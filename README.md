@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://image.web.id/images/logo-rames.png" alt="Rames Logo" width="140">
+</p>
+
 # Rames — Deploy Dashboard
 
 **Rames** — dashboard manajemen deployment berbasis Docker (mirip cPanel sederhana) untuk mengelola **site** yang di-deploy dari repo Git berisi `docker-compose.yml`. Dibangun dengan **Webman (PHP 8.1+)** dan berjalan di dalam **container Docker**; reverse proxy memakai **Nginx native di host**.
