@@ -31,6 +31,13 @@ return [
     // File status reload terakhir yang ditulis watcher di host
     'nginx_reload_status_file' => getenv('NGINX_RELOAD_STATUS_FILE') ?: (base_path() . '/nginx-status/last-reload.json'),
 
+    // Reload nginx HOST dari dashboard (via helper container pada Docker socket).
+    // Helper me-chroot ke root host (--privileged --pid host) sehingga memakai
+    // binary/config/user nginx host yang persis.
+    'nginx_http_conf' => getenv('NGINX_HTTP_CONF') ?: '/etc/nginx/nginx.conf',
+    'nginx_bin' => getenv('NGINX_BIN') ?: '/usr/sbin/nginx',
+    'nginx_reload_image' => getenv('NGINX_RELOAD_IMAGE') ?: 'alpine',
+
     // Direktori penyimpanan JSON (auth.json, sites.json)
     'database_path' => base_path() . '/database',
 

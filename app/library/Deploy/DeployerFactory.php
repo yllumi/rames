@@ -24,7 +24,6 @@ class DeployerFactory
                 enabledPath: (string) config('deploy.nginx_enabled_path', ''),
             ),
             sitesPath: (string) config('deploy.sites_path'),
-            appDomain: (string) config('deploy.app_domain', 'example.com'),
         );
     }
 }

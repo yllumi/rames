@@ -15,6 +15,7 @@
 use Webman\Route;
 
 use app\controller\AuthController;
+use app\controller\NginxController;
 use app\controller\SiteController;
 use app\controller\SslController;
 use app\controller\UserController;
@@ -53,6 +54,13 @@ Route::post('/sites/{id}/rebuild', [SiteController::class, 'rebuild']);
 Route::post('/sites/{id}/stop', [SiteController::class, 'stop']);
 Route::post('/sites/{id}/start', [SiteController::class, 'start']);
 Route::post('/sites/{id}/delete', [SiteController::class, 'delete']);
+
+// Custom domain
+Route::post('/sites/{id}/domain/set', [SiteController::class, 'setDomain']);
+Route::post('/sites/{id}/domain/remove', [SiteController::class, 'removeDomain']);
+
+// Reload Nginx host (via Docker socket helper container)
+Route::post('/nginx/reload', [NginxController::class, 'reload']);
 
 // SSL otomatis (Let's Encrypt)
 Route::get('/ssl', [SslController::class, 'index']);

@@ -126,6 +126,69 @@ class SslIssuer
     }
 
     /**
+     * Cabut (revoke) sertifikat Let's Encrypt untuk sebuah domain lalu hapus
+     * direktori cert-nya. No-op bila sertifikat tidak (lagi) ada di disk.
+     *
+     * Dipakai saat custom domain dihapus/diganti dari site — sertifikat lama
+     * tidak boleh dibiarkan aktif untuk domain yang tidak lagi dikelola.
+     *
+     * @throws RuntimeException bila certbot revoke gagal
+     */
+    public function revoke(string $domain): void
+    {
+        if (!$this->certExists($domain)) {
+            return;
+        }
+
+        $cmd = [
+            'certbot', 'revoke',
+            '--non-interactive',
+            '--cert-name', $domain,
+            '--config-dir', $this->lePath,
+            '--work-dir', '/var/lib/letsencrypt',
+            '--logs-dir', '/var/log/letsencrypt',
+        ];
+        if ($this->caServer === 'staging') {
+            $cmd[] = '--staging';
+        }
+
+        $result = $this->runner->run($cmd, null, 120);
+        if ($result['code'] !== 0) {
+            $err = trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']);
+            throw new RuntimeException('Gagal revoke sertifikat untuk ' . $domain . ': ' . $err);
+        }
+
+        // Bersihkan artefak certbot domain (live symlink, archive, renewal config)
+        foreach ([
+            $this->lePath . '/live/' . $domain,
+            $this->lePath . '/archive/' . $domain,
+            $this->lePath . '/renewal/' . $domain . '.conf',
+        ] as $path) {
+            if (is_link($path) || is_file($path)) {
+                @unlink($path);
+            } elseif (is_dir($path)) {
+                $this->removeRecursive($path);
+            }
+        }
+    }
+
+    private function removeRecursive(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($it as $file) {
+            $path = $file->getPathname();
+            $file->isDir() ? @rmdir($path) : @unlink($path);
+        }
+        @rmdir($dir);
+    }
+
+    /**
      * Pastikan direktori webroot & direktori kerja certbot tersedia.
      */
     private function prepareDirs(): void

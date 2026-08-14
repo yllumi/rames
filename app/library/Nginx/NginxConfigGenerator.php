@@ -19,20 +19,58 @@ class NginxConfigGenerator
     ) {
     }
 
-    public function render(string $name, string $domain, int $hostPort, bool $ssl = false): string
+    /**
+     * Render config Nginx untuk satu site. Satu file .conf bisa memuat banyak
+     * server block (subdomain + custom domain), masing-masing dengan peran:
+     *
+     *   - serve block     : `{server_name, ssl}` — proxy ke app; bila `ssl=true`
+     *                       render juga blok `listen 443 ssl` + redirect 80→https.
+     *   - redirect block  : `{server_name, redirect_to}` — hanya `return 301
+     *                       {redirect_to}$request_uri` (mis. subdomain → custom
+     *                       domain). `location /.well-known/acme-challenge/`
+     *                       tetap dirender SEBELUM return agar HTTP-01 tetap jalan.
+     *
+     * @param array<int,array{server_name:string,ssl?:bool,redirect_to?:string}> $servers
+     * @return string
+     */
+    public function render(int $hostPort, array $servers): string
     {
         $webroot = (string) config('deploy.ssl_webroot', base_path() . '/webroot');
+        $lePath = (string) config('deploy.letsencrypt_path', '/etc/letsencrypt');
         $acme = <<<ACME
     location ^~ /.well-known/acme-challenge/ {
         root {$webroot};
     }
 ACME;
 
-        if (!$ssl) {
-            return <<<NGINX
+        $blocks = [];
+        foreach ($servers as $entry) {
+            $serverName = (string) ($entry['server_name'] ?? '');
+            $redirectTo = ($entry['redirect_to'] ?? null) !== null ? (string) $entry['redirect_to'] : null;
+            $ssl = (bool) ($entry['ssl'] ?? false);
+
+            // Redirect block (mis. subdomain → custom domain)
+            if ($redirectTo !== null && $redirectTo !== '') {
+                $blocks[] = <<<NGINX
 server {
     listen 80;
-    server_name {$name}.{$domain};
+    server_name {$serverName};
+
+    {$acme}
+
+    location / {
+        return 301 {$redirectTo}\$request_uri;
+    }
+}
+NGINX;
+                continue;
+            }
+
+            // Serve block HTTP (80)
+            $httpBlock = <<<NGINX
+server {
+    listen 80;
+    server_name {$serverName};
 
     {$acme}
 
@@ -45,16 +83,20 @@ server {
     }
 }
 NGINX;
-        }
 
-        $lePath = (string) config('deploy.letsencrypt_path', '/etc/letsencrypt');
-        $cert = $lePath . '/live/' . $name . '.' . $domain . '/fullchain.pem';
-        $key = $lePath . '/live/' . $name . '.' . $domain . '/privkey.pem';
+            if (!$ssl) {
+                $blocks[] = $httpBlock;
+                continue;
+            }
 
-        return <<<NGINX
+            // Serve block dengan SSL: 80 → redirect https; 443 ssl serve app
+            $cert = $lePath . '/live/' . $serverName . '/fullchain.pem';
+            $key = $lePath . '/live/' . $serverName . '/privkey.pem';
+
+            $blocks[] = <<<NGINX
 server {
     listen 80;
-    server_name {$name}.{$domain};
+    server_name {$serverName};
 
     {$acme}
 
@@ -65,7 +107,7 @@ server {
 
 server {
     listen 443 ssl;
-    server_name {$name}.{$domain};
+    server_name {$serverName};
 
     ssl_certificate {$cert};
     ssl_certificate_key {$key};
@@ -80,6 +122,9 @@ server {
     }
 }
 NGINX;
+        }
+
+        return implode("\n\n", $blocks) . "\n";
     }
 
     /**

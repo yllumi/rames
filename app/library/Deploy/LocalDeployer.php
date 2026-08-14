@@ -19,7 +19,6 @@ class LocalDeployer implements DeployerInterface
         private readonly DockerClient $dockerClient,
         private readonly NginxConfigGenerator $nginx,
         private readonly string $sitesPath,
-        private readonly string $appDomain,
     ) {
     }
 
@@ -118,8 +117,27 @@ class LocalDeployer implements DeployerInterface
     public function renderNginxConfig(array $site): string
     {
         $hostPort = $this->primaryHostPort($site);
-        $ssl = ($site['ssl_status'] ?? null) === 'active';
-        return $this->nginx->render($site['name'], $this->appDomain, $hostPort, $ssl);
+        $subdomain = site_subdomain($site['name']);
+        $customDomain = (string) ($site['custom_domain'] ?? '');
+
+        // Tanpa custom domain: subdomain melayani app (perilaku default).
+        if ($customDomain === '') {
+            $ssl = ($site['ssl_status'] ?? null) === 'active';
+            return $this->nginx->render($hostPort, [
+                ['server_name' => $subdomain, 'ssl' => $ssl],
+            ]);
+        }
+
+        // Dengan custom domain: subdomain redirect (301) ke custom domain,
+        // custom domain melayani app. Redirect pakai https bila SSL custom aktif,
+        // selain itu http agar tidak memutus akses sebelum cert terpasang.
+        $customSsl = ($site['custom_ssl_status'] ?? null) === 'active';
+        $target = ($customSsl ? 'https://' : 'http://') . $customDomain;
+
+        return $this->nginx->render($hostPort, [
+            ['server_name' => $subdomain, 'redirect_to' => $target],
+            ['server_name' => $customDomain, 'ssl' => $customSsl],
+        ]);
     }
 
     public function writeNginxConfig(array $site): void

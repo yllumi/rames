@@ -15,7 +15,7 @@ $anyPending = false;
 <div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <div>
     <h1 class="h3 mb-1">SSL / Let's Encrypt</h1>
-    <p class="text-muted mb-0">Sertifikat TLS otomatis per domain (subdomain site).</p>
+    <p class="text-muted mb-0">Sertifikat TLS otomatis per domain (subdomain atau custom domain site).</p>
   </div>
   <a class="btn btn-outline-secondary btn-sm" href="/sites">&larr; Sites</a>
 </div>
@@ -41,15 +41,18 @@ $anyPending = false;
       <?php foreach ($rows as $r): ?>
         <?php $st = $r['ssl_status']; $anyPending = $anyPending || $st === 'pending'; ?>
         <tr>
-          <td><span class="mono"><?= e($r['domain']) ?></span></td>
+          <td>
+            <span class="mono"><?= e($r['domain']) ?></span>
+            <?php if (!empty($r['is_custom'])): ?><span class="text-muted small">(custom)</span><?php endif; ?>
+          </td>
           <td>
             <a href="/sites/<?= e($r['site']['id']) ?>"><?= e($r['site']['name']) ?></a>
             <span class="text-muted small">(<?= e($r['site']['status'] ?? 'unknown') ?>)</span>
           </td>
           <td>
             <span class="badge <?= e($badges[$st] ?? 'badge-stopped') ?>"><?= e($st) ?></span>
-            <?php if ($st === 'pending' && !empty($r['site']['ssl_message'])): ?>
-              <div class="text-muted small"><?= e($r['site']['ssl_message']) ?></div>
+            <?php if ($st === 'pending' && !empty($r['ssl_message'])): ?>
+              <div class="text-muted small"><?= e($r['ssl_message']) ?></div>
             <?php endif; ?>
           </td>
           <td class="small"><?= $r['ssl_expires_at'] ? e($r['ssl_expires_at']) : '<span class="text-muted">-</span>' ?></td>

@@ -63,7 +63,7 @@ flowchart TB
 ```
 
 **Poin kunci:**
-- Dashboard **tidak** menjalankan `nginx -s reload` langsung ke host — ia hanya menulis file `.conf` ke direktori yang di-mount; watcher di host yang memvalidasi & me-reload (`nginx -t && nginx -s reload`). Watcher ini belum diimplementasikan (lihat §8.3 SPECS).
+- Dashboard **tidak** menjalankan `nginx -s reload` langsung ke host via shell — ia hanya menulis file `.conf` ke direktori yang di-mount; reload diaktifkan watcher host (`nginx -t && nginx -s reload`, SPECS §8.3) atau, sementara watcher belum ada, via helper container `--pid host` yang me-chroot ke root host pada Docker socket (`NginxReloader`, SPECS §8.4).
 - Semua operasi Docker dijalankan lewat `/var/run/docker.sock` yang di-mount → berjalan pada **daemon Docker host** (bukan daemon di dalam container).
 
 ---
@@ -88,7 +88,7 @@ Controller hanya **mediator**: tidak memuat logika bisnis, tidak menyimpan state
 | Controller | Tanggung jawab |
 |---|---|
 | `AuthController` | Login/logout, session, regenerasi session id (anti fixation) |
-| `SiteController` | Wizard create site, halaman detail, aksi (rebuild/stop/start/delete), endpoint polling status |
+| `SiteController` | Wizard create site, halaman detail, aksi (rebuild/stop/start/delete), set/hapus custom domain, endpoint polling status |
 | `UserController` | Kelola user (tambah/hapus, ganti password) |
 
 ### 4.2 Middleware — `app/middleware/`
@@ -117,12 +117,13 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `PortManager` | Deteksi konflik port terhadap `sites.json`, saran port dari range, validasi port |
 | | `DockerClient` | Client Engine API (Guzzle + `CURLOPT_UNIX_SOCKET_PATH`) untuk operasi **baca**: list/inspect container, ping |
 | | `DockerComposeRunner` | CLI `docker compose` untuk **orkestrasi**: up/down/build/stop/start/pull |
-| **Nginx** | `NginxConfigGenerator` | Render & tulis config `.conf` + symlink ke `sites-enabled`; `ensureWritable()` fail-fast; render blok `listen 443 ssl` + `location /.well-known/acme-challenge/` |
+| **Nginx** | `NginxConfigGenerator` | Render & tulis config `.conf` + symlink ke `sites-enabled`; `ensureWritable()` fail-fast; render multi server block per site (subdomain + custom domain, redirect 301, blok `listen 443 ssl`, `location /.well-known/acme-challenge/`) |
 | | `NginxStatusReader` | Baca status reload terakhir watcher (`last-reload.json`) |
-| **SSL** | `SslIssuer` | Terbitkan sertifikat Let's Encrypt via certbot (HTTP-01 webroot / DNS-01 Cloudflare), cek kedaluwarsa cert |
-| | `SslController` | Halaman `/ssl`: daftar domain + status SSL + tombol Aktifkan SSL / Retry |
+| | `NginxReloader` | Reload nginx HOST via helper container (`--pid host --privileged`, chroot ke root host) pada Docker socket; tulis `last-reload.json`; dipakai tombol "Reload Nginx" + auto-reload setelah set/hapus custom domain, deploy/rebuild, dan SSL (best-effort) |
+| **SSL** | `SslIssuer` | Terbitkan/revoke sertifikat Let's Encrypt via certbot (HTTP-01 webroot / DNS-01 Cloudflare), cek kedaluwarsa cert |
+| | `SslController` | Halaman `/ssl`: daftar domain (subdomain/custom) + status SSL + tombol Aktifkan SSL / Retry |
 | **Deploy** | `DeployerInterface` | Abstraksi eksekusi deploy (siap diganti `HttpDeployer` untuk multi-server) |
-| | `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx |
+| | `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx (termasuk custom domain & redirect subdomain) |
 | | `DeployerFactory` | Satu-satunya titik pembuatan `DeployerInterface` |
 
 ### 4.4 Background Worker — `cli/deploy.php`
@@ -197,6 +198,13 @@ Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di
 3. Semua route (kecuali `/login`) dilindungi `AuthMiddleware`.
 4. Logout → hapus `user` + flush session.
 
+### 5.6 Custom Domain & SSL per Domain
+
+1. Halaman detail site → form **Set Custom Domain** (FQDN publik valid, unik di semua site, bukan subdomain sendiri).
+2. Set → update `sites.json` (`custom_domain` + `custom_ssl_status=disabled`) → tulis ulang config Nginx: subdomain menjadi block redirect `301` ke `http(s)://{custom_domain}`, custom domain melayani app (`LocalDeployer::renderNginxConfig`).
+3. Ganti/hapus custom domain → `SslIssuer::revoke()` mencabut sertifikat lama (no-op bila belum ada cert), lalu config ditulis ulang (subdomain kembali melayani app).
+4. SSL custom domain → tombol di detail site & `/ssl` → spawn `cli/ssl.php <siteId> <domain>`; worker menentukan slot `custom_ssl` (bila domain = `custom_domain`) atau `ssl` (subdomain), menjalankan certbot, lalu tulis ulang config Nginx.
+
 ---
 
 ## 6. Keputusan Teknis Penting
@@ -225,7 +233,7 @@ Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di
 
 ## 8. Batasan & Future Work
 
-- **Watcher reload Nginx belum ada** (SPECS §8.3) — reload manual `sudo systemctl reload nginx`; otomatisasi via `inotifywait` dijadwalkan.
+- **Watcher reload Nginx belum ada** (SPECS §8.3) — otomatisasi via `inotifywait` dijadwalkan. Pengganti sementara: dashboard me-reload nginx host lewat Docker socket (`NginxReloader`) — tombol "Reload Nginx" + auto-reload setelah set/hapus custom domain, deploy/rebuild, dan SSL (best-effort, non-fatal).
 - **SSL otomatis** (SPECS §8a) sudah diimplementasikan: halaman `/ssl` + worker `cli/ssl.php` menjalankan certbot di container (HTTP-01 webroot / DNS-01 Cloudflare). Otomasi renewal `certbot renew` di host tetap prasyarat manual.
 - **Deteksi konflik port** hanya terhadap site terkelola sendiri (SPECS §7.2), bukan container eksternal di host.
 - Ekstraksi `DeployerInterface` → agent HTTP terpisah (multi-server).

@@ -244,6 +244,22 @@ server {
 
 Pendekatan ini sengaja menghindari dashboard container butuh akses eksekusi command langsung di host (tidak perlu SSH/sudo dari container), cukup akses tulis file di volume yang di-mount.
 
+### 8.4 Reload dari dashboard (via Docker socket) — pengganti/fallback watcher
+
+Selama watcher host (§8.3) belum dipasang, dashboard bisa me-reload nginx HOST sendiri lewat **Docker socket** (`NginxReloader`):
+
+1. Helper container berbagi **PID namespace host** (`--pid host`) dan **me-chroot ke root host** (volume `-v /:/host`), sehingga memakai binary, config, module, dan user nginx HOST yang persis (bukan binary Alpine).
+2. Tahap **validasi** (`nginx -t`): mount host **rw** + tmpfs `/host/run` (nginx -t menulis log ke host seperti `sudo nginx -t` manual; tmpfs melindungi pid file host dari tertimpa pid test).
+3. Tahap **reload** (`nginx -s reload`): mount host **ro** — hanya membaca `/run/nginx.pid` lalu mengirim SIGHUP. Karena PID namespace dibagi host, sinyal sampai ke master nginx HOST (zero-downtime reload).
+4. `--privileged` dipakai karena sebagian host membatasi capability/seccomp sehingga sinyal ke proses root host ditolak (EPERM); konsisten dengan threat model project (docker.sock sudah di-mount). Kegagalan reload tidak menggagalkan deploy/SSL (dicatat di log & status).
+5. Hasil ditulis ke `nginx-status/last-reload.json` (format sama dengan watcher, dibaca `NginxStatusReader`) untuk feedback UI.
+
+Pemicu reload:
+- **Tombol "Reload Nginx"** di halaman detail site (`POST /nginx/reload`) — manual/kapan saja.
+- **Otomatis** (best-effort, non-fatal) setelah: set/hapus custom domain (`SiteController`), sukses deploy/rebuild (`cli/deploy.php`), dan sukses penerbitan SSL (`cli/ssl.php`) — karena ketiganya menulis ulang config Nginx.
+
+Prasyarat: image helper `NGINX_RELOAD_IMAGE` (default `alpine`, cukup `sh`+`chroot`); path config host (`NGINX_HTTP_CONF`) dan binary nginx host (`NGINX_BIN`, default `/usr/sbin/nginx`) sesuai host; daemon Docker mengizinkan `--privileged`.
+
 ## 8a. SSL Otomatis (Let's Encrypt)
 
 Nginx tetap native di host; **certbot dijalankan di dalam dashboard container** (root) oleh worker `cli/ssl.php`, dipicu tombol "Aktifkan SSL" di halaman `/ssl`. Dashboard tetap satu-satunya penulis file config Nginx — blok `listen 443 ssl` di-render sendiri, bukan dimodifikasi certbot (menghindari konflik kepemilikan config).
@@ -267,6 +283,43 @@ Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (
 - Nginx reload watcher host (SPECS §8.3) aktif — dashboard hanya menulis `.conf`, watcher yang `nginx -t && reload`
 - `ADMIN_EMAIL` diisi; untuk DNS-01 Cloudflare: `CLOUDFLARE_CREDS` menunjuk file berisi `dns_cloudflare_api_token = <token>` yang terbaca container dashboard
 - `LETSENCRYPT_PATH` (default `/etc/letsencrypt`) di-mount ke container dari host
+
+## 8b. Custom Domain per Site
+
+Setiap site bisa diberi **satu custom domain** (FQDN publik, mis. `example.org`). Subdomain bawaan `{name}.{APP_DOMAIN}` tetap aktif tetapi **redirect 301** ke custom domain. Custom domain & subdomain sama-sama di-proxy ke `127.0.0.1:{host_port primary_service}`.
+
+### Data model (sites.json)
+Field tambahan per site:
+- `custom_domain` — string FQDN publik, atau `null` bila tidak ada
+- `custom_ssl_status` — `disabled|pending|active|failed` (SSL custom domain)
+- `custom_ssl_stage`, `custom_ssl_message`, `custom_ssl_error`
+- `custom_ssl_expires_at` — tanggal kedaluwarsa cert custom domain
+
+`ssl_status`/`ssl_stage`/`ssl_message`/`ssl_error`/`ssl_expires_at` (yang lama) tetap berlaku untuk subdomain bawaan. Semua field diakses dengan default (`??`), sehingga site lama tanpa field ini tetap aman (tanpa migrasi data).
+
+### Alur set / ganti / hapus custom domain
+1. Halaman detail site → form **Set Custom Domain**. Validasi:
+   - FQDN publik valid (`SslIssuer::isPublicDomain` — menolak localhost/IP/TLD non-publik)
+   - bukan subdomain bawaan site itu sendiri
+   - **unik** di semua site (tidak boleh sama dengan subdomain maupun custom domain site lain)
+2. Set → simpan `custom_domain` + reset status SSL custom → tulis ulang config Nginx:
+   - subdomain bawaan → server block **redirect `301`** ke `http(s)://{custom_domain}`
+   - custom domain → server block serve app (80, +443 ssl bila `custom_ssl_status=active`)
+   - Redirect memakai `https` hanya bila SSL custom sudah `active`; sebelum itu `http` agar akses tidak terputus
+3. Ganti custom domain → custom domain lama (bila punya cert) di-`revoke` dulu, lalu set yang baru
+4. Hapus → `certbot revoke` cert custom domain (bila ada) + hapus field + tulis ulang config Nginx (subdomain kembali melayani app). Bila revoke gagal, domain tetap dihapus dari config (recovery via Rebuild)
+
+### SSL custom domain
+- Tombol **Aktifkan SSL** / **Retry** muncul di halaman detail site & halaman `/ssl` (baris custom domain ditandai `(custom)`)
+- Worker `cli/ssl.php <siteId> <domain>` — argumen domain menentukan slot:
+  - `domain == custom_domain` → update `custom_ssl_*`
+  - `domain == subdomain` (atau argumen kosong → default) → update `ssl_*`
+- Cert disimpan di `{LETSENCRYPT_PATH}/live/{domain}/` (per-domain; path cert di server block mengikuti domain tsb)
+- HTTP-01 tetap jalan: `location /.well-known/acme-challenge/` dirender di **setiap** server block (termasuk block redirect) sebelum `return 301`
+
+### Prasyarat
+- DNS custom domain harus diarahkan ke server ini (untuk HTTP-01: port 80 publik terbuka; bila record Cloudflare proxy aktif, gunakan `SSL_CHALLENGE=dns-cloudflare`)
+- Sama seperti §8a: watcher reload Nginx (§8.3), `ADMIN_EMAIL`, mount `LETSENCRYPT_PATH`, dll
 
 ## 9. Environment Variables (`.env`)
 

@@ -8,7 +8,9 @@ use app\library\Docker\ComposeParser;
 use app\library\Docker\PortManager;
 use app\library\Git\GitService;
 use app\library\Git\SshKeyManager;
+use app\library\Nginx\NginxReloader;
 use app\library\Nginx\NginxStatusReader;
+use app\library\SSL\SslIssuer;
 use app\library\Storage\SiteStore;
 use RuntimeException;
 use support\Request;
@@ -367,6 +369,181 @@ class SiteController
             flash_set('error', 'Gagal menghapus: ' . $e->getMessage());
         }
         return redirect('/sites');
+    }
+
+    // ==================================================================
+    // Custom domain (set / hapus)
+    // ==================================================================
+
+    /**
+     * Set / ganti custom domain site.
+     *
+     * Validasi: FQDN publik valid, bukan subdomain bawaan site sendiri, unik di
+     * semua site (subdomain & custom domain site lain). Bila ada custom domain
+     * lama yang punya sertifikat, di-revoke dulu. Setelah tersimpan, config
+     * Nginx ditulis ulang (subdomain → redirect ke custom domain).
+     */
+    public function setDomain(Request $request, string $id)
+    {
+        $store = new SiteStore();
+        $site = $store->find($id);
+        if ($site === null) {
+            flash_set('error', 'Site tidak ditemukan.');
+            return redirect('/sites');
+        }
+
+        $domain = strtolower(trim((string) $request->post('domain', '')));
+        $subdomain = site_subdomain($site['name']);
+        $oldCustom = (string) ($site['custom_domain'] ?? '');
+
+        try {
+            if (!SslIssuer::isPublicDomain($domain)) {
+                throw new RuntimeException('Custom domain harus FQDN publik yang valid (mis. example.org).');
+            }
+            if ($domain === $subdomain) {
+                throw new RuntimeException('Custom domain tidak boleh sama dengan subdomain bawaan site.');
+            }
+            if ($domain === $oldCustom) {
+                flash_set('info', 'Custom domain sudah di-set ke ' . $domain . '.');
+                return redirect('/sites/' . $id);
+            }
+            $this->assertDomainUnique($store, $id, $domain);
+
+            // Custom domain lama (bila ada sertifikat) di-revoke sebelum diganti.
+            if ($oldCustom !== '') {
+                try {
+                    (new SslIssuer())->revoke($oldCustom);
+                } catch (\Throwable $e) {
+                    flash_set('info', 'Peringatan: gagal revoke sertifikat lama ' . $oldCustom . ' — ' . $e->getMessage());
+                }
+            }
+
+            $store->update($id, function (array &$s) use ($domain): void {
+                $s['custom_domain'] = $domain;
+                $s['custom_ssl_status'] = 'disabled';
+                $s['custom_ssl_stage'] = null;
+                $s['custom_ssl_message'] = null;
+                $s['custom_ssl_error'] = null;
+                $s['custom_ssl_expires_at'] = null;
+                $s['custom_needs_ssl'] = false;
+            });
+
+            $site = $store->find($id);
+            if ($site !== null) {
+                try {
+                    $this->applyNginxConfig($site);
+                } catch (\Throwable $e) {
+                    flash_set('error', 'Custom domain ' . $domain . ' tersimpan, tetapi gagal menulis config Nginx: ' . $e->getMessage() . ' (jalankan Rebuild untuk menerapkan).');
+                    return redirect('/sites/' . $id);
+                }
+            }
+
+            // Reload nginx host agar reverse proxy custom domain langsung aktif.
+            $reloadNote = $this->reloadNginxNote();
+            flash_set('success', 'Custom domain ' . $domain . ' diset. Subdomain bawaan kini redirect ke domain tersebut.' . ($reloadNote !== '' ? ' ' . $reloadNote : '') . ' Jangan lupa arahkan DNS domain ke server, lalu aktifkan SSL-nya.');
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+        return redirect('/sites/' . $id);
+    }
+
+    /**
+     * Hapus custom domain site. Sertifikat SSL domain (bila ada) di-revoke;
+     * bila revoke gagal, domain tetap dihapus dari config (recovery via Rebuild).
+     */
+    public function removeDomain(Request $request, string $id)
+    {
+        $store = new SiteStore();
+        $site = $store->find($id);
+        if ($site === null) {
+            flash_set('error', 'Site tidak ditemukan.');
+            return redirect('/sites');
+        }
+
+        $customDomain = (string) ($site['custom_domain'] ?? '');
+        if ($customDomain === '') {
+            flash_set('info', 'Site tidak memiliki custom domain.');
+            return redirect('/sites/' . $id);
+        }
+
+        $revokeError = null;
+        try {
+            (new SslIssuer())->revoke($customDomain);
+        } catch (\Throwable $e) {
+            $revokeError = $e->getMessage();
+        }
+
+        $store->update($id, function (array &$s): void {
+            $s['custom_domain'] = null;
+            $s['custom_ssl_status'] = 'disabled';
+            $s['custom_ssl_stage'] = null;
+            $s['custom_ssl_message'] = null;
+            $s['custom_ssl_error'] = null;
+            $s['custom_ssl_expires_at'] = null;
+            $s['custom_needs_ssl'] = false;
+        });
+
+        $site = $store->find($id);
+        if ($site !== null) {
+            try {
+                $this->applyNginxConfig($site);
+                // Reload nginx host agar subdomain kembali melayani app (best-effort).
+                $reloadNote = $this->reloadNginxNote();
+                if ($reloadNote !== '') {
+                    $revokeError = ($revokeError ?? '') . ' ' . $reloadNote;
+                }
+            } catch (\Throwable $e) {
+                $revokeError = ($revokeError ?? '') . ' Gagal menulis config Nginx: ' . $e->getMessage();
+            }
+        }
+
+        if ($revokeError !== null) {
+            flash_set('error', 'Custom domain ' . $customDomain . ' dihapus, tetapi: ' . $revokeError . ' (jalankan Rebuild untuk menerapkan config).');
+        } else {
+            flash_set('success', 'Custom domain ' . $customDomain . ' dihapus. Sertifikat SSL-nya di-revoke.');
+        }
+        return redirect('/sites/' . $id);
+    }
+
+    /**
+     * Tulis ulang config Nginx site (dipakai saat custom domain di-set/dihapus).
+     */
+    private function applyNginxConfig(array $site): void
+    {
+        DeployerFactory::create()->writeNginxConfig($site);
+    }
+
+    /**
+     * Reload nginx host via NginxReloader (best-effort). Mengembalikan string
+     * pesan error bila gagal, atau string kosong bila sukses.
+     */
+    private function reloadNginxNote(): string
+    {
+        try {
+            $r = (new NginxReloader())->reload();
+            return $r['ok'] ? '' : 'Reload Nginx GAGAL: ' . ($r['error'] ?? 'unknown error') . ' — klik tombol "Reload Nginx" untuk mencoba lagi.';
+        } catch (\Throwable $e) {
+            return 'Reload Nginx gagal: ' . $e->getMessage() . ' — klik tombol "Reload Nginx" untuk mencoba lagi.';
+        }
+    }
+
+    /**
+     * Pastikan sebuah domain belum dipakai site lain (sebagai subdomain bawaan
+     * maupun custom domain). Subdomain site itu sendiri sudah dicek pemanggil.
+     */
+    private function assertDomainUnique(SiteStore $store, string $excludeId, string $domain): void
+    {
+        foreach ($store->all() as $other) {
+            if (($other['id'] ?? '') === $excludeId) {
+                continue;
+            }
+            if (($other['subdomain'] ?? '') === $domain) {
+                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai subdomain site "' . ($other['name'] ?? '?') . '".');
+            }
+            if (($other['custom_domain'] ?? '') === $domain) {
+                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai custom domain site "' . ($other['name'] ?? '?') . '".');
+            }
+        }
     }
 
     // ==================================================================

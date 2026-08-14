@@ -17,6 +17,7 @@ declare(strict_types=1);
  */
 
 use app\library\Deploy\DeployerFactory;
+use app\library\Nginx\NginxReloader;
 use app\library\Storage\SiteStore;
 
 if (PHP_SAPI !== 'cli') {
@@ -72,6 +73,15 @@ try {
         $s['error'] = null;
         $s['containers'] = $site['containers'] ?? [];
     });
+
+    // Reload nginx host agar config baru (subdomain/custom domain) aktif.
+    // Best-effort: kegagalan reload tidak menggagalkan deploy — hanya dicatat.
+    try {
+        $reload = (new NginxReloader())->reload();
+        file_put_contents($logFile, '[' . date('c') . "] [nginx] " . ($reload['ok'] ? 'Reload Nginx berhasil.' : 'Reload Nginx GAGAL: ' . ($reload['error'] ?? '')) . "\n", FILE_APPEND);
+    } catch (\Throwable $e) {
+        file_put_contents($logFile, '[' . date('c') . "] [nginx] Reload Nginx gagal: " . $e->getMessage() . "\n", FILE_APPEND);
+    }
 
     file_put_contents($logFile, '[' . date('c') . "] done\n", FILE_APPEND);
     exit(0);
