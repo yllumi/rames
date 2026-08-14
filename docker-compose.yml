@@ -20,6 +20,10 @@ services:
       ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@example.com}"
       DOCKER_SOCKET: "${DOCKER_SOCKET:-/var/run/docker.sock}"
       DEPLOY_TIMEOUT: "${DEPLOY_TIMEOUT:-600}"
+      SSL_CHALLENGE: "${SSL_CHALLENGE:-http}"
+      SSL_CA_SERVER: "${SSL_CA_SERVER:-production}"
+      SSL_WEBROOT: "${SSL_WEBROOT:-}"
+      CLOUDFLARE_CREDS: "${CLOUDFLARE_CREDS:-}"
     volumes:
       # Penting: kode di-mount di path yang SAMA dengan host (${PWD}). Karena
       # docker compose dijalankan DI DALAM container namun daemon-nya di host,
@@ -34,6 +38,8 @@ services:
       - "${NGINX_ENABLED_PATH:-/etc/nginx/sites-enabled}:${NGINX_ENABLED_PATH:-/etc/nginx/sites-enabled}"
       # Status reload yang ditulis watcher di host, dibaca dashboard
       - "./nginx-status:${PWD}/nginx-status"
+      # Sertifikat Let's Encrypt: ditulis certbot (di container), dibaca nginx host
+      - "/etc/letsencrypt:/etc/letsencrypt"
     ports:
       - "${APP_PORT:-8123}:8787"
     # DNS eksplisit: /etc/resolv.conf di host adalah symlink rusak (stub-resolv.conf

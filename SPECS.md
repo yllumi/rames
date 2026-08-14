@@ -246,27 +246,27 @@ Pendekatan ini sengaja menghindari dashboard container butuh akses eksekusi comm
 
 ## 8a. SSL Otomatis (Let's Encrypt)
 
-Karena Nginx dikelola native di host (bukan container) dan menggunakan watcher untuk reload (lihat 8.3), penerbitan sertifikat juga dilakukan di sisi host, dipicu oleh dashboard lewat mekanisme yang sama (tulis file/trigger), bukan dashboard container yang langsung menjalankan `certbot`.
+Nginx tetap native di host; **certbot dijalankan di dalam dashboard container** (root) oleh worker `cli/ssl.php`, dipicu tombol "Aktifkan SSL" di halaman `/ssl`. Dashboard tetap satu-satunya penulis file config Nginx — blok `listen 443 ssl` di-render sendiri, bukan dimodifikasi certbot (menghindari konflik kepemilikan config).
 
-### Alur penerbitan sertifikat saat create/update site
-1. Setelah config Nginx untuk `{name}.{APP_DOMAIN}` berhasil ditulis, divalidasi, dan direload (HTTP dulu, port 80) — subdomain harus sudah bisa diakses via HTTP sebelum certbot bisa validasi domain ownership (challenge butuh port 80 terbuka & mengarah ke server ini)
-2. Dashboard menandai site dengan status `ssl_pending` dan menulis request ke **antrian sederhana** (mis. file `database/ssl-queue.json` atau baris ditambah dgn flag `needs_ssl: true` pada entry site)
-3. Watcher/cron di host (service terpisah, mis. `dashboard-ssl-issuer.service` atau cron interval singkat) membaca antrian ini, lalu jalankan:
-   ```
-   certbot certonly --nginx -d {name}.{APP_DOMAIN} --non-interactive --agree-tos -m {admin_email}
-   ```
-4. Certbot juga menulis konfigurasi `listen 443 ssl` ke file config site tsb (certbot plugin nginx otomatis modifikasi block server) — dashboard **tidak** menimpa bagian SSL ini saat regenerate config, cukup bagian `proxy_pass`/upstream yang dikelola dashboard
-5. Setelah sukses, watcher update status site di `sites.json` jadi `ssl_active` beserta `ssl_expires_at`; dashboard menampilkan status ini di halaman detail site
-6. **Renewal**: dijadwalkan lewat cron/systemd timer standar bawaan certbot (`certbot renew`, biasanya jalan 2x sehari, cukup renew kalau mendekati expired) — di luar tanggung jawab dashboard, cukup pastikan saat instalasi certbot timer ini aktif
+### Alur penerbitan sertifikat
+1. Halaman `/ssl` menampilkan daftar domain (= subdomain tiap site) + status SSL (`disabled`/`pending`/`active`/`failed`); tombol **Aktifkan SSL** / **Retry**. Untuk domain non-publik (`APP_DOMAIN` `.local` dll) fitur dinonaktifkan.
+2. Klik tombol → dashboard set `ssl_status=pending`, `needs_ssl=true`, spawn worker `cli/ssl.php` (detached; log `runtime/logs/ssl/{siteId}.log`).
+3. Worker menentukan domain = `{name}.{APP_DOMAIN}` lalu menjalankan `certbot certonly`:
+   - `SSL_CHALLENGE=http` (default): `--webroot -w {SSL_WEBROOT}` — webroot dilayani nginx host lewat `location /.well-known/acme-challenge/` yang selalu dirender di tiap site conf; berlaku untuk semua DNS provider asal port 80 publik terbuka.
+   - `SSL_CHALLENGE=dns-cloudflare`: `--dns-cloudflare --dns-cloudflare-credentials {CLOUDFLARE_CREDS}` — validasi via record TXT; cocok saat record Cloudflare proxy aktif, tidak butuh port 80 publik.
+   - `SSL_CA_SERVER=staging` → tambah `--staging` untuk uji tanpa rate limit production.
+4. Sukses → update `ssl_status=active` + `ssl_expires_at`, lalu **regenerate config Nginx** dengan blok `listen 443 ssl` + redirect HTTP→HTTPS (path cert `/etc/letsencrypt/live/{domain}/...` yang di-mount dari host). Watcher host me-reload.
+5. Gagal → `ssl_status=failed` + pesan error; site tetap `running` via HTTP, tombol **Retry SSL** muncul.
 
-### Kegagalan penerbitan
-- Kalau certbot gagal (mis. DNS belum propagate, port 80 diblokir firewall), site tetap `running` dengan status `ssl_failed` — site tetap bisa diakses via HTTP, tidak memblokir fungsi utama
-- Dashboard tampilkan pesan error terakhir dan tombol "Retry SSL" yang menambahkan kembali ke antrian
+### Renewal
+Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (atau tombol Enable/Retry) tidak menerbitkan ulang selama masih valid. Otomasi renewal via cron/systemd timer `certbot renew` di host — prasyarat instalasi, di luar dashboard.
 
 ### Prasyarat
-- DNS wildcard/record subdomain harus sudah aktif mengarah ke IP server sebelum request SSL dicoba (sama seperti prasyarat routing biasa)
-- Port 80 dan 443 harus terbuka di firewall host
-- `certbot` dan plugin `python3-certbot-nginx` terinstall di host (bagian dari setup awal server, dicatat sebagai prasyarat instalasi, bukan diinstall otomatis oleh dashboard di Phase 1)
+- DNS wildcard/record subdomain mengarah ke server (untuk HTTP-01 juga butuh port 80 publik terbuka di firewall host)
+- Port 80 dan 443 terbuka di firewall host
+- Nginx reload watcher host (SPECS §8.3) aktif — dashboard hanya menulis `.conf`, watcher yang `nginx -t && reload`
+- `ADMIN_EMAIL` diisi; untuk DNS-01 Cloudflare: `CLOUDFLARE_CREDS` menunjuk file berisi `dns_cloudflare_api_token = <token>` yang terbaca container dashboard
+- `LETSENCRYPT_PATH` (default `/etc/letsencrypt`) di-mount ke container dari host
 
 ## 9. Environment Variables (`.env`)
 

@@ -19,12 +19,57 @@ class NginxConfigGenerator
     ) {
     }
 
-    public function render(string $name, string $domain, int $hostPort): string
+    public function render(string $name, string $domain, int $hostPort, bool $ssl = false): string
     {
+        $webroot = (string) config('deploy.ssl_webroot', base_path() . '/webroot');
+        $acme = <<<ACME
+    location ^~ /.well-known/acme-challenge/ {
+        root {$webroot};
+    }
+ACME;
+
+        if (!$ssl) {
+            return <<<NGINX
+server {
+    listen 80;
+    server_name {$name}.{$domain};
+
+    {$acme}
+
+    location / {
+        proxy_pass http://127.0.0.1:{$hostPort};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+NGINX;
+        }
+
+        $lePath = (string) config('deploy.letsencrypt_path', '/etc/letsencrypt');
+        $cert = $lePath . '/live/' . $name . '.' . $domain . '/fullchain.pem';
+        $key = $lePath . '/live/' . $name . '.' . $domain . '/privkey.pem';
+
         return <<<NGINX
 server {
     listen 80;
     server_name {$name}.{$domain};
+
+    {$acme}
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name {$name}.{$domain};
+
+    ssl_certificate {$cert};
+    ssl_certificate_key {$key};
+    ssl_protocols TLSv1.2 TLSv1.3;
 
     location / {
         proxy_pass http://127.0.0.1:{$hostPort};

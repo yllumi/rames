@@ -38,8 +38,15 @@ return [
     'ssh_keys_path' => getenv('SSH_KEYS_PATH') ?: (base_path() . '/database/keys'),
     'git_known_hosts' => getenv('GIT_KNOWN_HOSTS') ?: (base_path() . '/database/keys/known_hosts'),
 
-    // Email admin (cadangan untuk SSL di iterasi berikutnya)
+    // Email admin untuk penerimaan syarat & notifikasi Let's Encrypt
     'admin_email' => getenv('ADMIN_EMAIL') ?: '',
+
+    // SSL otomatis Let's Encrypt (SPECS.md §8a)
+    'ssl_challenge' => getenv('SSL_CHALLENGE') ?: 'http',        // http | dns-cloudflare
+    'ssl_ca_server' => getenv('SSL_CA_SERVER') ?: 'production',  // production | staging
+    'ssl_webroot' => getenv('SSL_WEBROOT') ?: (base_path() . '/webroot'),
+    'letsencrypt_path' => getenv('LETSENCRYPT_PATH') ?: '/etc/letsencrypt',
+    'cloudflare_creds' => getenv('CLOUDFLARE_CREDS') ?: '',
 
     // Socket Docker Engine
     'docker_socket' => getenv('DOCKER_SOCKET') ?: '/var/run/docker.sock',

@@ -118,7 +118,8 @@ class LocalDeployer implements DeployerInterface
     public function renderNginxConfig(array $site): string
     {
         $hostPort = $this->primaryHostPort($site);
-        return $this->nginx->render($site['name'], $this->appDomain, $hostPort);
+        $ssl = ($site['ssl_status'] ?? null) === 'active';
+        return $this->nginx->render($site['name'], $this->appDomain, $hostPort, $ssl);
     }
 
     public function writeNginxConfig(array $site): void

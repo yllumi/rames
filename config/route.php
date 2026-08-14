@@ -16,6 +16,7 @@ use Webman\Route;
 
 use app\controller\AuthController;
 use app\controller\SiteController;
+use app\controller\SslController;
 use app\controller\UserController;
 
 /*
@@ -52,6 +53,10 @@ Route::post('/sites/{id}/rebuild', [SiteController::class, 'rebuild']);
 Route::post('/sites/{id}/stop', [SiteController::class, 'stop']);
 Route::post('/sites/{id}/start', [SiteController::class, 'start']);
 Route::post('/sites/{id}/delete', [SiteController::class, 'delete']);
+
+// SSL otomatis (Let's Encrypt)
+Route::get('/ssl', [SslController::class, 'index']);
+Route::post('/ssl/{id}/enable', [SslController::class, 'enable']);
 
 /*
 |--------------------------------------------------------------------------

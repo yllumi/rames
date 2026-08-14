@@ -7,7 +7,7 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 
 # system deps: git (clone repo site), docker CLI + compose plugin (orkestrasi),
 # curl + curl-dev (extension curl utk Guzzle curl handler ke Docker Engine API)
-RUN apk add --no-cache git openssh-client openssh-keygen docker-cli docker-cli-compose curl curl-dev
+RUN apk add --no-cache git openssh-client openssh-keygen docker-cli docker-cli-compose curl curl-dev certbot certbot-dns-cloudflare
 
 # PHP extensions
 RUN docker-php-ext-install -j$(nproc) pdo pdo_mysql pcntl curl \

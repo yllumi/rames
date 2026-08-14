@@ -74,6 +74,7 @@ flowchart TB
 - Kode di-mount dengan path **sama dengan host** — `"${PWD}:${PWD}"` + `working_dir: ${PWD}`. Ini **krusial**: karena `docker compose` dieksekusi *di dalam container* tetapi daemon-nya *di host*, relative volume mount di `docker-compose.yml` milik site harus terselesaikan ke **path host yang valid**. Memakai `/app` membuat bind jadi `/app/sites/...` yang tidak dikenal daemon.
 - `docker.sock` di-mount → dashboard mengeksekusi `docker compose` pada daemon host.
 - Direktori Nginx host (`sites-available`/`sites-enabled`) di-mount → dashboard menulis file config; reload dilakukan watcher/manual di host.
+- `/etc/letsencrypt` host di-mount → certbot (container) menulis sertifikat; nginx host membaca dari path yang sama.
 - Container memakai `dns:` eksplisit (`DNS_1`/`DNS_2`) karena `/etc/resolv.conf` host pada environment ini bermasalah (symlink rusak) sehingga resolver internal Docker tak punya upstream.
 
 ---
@@ -116,8 +117,10 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `PortManager` | Deteksi konflik port terhadap `sites.json`, saran port dari range, validasi port |
 | | `DockerClient` | Client Engine API (Guzzle + `CURLOPT_UNIX_SOCKET_PATH`) untuk operasi **baca**: list/inspect container, ping |
 | | `DockerComposeRunner` | CLI `docker compose` untuk **orkestrasi**: up/down/build/stop/start/pull |
-| **Nginx** | `NginxConfigGenerator` | Render & tulis config `.conf` + symlink ke `sites-enabled`; `ensureWritable()` fail-fast |
+| **Nginx** | `NginxConfigGenerator` | Render & tulis config `.conf` + symlink ke `sites-enabled`; `ensureWritable()` fail-fast; render blok `listen 443 ssl` + `location /.well-known/acme-challenge/` |
 | | `NginxStatusReader` | Baca status reload terakhir watcher (`last-reload.json`) |
+| **SSL** | `SslIssuer` | Terbitkan sertifikat Let's Encrypt via certbot (HTTP-01 webroot / DNS-01 Cloudflare), cek kedaluwarsa cert |
+| | `SslController` | Halaman `/ssl`: daftar domain + status SSL + tombol Aktifkan SSL / Retry |
 | **Deploy** | `DeployerInterface` | Abstraksi eksekusi deploy (siap diganti `HttpDeployer` untuk multi-server) |
 | | `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx |
 | | `DeployerFactory` | Satu-satunya titik pembuatan `DeployerInterface` |
@@ -128,6 +131,7 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 - Pipeline per tahap menulis status ke `sites.json` (via `SiteStore->update`, `flock`), sehingga UI bisa *poll*:
   `deploying` → `build` → `collect` → `nginx` → `running` (atau `error`).
 - Log per site: `runtime/logs/deploy/{siteId}.log`.
+- Worker SSL: `cli/ssl.php` — jalankan `certbot certonly`, update `ssl_status`/`ssl_expires_at`, tulis ulang config Nginx dengan SSL (log `runtime/logs/ssl/{siteId}.log`).
 
 ### 4.5 Storage
 
@@ -213,6 +217,7 @@ Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di
 - Input divalidasi ketat (slug `[a-z0-9-]`, URL http/https, branch, port int 1–65535).
 - Eksekusi command tanpa shell (lihat §6).
 - Deploy key SSH per site: private key di `database/keys/` (chmod 0600, gitignored), hanya public key yang ditampilkan; `GIT_SSH_COMMAND` memakai `IdentitiesOnly=yes`, `StrictHostKeyChecking=accept-new`, dan `UserKnownHostsFile` milik sistem.
+- SSL: sertifikat Let's Encrypt hanya diaktifkan untuk domain publik (`SslIssuer::isPublicDomain`); `/etc/letsencrypt` di-mount baca-tulis ke container; `CLOUDFLARE_CREDS` (API token) via file dengan izin ketat, bukan hard-coded.
 - `docker.sock` di-mount adalah risiko yang disengaja; semua akses dashboard di balik autentikasi.
 - Direktori Nginx host yang di-mount dibatasi hanya `sites-available/` + `sites-enabled/`.
 
@@ -221,7 +226,7 @@ Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di
 ## 8. Batasan & Future Work
 
 - **Watcher reload Nginx belum ada** (SPECS §8.3) — reload manual `sudo systemctl reload nginx`; otomatisasi via `inotifywait` dijadwalkan.
-- **SSL otomatis** (SPECS §8a) belum diimplementasikan; struktur `needs_ssl`/`ssl_status` sudah disiapkan.
+- **SSL otomatis** (SPECS §8a) sudah diimplementasikan: halaman `/ssl` + worker `cli/ssl.php` menjalankan certbot di container (HTTP-01 webroot / DNS-01 Cloudflare). Otomasi renewal `certbot renew` di host tetap prasyarat manual.
 - **Deteksi konflik port** hanya terhadap site terkelola sendiri (SPECS §7.2), bukan container eksternal di host.
 - Ekstraksi `DeployerInterface` → agent HTTP terpisah (multi-server).
 - Role & permission antar user.
