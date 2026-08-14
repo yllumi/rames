@@ -55,7 +55,7 @@ class LocalDeployer implements DeployerInterface
         $files = $site['compose_files'] ?? ['docker-compose.yml'];
 
         $logger('pull', 'git pull --ff-only ...');
-        (new GitService())->pull($dir, $site['branch'] ?? 'main');
+        (new GitService())->pull($dir, $site['branch'] ?? 'main', $this->siteSshKeyPath($site));
 
         $logger('build', 'docker compose up -d --build ...');
         $this->compose->up($project, $dir, $files, true);
@@ -134,6 +134,23 @@ class LocalDeployer implements DeployerInterface
     private function siteDir(array $site): string
     {
         return $this->sitesPath . '/' . $site['name'];
+    }
+
+    /**
+     * Path private key SSH deploy key site, atau null untuk repo publik.
+     * Site menyimpan path relatif (mis. "keys/{name}") terhadap database_path.
+     */
+    private function siteSshKeyPath(array $site): ?string
+    {
+        if (($site['auth_method'] ?? 'none') !== 'ssh') {
+            return null;
+        }
+        $key = (string) ($site['ssh_key'] ?? '');
+        if ($key === '') {
+            return null;
+        }
+        $path = (string) config('deploy.database_path') . '/' . $key;
+        return is_file($path) ? $path : null;
     }
 
     private function primaryHostPort(array $site): int

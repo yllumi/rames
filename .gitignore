@@ -13,3 +13,4 @@
 /database/*.json
 /database/*.bak
 /database/*.tmp
+/database/keys/

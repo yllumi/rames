@@ -110,7 +110,8 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `SiteStore` | CRUD entri site di `database/sites.json` |
 | **Auth** | `UserStore` | CRUD user di `database/auth.json`; hash bcrypt, `password_verify` |
 | **Support** | `ProcessRunner` | Eksekusi command eksternal via `proc_open` (**array + `bypass_shell`** → tanpa shell, bebas command injection) + timeout |
-| **Git** | `GitService` | `git clone` (depth 1) & `git pull --ff-only` |
+| **Git** | `GitService` | `git clone` (depth 1) & `git pull --ff-only`; mendukung repo private via deploy key SSH (`GIT_SSH_COMMAND`) |
+| | `SshKeyManager` | Generate/read/hapus pasangan kunci SSH (deploy key per site) di `database/keys/` |
 | **Docker** | `ComposeParser` | Parse `docker-compose.yml` (short/long syntax port, IP binding) via `symfony/yaml` |
 | | `PortManager` | Deteksi konflik port terhadap `sites.json`, saran port dari range, validasi port |
 | | `DockerClient` | Client Engine API (Guzzle + `CURLOPT_UNIX_SOCKET_PATH`) untuk operasi **baca**: list/inspect container, ping |
@@ -131,9 +132,10 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 ### 4.5 Storage
 
 - `database/auth.json` — array user (id, username, password_hash, created_at).
-- `database/sites.json` — array site (struktur lengkap di SPECS §7.1): id, name, subdomain, repo_url, branch, local_path, primary_service, status, compose_files, containers, timestamp.
+- `database/sites.json` — array site (struktur lengkap di SPECS §7.1): id, name, subdomain, repo_url, branch, local_path, primary_service, status, compose_files, auth_method, ssh_key, containers, timestamp.
+- `database/keys/` — pasangan kunci SSH (deploy key per site, chmod 0600) + `known_hosts`; private key tidak pernah keluar server.
 - Semua mutasi lewat `JsonStore->update()` dengan `flock` → aman dari race condition.
-- Direktori `sites/`, `database/*.json`, `nginx-status/` di-gitignore (data runtime).
+- Direktori `sites/`, `database/*.json`, `database/keys/`, `nginx-status/` di-gitignore (data runtime).
 
 ---
 
@@ -143,8 +145,11 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 
 ```mermaid
 flowchart TD
-    A[Form: nama slug, repo URL, branch] --> B[Validasi: slug unik, URL http/https]
-    B --> C[GitService clone → sites/name]
+    A[Form: nama slug, repo URL, branch, akses repo] --> B[Validasi: slug unik, URL http/https/ssh]
+    B --> B1{Akses private via SSH?}
+    B1 -- ya --> B2[SshKeyManager generate deploy key<br/>database/keys/name + .pub]
+    B2 --> C[GitService clone → sites/name<br/>pakai GIT_SSH_COMMAND]
+    B1 -- tidak --> C
     C --> D{Ada docker-compose.yml?}
     D -- tidak --> E[Tolak + error; bersihkan dir]
     D -- ya --> F[ComposeParser: service + port]
@@ -161,6 +166,7 @@ flowchart TD
 
 Detil penting:
 
+- **Repo private via deploy key SSH**: sistem membangkitkan keypair ed25519 per site (`database/keys/{name}`) sebelum clone. Public key ditampilkan di form/konfirmasi untuk ditambahkan user sebagai Deploy Key repo (Settings → Deploy keys). Bila clone gagal karena key belum ditambahkan, form dirender ulang bersama public key (kunci dipakai ulang saat percobaan berikutnya). `git pull` saat Rebuild memakai key yang sama.
 - **Override port dua lapis** (`writeOverride`): karena docker compose **menggabungkan** daftar `ports` (base + override, bukan mengganti), port bawaan repo harus di-reset dulu:
   1. `docker-compose.override.yml` → `ports: !reset []` (tag YAML, via `Symfony\Component\Yaml\Tag\TaggedValue`)
   2. `docker-compose.override.ports.yml` → `ports: [host:container]` (hasil edit user)
@@ -206,6 +212,7 @@ Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di
 - CSRF token untuk semua mutasi.
 - Input divalidasi ketat (slug `[a-z0-9-]`, URL http/https, branch, port int 1–65535).
 - Eksekusi command tanpa shell (lihat §6).
+- Deploy key SSH per site: private key di `database/keys/` (chmod 0600, gitignored), hanya public key yang ditampilkan; `GIT_SSH_COMMAND` memakai `IdentitiesOnly=yes`, `StrictHostKeyChecking=accept-new`, dan `UserKnownHostsFile` milik sistem.
 - `docker.sock` di-mount adalah risiko yang disengaja; semua akses dashboard di balik autentikasi.
 - Direktori Nginx host yang di-mount dibatasi hanya `sites-available/` + `sites-enabled/`.
 

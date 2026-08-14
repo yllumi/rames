@@ -7,6 +7,7 @@ use app\library\Deploy\DeployerFactory;
 use app\library\Docker\ComposeParser;
 use app\library\Docker\PortManager;
 use app\library\Git\GitService;
+use app\library\Git\SshKeyManager;
 use app\library\Nginx\NginxStatusReader;
 use app\library\Storage\SiteStore;
 use RuntimeException;
@@ -51,10 +52,17 @@ class SiteController
 
         $nginxStatus = (new NginxStatusReader((string) config('deploy.nginx_reload_status_file')))->lastReload();
 
+        // Public key deploy key site (untuk repo private via SSH)
+        $sshPubkey = null;
+        if (($site['auth_method'] ?? 'none') === 'ssh') {
+            $sshPubkey = (new SshKeyManager())->publicKey($site['name']);
+        }
+
         return view('site/detail', [
             'site' => $site,
             'live' => $live,
             'nginxStatus' => $nginxStatus,
+            'sshPubkey' => $sshPubkey,
         ]);
     }
 
@@ -72,9 +80,13 @@ class SiteController
         $name = strtolower(trim((string) $request->post('name', '')));
         $repoUrl = trim((string) $request->post('repo_url', ''));
         $branch = trim((string) $request->post('branch', 'main'));
+        $authMethod = (string) $request->post('auth_method', 'none');
+
+        $keyManager = new SshKeyManager();
+        $generatedKey = false;
 
         try {
-            $this->validateCreateInput($name, $repoUrl, $branch);
+            $this->validateCreateInput($name, $repoUrl, $branch, $authMethod);
 
             $store = new SiteStore();
             if ($store->nameExists($name)) {
@@ -88,8 +100,17 @@ class SiteController
                 $this->cleanupDir($dest);
             }
 
+            // Repo private: generate deploy key SSH sebelum clone. Kalau sudah ada
+            // (percobaan ulang setelah user menambah deploy key), dipakai kembali.
+            $sshKeyPath = null;
+            if ($authMethod === 'ssh') {
+                $keyManager->generate($name);
+                $generatedKey = true;
+                $sshKeyPath = $keyManager->privateKeyPath($name);
+            }
+
             $git = new GitService();
-            $git->clone($repoUrl, $branch, $dest);
+            $git->clone($repoUrl, $branch, $dest, $sshKeyPath);
 
             $composeFile = $git->findComposeFile($dest);
             if ($composeFile === null) {
@@ -116,10 +137,28 @@ class SiteController
                 'compose_file' => $composeFile,
                 'services' => $services,
                 'primary_service' => $primary,
+                'auth_method' => $authMethod,
+                'ssh_key' => $authMethod === 'ssh' ? 'keys/' . $name : null,
             ]);
 
             return redirect('/sites/create/confirm');
         } catch (\Throwable $e) {
+            // Repo private via SSH: kalau clone gagal (deploy key belum ditambahkan),
+            // tampilkan public key di form agar user bisa menambahkannya ke repo
+            // lalu mencoba Analisis Repo lagi (kunci dipakai ulang).
+            if ($authMethod === 'ssh' && $keyManager->exists($name)) {
+                return view('site/create', [
+                    'sshPubkey' => $keyManager->publicKey($name),
+                    'auth_method' => $authMethod,
+                    'preview_error' => $e->getMessage(),
+                    'form_name' => $name,
+                    'form_repo_url' => $repoUrl,
+                    'form_branch' => $branch,
+                ]);
+            }
+            if ($generatedKey) {
+                $keyManager->remove($name);
+            }
             flash_set('error', $e->getMessage());
             return redirect('/sites/create');
         }
@@ -172,6 +211,8 @@ class SiteController
                 'compose_files' => $composeFiles,
                 'needs_ssl' => false,
                 'ssl_status' => null,
+                'auth_method' => $pending['auth_method'] ?? 'none',
+                'ssh_key' => $pending['ssh_key'] ?? null,
                 'containers' => [],
             ]);
 
@@ -315,6 +356,11 @@ class SiteController
                 $this->cleanupDir($dir);
             }
 
+            // Bersihkan pasangan kunci SSH deploy key site
+            if (($site['auth_method'] ?? 'none') === 'ssh') {
+                (new SshKeyManager())->remove($site['name']);
+            }
+
             $store->delete($id);
             flash_set('success', 'Site "' . $site['name'] . '" dihapus.');
         } catch (\Throwable $e) {
@@ -327,7 +373,7 @@ class SiteController
     // Helper privat
     // ==================================================================
 
-    private function validateCreateInput(string $name, string $repoUrl, string $branch): void
+    private function validateCreateInput(string $name, string $repoUrl, string $branch, string $authMethod = 'none'): void
     {
         if (!preg_match('/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/', $name)) {
             throw new RuntimeException('Nama site hanya boleh huruf kecil a-z, angka, dan strip (-).');
@@ -335,13 +381,44 @@ class SiteController
         if (strlen($name) > 63) {
             throw new RuntimeException('Nama site maksimal 63 karakter.');
         }
-        $scheme = parse_url($repoUrl, PHP_URL_SCHEME);
-        if ($repoUrl === '' || !filter_var($repoUrl, FILTER_VALIDATE_URL) || !in_array($scheme, ['http', 'https'], true)) {
-            throw new RuntimeException('URL repo tidak valid (harus http/https).');
+        if (!in_array($authMethod, ['none', 'ssh'], true)) {
+            throw new RuntimeException('Metode akses repo tidak valid.');
+        }
+        if (!$this->isRepoUrlValid($repoUrl, $authMethod)) {
+            throw new RuntimeException(
+                $authMethod === 'ssh'
+                    ? 'URL repo tidak valid untuk SSH. Gunakan git@host:user/repo.git atau ssh://git@host/user/repo.git'
+                    : 'URL repo tidak valid (harus http/https).'
+            );
         }
         if ($branch === '' || !preg_match('/^[a-zA-Z0-9._\/-]+$/', $branch)) {
             throw new RuntimeException('Branch tidak valid.');
         }
+    }
+
+    /**
+     * Validasi format URL repo sesuai metode akses:
+     *   - publik (none): http/https
+     *   - ssh          : scp-like (git@host:user/repo.git) atau ssh:// / git://
+     */
+    private function isRepoUrlValid(string $repoUrl, string $authMethod): bool
+    {
+        if ($repoUrl === '' || preg_match('/[\s\x00-\x1F]/', $repoUrl)) {
+            return false;
+        }
+        // scp-like: git@github.com:user/repo.git
+        if (preg_match('/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[^\s]+$/', $repoUrl)) {
+            return true;
+        }
+        try {
+            $scheme = strtolower((string) parse_url($repoUrl, PHP_URL_SCHEME));
+        } catch (\Throwable $e) {
+            return false;
+        }
+        if ($authMethod === 'ssh') {
+            return in_array($scheme, ['ssh', 'git'], true) && filter_var($repoUrl, FILTER_VALIDATE_URL) !== false;
+        }
+        return in_array($scheme, ['http', 'https'], true) && filter_var($repoUrl, FILTER_VALIDATE_URL) !== false;
     }
 
     /**

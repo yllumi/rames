@@ -141,6 +141,8 @@ File: `database/sites.json` — array of site object.
     "local_path": "sites/myapp",
     "primary_service": "web",
     "status": "running",
+    "auth_method": "none",       // none (publik) | ssh (deploy key per repo)
+    "ssh_key": null,              // path relatif private key (mis. "keys/myapp") utk repo private
     "containers": [
       {
         "service_name": "web",
@@ -169,12 +171,14 @@ Field penting:
 - `name` — slug unik, dipakai sebagai subdomain dan nama direktori lokal (`sites/{name}`)
 - `primary_service` — nama service dalam `docker-compose.yml` yang menerima traffic dari subdomain (ditentukan user saat create, default: service pertama yang punya port exposed)
 - `containers[].host_port` — port di host yang sudah final dipakai (setelah resolusi konflik), inilah yang dipakai Nginx sebagai target `proxy_pass`
+- `auth_method` — metode akses repo: `none` (publik, anonim) atau `ssh` (deploy key per site)
+- `ssh_key` — path relatif private key terhadap `database_path` (mis. `keys/myapp`), dipakai saat `git pull` Rebuild; hanya path yang disimpan, private key di file terpisah (`database/keys/`)
 
 ### 7.2 Alur "Create Site"
 
 1. **Input form**: nama site (slug), URL repo Git, branch (default `main`)
 2. **Validasi**: nama unik (cek `sites.json`), format slug valid (`a-z0-9-`), URL repo formatnya valid
-3. **Clone repo** ke `sites/{name}` (`git clone --branch {branch} {repo_url} sites/{name}`)
+3. **Clone repo** ke `sites/{name}` (`git clone --branch {branch} {repo_url} sites/{name}`). Untuk repo private, sistem **membangkitkan deploy key SSH per site** (keypair ed25519 di `database/keys/{name}`), menampilkan public key agar user menambahkannya sebagai Deploy Key repo (Settings → Deploy keys), lalu clone memakai `GIT_SSH_COMMAND` (`ssh -i {key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`)
 4. **Cek keberadaan** `docker-compose.yml` (atau `.yaml`) di root repo — jika tidak ada, tolak dan tampilkan error
 5. **Parse** `docker-compose.yml`, ekstrak semua service beserta `ports:` mapping (`HOST:CONTAINER`)
 6. **Deteksi konflik port**: bandingkan setiap host port dengan seluruh `host_port` yang sudah terpakai di `sites.json`
@@ -284,7 +288,8 @@ NGINX_RELOAD_STATUS_FILE=/app/nginx-status/last-reload.json  # ditulis watcher, 
 ├── app/                      # source Webman
 ├── database/
 │   ├── auth.json
-│   └── sites.json
+│   ├── sites.json
+│   └── keys/                 # deploy key SSH per site (private 0600) + known_hosts
 ├── sites/                    # hasil clone repo tiap site (gitignored)
 │   └── {name}/
 │       ├── docker-compose.yml           # asli dari repo user
@@ -309,6 +314,7 @@ NGINX_RELOAD_STATUS_FILE=/app/nginx-status/last-reload.json  # ditulis watcher, 
 - Backup `docker-compose.yml`/`sites.json` sebelum overwrite, agar ada jejak jika perlu rollback manual
 - Direktori Nginx host yang di-mount ke dashboard container dibatasi sesempit mungkin (hanya `sites-available/`, bukan seluruh `/etc/nginx`), agar dashboard tidak bisa menimpa `nginx.conf` utama atau config site lain di luar mekanisme yang disediakan
 - Watcher service di host dijalankan dengan user yang punya izin reload Nginx (lewat `sudoers` khusus untuk `nginx -s reload` saja) — bukan root penuh, dan tidak menerima input dari dashboard secara langsung (dashboard cuma menulis file, bukan mengirim perintah)
+- Deploy key SSH per repo disimpan privat (chmod 0600, gitignored); hanya public key yang ditampilkan ke user. `git` memakai `GIT_SSH_COMMAND` dengan `IdentitiesOnly=yes` & `StrictHostKeyChecking=accept-new` (host key tersimpan di file `known_hosts` sistem)
 
 ## 12. Future Work (di luar Phase 1)
 

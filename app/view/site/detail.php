@@ -59,6 +59,19 @@ unset($c);
         <dd class="v mb-0"><?= e($site['branch'] ?? 'main') ?></dd>
       </div>
       <div class="site-info-item">
+        <dt class="k">Akses repo</dt>
+        <dd class="v mb-0">
+          <?php if (($site['auth_method'] ?? 'none') === 'ssh'): ?>
+            SSH deploy key
+            <?php if ($sshPubkey): ?>
+              <a class="small fw-normal ms-1" data-bs-toggle="collapse" href="#deploykey-card" role="button" aria-expanded="false" aria-controls="deploykey-card">lihat public key</a>
+            <?php endif; ?>
+          <?php else: ?>
+            <span class="text-muted fw-normal">Publik (anonim)</span>
+          <?php endif; ?>
+        </dd>
+      </div>
+      <div class="site-info-item">
         <dt class="k">Primary Service</dt>
         <dd class="v mb-0"><?= e($site['primary_service'] ?? '-') ?></dd>
       </div>
@@ -73,6 +86,21 @@ unset($c);
     </dl>
   </div>
 </div>
+
+<?php if (($site['auth_method'] ?? 'none') === 'ssh' && $sshPubkey): ?>
+<div class="collapse" id="deploykey-card">
+  <div class="card mb-4">
+    <div class="card-header"><h2 class="h6 mb-0">SSH Deploy Key</h2></div>
+    <div class="card-body">
+      <p class="text-muted small mb-2">Tambahkan public key ini sebagai <strong>Deploy Key</strong> di repo Anda bila belum (GitHub/GitLab: <em>Settings → Deploy keys</em>). Diperlukan untuk <code>git pull</code> saat <strong>Rebuild</strong>.</p>
+      <div class="input-group">
+        <textarea id="ssh-pubkey-detail" class="form-control mono form-control-sm" rows="4" readonly><?= e($sshPubkey) ?></textarea>
+        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyDetailKey()">Salin</button>
+      </div>
+    </div>
+  </div>
+</div>
+<?php endif; ?>
 
 <?php if (!$isBusy): ?>
 <div class="d-flex flex-wrap gap-2 mb-4">
@@ -140,6 +168,17 @@ unset($c);
     <?php endif; ?>
   </div>
 </section>
+
+<script>
+function copyDetailKey() {
+  var t = document.getElementById('ssh-pubkey-detail');
+  if (!t) return;
+  t.select();
+  t.setSelectionRange(0, 99999);
+  try { navigator.clipboard.writeText(t.value); } catch (e) {}
+  try { document.execCommand('copy'); } catch (e) {}
+}
+</script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>
 

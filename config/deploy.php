@@ -34,6 +34,10 @@ return [
     // Direktori penyimpanan JSON (auth.json, sites.json)
     'database_path' => base_path() . '/database',
 
+    // Direktori pasangan kunci SSH (deploy key per site) + known_hosts
+    'ssh_keys_path' => getenv('SSH_KEYS_PATH') ?: (base_path() . '/database/keys'),
+    'git_known_hosts' => getenv('GIT_KNOWN_HOSTS') ?: (base_path() . '/database/keys/known_hosts'),
+
     // Email admin (cadangan untuk SSL di iterasi berikutnya)
     'admin_email' => getenv('ADMIN_EMAIL') ?: '',
 
