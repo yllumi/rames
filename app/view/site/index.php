@@ -19,13 +19,22 @@
   <div class="table-responsive">
   <table class="table table-hover align-middle mb-0">
     <thead>
-      <tr><th>Name</th><th>Subdomain</th><th>Status</th><th>Containers</th><th>Updated</th><th></th></tr>
+      <tr><th>Name</th><th>Subdomain</th><th>Custom Domain</th><th>Status</th><th>Containers</th><th>Updated</th><th></th></tr>
     </thead>
     <tbody>
       <?php foreach ($sites as $site): ?>
       <tr>
         <td><a class="mono fw-semibold text-decoration-none" href="/sites/<?= e($site['id']) ?>"><?= e($site['name']) ?></a></td>
-        <td><a class="mono text-decoration-none" href="http://<?= e($site['subdomain']) ?>" target="_blank" rel="noopener"><?= e($site['subdomain']) ?> ↗</a></td>
+        <td><a class="mono text-decoration-none text-nowrap" href="http://<?= e($site['subdomain']) ?>" target="_blank" rel="noopener"><?= e($site['subdomain']) ?> ↗</a></td>
+        <td>
+          <?php $__cd = (string) ($site['custom_domain'] ?? ''); ?>
+          <?php if ($__cd !== ''): ?>
+            <?php $__cdSsl = (($site['custom_ssl_status'] ?? 'disabled') === 'active'); ?>
+            <a class="mono text-decoration-none text-nowrap" href="<?= $__cdSsl ? 'https' : 'http' ?>://<?= e($__cd) ?>" target="_blank" rel="noopener"><?= e($__cd) ?> ↗</a>
+          <?php else: ?>
+            <span class="text-muted small">&mdash;</span>
+          <?php endif; ?>
+        </td>
         <td>
           <span class="badge badge-<?= e($site['status'] ?? 'unknown') ?>"
             title="<?= !empty($site['message']) ? e($site['message']) : '' ?>">
