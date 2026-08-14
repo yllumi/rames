@@ -1,0 +1,15 @@
+/runtime
+/.idea
+/.vscode
+/vendor
+*.log
+.env
+/tests/tmp
+/tests/.phpunit.result.cache
+
+# runtime data dashboard deployer
+/sites
+/nginx-status
+/database/*.json
+/database/*.bak
+/database/*.tmp

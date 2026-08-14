@@ -1,0 +1,45 @@
+# Nama project (komposisi) — tidak bergantung pada nama folder
+name: rames
+
+services:
+  webman:
+    build: .
+    # Nama unik (hindari bentrok dengan container webman proyek lain di host)
+    container_name: rames-webman
+    restart: unless-stopped
+    # Jalankan dari direktori proyek (sama dengan path host, lihat volume ${PWD})
+    working_dir: "${PWD}"
+    environment:
+      APP_DOMAIN: "${APP_DOMAIN:-example.com}"
+      APP_PORT: "${APP_PORT:-8000}"
+      SESSION_SECRET: "${SESSION_SECRET:-change-me}"
+      PORT_RANGE_START: "${PORT_RANGE_START:-30000}"
+      PORT_RANGE_END: "${PORT_RANGE_END:-30999}"
+      NGINX_CONF_PATH: "${NGINX_CONF_PATH:-/etc/nginx/sites-available}"
+      NGINX_ENABLED_PATH: "${NGINX_ENABLED_PATH:-/etc/nginx/sites-enabled}"
+      ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@example.com}"
+      DOCKER_SOCKET: "${DOCKER_SOCKET:-/var/run/docker.sock}"
+      DEPLOY_TIMEOUT: "${DEPLOY_TIMEOUT:-600}"
+    volumes:
+      # Penting: kode di-mount di path yang SAMA dengan host (${PWD}). Karena
+      # docker compose dijalankan DI DALAM container namun daemon-nya di host,
+      # relative volume mount di docker-compose.yml milik site harus terselesaikan
+      # ke path yang valid di HOST. Jika dimount di /app, path bind jadi
+      # "/app/sites/..." yang tidak dikenal daemon host.
+      - "${PWD}:${PWD}"
+      # Docker socket agar dashboard bisa mengeksekusi docker compose (Phase 1 known-risk)
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      # Direktori config Nginx host di-mount ke dashboard container (dashboard hanya menulis file)
+      - "${NGINX_CONF_PATH:-/etc/nginx/sites-available}:${NGINX_CONF_PATH:-/etc/nginx/sites-available}"
+      - "${NGINX_ENABLED_PATH:-/etc/nginx/sites-enabled}:${NGINX_ENABLED_PATH:-/etc/nginx/sites-enabled}"
+      # Status reload yang ditulis watcher di host, dibaca dashboard
+      - "./nginx-status:${PWD}/nginx-status"
+    ports:
+      - "${APP_PORT:-8123}:8787"
+    # DNS eksplisit: /etc/resolv.conf di host adalah symlink rusak (stub-resolv.conf
+    # tidak ada), sehingga resolver internal Docker tak punya upstream dan container
+    # tidak bisa resolve domain eksternal (mis. github.com saat git clone).
+    dns:
+      - "${DNS_1:-8.8.8.8}"
+      - "${DNS_2:-1.1.1.1}"
+    command: ["php", "start.php", "start"]
