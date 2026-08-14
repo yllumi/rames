@@ -16,6 +16,9 @@
 - **Deploy otomatis** — clone repo → parse `docker-compose.yml` → tulis override port → `docker compose up -d --build` → kumpulkan info container → generate config Nginx.
 - **Background worker** — deploy/rebuild berjalan async (proses terpisah) dengan status yang bisa di-*poll* dari UI.
 - **Reverse proxy** — tiap site otomatis mendapat subdomain `{name}.{APP_DOMAIN}`.
+- **Custom domain** — site bisa diberi satu custom domain; subdomain bawaan redirect (301) ke custom domain.
+- **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri.
+- **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Container management** — daftar container per site, aksi Rebuild / Stop / Start / Delete.
 - **Keamanan dasar** — CSRF token, eksekusi command bebas injection (`array` + `bypass_shell`), validasi input ketat, JSON dengan file locking (`flock`).
 
@@ -37,32 +40,72 @@
 - Nginx terinstall, direktori `sites-available/` & `sites-enabled/` ada
 - DNS wildcard `*.{APP_DOMAIN}` diarahkan ke IP server (prasyarat; bukan tanggung jawab dashboard)
 - Port 80/443 host terbuka untuk traffic site
+- (Disarankan) daemon Docker mengizinkan `--privileged` — dipakai fitur "Reload Nginx dari dashboard"
 
 ## Instalasi & Menjalankan
 
+Panduan langkah demi langkah. Jalankan semua perintah dari direktori project (folder berisi `docker-compose.yml`), dan pastikan [Prasyarat](#prasyarat-host) sudah terpenuhi.
+
+### Langkah 1 — Siapkan environment (`.env`)
+
 ```bash
-# 1. Siapkan environment
 cp .env.example .env
-#    Atur APP_DOMAIN, APP_PORT, SESSION_SECRET, dst.
-
-# 2. Build & jalankan container (dashboard berjalan sebagai root di dalam container)
-docker compose up -d --build
-
-# 3. Provisioning user admin pertama (cukup sekali)
-docker exec -it rames-webman php webman make:admin
-#    username default: admin — password di-generate & dicetak
-
-# 4. Buka dashboard
-#    http://localhost:{APP_PORT}     (default 8000; contoh .env: 8123)
 ```
 
-### Setelah Create/Delete Site
+Edit file `.env`. Minimal ubah 3 nilai berikut:
 
-Watcher reload otomatis (SPECS §8.3) belum dipasang, jadi setelah membuat/menghapus site jalankan sekali:
+| Variabel | Contoh | Keterangan |
+|---|---|---|
+| `APP_DOMAIN` | `example.com` | Domain dasar; site `{name}` otomatis dapat subdomain `{name}.{APP_DOMAIN}` |
+| `SESSION_SECRET` | `(nilai acak)` | Secret session — **jangan biarkan `change-me`** |
+| `ADMIN_EMAIL` | `admin@example.com` | Email untuk penerbitan SSL Let's Encrypt |
+
+Boleh disesuaikan juga: `APP_PORT` (port dashboard di host, default `8000`), `PORT_RANGE_START`/`PORT_RANGE_END`, `NGINX_CONF_PATH`/`NGINX_ENABLED_PATH`, serta opsi SSL (`SSL_CHALLENGE`, `SSL_CA_SERVER`, `LETSENCRYPT_PATH`). Daftar lengkap: [Konfigurasi (.env)](#konfigurasi-env).
+
+### Langkah 2 — Build & jalankan container
 
 ```bash
-sudo systemctl reload nginx
+docker compose up -d --build
 ```
+
+Periksa container **`rames-webman`** berjalan (status `Up`):
+
+```bash
+docker compose ps
+```
+
+### Langkah 3 — Buat user admin pertama (cukup sekali)
+
+```bash
+docker exec -it rames-webman php webman make:admin
+```
+
+Perintah ini mencetak **username** (default `admin`) dan **password acak**. Simpan keduanya — dipakai untuk login. (Opsional: tentukan sendiri, mis. `docker exec -it rames-webman php webman make:admin admin passwordku`.)
+
+### Langkah 4 — Buka dashboard & login
+
+- Buka `http://localhost:{APP_PORT}` (contoh: `http://localhost:8000`).
+- Login dengan kredensial dari Langkah 3.
+
+### Langkah 5 — Deploy site pertama
+
+1. Klik **+ Create Site**, isi **nama** (slug), **URL repo Git** (repo harus berisi `docker-compose.yml`), dan **branch**.
+2. Ikuti wizard: dashboard mendeteksi service & port, tampilkan halaman konfirmasi → klik submit.
+3. Deploy berjalan di background; status site berubah `deploying → running`.
+4. Config Nginx ditulis dan **nginx host di-reload otomatis** (lihat [Reload Nginx host](#reload-nginx-host-dari-dashboard)).
+
+Buka `http://{site}.{APP_DOMAIN}` di browser. Pastikan DNS subdomain mengarah ke server (untuk pengujian lokal: [Pengujian Lokal](#pengujian-lokal-subdomain)).
+
+### Langkah 6 — (Opsional) Custom domain & SSL
+
+1. Buka halaman detail site → kartu **Custom Domain** → isi domain (mis. `app.example.org`) → **Set**.
+2. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi).
+
+### Reload Nginx host (dari dashboard)
+
+Dashboard menulis config Nginx lalu me-reload nginx host secara **otomatis** setelah: set/hapus custom domain, deploy/rebuild, dan aktivasi SSL. Ada juga tombol **↻ Reload Nginx** di halaman detail site untuk reload manual.
+
+> Reload memakai helper container `--pid host --privileged` via Docker socket (butuh daemon Docker yang mengizinkan `--privileged`). Bila mekanisme ini tidak tersedia, pasang watcher host (SPECS §8.3) atau reload manual: `sudo systemctl reload nginx`.
 
 ### Pengujian Lokal (subdomain)
 
@@ -83,29 +126,39 @@ sudo systemctl reload nginx
 | `SESSION_SECRET` | `change-me` | Secret session — **wajib ganti** |
 | `PORT_RANGE_START` / `PORT_RANGE_END` | `30000` / `30999` | Rentang host port untuk container site |
 | `NGINX_CONF_PATH` / `NGINX_ENABLED_PATH` | `/etc/nginx/sites-available` / `sites-enabled` | Direktori config Nginx host (di-mount ke container) |
-| `NGINX_RELOAD_STATUS_FILE` | `{proyek}/nginx-status/last-reload.json` | Status reload yang ditulis watcher host |
+| `NGINX_RELOAD_STATUS_FILE` | `{proyek}/nginx-status/last-reload.json` | Status reload yang ditulis watcher host / dashboard |
+| `NGINX_HTTP_CONF` | `/etc/nginx/nginx.conf` | Config utama nginx host (dipakai helper reload) |
+| `NGINX_BIN` | `/usr/sbin/nginx` | Binary nginx host (dipakai helper reload) |
+| `NGINX_RELOAD_IMAGE` | `alpine` | Image helper reload nginx (cukup `sh` + `chroot`) |
 | `DOCKER_SOCKET` | `/var/run/docker.sock` | Socket Docker Engine |
 | `DEPLOY_TIMEOUT` | `600` | Timeout operasi docker compose (detik) |
 | `DNS_1` / `DNS_2` | `8.8.8.8` / `1.1.1.1` | DNS untuk container (diperlukan jika resolv.conf host bermasalah) |
-| `ADMIN_EMAIL` | — | Cadangan untuk SSL (iterasi berikutnya) |
+| `ADMIN_EMAIL` | — | Email untuk SSL Let's Encrypt (wajib saat mengaktifkan SSL) |
+| `SSL_CHALLENGE` | `http` | Mode challenge: `http` (webroot) atau `dns-cloudflare` |
+| `SSL_CA_SERVER` | `production` | CA Let's Encrypt: `production` / `staging` (staging untuk uji) |
+| `SSL_WEBROOT` | `{proyek}/webroot` | Webroot HTTP-01 challenge |
+| `LETSENCRYPT_PATH` | `/etc/letsencrypt` | Direktori sertifikat (di-mount dari host) |
+| `CLOUDFLARE_CREDS` | — | File kredensial DNS Cloudflare (saat `SSL_CHALLENGE=dns-cloudflare`) |
 
 ## Struktur Direktori (Ringkas)
 
 ```
 app/
 ├── command/MakeAdmin.php        # php webman make:admin (provisioning user awal)
-├── controller/                  # AuthController, SiteController, UserController
+├── controller/                  # AuthController, SiteController, SslController, NginxController, UserController
 ├── library/                     # SELURUH logika bisnis (controller hanya mediator)
 │   ├── Auth/UserStore.php
 │   ├── Deploy/                  # DeployerInterface, LocalDeployer, DeployerFactory
 │   ├── Docker/                  # ComposeParser, DockerClient, DockerComposeRunner, PortManager
 │   ├── Git/GitService.php
-│   ├── Nginx/                   # NginxConfigGenerator, NginxStatusReader
+│   ├── Nginx/                   # NginxConfigGenerator, NginxStatusReader, NginxReloader
+│   ├── SSL/SslIssuer.php
 │   ├── Storage/                 # JsonStore (flock), SiteStore
 │   └── Support/ProcessRunner.php
 ├── middleware/                  # AuthMiddleware, CsrfMiddleware
 └── view/                        # template Raw Webman (.html)
 cli/deploy.php                   # background worker deploy/rebuild
+cli/ssl.php                      # background worker SSL (Let's Encrypt)
 config/                          # konfigurasi Webman + config/deploy.php
 database/                        # auth.json, sites.json (runtime, gitignored)
 sites/                           # hasil clone tiap site (gitignored)
@@ -120,7 +173,7 @@ public/css/app.css               # stylesheet dashboard
 3. Deteksi konflik port → halaman konfirmasi (edit host port + pilih primary service).
 4. Submit → tulis `docker-compose.override.yml` + `docker-compose.override.ports.yml` → simpan site (status `deploying`) → spawn worker background.
 5. Worker: `docker compose up -d --build` → kumpulkan info container → generate config Nginx → status `running`.
-6. Reload Nginx host (manual / watcher).
+6. Config Nginx ditulis & nginx host di-reload otomatis oleh dashboard.
 
 ## Keamanan
 
@@ -141,8 +194,8 @@ public/css/app.css               # stylesheet dashboard
 
 ## Roadmap (Iterasi Berikutnya)
 
-- SSL otomatis per subdomain (Let's Encrypt) — struktur `needs_ssl`/`ssl_status` sudah disiapkan
-- Watcher host (`systemd` + `inotifywait`) untuk reload Nginx otomatis
+- Watcher host (`systemd` + `inotifywait`) untuk reload Nginx otomatis — sementara digantikan reload dari dashboard (lihat "Reload Nginx host")
+- SSL multi-domain dalam satu sertifikat (SAN)
 - Ekstrak `DeployerInterface` menjadi agent HTTP terpisah (multi-server)
 - Role & permission antar user
 - Log viewer real-time per container
