@@ -51,4 +51,7 @@ services:
     dns:
       - "${DNS_1:-8.8.8.8}"
       - "${DNS_2:-1.1.1.1}"
-    command: ["php", "start.php", "start"]
+    # Instal dependensi Composer otomatis jika vendor/ belum ada (mis. clone baru
+    # di host tanpa vendor). Karena bind mount ${PWD}:${PWD}, hasil install langsung
+    # tersimpan di direktori host dan reusable untuk restart berikutnya.
+    command: ["sh", "-c", "if [ ! -d vendor ]; then composer install --no-dev --optimize-autoloader; fi && php start.php start"]
