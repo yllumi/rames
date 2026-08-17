@@ -13,7 +13,7 @@ use Webman\Http\Request;
  */
 class AuthMiddleware implements MiddlewareInterface
 {
-    private const PUBLIC_PATHS = ['/login'];
+    private const PUBLIC_PATHS = ['/', '/login'];
 
     private const STATIC_EXTENSIONS = [
         'css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp',

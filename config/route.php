@@ -15,6 +15,7 @@
 use Webman\Route;
 
 use app\controller\AuthController;
+use app\controller\IndexController;
 use app\controller\NginxController;
 use app\controller\SiteController;
 use app\controller\SslController;
@@ -24,7 +25,7 @@ use app\controller\UserController;
 |--------------------------------------------------------------------------
 | Route publik (tanpa autentikasi)
 |--------------------------------------------------------------------------
-| /login saja yang publik; /logout tetap diproses (tidak butuh user login).
+| / (hello world) dan /login publik; /logout tetap diproses (tidak butuh user login).
 |--------------------------------------------------------------------------
 */
 Route::get('/login', [AuthController::class, 'loginForm']);
@@ -36,7 +37,7 @@ Route::get('/logout', [AuthController::class, 'logout']);
 | Route dilindungi (AuthMiddleware global di config/middleware.php)
 |--------------------------------------------------------------------------
 */
-Route::get('/', [SiteController::class, 'index']);
+Route::get('/', [IndexController::class, 'index']);
 Route::get('/sites', [SiteController::class, 'index']);
 
 // Wizard create site
