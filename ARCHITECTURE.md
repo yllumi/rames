@@ -122,15 +122,16 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `NginxReloader` | Reload nginx HOST via helper container (`--pid host --privileged`, chroot ke root host) pada Docker socket; tulis `last-reload.json`; dipakai tombol "Reload Nginx" + auto-reload setelah set/hapus custom domain, deploy/rebuild, dan SSL (best-effort) |
 | **SSL** | `SslIssuer` | Terbitkan/revoke sertifikat Let's Encrypt via certbot (HTTP-01 webroot / DNS-01 Cloudflare), cek kedaluwarsa cert |
 | | `SslController` | Halaman `/ssl`: daftar domain (subdomain/custom) + status SSL + tombol Aktifkan SSL / Retry |
-| **Deploy** | `DeployerInterface` | Abstraksi eksekusi deploy (siap diganti `HttpDeployer` untuk multi-server) |
-| | `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx (termasuk custom domain & redirect subdomain) |
+| **Deploy** | `DeployerInterface` | Abstraksi eksekusi deploy (siap diganti `HttpDeployer` untuk multi-server); termasuk `rollback()` |
+| | `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx (termasuk custom domain & redirect subdomain); `rollback()` = fetch+checkout ref lama + rebuild, auto-restore ke versi aktif bila gagal, catat `deploy_history` |
 | | `DeployerFactory` | Satu-satunya titik pembuatan `DeployerInterface` |
 
 ### 4.4 Background Worker — `cli/deploy.php`
 
 - Dipanggil detached oleh `SiteController` lewat `proc_open` (stdout/stderr → log file, tanpa blokir worker HTTP).
-- Pipeline per tahap menulis status ke `sites.json` (via `SiteStore->update`, `flock`), sehingga UI bisa *poll*:
+- Mode: `deploy`, `rebuild`, `rollback` (dengan argumen ref SHA). Pipeline per tahap menulis status ke `sites.json` (via `SiteStore->update`, `flock`), sehingga UI bisa *poll*:
   `deploying` → `build` → `collect` → `nginx` → `running` (atau `error`).
+- Setelah selesai, persisten `containers` dan `deploy_history` kembali ke `sites.json`.
 - Log per site: `runtime/logs/deploy/{siteId}.log`.
 - Worker SSL: `cli/ssl.php` — jalankan `certbot certonly`, update `ssl_status`/`ssl_expires_at`, tulis ulang config Nginx dengan SSL (log `runtime/logs/ssl/{siteId}.log`).
 
@@ -204,6 +205,15 @@ Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di
 2. Set → update `sites.json` (`custom_domain` + `custom_ssl_status=disabled`) → tulis ulang config Nginx: subdomain menjadi block redirect `301` ke `http(s)://{custom_domain}`, custom domain melayani app (`LocalDeployer::renderNginxConfig`).
 3. Ganti/hapus custom domain → `SslIssuer::revoke()` mencabut sertifikat lama (no-op bila belum ada cert), lalu config ditulis ulang (subdomain kembali melayani app).
 4. SSL custom domain → tombol di detail site & `/ssl` → spawn `cli/ssl.php <siteId> <domain>`; worker menentukan slot `custom_ssl` (bila domain = `custom_domain`) atau `ssl` (subdomain), menjalankan certbot, lalu tulis ulang config Nginx.
+
+### 5.7 Rollback (kembali ke versi sebelumnya)
+
+1. Setiap deploy/rebuild **sukses** mencatat `git rev-parse HEAD` ke `deploy_history` (field baru di `sites.json`, maks. 20 entri) — inilah checkpoint rollback. Rollback sendiri juga menambah entri (reversibel).
+2. Halaman detail → tombol **↶ Rollback** pada entri sukses/restored (bukan versi aktif). Guard: ditolak saat status `deploying` (busy).
+3. `SiteController::rollback` → set `deploying` → spawn `cli/deploy.php <id> rollback <full_sha>` (detached).
+4. `LocalDeployer::rollback`: `git fetch origin <sha>` (repo shallow `--depth 1` → SHA lama di-fetch dari remote) → `git checkout <sha>` → `docker compose up -d --build` → collect → tulis ulang config Nginx → `running`.
+5. Bila build versi lama **gagal** → auto-`git checkout` kembali ke versi aktif sebelumnya + `up -d --build` (restore best-effort); bila restore gagal → status `error`.
+6. Non-destruktif: volume Docker tidak dihapus (`down -v` tidak dijalankan). Override ports dashboard (`docker-compose.override*.yml`, untracked) dipertahankan — hanya source tracked yang ikut ke versi lama. Rebuild berikutnya memanggil `git checkout {branch}` dulu untuk keluar dari detached HEAD.
 
 ---
 

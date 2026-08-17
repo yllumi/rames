@@ -48,10 +48,12 @@ Route::post('/sites/create/confirm', [SiteController::class, 'confirmCreate']);
 
 // Detail & polling
 Route::get('/sites/{id}', [SiteController::class, 'detail']);
+Route::get('/sites/{id}/versions', [SiteController::class, 'versions']);
 Route::get('/api/sites/{id}/status', [SiteController::class, 'status']);
 
 // Aksi site
 Route::post('/sites/{id}/rebuild', [SiteController::class, 'rebuild']);
+Route::post('/sites/{id}/rollback', [SiteController::class, 'rollback']);
 Route::post('/sites/{id}/stop', [SiteController::class, 'stop']);
 Route::post('/sites/{id}/start', [SiteController::class, 'start']);
 Route::post('/sites/{id}/delete', [SiteController::class, 'delete']);

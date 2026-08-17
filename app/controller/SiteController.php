@@ -60,11 +60,36 @@ class SiteController
             $sshPubkey = (new SshKeyManager())->publicKey($site['name']);
         }
 
+        // Riwayat deploy (terbaru dulu) + versi aktif untuk tombol rollback
+        $deployHistory = array_reverse($site['deploy_history'] ?? []);
+        $activeSha = $this->resolveActiveSha($site);
+
         return view('site/detail', [
             'site' => $site,
             'live' => $live,
             'nginxStatus' => $nginxStatus,
             'sshPubkey' => $sshPubkey,
+            'deployHistory' => $deployHistory,
+            'activeSha' => $activeSha,
+        ]);
+    }
+
+    /**
+     * Halaman khusus riwayat versi site (checkpoint rollback).
+     */
+    public function versions(Request $request, string $id)
+    {
+        $store = new SiteStore();
+        $site = $store->find($id);
+        if ($site === null) {
+            flash_set('error', 'Site tidak ditemukan.');
+            return redirect('/sites');
+        }
+
+        return view('site/versions', [
+            'site' => $site,
+            'deployHistory' => array_reverse($site['deploy_history'] ?? []),
+            'activeSha' => $this->resolveActiveSha($site),
         ]);
     }
 
@@ -296,6 +321,78 @@ class SiteController
             flash_set('error', 'Gagal menjalankan rebuild.');
         } else {
             flash_set('success', 'Rebuild dijalankan.');
+        }
+        return redirect('/sites/' . $id);
+    }
+
+    /**
+     * Rollback site ke versi (commit) yang pernah sukses.
+     *
+     * Ref divalidasi: harus ada di deploy_history dengan status sukses/restored
+     * dan bukan versi yang sedang aktif. Ditandai busy (status deploying) agar
+     * tidak bentrok dengan deploy/rebuild/rollback lain, lalu worker di-spawn.
+     */
+    public function rollback(Request $request, string $id)
+    {
+        $store = new SiteStore();
+        $site = $store->find($id);
+        if ($site === null) {
+            flash_set('error', 'Site tidak ditemukan.');
+            return redirect('/sites');
+        }
+        if (($site['status'] ?? '') === 'deploying') {
+            flash_set('error', 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/sites/' . $id);
+        }
+
+        $ref = trim((string) $request->post('ref', ''));
+        if ($ref === '' || !preg_match('/^[0-9a-fA-F]{7,40}$/', $ref)) {
+            flash_set('error', 'Ref rollback tidak valid.');
+            return redirect('/sites/' . $id);
+        }
+
+        // Cari di history — resolve ke full SHA bila user kirim short SHA.
+        $fullRef = '';
+        foreach (($site['deploy_history'] ?? []) as $h) {
+            if (in_array(($h['status'] ?? ''), ['success', 'restored'], true) && str_starts_with((string) ($h['sha'] ?? ''), $ref)) {
+                $fullRef = (string) $h['sha'];
+                break;
+            }
+        }
+        if ($fullRef === '') {
+            flash_set('error', 'Ref tidak ditemukan di riwayat deploy yang sukses.');
+            return redirect('/sites/' . $id);
+        }
+
+        // Tolak rollback ke versi yang sedang aktif (no-op).
+        if ($fullRef === $this->resolveActiveSha($site)) {
+            flash_set('error', 'Ref yang dipilih adalah versi yang sedang aktif.');
+            return redirect('/sites/' . $id);
+        }
+
+        $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+        if (!is_dir($dir)) {
+            flash_set('error', 'Direktori site tidak ada. Site mungkin sudah dihapus.');
+            return redirect('/sites/' . $id);
+        }
+
+        $store->update($id, function (array &$s): void {
+            $s['status'] = 'deploying';
+            $s['stage'] = 'queued';
+            $s['message'] = 'Menunggu worker rollback ...';
+            $s['error'] = null;
+        });
+
+        if (!$this->spawnWorker($id, 'rollback', $fullRef)) {
+            $store->update($id, function (array &$s): void {
+                $s['status'] = 'error';
+                $s['stage'] = null;
+                $s['message'] = 'Gagal menjalankan worker rollback.';
+                $s['error'] = 'Gagal spawn worker rollback.';
+            });
+            flash_set('error', 'Gagal menjalankan rollback.');
+        } else {
+            flash_set('success', 'Rollback ke ' . substr($fullRef, 0, 7) . ' dijalankan.');
         }
         return redirect('/sites/' . $id);
     }
@@ -726,7 +823,7 @@ class SiteController
     /**
      * Spawn background worker deploy (detached).
      */
-    private function spawnWorker(string $siteId, string $mode): bool
+    private function spawnWorker(string $siteId, string $mode, ?string $arg = null): bool
     {
         $logDir = runtime_path('logs/deploy');
         if (!is_dir($logDir)) {
@@ -735,6 +832,9 @@ class SiteController
         $logFile = $logDir . '/' . $siteId . '.log';
 
         $command = [PHP_BINARY, base_path('cli/deploy.php'), $siteId, $mode];
+        if ($arg !== null && $arg !== '') {
+            $command[] = $arg;
+        }
         $descriptors = [
             0 => ['file', '/dev/null', 'r'],
             1 => ['file', $logFile, 'a'],
@@ -748,6 +848,20 @@ class SiteController
         // proc_close langsung (tanpa pipe interaktif) => proses berjalan detached
         @proc_close($proc);
         return true;
+    }
+
+    /**
+     * SHA versi yang sedang aktif = entri sukses/restored terakhir di history.
+     * Dipakai untuk menampilkan "versi aktif" dan mencegah rollback ke versi aktif.
+     */
+    private function resolveActiveSha(array $site): string
+    {
+        foreach (array_reverse($site['deploy_history'] ?? []) as $h) {
+            if (in_array(($h['status'] ?? ''), ['success', 'restored'], true)) {
+                return (string) ($h['sha'] ?? '');
+            }
+        }
+        return '';
     }
 
     /**

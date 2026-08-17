@@ -48,6 +48,61 @@ class GitService
     }
 
     /**
+     * SHA-1 commit yang sedang aktif (HEAD) di working tree.
+     */
+    public function revParse(string $dir): string
+    {
+        $result = $this->runner->run(['git', '-C', $dir, 'rev-parse', 'HEAD'], $dir, 60);
+        if ($result['code'] !== 0) {
+            throw new RuntimeException('Gagal membaca HEAD repo: ' . trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']));
+        }
+        return trim($result['stdout']);
+    }
+
+    /**
+     * Ambil commit lama (rollback) dari remote. Repo diklone shallow (--depth 1),
+     * sehingga SHA yang tidak ada di riwayat lokal perlu di-fetch dulu.
+     * Butuh server git yang mengizinkan fetch arbitrary SHA
+     * (GitHub/GitLab umumnya mendukung via reachable SHA).
+     */
+    public function fetchSha(string $dir, string $sha, ?string $sshKeyPath = null): void
+    {
+        $result = $this->runner->run(
+            ['git', '-C', $dir, 'fetch', 'origin', $sha],
+            null,
+            $this->timeout,
+            $this->sshEnv($sshKeyPath)
+        );
+        if ($result['code'] !== 0) {
+            throw new RuntimeException('Gagal fetch commit ' . substr($sha, 0, 7) . ': ' . trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']));
+        }
+    }
+
+    /**
+     * Checkout ke ref tertentu (detached HEAD). Dipakai untuk rollback.
+     */
+    public function checkout(string $dir, string $ref): void
+    {
+        $result = $this->runner->run(['git', '-C', $dir, 'checkout', $ref], $dir, 120);
+        if ($result['code'] !== 0) {
+            throw new RuntimeException('Gagal checkout ' . substr($ref, 0, 7) . ': ' . trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']));
+        }
+    }
+
+    /**
+     * Pastikan working tree berada di branch (re-attach dari detached HEAD).
+     * Diperlukan setelah rollback (checkout SHA membuat detached HEAD) agar
+     * `git pull --ff-only` pada rebuild berikutnya tetap valid.
+     */
+    public function ensureBranch(string $dir, string $branch): void
+    {
+        $result = $this->runner->run(['git', '-C', $dir, 'checkout', $branch], $dir, 120);
+        if ($result['code'] !== 0) {
+            throw new RuntimeException('Gagal pindah ke branch ' . $branch . ': ' . trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']));
+        }
+    }
+
+    /**
      * Environment tambahan untuk transport SSH bila repo memakai deploy key.
      * Repo publik (tanpa deploy key) => env kosong, perilaku tetap seperti dulu.
      *

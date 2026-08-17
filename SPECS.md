@@ -26,7 +26,6 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - Multi-server / agent sebagai service HTTP terpisah
 - Role & permission antar user — semua user yang login punya hak akses sama (lihat Goals untuk multi user tanpa role)
 - Auto-scaling, health-check lanjutan, monitoring resource
-- Rollback otomatis / versioning deployment
 - Podman — Phase 1 tetap pakai Docker Engine yang sudah familiar; migrasi ke rootless Podman jadi pertimbangan keamanan di fase lanjutan
 
 ## 4. Tech Stack
@@ -199,6 +198,7 @@ Menampilkan:
 - Info umum: nama, subdomain (dengan link langsung), repo URL, branch
 - Daftar container: nama, image, status (running/stopped/exited), port mapping
 - Aksi: Rebuild (pull ulang + up ulang), Stop, Start, Delete (hapus container + config nginx + file lokal)
+- Riwayat Deployment + tombol Rollback (lihat §7.5)
 
 ### 7.4 Delete Site
 
@@ -206,6 +206,33 @@ Menampilkan:
 2. Hapus config Nginx terkait, reload Nginx
 3. Hapus direktori `sites/{name}` (opsional — bisa juga di-retain sebagai backup dengan konfirmasi user)
 4. Hapus entry dari `sites.json`
+
+### 7.5 Rollback Site ke Versi Sebelumnya
+
+Rollback mengembalikan site ke **commit yang pernah sukses** (checkpoint otomatis), berguna saat versi terbaru error.
+
+**Checkpoint otomatis (`deploy_history`)**
+- Setiap deploy/rebuild **sukses** mencatat `git rev-parse HEAD` ke `deploy_history` di `sites.json`: `{sha, short, action, status, message, created_at}` (maksimal 20 entri terakhir).
+- Rollback juga menambah entri (reversibel — bisa di-rollback lagi).
+- `versi aktif` = entri sukses/restored terakhir; entri inilah target rollback yang valid.
+
+**Alur rollback**
+1. Halaman detail → tombol **↶ Rollback** pada entri riwayat yang sukses (bukan versi aktif).
+2. Validasi: ref harus ada di `deploy_history` berstatus sukses/restored, bukan versi aktif; site tidak boleh berstatus `deploying` (busy) — guard anti-bentrok.
+3. `SiteController::rollback` set status `deploying` lalu spawn worker `php cli/deploy.php {id} rollback {full_sha}` (detached, pola sama dengan deploy/rebuild).
+4. `LocalDeployer::rollback`:
+   - `git fetch origin {sha}` (repo diklone **shallow `--depth 1`**, jadi SHA lama di-fetch dari remote; butuh server git yang mengizinkan fetch arbitrary SHA)
+   - `git checkout {sha}` (detached HEAD)
+   - `docker compose up -d --build` → collect container → tulis ulang config Nginx → status `running`
+5. UI polling status (sama dengan rebuild) sampai selesai.
+
+**Fallback otomatis**: bila build versi lama **gagal**, sistem otomatis `git checkout` kembali ke versi yang tadinya aktif + `up -d --build` (restore best-effort). Jika restore juga gagal, status `error`.
+
+**Batasan & keputusan**
+- **Non-destruktif**: volume Docker (`down -v`) **tidak** dijalankan — data DB dipertahankan. Risiko: kode lama + schema data baru bisa tidak kompatibel (diterima).
+- **Override ports tetap**: `docker-compose.override.yml` & `docker-compose.override.ports.yml` (di-generate dashboard, untracked) **tidak** ikut ter-revert — memegang identitas port host site. `docker-compose.yml` repo ikut ke versi lama secara otomatis (tracked).
+- **Detached HEAD**: rebuild berikutnya memanggil `git checkout {branch}` dulu agar `git pull --ff-only` tetap valid.
+- Rollback ke versi yang sedang aktif ditolak (no-op).
 
 ## 8. Reverse Proxy / Subdomain Routing
 

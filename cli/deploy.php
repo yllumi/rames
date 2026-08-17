@@ -5,14 +5,14 @@ declare(strict_types=1);
 /**
  * Background worker deploy site.
  *
- *   php cli/deploy.php <siteId> [deploy|rebuild]
+ *   php cli/deploy.php <siteId> [deploy|rebuild|rollback] [ref]
  *
  * Dipanggil detached oleh SiteController (proc_open) supaya request HTTP tidak
  * terblokir oleh operasi build yang lama. Pipeline:
  *   - muat site dari sites.json
  *   - update status tiap tahap (deploying / running / error)
- *   - jalankan deployer (deploy/rebuild)
- *   - simpan hasil (containers, status) kembali ke sites.json
+ *   - jalankan deployer (deploy/rebuild/rollback)
+ *   - simpan hasil (containers, deploy_history, status) kembali ke sites.json
  * Log per-site ditulis ke runtime/logs/deploy/{siteId}.log.
  */
 
@@ -29,9 +29,10 @@ require __DIR__ . '/../support/bootstrap.php';
 
 $siteId = $argv[1] ?? '';
 $mode = $argv[2] ?? 'deploy';
+$ref = $argv[3] ?? '';
 
-if ($siteId === '' || !in_array($mode, ['deploy', 'rebuild'], true)) {
-    fwrite(STDERR, "Usage: php cli/deploy.php <siteId> [deploy|rebuild]\n");
+if ($siteId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback'], true) || ($mode === 'rollback' && $ref === '')) {
+    fwrite(STDERR, "Usage: php cli/deploy.php <siteId> [deploy|rebuild|rollback [ref]]\n");
     exit(1);
 }
 
@@ -62,9 +63,11 @@ $logger = function (string $stage, string $message) use ($store, $siteId, $logFi
 
 try {
     $deployer = DeployerFactory::create();
-    $site = $mode === 'rebuild'
-        ? $deployer->rebuild($site, $logger)
-        : $deployer->deploy($site, $logger);
+    $site = match ($mode) {
+        'rebuild'  => $deployer->rebuild($site, $logger),
+        'rollback' => $deployer->rollback($site, $ref, $logger),
+        default    => $deployer->deploy($site, $logger),
+    };
 
     $store->update($siteId, function (array &$s) use ($site): void {
         $s['status'] = (string) ($site['status'] ?? 'running');
@@ -72,6 +75,7 @@ try {
         $s['message'] = $s['status'] === 'running' ? 'Running' : (string) ($site['message'] ?? '');
         $s['error'] = null;
         $s['containers'] = $site['containers'] ?? [];
+        $s['deploy_history'] = $site['deploy_history'] ?? $s['deploy_history'] ?? [];
     });
 
     // Reload nginx host agar config baru (subdomain/custom domain) aktif.
