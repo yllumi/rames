@@ -32,6 +32,15 @@
     <img src="/logo-rames.png" alt="rames">
   </div>
   <h1 class="hello-title">Hello, World!</h1>
+  <p class="hello-sub">
+    Selamat datang di <strong>Rames</strong> — Deployment Control Panel.
+    Mulai kelola site, SSL, dan pengguna dari dashboard.
+  </p>
+  <?php if (current_user()): ?>
+    <div class="d-flex justify-content-center gap-2 flex-wrap">
+      <a class="btn btn-primary px-4" href="/sites">Buka Dashboard</a>
+    </div>
+  <?php endif; ?>  
 </div>
 <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
 </body>
