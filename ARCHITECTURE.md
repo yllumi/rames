@@ -88,7 +88,8 @@ Controller hanya **mediator**: tidak memuat logika bisnis, tidak menyimpan state
 | Controller | Tanggung jawab |
 |---|---|
 | `AuthController` | Login/logout, session, regenerasi session id (anti fixation) |
-| `SiteController` | Wizard create site, halaman detail, aksi (rebuild/stop/start/delete), set/hapus custom domain, endpoint polling status |
+| `SiteController` | Wizard create site, halaman detail & halaman versi (`/sites/{id}/versions`), aksi (rebuild/rollback/stop/start/delete dengan mode preserve/purge volume), set/hapus custom domain, endpoint polling status |
+| `VolumeController` | Halaman `/volumes`: daftar volume ber-label compose + bersihkan volume **yatim** (ditinggalkan site yang dihapus dengan mode preserve) |
 | `UserController` | Kelola user (tambah/hapus, ganti password) |
 
 ### 4.2 Middleware — `app/middleware/`
@@ -115,8 +116,8 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `SshKeyManager` | Generate/read/hapus pasangan kunci SSH (deploy key per site) di `database/keys/` |
 | **Docker** | `ComposeParser` | Parse `docker-compose.yml` (short/long syntax port, IP binding) via `symfony/yaml` |
 | | `PortManager` | Deteksi konflik port terhadap `sites.json`, saran port dari range, validasi port |
-| | `DockerClient` | Client Engine API (Guzzle + `CURLOPT_UNIX_SOCKET_PATH`) untuk operasi **baca**: list/inspect container, ping |
-| | `DockerComposeRunner` | CLI `docker compose` untuk **orkestrasi**: up/down/build/stop/start/pull |
+| | `DockerClient` | Client Engine API (Guzzle + `CURLOPT_UNIX_SOCKET_PATH`) untuk operasi **baca**: list/inspect container, list volume (per project / semua), ping |
+| | `DockerComposeRunner` | CLI `docker compose` untuk **orkestrasi**: up/down/build/stop/start/pull; `removeVolumes()` untuk `docker volume rm` (teardown selektif) |
 | **Nginx** | `NginxConfigGenerator` | Render & tulis config `.conf` + symlink ke `sites-enabled`; `ensureWritable()` fail-fast; render multi server block per site (subdomain + custom domain, redirect 301, blok `listen 443 ssl`, `location /.well-known/acme-challenge/`) |
 | | `NginxStatusReader` | Baca status reload terakhir watcher (`last-reload.json`) |
 | | `NginxReloader` | Reload nginx HOST via helper container (`--pid host --privileged`, chroot ke root host) pada Docker socket; tulis `last-reload.json`; dipakai tombol "Reload Nginx" + auto-reload setelah set/hapus custom domain, deploy/rebuild, dan SSL (best-effort) |
@@ -190,7 +191,12 @@ Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di
 
 ### 5.4 Delete
 
-`LocalDeployer::teardown()`: `docker compose down -v` → hapus config Nginx (+ symlink) → hapus direktori `sites/{name}` → hapus entri dari `sites.json`.
+Delete dua mode (modal konfirmasi di detail site):
+
+- **Hapus & pertahankan volume** (default, aman): `LocalDeployer::teardown($site, $preserveVolumes)` → `docker compose down` (tanpa `-v`), lalu `docker volume rm` hanya volume project yang **tidak** dicentang (via `DockerClient::listVolumesForProject` + `DockerComposeRunner::removeVolumes`). Named volume yang dipertahankan akan **dipakai ulang otomatis** saat site dibuat ulang dengan nama yang sama (project name compose = nama site) — data DB tidak hilang.
+- **Hapus total** (`mode=purge`): `LocalDeployer::teardown($site, null)` → `docker compose down -v` (semua named + anonymous volume terhapus permanen; butuh konfirmasi tambahan).
+
+Lalu: hapus config Nginx (+ symlink) → hapus direktori `sites/{name}` → hapus entri dari `sites.json`. Volume **yatim** (project-nya sudah tidak ada di `sites.json`) dapat dilihat & dibersihkan di halaman `/volumes` (`VolumeController`).
 
 ### 5.5 Autentikasi
 
@@ -209,11 +215,12 @@ Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di
 ### 5.7 Rollback (kembali ke versi sebelumnya)
 
 1. Setiap deploy/rebuild **sukses** mencatat `git rev-parse HEAD` ke `deploy_history` (field baru di `sites.json`, maks. 20 entri) — inilah checkpoint rollback. Rollback sendiri juga menambah entri (reversibel).
-2. Halaman detail → tombol **↶ Rollback** pada entri sukses/restored (bukan versi aktif). Guard: ditolak saat status `deploying` (busy).
+2. Halaman **Versi** (`/sites/{id}/versions`) menampilkan seluruh checkpoint; tombol **↶ Rollback** pada entri sukses/restored (bukan versi aktif). Detail site menampilkan 5 terakhir + link ke halaman versi. Guard: ditolak saat status `deploying` (busy).
 3. `SiteController::rollback` → set `deploying` → spawn `cli/deploy.php <id> rollback <full_sha>` (detached).
 4. `LocalDeployer::rollback`: `git fetch origin <sha>` (repo shallow `--depth 1` → SHA lama di-fetch dari remote) → `git checkout <sha>` → `docker compose up -d --build` → collect → tulis ulang config Nginx → `running`.
 5. Bila build versi lama **gagal** → auto-`git checkout` kembali ke versi aktif sebelumnya + `up -d --build` (restore best-effort); bila restore gagal → status `error`.
 6. Non-destruktif: volume Docker tidak dihapus (`down -v` tidak dijalankan). Override ports dashboard (`docker-compose.override*.yml`, untracked) dipertahankan — hanya source tracked yang ikut ke versi lama. Rebuild berikutnya memanggil `git checkout {branch}` dulu untuk keluar dari detached HEAD.
+7. Unit test fitur: `tests/` (PHPUnit 10) — jalankan `composer test`. `DeployerFactory` mendukung override env `DEPLOYER_CLASS` (hook test) untuk fake deployer tanpa daemon Docker; `cli/deploy.php` mode rollback diuji end-to-end via subproses (`CliDeployRollbackTest`).
 
 ---
 

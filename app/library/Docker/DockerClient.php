@@ -68,6 +68,37 @@ class DockerClient
     }
 
     /**
+     * Daftar volume bernama milik sebuah compose project (via label compose).
+     *
+     * @return array<int,array>
+     */
+    public function listVolumesForProject(string $project): array
+    {
+        return $this->listVolumes(['label' => ["com.docker.compose.project={$project}"]]);
+    }
+
+    /**
+     * Daftar volume dengan filter opsional (mis. label compose project).
+     *
+     * @param array $filters filter Docker Engine API (mis. ['label' => ['...']])
+     * @return array<int,array>
+     */
+    public function listVolumes(array $filters = []): array
+    {
+        $query = [];
+        if ($filters !== []) {
+            $query['filters'] = json_encode($filters);
+        }
+        try {
+            $resp = $this->client->get('/volumes', ['query' => $query]);
+        } catch (GuzzleException $e) {
+            throw new RuntimeException('Gagal terhubung ke Docker Engine: ' . $e->getMessage(), 0, $e);
+        }
+        $data = $this->decode($resp, 'gagal mengambil daftar volume');
+        return $data['Volumes'] ?? [];
+    }
+
+    /**
      * Detail container per ID.
      *
      * @return array

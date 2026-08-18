@@ -63,7 +63,8 @@
     ],
     "setup-webman": [
       "support\\Setup::run"
-    ]
+    ],
+    "test": "vendor/bin/phpunit"
   },
   "minimum-stability": "dev",
   "prefer-stable": true,

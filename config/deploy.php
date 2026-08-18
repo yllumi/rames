@@ -39,7 +39,7 @@ return [
     'nginx_reload_image' => getenv('NGINX_RELOAD_IMAGE') ?: 'alpine',
 
     // Direktori penyimpanan JSON (auth.json, sites.json)
-    'database_path' => base_path() . '/database',
+    'database_path' => getenv('DATABASE_PATH') ?: (base_path() . '/database'),
 
     // Direktori pasangan kunci SSH (deploy key per site) + known_hosts
     'ssh_keys_path' => getenv('SSH_KEYS_PATH') ?: (base_path() . '/database/keys'),

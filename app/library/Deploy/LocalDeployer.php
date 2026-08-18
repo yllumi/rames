@@ -137,10 +137,40 @@ class LocalDeployer implements DeployerInterface
         $this->compose->start($site['name'], $this->siteDir($site), $site['compose_files'] ?? ['docker-compose.yml']);
     }
 
-    public function teardown(array $site): void
+    public function teardown(array $site, ?array $preserveVolumes = null): void
     {
-        $this->compose->down($site['name'], $this->siteDir($site), $site['compose_files'] ?? ['docker-compose.yml'], true);
+        $project = $site['name'];
+        $dir = $this->siteDir($site);
+        $files = $site['compose_files'] ?? ['docker-compose.yml'];
+
+        if ($preserveVolumes === null) {
+            // Hapus total: down -v (semua named + anonymous volume terhapus).
+            $this->compose->down($project, $dir, $files, true);
+        } else {
+            // Pertahankan volume terpilih: down tanpa -v (semua named volume
+            // tetap ada), lalu hapus hanya volume project yang TIDAK
+            // dipertahankan. Volume yang dipertahankan akan dipakai ulang saat
+            // site dibuat ulang dengan nama yang sama (project = nama site).
+            $this->compose->down($project, $dir, $files, false);
+            $remove = array_values(array_diff(
+                $this->volumeNamesForProject($project),
+                $preserveVolumes
+            ));
+            if ($remove !== []) {
+                $this->compose->removeVolumes($remove);
+            }
+        }
         $this->removeNginxConfig($site);
+    }
+
+    /**
+     * Nama-nama named volume milik project compose (untuk modal delete).
+     *
+     * @return array<int,string>
+     */
+    public function getProjectVolumes(string $project): array
+    {
+        return $this->volumeNamesForProject($project);
     }
 
     public function getContainers(string $project): array
@@ -229,6 +259,20 @@ class LocalDeployer implements DeployerInterface
     private function siteDir(array $site): string
     {
         return $this->sitesPath . '/' . $site['name'];
+    }
+
+    /**
+     * Nama-nama named volume milik project compose (deteksi via Engine API).
+     *
+     * @return array<int,string>
+     */
+    private function volumeNamesForProject(string $project): array
+    {
+        $volumes = $this->dockerClient->listVolumesForProject($project);
+        return array_values(array_filter(array_map(
+            static fn (array $v): string => (string) ($v['Name'] ?? ''),
+            $volumes
+        ), static fn (string $name): bool => $name !== ''));
     }
 
     /**

@@ -59,6 +59,25 @@ class DockerComposeRunner
         $this->mustRun($args, $dir, 'docker compose down', $this->timeout);
     }
 
+    /**
+     * Hapus volume bernama (docker volume rm). Dipakai teardown selektif:
+     * menghapus volume project yang TIDAK dipertahankan saat site dihapus.
+     * Bentuk array + bypass_shell → bebas command injection (nama volume argumen).
+     *
+     * @param array<int,string> $names
+     */
+    public function removeVolumes(array $names): void
+    {
+        if ($names === []) {
+            return;
+        }
+        $args = [$this->composeBinary, 'volume', 'rm'];
+        foreach ($names as $name) {
+            $args[] = (string) $name;
+        }
+        $this->mustRun($args, sys_get_temp_dir(), 'docker volume rm', 120);
+    }
+
     public function stop(string $project, string $dir, array $files): void
     {
         $args = $this->baseArgs($project, $dir, $files);

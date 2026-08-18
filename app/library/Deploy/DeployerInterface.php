@@ -55,9 +55,25 @@ interface DeployerInterface
     public function start(array $site): void;
 
     /**
-     * Teardown: down -v + hapus config Nginx.
+     * Teardown: down container + hapus config Nginx.
+     *
+     * Bila $preserveVolumes === null → `down -v` (hapus SEMUA volume termasuk
+     * anonymous — jalur "hapus total"). Bila array → `down` tanpa -v lalu hapus
+     * hanya volume project yang TIDAK ada di $preserveVolumes. Named volume yang
+     * dipertahankan akan dipakai ulang otomatis saat site dibuat ulang dengan
+     * nama yang sama (project name compose = nama site).
+     *
+     * @param array       $site
+     * @param array|null  $preserveVolumes daftar nama volume yang dipertahankan, atau null = hapus semua
      */
-    public function teardown(array $site): void;
+    public function teardown(array $site, ?array $preserveVolumes = null): void;
+
+    /**
+     * Nama-nama named volume milik project compose (untuk UI konfirmasi delete).
+     *
+     * @return array<int,string>
+     */
+    public function getProjectVolumes(string $project): array;
 
     /**
      * Info container project (nama, image, status, port).

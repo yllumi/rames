@@ -44,12 +44,22 @@ class SiteController
             return redirect('/sites');
         }
 
+        $deployer = DeployerFactory::create();
+
         // status container live (best effort — engine mungkin tidak tersedia)
         $live = [];
         try {
-            $live = DeployerFactory::create()->getContainers($site['name']);
+            $live = $deployer->getContainers($site['name']);
         } catch (\Throwable $e) {
             // pakai data tersimpan
+        }
+
+        // named volume project (untuk modal konfirmasi delete)
+        $volumes = [];
+        try {
+            $volumes = $deployer->getProjectVolumes($site['name']);
+        } catch (\Throwable $e) {
+            // engine tidak tersedia — modal tampil tanpa daftar volume
         }
 
         $nginxStatus = (new NginxStatusReader((string) config('deploy.nginx_reload_status_file')))->lastReload();
@@ -67,6 +77,7 @@ class SiteController
         return view('site/detail', [
             'site' => $site,
             'live' => $live,
+            'volumes' => $volumes,
             'nginxStatus' => $nginxStatus,
             'sshPubkey' => $sshPubkey,
             'deployHistory' => $deployHistory,
@@ -447,8 +458,24 @@ class SiteController
             flash_set('error', 'Site tidak ditemukan.');
             return redirect('/sites');
         }
+
+        // mode: preserve (default, aman — volume tercentang dipertahankan) atau
+        // purge (hapus total termasuk semua volume).
+        $mode = (string) $request->post('mode', 'preserve');
+        $preserve = array_values(array_filter(
+            array_map('strval', (array) $request->post('preserve_volumes', [])),
+            static fn (string $v): bool => $v !== ''
+        ));
+
         try {
-            DeployerFactory::create()->teardown($site);
+            if ($mode === 'purge') {
+                // Hapus total: down -v (semua volume termasuk anonymous terhapus).
+                DeployerFactory::create()->teardown($site, null);
+            } else {
+                // Default aman: pertahankan volume tercentang (data DB dll. tetap
+                // ada, dipakai ulang bila site dibuat ulang dengan nama sama).
+                DeployerFactory::create()->teardown($site, $preserve);
+            }
 
             $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
             if (is_dir($dir)) {

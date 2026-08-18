@@ -25,6 +25,9 @@
             <a class="nav-link <?= ($active ?? '') === 'ssl' ? 'active' : '' ?>" href="/ssl">SSL</a>
           </li>
           <li class="nav-item">
+            <a class="nav-link <?= ($active ?? '') === 'volumes' ? 'active' : '' ?>" href="/volumes">Volumes</a>
+          </li>
+          <li class="nav-item">
             <a class="nav-link <?= ($active ?? '') === 'users' ? 'active' : '' ?>" href="/users">Users</a>
           </li>
           <?php $__u = current_user(); ?>

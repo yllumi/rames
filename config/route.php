@@ -20,6 +20,7 @@ use app\controller\NginxController;
 use app\controller\SiteController;
 use app\controller\SslController;
 use app\controller\UserController;
+use app\controller\VolumeController;
 
 /*
 |--------------------------------------------------------------------------
@@ -68,6 +69,10 @@ Route::post('/nginx/reload', [NginxController::class, 'reload']);
 // SSL otomatis (Let's Encrypt)
 Route::get('/ssl', [SslController::class, 'index']);
 Route::post('/ssl/{id}/enable', [SslController::class, 'enable']);
+
+// Volume Docker (lihat & bersihkan volume yatim)
+Route::get('/volumes', [VolumeController::class, 'index']);
+Route::post('/volumes/purge', [VolumeController::class, 'purge']);
 
 /*
 |--------------------------------------------------------------------------

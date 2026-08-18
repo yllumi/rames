@@ -202,10 +202,18 @@ Menampilkan:
 
 ### 7.4 Delete Site
 
-1. `docker compose -p {name} down -v`
+Dua mode (dipilih di modal konfirmasi pada halaman detail site):
+
+- **Hapus & pertahankan volume** (default, aman): `docker compose -p {name} down` (tanpa `-v`) → semua named volume tetap ada; hanya named volume yang **tidak** dicentang (dan anonymous volume) yang dihapus via `docker volume rm`. Volume yang dipertahankan akan **dipakai ulang otomatis** bila site dibuat ulang dengan nama yang sama (project name compose = nama site) — data DB tidak hilang.
+- **Hapus total**: `docker compose -p {name} down -v` → semua named + anonymous volume terhapus permanen (butuh konfirmasi tambahan).
+
+Langkah umum:
+1. Down container sesuai mode volume di atas
 2. Hapus config Nginx terkait, reload Nginx
-3. Hapus direktori `sites/{name}` (opsional — bisa juga di-retain sebagai backup dengan konfirmasi user)
+3. Hapus direktori `sites/{name}`
 4. Hapus entry dari `sites.json`
+
+Volume yatim (ditinggalkan site yang dihapus dengan mode preserve) dapat dilihat & dibersihkan di halaman **/volumes** — hanya volume yang project-nya sudah tidak ada di `sites.json` yang bisa di-purge (volume site aktif ditolak).
 
 ### 7.5 Rollback Site ke Versi Sebelumnya
 
@@ -217,7 +225,7 @@ Rollback mengembalikan site ke **commit yang pernah sukses** (checkpoint otomati
 - `versi aktif` = entri sukses/restored terakhir; entri inilah target rollback yang valid.
 
 **Alur rollback**
-1. Halaman detail → tombol **↶ Rollback** pada entri riwayat yang sukses (bukan versi aktif).
+1. Halaman **Versi** (`/sites/{id}/versions`, dibuka lewat "Semua versi" di detail site) → tombol **↶ Rollback** pada entri riwayat yang sukses (bukan versi aktif). Halaman detail menampilkan 5 riwayat terakhir + link ke halaman versi.
 2. Validasi: ref harus ada di `deploy_history` berstatus sukses/restored, bukan versi aktif; site tidak boleh berstatus `deploying` (busy) — guard anti-bentrok.
 3. `SiteController::rollback` set status `deploying` lalu spawn worker `php cli/deploy.php {id} rollback {full_sha}` (detached, pola sama dengan deploy/rebuild).
 4. `LocalDeployer::rollback`:
@@ -233,6 +241,12 @@ Rollback mengembalikan site ke **commit yang pernah sukses** (checkpoint otomati
 - **Override ports tetap**: `docker-compose.override.yml` & `docker-compose.override.ports.yml` (di-generate dashboard, untracked) **tidak** ikut ter-revert — memegang identitas port host site. `docker-compose.yml` repo ikut ke versi lama secara otomatis (tracked).
 - **Detached HEAD**: rebuild berikutnya memanggil `git checkout {branch}` dulu agar `git pull --ff-only` tetap valid.
 - Rollback ke versi yang sedang aktif ditolak (no-op).
+
+**Pengujian**: unit test di `tests/` (PHPUnit 10 — jalankan `composer test` atau `vendor/bin/phpunit`):
+- `GitServiceTest` — clone shallow, fetch SHA, checkout, re-attach branch, pull.
+- `LocalDeployerRollbackTest` — rollback sukses, restore otomatis saat build gagal, no-op ke versi aktif, history cap 20.
+- `CliDeployRollbackTest` — end-to-end `cli/deploy.php` mode rollback via subproses dengan fake deployer (`DEPLOYER_CLASS` env override di `DeployerFactory`, tanpa daemon Docker): persistensi status+history, jalur error, validasi argumen.
+- `SiteStoreTest` — persistensi `deploy_history`.
 
 ## 8. Reverse Proxy / Subdomain Routing
 

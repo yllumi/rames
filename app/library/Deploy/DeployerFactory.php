@@ -16,6 +16,14 @@ class DeployerFactory
 {
     public static function create(): DeployerInterface
     {
+        // Hook pengujian: override implementasi lewat env DEPLOYER_CLASS
+        // (mis. fake deployer pada unit test tanpa daemon Docker). Hanya aktif
+        // bila env diset; normalnya memakai LocalDeployer.
+        $override = getenv('DEPLOYER_CLASS');
+        if ($override !== false && $override !== '' && class_exists($override) && is_callable([$override, 'create'])) {
+            return $override::create();
+        }
+
         return new LocalDeployer(
             compose: new DockerComposeRunner(timeout: (int) config('deploy.deploy_timeout', 600)),
             dockerClient: new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock')),

@@ -68,7 +68,7 @@ final class GitTestFixture
      */
     private function git(string $cwd, array $args): void
     {
-        $cmd = 'git ' . implode(' ', array_map('escapeshellarg', $args));
+        $cmd = 'git -C ' . escapeshellarg($cwd) . ' ' . implode(' ', array_map('escapeshellarg', $args));
         $output = [];
         $code = 0;
         exec($cmd . ' 2>&1', $output, $code);
@@ -77,7 +77,7 @@ final class GitTestFixture
         }
     }
 
-    private static function removeDir(string $dir): void
+    public static function removeDir(string $dir): void
     {
         if (!is_dir($dir)) {
             return;
