@@ -113,6 +113,65 @@ class DockerClient
         return $this->decode($resp, 'gagal inspect container');
     }
 
+    /**
+     * Stop container (graceful). 404 dianggap sukses (container sudah hilang).
+     */
+    public function stopContainer(string $id): void
+    {
+        $this->requestIgnore404('POST', '/containers/' . rawurlencode($id) . '/stop');
+    }
+
+    /**
+     * Hapus container (force). 404 dianggap sukses (container sudah hilang).
+     */
+    public function removeContainer(string $id, bool $force = true, bool $removeVolumes = true): void
+    {
+        $query = ['force' => $force ? 1 : 0, 'v' => $removeVolumes ? 1 : 0];
+        $this->requestIgnore404('DELETE', '/containers/' . rawurlencode($id), $query);
+    }
+
+    /**
+     * Daftar network milik sebuah compose project (via label compose).
+     *
+     * @return array<int,array>
+     */
+    public function listNetworksForProject(string $project): array
+    {
+        $filters = json_encode(['label' => ["com.docker.compose.project={$project}"]]);
+        try {
+            $resp = $this->client->get('/networks', ['query' => ['filters' => $filters]]);
+        } catch (GuzzleException $e) {
+            throw new RuntimeException('Gagal terhubung ke Docker Engine: ' . $e->getMessage(), 0, $e);
+        }
+        $data = $this->decode($resp, 'gagal mengambil daftar network');
+        return $data['Networks'] ?? [];
+    }
+
+    /**
+     * Hapus network. 404 dianggap sukses (network sudah hilang).
+     */
+    public function removeNetwork(string $id): void
+    {
+        $this->requestIgnore404('DELETE', '/networks/' . rawurlencode($id));
+    }
+
+    /**
+     * Request API yang toleran 404 (resource sudah tidak ada = sukses).
+     * Status >= 300 selain 404 dianggap error.
+     */
+    private function requestIgnore404(string $method, string $path, array $query = []): void
+    {
+        try {
+            $resp = $this->client->request(strtoupper($method), $path, ['query' => $query]);
+        } catch (GuzzleException $e) {
+            throw new RuntimeException('Gagal terhubung ke Docker Engine: ' . $e->getMessage(), 0, $e);
+        }
+        $code = $resp->getStatusCode();
+        if ($code >= 300 && $code !== 404) {
+            throw new RuntimeException("Operasi Docker gagal: HTTP {$code} {$resp->getReasonPhrase()}");
+        }
+    }
+
     private function decode($resp, string $errMsg): array
     {
         if ($resp->getStatusCode() >= 300) {

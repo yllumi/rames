@@ -1,0 +1,5 @@
+# Rames — izin reload Nginx untuk user watcher (SPECS.md §8.3 / §11)
+# Hanya binary nginx yang boleh dijalankan sebagai root (tanpa password),
+# bukan shell/root penuh. Diinstal ke /etc/sudoers.d/rames-nginx-watcher oleh
+# host/install.sh (mode 0440) dan divalidasi dengan `visudo -cf`.
+rames-watcher ALL=(root) NOPASSWD: /usr/sbin/nginx

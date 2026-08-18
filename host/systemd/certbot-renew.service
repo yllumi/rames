@@ -1,0 +1,12 @@
+# Rames — Renewal certbot (dipicu timer; SPECS.md §8a)
+# Diinstal ke /etc/systemd/system/certbot-renew.service oleh host/install.sh.
+[Unit]
+Description=Rames — Certbot renewal (Let's Encrypt)
+Documentation=file:/opt/rames/SPECS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/rames/certbot-renew.env
+ExecStart=/usr/local/bin/rames-certbot-renew.sh

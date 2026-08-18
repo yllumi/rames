@@ -1,0 +1,23 @@
+# Rames — Nginx reload watcher (SPECS.md §8.3)
+# Diinstal ke /etc/systemd/system/dashboard-nginx-watcher.service oleh host/install.sh.
+# Berjalan sebagai user non-root; reload nginx via sudo (sudoers khusus binary
+# nginx saja — dashboard-nginx-watcher.sudoers). JANGAN set NoNewPrivileges=true
+# karena service butuh sudo.
+[Unit]
+Description=Rames — Nginx reload watcher (inotify + nginx -t/reload)
+Documentation=file:/opt/rames/SPECS.md
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=rames-watcher
+Group=rames-watcher
+EnvironmentFile=-/etc/rames/nginx-watcher.env
+ExecStart=/usr/local/bin/rames-nginx-reload-watcher.sh
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

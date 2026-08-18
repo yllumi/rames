@@ -8,6 +8,7 @@ use app\library\Docker\DockerComposeRunner;
 use app\library\Git\GitService;
 use app\library\Nginx\NginxConfigGenerator;
 use RuntimeException;
+use Symfony\Component\Yaml\Yaml;
 
 /**
  * Implementasi deployer lokal: eksekusi docker compose di mesin yang sama.
@@ -29,7 +30,7 @@ class LocalDeployer implements DeployerInterface
 
         $project = $site['name'];
         $dir = $this->siteDir($site);
-        $files = $site['compose_files'] ?? ['docker-compose.yml'];
+        $files = $this->resolveComposeFiles($site, $dir);
 
         $logger('build', 'Menjalankan docker compose up -d --build ...');
         $this->compose->up($project, $dir, $files, true);
@@ -52,7 +53,7 @@ class LocalDeployer implements DeployerInterface
 
         $project = $site['name'];
         $dir = $this->siteDir($site);
-        $files = $site['compose_files'] ?? ['docker-compose.yml'];
+        $files = $this->resolveComposeFiles($site, $dir);
         $branch = $site['branch'] ?? 'main';
         $git = new GitService();
 
@@ -79,7 +80,7 @@ class LocalDeployer implements DeployerInterface
 
         $project = $site['name'];
         $dir = $this->siteDir($site);
-        $files = $site['compose_files'] ?? ['docker-compose.yml'];
+        $files = $this->resolveComposeFiles($site, $dir);
         $git = new GitService();
 
         // Versi aktif saat ini — dijadikan target restore bila rollback gagal.
@@ -124,7 +125,8 @@ class LocalDeployer implements DeployerInterface
 
     public function stop(array $site): void
     {
-        $this->compose->stop($site['name'], $this->siteDir($site), $site['compose_files'] ?? ['docker-compose.yml']);
+        $dir = $this->siteDir($site);
+        $this->compose->stop($site['name'], $dir, $this->resolveComposeFiles($site, $dir));
     }
 
     public function ensureWritable(): void
@@ -134,24 +136,36 @@ class LocalDeployer implements DeployerInterface
 
     public function start(array $site): void
     {
-        $this->compose->start($site['name'], $this->siteDir($site), $site['compose_files'] ?? ['docker-compose.yml']);
+        $dir = $this->siteDir($site);
+        $this->compose->start($site['name'], $dir, $this->resolveComposeFiles($site, $dir));
     }
 
     public function teardown(array $site, ?array $preserveVolumes = null): void
     {
         $project = $site['name'];
         $dir = $this->siteDir($site);
-        $files = $site['compose_files'] ?? ['docker-compose.yml'];
+        $files = $this->resolveComposeFiles($site, $dir);
 
-        if ($preserveVolumes === null) {
-            // Hapus total: down -v (semua named + anonymous volume terhapus).
-            $this->compose->down($project, $dir, $files, true);
-        } else {
-            // Pertahankan volume terpilih: down tanpa -v (semua named volume
-            // tetap ada), lalu hapus hanya volume project yang TIDAK
-            // dipertahankan. Volume yang dipertahankan akan dipakai ulang saat
-            // site dibuat ulang dengan nama yang sama (project = nama site).
-            $this->compose->down($project, $dir, $files, false);
+        // Hapus project lewat docker compose. Bila project TIDAK bisa dimuat
+        // (mis. override stale mereferensikan service yang sudah tidak ada di
+        // docker-compose.yml setelah git pull/rollback → "service X has neither
+        // an image nor a build context specified"), `down` melempar exception;
+        // lanjut ke pembersihan manual via Engine API di bawah.
+        try {
+            $this->compose->down($project, $dir, $files, $preserveVolumes === null);
+        } catch (\Throwable $e) {
+            // abaikan — teardownViaApi() menyelesaikan sisanya.
+        }
+
+        // Sapu bersih sisa container & network project via Engine API (termasuk
+        // container orphan yang sudah tidak ada di config compose saat ini) dan
+        // volume bila mode purge. Idempoten — hanya menghapus yang masih ada.
+        $this->teardownViaApi($project, $preserveVolumes === null);
+
+        if ($preserveVolumes !== null) {
+            // Pertahankan volume terpilih: down tanpa -v, lalu hapus hanya volume
+            // project yang TIDAK dipertahankan. Volume yang dipertahankan akan
+            // dipakai ulang saat site dibuat ulang dengan nama sama (project = nama site).
             $remove = array_values(array_diff(
                 $this->volumeNamesForProject($project),
                 $preserveVolumes
@@ -161,6 +175,119 @@ class LocalDeployer implements DeployerInterface
             }
         }
         $this->removeNginxConfig($site);
+    }
+
+    /**
+     * Daftar compose_files site dengan perbaikan override stale bila direktori
+     * site ada. Lihat repairStaleOverrides().
+     *
+     * @return array<int,string>
+     */
+    private function resolveComposeFiles(array $site, string $dir): array
+    {
+        $files = $site['compose_files'] ?? ['docker-compose.yml'];
+        if (is_dir($dir)) {
+            $this->repairStaleOverrides($dir, $files);
+        }
+        return $files;
+    }
+
+    /**
+     * Perbaiki override file yang stale: mereferensikan service yang sudah
+     * tidak ada di base docker-compose.yml (terjadi saat repo berubah lewat
+     * git pull/rollback). Compose menolak project bila override berisi service
+     * tanpa image/build ("service X has neither an image nor a build context
+     * specified: invalid compose project").
+     *
+     * Hanya menyaring isi file (service tak valid dibuang); file TIDAK pernah
+     * dihapus sehingga daftar compose_files tetap valid.
+     *
+     * @param array<int,string> $files
+     */
+    private function repairStaleOverrides(string $dir, array $files): void
+    {
+        // base compose = file pertama yang bukan override (mis. docker-compose.yml)
+        $baseFile = null;
+        foreach ($files as $f) {
+            if (!str_starts_with($f, 'docker-compose.override')) {
+                $baseFile = $f;
+                break;
+            }
+        }
+        if ($baseFile === null || !is_file($dir . '/' . $baseFile)) {
+            return;
+        }
+        try {
+            $base = Yaml::parseFile($dir . '/' . $baseFile, Yaml::PARSE_CUSTOM_TAGS);
+        } catch (\Throwable) {
+            return;
+        }
+        $valid = array_keys(is_array($base['services'] ?? null) ? $base['services'] : []);
+        if ($valid === []) {
+            return;
+        }
+
+        foreach ($files as $f) {
+            if (!str_starts_with($f, 'docker-compose.override')) {
+                continue;
+            }
+            $path = $dir . '/' . $f;
+            if (!is_file($path)) {
+                continue;
+            }
+            try {
+                $data = Yaml::parseFile($path, Yaml::PARSE_CUSTOM_TAGS);
+            } catch (\Throwable) {
+                continue;
+            }
+            $svc = $data['services'] ?? [];
+            if (!is_array($svc)) {
+                continue;
+            }
+            $filtered = array_intersect_key($svc, array_flip($valid));
+            if ($filtered === $svc) {
+                continue; // tidak ada service stale
+            }
+            $data['services'] = $filtered;
+            @file_put_contents($path, Yaml::dump($data, 4, 2), LOCK_EX);
+        }
+    }
+
+    /**
+     * Teardown manual project via Docker Engine API (tanpa compose file).
+     * Dipakai sebagai fallback saat compose project tidak bisa dimuat, dan
+     * sebagai sapuan pembersih sisa container orphan setelah down.
+     */
+    private function teardownViaApi(string $project, bool $removeVolumes): void
+    {
+        // 1) Stop & hapus semua container project.
+        foreach ($this->dockerClient->listContainersForProject($project) as $c) {
+            $id = (string) ($c['Id'] ?? '');
+            if ($id === '') {
+                continue;
+            }
+            if (($c['State'] ?? '') === 'running') {
+                $this->dockerClient->stopContainer($id);
+            }
+            $this->dockerClient->removeContainer($id, true);
+        }
+
+        // 2) Hapus network project.
+        foreach ($this->dockerClient->listNetworksForProject($project) as $n) {
+            $id = (string) ($n['Id'] ?? ($n['Name'] ?? ''));
+            if ($id === '') {
+                continue;
+            }
+            $this->dockerClient->removeNetwork($id);
+        }
+
+        // 3) Hapus volume project (hanya mode purge — preserve dikelola pemanggil).
+        if ($removeVolumes) {
+            $names = $this->volumeNamesForProject($project);
+            if ($names !== []) {
+                $this->compose->removeVolumes($names);
+            }
+        }
     }
 
     /**

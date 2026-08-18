@@ -1,0 +1,14 @@
+# Rames — Timer renewal certbot (2×/hari dengan jeda acak)
+# Diinstal ke /etc/systemd/system/certbot-renew.timer oleh host/install.sh.
+[Unit]
+Description=Rames — Timer renewal certbot (Let's Encrypt)
+
+[Timer]
+# Dua kali sehari (rekomendasi Let's Encrypt), dengan jeda acak agar tidak
+# membebani CA pada jam yang sama dengan server lain.
+OnCalendar=*-*-* 00,12:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

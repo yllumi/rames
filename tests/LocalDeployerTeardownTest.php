@@ -18,6 +18,16 @@ class TeardownFakeDockerClient extends DockerClient
 {
     /** @var array<int,array> */
     public array $volumes = [];
+    /** @var array<int,array> */
+    public array $containers = [];
+    /** @var array<int,array> */
+    public array $networks = [];
+    /** @var array<int,string> */
+    public array $stopped = [];
+    /** @var array<int,string> */
+    public array $removedContainers = [];
+    /** @var array<int,string> */
+    public array $removedNetworks = [];
 
     public function __construct()
     {
@@ -27,6 +37,31 @@ class TeardownFakeDockerClient extends DockerClient
     public function listVolumesForProject(string $project): array
     {
         return $this->volumes;
+    }
+
+    public function listContainersForProject(string $project): array
+    {
+        return $this->containers;
+    }
+
+    public function listNetworksForProject(string $project): array
+    {
+        return $this->networks;
+    }
+
+    public function stopContainer(string $id): void
+    {
+        $this->stopped[] = $id;
+    }
+
+    public function removeContainer(string $id, bool $force = true, bool $removeVolumes = true): void
+    {
+        $this->removedContainers[] = $id;
+    }
+
+    public function removeNetwork(string $id): void
+    {
+        $this->removedNetworks[] = $id;
     }
 }
 
@@ -39,6 +74,10 @@ class TeardownFakeComposeRunner extends DockerComposeRunner
     public array $downCalls = [];
     /** @var array<int,string> */
     public array $removedVolumes = [];
+    /** @var bool simulasikan down gagal (compose project tak bisa dimuat) */
+    public bool $downThrows = false;
+    /** @var TeardownFakeDockerClient|null referensi untuk simulasi down -v */
+    public ?TeardownFakeDockerClient $docker = null;
 
     public function __construct()
     {
@@ -48,6 +87,13 @@ class TeardownFakeComposeRunner extends DockerComposeRunner
     public function down(string $project, string $dir, array $files, bool $volumes = true): void
     {
         $this->downCalls[] = $volumes;
+        if ($this->downThrows) {
+            throw new \RuntimeException('service "mariadb" has neither an image nor a build context specified: invalid compose project');
+        }
+        if ($volumes && $this->docker !== null) {
+            // down -v menghapus semua volume (simulasi perilaku nyata)
+            $this->docker->volumes = [];
+        }
     }
 
     public function removeVolumes(array $names): void
@@ -113,6 +159,7 @@ class LocalDeployerTeardownTest extends TestCase
     {
         $this->compose = new TeardownFakeComposeRunner();
         $this->docker = new TeardownFakeDockerClient();
+        $this->compose->docker = $this->docker;
         $this->deployer = new TeardownTestDeployer($this->compose, $this->docker);
     }
 
@@ -183,5 +230,50 @@ class LocalDeployerTeardownTest extends TestCase
             ['Name' => '', 'Labels' => ['com.docker.compose.project' => 'myapp']],
         ];
         $this->assertSame(['myapp_db'], $this->deployer->getProjectVolumes('myapp'));
+    }
+
+    public function testDownFailureFallsBackToApiTeardownPurge(): void
+    {
+        // Simulasikan compose project tidak bisa dimuat (override stale) —
+        // down melempar, teardown harus tetap berhasil via Engine API.
+        $this->compose->downThrows = true;
+        $this->docker->containers = [
+            ['Id' => 'c1', 'State' => 'running', 'Names' => ['/testdocker-nginx']],
+            ['Id' => 'c2', 'State' => 'exited', 'Names' => ['/testdocker-mariadb']],
+        ];
+        $this->docker->networks = [['Id' => 'n1', 'Name' => 'halo_default']];
+        $this->docker->volumes = [
+            ['Name' => 'halo_db', 'Labels' => ['com.docker.compose.project' => 'halo']],
+        ];
+
+        $site = $this->makeSite();
+        $site['name'] = 'halo';
+        $this->deployer->teardown($site, null); // purge
+
+        $this->assertSame(['c1'], $this->docker->stopped); // hanya running yang distop
+        sort($this->docker->removedContainers);
+        $this->assertSame(['c1', 'c2'], $this->docker->removedContainers);
+        $this->assertSame(['n1'], $this->docker->removedNetworks);
+        $this->assertSame(['halo_db'], $this->compose->removedVolumes); // purge -> volume ikut dihapus
+    }
+
+    public function testDownFailureFallbackPreserveRemovesOnlyUncheckedVolumes(): void
+    {
+        $this->compose->downThrows = true;
+        $this->docker->containers = [['Id' => 'c1', 'State' => 'running', 'Names' => ['/x']]];
+        $this->docker->networks = [['Id' => 'n1', 'Name' => 'proj_default']];
+        $this->docker->volumes = [
+            ['Name' => 'proj_db', 'Labels' => ['com.docker.compose.project' => 'proj']],
+            ['Name' => 'proj_cache', 'Labels' => ['com.docker.compose.project' => 'proj']],
+        ];
+
+        $site = $this->makeSite();
+        $site['name'] = 'proj';
+        $this->deployer->teardown($site, ['proj_db']);
+
+        $this->assertSame(['c1'], $this->docker->removedContainers);
+        $this->assertSame(['n1'], $this->docker->removedNetworks);
+        // fallback tidak menghapus volume (preserve) — pemanggil hapus yang tak dipertahankan
+        $this->assertSame(['proj_cache'], $this->compose->removedVolumes);
     }
 }

@@ -11,21 +11,34 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 
 ## 2. Goals (Phase 1)
 
-- [ ] Login dashboard dengan kredensial sederhana (username/password) dari `database/auth.json`
-- [ ] User bisa membuat site baru dengan menyuplai URL repo Git yang sudah punya `docker-compose.yml`
-- [ ] Sistem clone repo, build & jalankan `docker compose` untuk site tersebut
-- [ ] Sistem mendeteksi port yang dipakai di `docker-compose.yml`, mendeteksi konflik dengan site lain, dan memungkinkan user mengedit port host sebelum build
-- [ ] Sistem mencatat daftar container yang dihasilkan tiap site, ditampilkan di halaman detail site
-- [ ] Site otomatis bisa diakses lewat `namasite.namadomain.com`, dengan `namadomain.com` diatur lewat `.env`
-- [ ] Sistem generate & reload config Nginx otomatis setiap ada site baru/berubah
-- [ ] Multi user untuk login dashboard, tanpa konsep role/permission (semua user punya akses yang sama)
-- [ ] SSL otomatis per subdomain menggunakan Let's Encrypt
+- [x] Login dashboard dengan kredensial sederhana (username/password) dari `database/auth.json`
+- [x] User bisa membuat site baru dengan menyuplai URL repo Git yang sudah punya `docker-compose.yml`
+- [x] Sistem clone repo, build & jalankan `docker compose` untuk site tersebut
+- [x] Sistem mendeteksi port yang dipakai di `docker-compose.yml`, mendeteksi konflik dengan site lain, dan memungkinkan user mengedit port host sebelum build
+- [x] Sistem mencatat daftar container yang dihasilkan tiap site, ditampilkan di halaman detail site
+- [x] Site otomatis bisa diakses lewat `namasite.namadomain.com`, dengan `namadomain.com` diatur lewat `.env`
+- [x] Sistem generate & reload config Nginx otomatis setiap ada site baru/berubah
+- [x] Multi user untuk login dashboard, tanpa konsep role/permission (semua user punya akses yang sama)
+- [x] SSL otomatis per subdomain menggunakan Let's Encrypt
+- [x] Reload Nginx host via Docker socket (`NginxReloader`) sebagai pelengkap/fallback watcher (§8.4)
+- [x] Rollback site ke versi sukses sebelumnya (checkpoint `deploy_history`, §7.5)
+- [x] Dukungan repo private via deploy key SSH per site (§7.1)
+- [x] Delete site dengan pilihan pertahankan/purge volume + halaman `/volumes` (§7.4)
+- [x] Installer otomatis host (`host/install.sh`) — setup nginx, watcher, renewal certbot, `.env`, build dashboard
+- [x] Nginx reload watcher host (`host/nginx-reload-watcher.sh` + systemd unit) (§8.3)
+- [x] Renewal certbot otomatis (`host/certbot-renew.sh` + systemd timer) (§8a)
+- [ ] Log viewer real-time per container (§8c)
+- [ ] Health check & monitoring resource per container (§8d)
+- [ ] Search / filter / pagination daftar site (§8e)
+- [ ] Rate limiting / proteksi brute-force login (§8f)
+- [ ] Backup otomatis data & config sebelum overwrite (§8g)
 
 ## 3. Non-Goals (Phase 1)
 
 - Multi-server / agent sebagai service HTTP terpisah
 - Role & permission antar user — semua user yang login punya hak akses sama (lihat Goals untuk multi user tanpa role)
-- Auto-scaling, health-check lanjutan, monitoring resource
+- Auto-scaling, health-check lanjutan & monitoring resource penuh (metrik historis, alerting) — Phase 1 hanya ringkasan status/usage per container (§8d)
+- Log viewer streaming penuh & buffer historis — Phase 1 memakai polling tail sederhana (§8c)
 - Podman — Phase 1 tetap pakai Docker Engine yang sudah familiar; migrasi ke rootless Podman jadi pertimbangan keamanan di fase lanjutan
 
 ## 4. Tech Stack
@@ -285,9 +298,11 @@ server {
 
 Pendekatan ini sengaja menghindari dashboard container butuh akses eksekusi command langsung di host (tidak perlu SSH/sudo dari container), cukup akses tulis file di volume yang di-mount.
 
-### 8.4 Reload dari dashboard (via Docker socket) — pengganti/fallback watcher
+**Implementasi watcher** disertakan di repo: `host/nginx-reload-watcher.sh` (loop `inotifywait` + `nginx -t`/`-s reload` + tulis status), unit `host/systemd/dashboard-nginx-watcher.service`, dan `host/systemd/dashboard-nginx-watcher.sudoers` (izin khusus binary `nginx` untuk user non-root). Semuanya dipasang otomatis oleh `host/install.sh` (fitur 1).
 
-Selama watcher host (§8.3) belum dipasang, dashboard bisa me-reload nginx HOST sendiri lewat **Docker socket** (`NginxReloader`):
+### 8.4 Reload dari dashboard (via Docker socket) — pelengkap/fallback watcher
+
+Dashboard juga bisa me-reload nginx HOST sendiri lewat **Docker socket** (`NginxReloader`) — berjalan sebagai pelengkap watcher (§8.3) dan fallback bila watcher belum aktif/rusak:
 
 1. Helper container berbagi **PID namespace host** (`--pid host`) dan **me-chroot ke root host** (volume `-v /:/host`), sehingga memakai binary, config, module, dan user nginx HOST yang persis (bukan binary Alpine).
 2. Tahap **validasi** (`nginx -t`): mount host **rw** + tmpfs `/host/run` (nginx -t menulis log ke host seperti `sudo nginx -t` manual; tmpfs melindungi pid file host dari tertimpa pid test).
@@ -316,7 +331,7 @@ Nginx tetap native di host; **certbot dijalankan di dalam dashboard container** 
 5. Gagal → `ssl_status=failed` + pesan error; site tetap `running` via HTTP, tombol **Retry SSL** muncul.
 
 ### Renewal
-Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (atau tombol Enable/Retry) tidak menerbitkan ulang selama masih valid. Otomasi renewal via cron/systemd timer `certbot renew` di host — prasyarat instalasi, di luar dashboard.
+Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (atau tombol Enable/Retry) tidak menerbitkan ulang selama masih valid. Otomasi renewal di host memakai **systemd timer**: script `host/certbot-renew.sh` menjalankan `certbot renew` (2×/hari, `RandomizedDelaySec`), lalu `nginx -s reload` + tulis status **hanya bila** ada sertifikat yang benar-benar diperbarui (bandingkan mtime `live/*/fullchain.pem`). Unit `host/systemd/certbot-renew.{service,timer}` dipasang otomatis oleh `host/install.sh` (fitur 3).
 
 ### Prasyarat
 - DNS wildcard/record subdomain mengarah ke server (untuk HTTP-01 juga butuh port 80 publik terbuka di firewall host)
@@ -362,6 +377,72 @@ Field tambahan per site:
 - DNS custom domain harus diarahkan ke server ini (untuk HTTP-01: port 80 publik terbuka; bila record Cloudflare proxy aktif, gunakan `SSL_CHALLENGE=dns-cloudflare`)
 - Sama seperti §8a: watcher reload Nginx (§8.3), `ADMIN_EMAIL`, mount `LETSENCRYPT_PATH`, dll
 
+## 8c. Log Viewer Real-time per Container
+
+**Tujuan:** melihat log stdout/stderr container site secara real-time dari halaman detail site, tanpa SSH ke server.
+
+**Alur:**
+1. Halaman detail site → panel **Logs** → pilih container (dropdown dari `site['containers']`).
+2. Mode tampilan: **tail** (N baris terakhir, default 200) dan **follow** (auto-scroll ke baris terbaru).
+3. Implementasi awal memakai **polling** `docker logs --tail/--since` (via Docker socket) tiap 2–3 detik; upgrade ke streaming (SSE) bila latency kurang responsif (tetap di Future Work §12).
+4. Batas baris tampil (mis. maks 1000) + tombol **clear** untuk mengosongkan buffer UI (bukan log container).
+
+**Implementasi (Phase 1):**
+- `DockerClient::logs(string $container, int $tail = 200, ?string $since = null): string` — GET `/containers/{id}/logs?stdout=1&stderr=1&tail={n}&timestamps=1`.
+- Endpoint `GET /api/sites/{id}/containers/{name}/logs?tail={n}&since={iso}` di `SiteController` (dilindungi auth middleware).
+- View `site/detail.php`: panel log + polling `fetch`.
+
+## 8d. Health Check & Monitoring Resource per Container
+
+**Tujuan:** ringkasan kesehatan & pemakaian resource tiap container di halaman detail site (uptime, status, restart count, CPU, memory) — cukup untuk deteksi dini, bukan monitoring historis/alerting penuh.
+
+**Data (dari Docker Engine API, dibaca `DockerClient`):**
+- `inspect` — `State.Status`, `State.Running`, `State.StartedAt`, `RestartCount`, `State.Health` (bila healthcheck didefinisikan di compose).
+- `stats --no-stream` — `cpu_perc`, `mem_usage`, `mem_perc` (dipanggil sekali per refresh, bukan daemon streaming).
+
+**Alur:**
+1. Halaman detail site → kartu **Status Container** menampilkan per container: status (`running`/`stopped`/`exited`/`restarting`), uptime (dari `StartedAt`), restart count, dan (bila tersedia) usage CPU/mem.
+2. Tombol **Refresh** untuk mengambil ulang data `stats` (tidak di-poll otomatis agar tidak membebani daemon).
+3. Status health (bila ada healthcheck) tampil sebagai badge `healthy`/`unhealthy`/`starting`.
+4. Data **tidak persisten** — hanya diambil saat halaman dibuka/refresh (tanpa field baru di `sites.json`).
+
+## 8e. Search / Filter / Pagination Daftar Site
+
+**Tujuan:** memudahkan navigasi saat jumlah site banyak (daftar `/sites`).
+
+**Alur:**
+1. `/sites` menerima query params: `?q={keyword}&status={running|stopped|deploying|error}&page={n}`.
+2. **Search (`q`)** — cocokkan case-insensitive pada `name`, `subdomain`, `custom_domain`, `repo_url`.
+3. **Filter status** — dropdown (semua/running/stopped/deploying/error).
+4. **Pagination** — `SITES_PER_PAGE` site per halaman (default 20), tombol prev/next + info "menampilkan x–y dari z".
+5. Filter/search berbasis **query string** (bukan JS state) sehingga URL bisa di-share & tombol back bekerja.
+6. Murni di `SiteController::index` + view `site/index.php` (`request()->get()`), tanpa perubahan data model.
+
+## 8f. Rate Limiting & Proteksi Brute-Force Login
+
+**Tujuan:** memperlambat serangan brute-force ke halaman login (satu-satunya endpoint publik yang menerima input).
+
+**Alur:**
+1. Setiap percobaan login (gagal) dicatat per **IP + username** (dan per IP sebagai fallback).
+2. Bila dalam jendela `LOGIN_MAX_ATTEMPTS` (default 5) percobaan gagal melewati ambang, maka untuk durasi `LOGIN_LOCKOUT_MINUTES` (default 15) endpoint `/login` POST ditolak dengan pesan "Terlalu banyak percobaan. Coba lagi nanti.".
+3. Pencatatan di **file JSON** (`database/login_attempts.json`, `flock`) — konsisten dengan storage Phase 1, tanpa Redis. Entry basi dibersihkan otomatis saat akses (TTL).
+4. Cek lockout dilakukan di `AuthController::login` **sebelum** verifikasi kredensial; setelah verifikasi, catat hasil.
+
+**Config (.env):** `LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCKOUT_MINUTES`.
+
+## 8g. Backup Otomatis Data & Config
+
+**Tujuan:** menjaga jejak pemulihan bila terjadi overwrite/kerusakan pada file data (`auth.json`, `sites.json`) dan config Nginx yang di-generate, sekaligus memenuhi butir §11 ("Backup sebelum overwrite").
+
+**Alur:**
+1. **Sebelum setiap write** `sites.json` / `auth.json` (di `SiteStore`/`AuthStore`), salin file lama ke `database/backups/{file}.{timestamp}.bak` (mis. `sites.json.2026-08-18T10-00-00.bak`).
+2. **Rotasi:** pertahankan `BACKUP_RETENTION` (default 20) file backup terbaru per jenis; sisanya dihapus.
+3. **Config Nginx:** sebelum menulis/menghapus `.conf` site (`writeNginxConfig`), backup file lama ke `nginx-status/backups/` dengan pola nama sama.
+4. **Backup penuh (opsional):** script `cli/backup.php` menghasilkan arsip `database/backups/full-{timestamp}.tar.gz` berisi `database/*.json` + `nginx-status/last-reload.json` — dijalankan manual/`cron` (installer `host/install.sh` menambahkan timer opsional).
+5. Restore manual: salin ulang `.bak` terpilih ke file utama (dokumentasikan di README/ARCHITECTURE).
+
+**Config (.env):** `BACKUP_ENABLED=true`, `BACKUP_RETENTION=20`, `BACKUP_PATH={proyek}/database/backups`.
+
 ## 9. Environment Variables (`.env`)
 
 ```
@@ -373,6 +454,11 @@ PORT_RANGE_END=30999
 SITES_PATH=/app/sites
 NGINX_CONF_PATH=/etc/nginx/sites-available   # dimount dari host ke dashboard container
 NGINX_RELOAD_STATUS_FILE=/app/nginx-status/last-reload.json  # ditulis watcher, dibaca dashboard
+LOGIN_MAX_ATTEMPTS=5        # rate limiting login (§8f)
+LOGIN_LOCKOUT_MINUTES=15    # durasi lockout setelah percobaan gagal
+SITES_PER_PAGE=20           # pagination daftar site (§8e)
+BACKUP_ENABLED=true         # backup otomatis data & config (§8g)
+BACKUP_RETENTION=20         # jumlah file backup yang dipertahankan per jenis
 ```
 
 ## 10. Struktur Direktori (usulan)
@@ -383,7 +469,13 @@ NGINX_RELOAD_STATUS_FILE=/app/nginx-status/last-reload.json  # ditulis watcher, 
 ├── database/
 │   ├── auth.json
 │   ├── sites.json
+│   ├── backups/              # backup otomatis data & config (§8g)
 │   └── keys/                 # deploy key SSH per site (private 0600) + known_hosts
+├── host/                     # skrip & unit systemd untuk infra host (installer/watcher/renewal)
+│   ├── install.sh
+│   ├── nginx-reload-watcher.sh
+│   ├── certbot-renew.sh
+│   └── systemd/              # dashboard-nginx-watcher.{service,sudoers}, certbot-renew.{service,timer}
 ├── sites/                    # hasil clone repo tiap site (gitignored)
 │   └── {name}/
 │       ├── docker-compose.yml           # asli dari repo user
@@ -392,20 +484,22 @@ NGINX_RELOAD_STATUS_FILE=/app/nginx-status/last-reload.json  # ditulis watcher, 
 ├── docker-compose.yml        # compose untuk stack dashboard saja (nginx tidak ikut di-compose)
 └── SPECS.md
 
-# Di host (di luar direktori dashboard, dikelola terpisah):
+# Di host (di luar direktori dashboard, dikelola install.sh):
 /etc/nginx/sites-available/{name}.conf   # digenerate dashboard, dimount sbg volume
 /etc/nginx/sites-enabled/{name}.conf     # symlink, dibuat watcher atau dashboard
 /etc/systemd/system/dashboard-nginx-watcher.service   # watcher inotify + reload
+/etc/systemd/system/certbot-renew.{service,timer}     # renewal certbot otomatis (2×/hari)
 ```
 
 ## 11. Security Considerations (Phase 1)
 
 - Password admin di-hash (bcrypt), tidak pernah disimpan/di-log plaintext
+- **Rate limiting pada login** (§8f): batasi percobaan per IP+username, lockout sementara bila melewati ambang — memperlambat brute-force pada satu-satunya endpoint publik
 - Semua input user (nama site, repo URL, branch, port) disanitasi sebelum dipakai dalam perintah shell — **hindari command injection** (gunakan `escapeshellarg()`, jangan concatenate string mentah ke `exec()`)
 - Validasi format port (integer, dalam range yang wajar) sebelum ditulis ke `docker-compose.override.yml`
 - File JSON (`sites.json`, `auth.json`) ditulis dengan file locking (`flock`) untuk menghindari race condition saat ada dua request bersamaan
 - Dashboard container yang mount `docker.sock` adalah titik sensitif — akses ke dashboard **harus** selalu di balik autentikasi, tidak boleh ada endpoint yang expose eksekusi shell tanpa lolos middleware auth
-- Backup `docker-compose.yml`/`sites.json` sebelum overwrite, agar ada jejak jika perlu rollback manual
+- **Backup otomatis** `sites.json`/`auth.json` + config Nginx sebelum overwrite (§8g) — file `.bak` ber-timestamp dengan rotasi `BACKUP_RETENTION`, agar ada jejak jika perlu rollback manual
 - Direktori Nginx host yang di-mount ke dashboard container dibatasi sesempit mungkin (hanya `sites-available/`, bukan seluruh `/etc/nginx`), agar dashboard tidak bisa menimpa `nginx.conf` utama atau config site lain di luar mekanisme yang disediakan
 - Watcher service di host dijalankan dengan user yang punya izin reload Nginx (lewat `sudoers` khusus untuk `nginx -s reload` saja) — bukan root penuh, dan tidak menerima input dari dashboard secara langsung (dashboard cuma menulis file, bukan mengirim perintah)
 - Deploy key SSH per repo disimpan privat (chmod 0600, gitignored); hanya public key yang ditampilkan ke user. `git` memakai `GIT_SSH_COMMAND` dengan `IdentitiesOnly=yes` & `StrictHostKeyChecking=accept-new` (host key tersimpan di file `known_hosts` sistem)
@@ -416,5 +510,5 @@ NGINX_RELOAD_STATUS_FILE=/app/nginx-status/last-reload.json  # ditulis watcher, 
 - Role & permission antar user (mis. admin vs. member dengan akses site terbatas)
 - Migrasi dari JSON file ke SQLite/RDBMS jika jumlah site/user bertambah signifikan
 - Rootless Podman sebagai pengganti Docker socket untuk mengurangi risiko root-escape
-- Log viewer real-time per container
-- Installer otomatis (`install.sh`, termasuk instalasi certbot) setelah fitur inti stabil
+- Log viewer streaming penuh (SSE) & buffer historis — polling tail sudah masuk Phase 1 (§8c)
+- Monitoring resource penuh (metrik historis, graf, alerting) — ringkasan per-container sudah masuk Phase 1 (§8d)

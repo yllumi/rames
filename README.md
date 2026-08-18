@@ -46,6 +46,16 @@
 
 Panduan langkah demi langkah. Jalankan semua perintah dari direktori project (folder berisi `docker-compose.yml`), dan pastikan [Prasyarat](#prasyarat-host) sudah terpenuhi.
 
+### Instalasi otomatis (disarankan)
+
+[`host/install.sh`](./host/install.sh) menyiapkan host & dashboard dalam satu perintah: menginstal prasyarat (nginx, inotify-tools, certbot + plugin, docker compose), membuat `.env`, memastikan direktori & include Nginx, membangun & menjalankan dashboard, membuat user admin pertama, lalu memasang **watcher reload Nginx** (`dashboard-nginx-watcher.service`) dan **timer renewal certbot** (`certbot-renew.timer`):
+
+```bash
+sudo ./host/install.sh --domain example.com --email admin@example.com
+```
+
+Idempoten — aman dijalankan ulang. Lihat `./host/install.sh --help` untuk opsi (mis. `--no-deps`, `--non-interactive`). Bila memakai installer, **Langkah 1–3 di bawah tidak perlu dijalankan manual** (`.env`, build, dan `make:admin` sudah ditangani; kredensial admin dicetak di akhir instalasi). Langkah manual berikut disediakan sebagai alternatif/pengecekan.
+
 ### Langkah 1 — Siapkan environment (`.env`)
 
 ```bash
