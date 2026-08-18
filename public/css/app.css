@@ -137,6 +137,23 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 }
 .site-info .v { font-weight: 600; word-break: break-word; font-size: 13.5px; }
 
+/* ---------- Tabs (scroll horizontal di layar sempit) ---------- */
+.nav-tabs.tab-scroll {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bs-secondary-color, #94a3b8) transparent;
+}
+.nav-tabs.tab-scroll .nav-item { flex: 0 0 auto; }
+.nav-tabs.tab-scroll .nav-link { white-space: nowrap; }
+.nav-tabs.tab-scroll::-webkit-scrollbar { height: 5px; }
+.nav-tabs.tab-scroll::-webkit-scrollbar-thumb {
+  background: var(--bs-secondary-color, #94a3b8);
+  border-radius: 3px;
+}
+
 /* ---------- Forms ---------- */
 .form-label { font-weight: 600; color: #2f5d67; }
 .form-control:focus { border-color: #14b8a6; box-shadow: 0 0 0 3px rgba(20, 184, 166, .20); }

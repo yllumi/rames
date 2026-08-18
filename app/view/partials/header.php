@@ -28,6 +28,9 @@
             <a class="nav-link <?= ($active ?? '') === 'volumes' ? 'active' : '' ?>" href="/volumes">Volumes</a>
           </li>
           <li class="nav-item">
+            <a class="nav-link <?= ($active ?? '') === 'nginx' ? 'active' : '' ?>" href="/nginx">Nginx</a>
+          </li>
+          <li class="nav-item">
             <a class="nav-link <?= ($active ?? '') === 'users' ? 'active' : '' ?>" href="/users">Users</a>
           </li>
           <?php $__u = current_user(); ?>

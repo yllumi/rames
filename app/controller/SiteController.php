@@ -10,7 +10,6 @@ use app\library\Docker\PortManager;
 use app\library\Git\GitService;
 use app\library\Git\SshKeyManager;
 use app\library\Nginx\NginxReloader;
-use app\library\Nginx\NginxStatusReader;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\SiteStore;
 use RuntimeException;
@@ -63,8 +62,6 @@ class SiteController
             // engine tidak tersedia — modal tampil tanpa daftar volume
         }
 
-        $nginxStatus = (new NginxStatusReader((string) config('deploy.nginx_reload_status_file')))->lastReload();
-
         // Public key deploy key site (untuk repo private via SSH)
         $sshPubkey = null;
         if (($site['auth_method'] ?? 'none') === 'ssh') {
@@ -79,7 +76,6 @@ class SiteController
             'site' => $site,
             'live' => $live,
             'volumes' => $volumes,
-            'nginxStatus' => $nginxStatus,
             'sshPubkey' => $sshPubkey,
             'deployHistory' => $deployHistory,
             'activeSha' => $activeSha,

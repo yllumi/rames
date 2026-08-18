@@ -71,19 +71,17 @@ unset($c);
   <?php elseif ($status === 'stopped'): ?>
     <form method="post" action="/sites/<?= e($site['id']) ?>/start"><?= csrf_field() ?><button class="btn btn-success btn-sm">▶ Start</button></form>
   <?php endif; ?>
-
-  <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteModal">✕ Delete</button>
 </div>
 <?php endif; ?>
 
-<!-- Tab bar navigasi section site -->
-<ul class="nav nav-tabs mb-3" id="siteTabs" role="tablist">
+<!-- Tab bar navigasi section site (scroll horizontal di layar sempit) -->
+<ul class="nav nav-tabs tab-scroll mb-3" id="siteTabs" role="tablist">
   <li class="nav-item" role="presentation"><button class="nav-link active" id="tab-info-btn" data-bs-toggle="tab" data-bs-target="#tab-info" type="button" role="tab" aria-controls="tab-info" aria-selected="true">Info</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-containers-btn" data-bs-toggle="tab" data-bs-target="#tab-containers" type="button" role="tab" aria-controls="tab-containers" aria-selected="false">Container</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-deploy-btn" data-bs-toggle="tab" data-bs-target="#tab-deploy" type="button" role="tab" aria-controls="tab-deploy" aria-selected="false">Deployment</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-env-btn" data-bs-toggle="tab" data-bs-target="#tab-env" type="button" role="tab" aria-controls="tab-env" aria-selected="false">Environment</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-domain-btn" data-bs-toggle="tab" data-bs-target="#tab-domain" type="button" role="tab" aria-controls="tab-domain" aria-selected="false">Domain &amp; SSL</button></li>
-  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-nginx-btn" data-bs-toggle="tab" data-bs-target="#tab-nginx" type="button" role="tab" aria-controls="tab-nginx" aria-selected="false">Nginx</button></li>
+  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-delete-btn" data-bs-toggle="tab" data-bs-target="#tab-delete" type="button" role="tab" aria-controls="tab-delete" aria-selected="false">Hapus Site</button></li>
 </ul>
 
 <div class="tab-content" id="siteTabContent">
@@ -237,7 +235,7 @@ unset($c);
       </form>
     <?php endif; ?>
   </div>
-  <div class="card-body">
+  <div class="">
     <form method="post" action="/sites/<?= e($site['id']) ?>/env" id="env-form">
       <?= csrf_field() ?>
       <?php if (empty($envVars)): ?>
@@ -270,18 +268,20 @@ unset($c);
           </tbody>
         </table>
       </div>
-      <p class="text-muted small mb-3">
-        Nilai ter-mask; klik 👁 untuk melihat. Perubahan diterapkan dengan menciptakan
-        ulang container yang env-nya berubah (tanpa rebuild source). Variabel tersedia
-        untuk substitusi <code>${VAR}</code> di <span class="mono">docker-compose.yml</span>
-        dan di-inject ke environment <strong>semua container</strong> site.
-      </p>
-      <div class="d-flex flex-wrap gap-2 align-items-center">
-        <button type="button" class="btn btn-outline-secondary btn-sm" id="env-add-row">＋ Tambah variabel</button>
-        <button type="submit" class="btn btn-primary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>Simpan &amp; Terapkan</button>
-        <?php if ($isBusy): ?>
-          <span class="text-muted small">Dinonaktifkan sementara site sedang diproses.</span>
-        <?php endif; ?>
+      <div class="p-3">
+        <p class="text-muted small mb-3">
+          Nilai ter-mask; klik 👁 untuk melihat. Perubahan diterapkan dengan menciptakan
+          ulang container yang env-nya berubah (tanpa rebuild source). Variabel tersedia
+          untuk substitusi <code>${VAR}</code> di <span class="mono">docker-compose.yml</span>
+          dan di-inject ke environment <strong>semua container</strong> site.
+        </p>
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="env-add-row">＋ Tambah variabel</button>
+          <button type="submit" class="btn btn-primary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>Simpan &amp; Terapkan</button>
+          <?php if ($isBusy): ?>
+            <span class="text-muted small">Dinonaktifkan sementara site sedang diproses.</span>
+          <?php endif; ?>
+        </div>
       </div>
     </form>
   </div>
@@ -422,28 +422,27 @@ unset($c);
   </section>
   </div>
 
-  <!-- ============ Tab: Nginx ============ -->
-  <div class="tab-pane fade" id="tab-nginx" role="tabpanel" aria-labelledby="tab-nginx-btn">
-    <section class="card mb-4">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h2 class="h6 mb-0">Nginx</h2>
-    <form method="post" action="/nginx/reload" class="d-inline">
-      <?= csrf_field() ?>
-      <button class="btn btn-outline-secondary btn-sm" title="Validasi config lalu reload nginx host">↻ Reload Nginx</button>
-    </form>
-  </div>
-  <div class="card-body">
-    <?php if ($nginxStatus): ?>
-      <?php if (!empty($nginxStatus['ok'])): ?>
-        <div class="alert alert-success mb-0">Reload Nginx terakhir berhasil (<?= e($nginxStatus['updated_at'] ?? '?') ?>).</div>
-      <?php else: ?>
-        <div class="alert alert-danger mb-0">Reload Nginx terakhir GAGAL: <?= e($nginxStatus['error'] ?? 'unknown') ?></div>
-      <?php endif; ?>
-    <?php else: ?>
-      <div class="text-muted small mb-0">Belum ada status reload. Klik <strong>Reload Nginx</strong> untuk mengaktifkan config terbaru (mis. setelah set custom domain atau aktifkan SSL).</div>
-    <?php endif; ?>
-  </div>
-  </section>
+  <!-- ============ Tab: Hapus Site ============ -->
+  <div class="tab-pane fade" id="tab-delete" role="tabpanel" aria-labelledby="tab-delete-btn">
+    <section class="card mb-4 border-danger">
+      <div class="card-header">
+        <h2 class="h6 mb-0 text-danger">Danger Zone</h2>
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Menghapus site akan menghentikan &amp; menghapus container, config Nginx, dan
+          direktori lokal. Pilih mode di dialog konfirmasi:
+          <strong>pertahankan volume</strong> (data database tetap ada dan dipakai ulang
+          bila site dibuat ulang dengan nama sama) atau <strong>hapus total</strong>
+          (termasuk semua volume — data hilang permanen).
+        </p>
+        <?php if ($isBusy): ?>
+          <span class="text-muted small">Dinonaktifkan sementara site sedang diproses.</span>
+        <?php else: ?>
+          <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteModal">✕ Delete site</button>
+        <?php endif; ?>
+      </div>
+    </section>
   </div>
 </div>
 

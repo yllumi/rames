@@ -67,7 +67,8 @@ Route::post('/sites/{id}/domain/remove', [SiteController::class, 'removeDomain']
 Route::post('/sites/{id}/env', [SiteController::class, 'saveEnv']);
 Route::post('/sites/{id}/env/import', [SiteController::class, 'importEnv']);
 
-// Reload Nginx host (via Docker socket helper container)
+// Halaman & reload Nginx host (global — berlaku untuk semua site)
+Route::get('/nginx', [NginxController::class, 'index']);
 Route::post('/nginx/reload', [NginxController::class, 'reload']);
 
 // SSL otomatis (Let's Encrypt)
