@@ -36,9 +36,9 @@ services:
     volumes:
       # Penting: kode di-mount di path yang SAMA dengan host (${PWD}). Karena
       # docker compose dijalankan DI DALAM container namun daemon-nya di host,
-      # relative volume mount di docker-compose.yml milik site harus terselesaikan
+      # relative volume mount di docker-compose.yml milik app harus terselesaikan
       # ke path yang valid di HOST. Jika dimount di /app, path bind jadi
-      # "/app/sites/..." yang tidak dikenal daemon host.
+      # "/app/apps/..." yang tidak dikenal daemon host.
       - "${PWD}:${PWD}"
       # Docker socket agar dashboard bisa mengeksekusi docker compose (Phase 1 known-risk)
       - "/var/run/docker.sock:/var/run/docker.sock"

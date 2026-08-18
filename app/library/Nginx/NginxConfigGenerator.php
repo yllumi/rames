@@ -6,7 +6,7 @@ namespace app\library\Nginx;
 use RuntimeException;
 
 /**
- * Generate & tulis config Nginx per site (SPECS.md §8.2).
+ * Generate & tulis config Nginx per app (SPECS.md §8.2).
  *
  * Dashboard hanya menulis file ke direktori yang di-mount; reload (nginx -t &&
  * nginx -s reload) dijalankan oleh watcher di host (SPECS.md §8.3).
@@ -20,7 +20,7 @@ class NginxConfigGenerator
     }
 
     /**
-     * Render config Nginx untuk satu site. Satu file .conf bisa memuat banyak
+     * Render config Nginx untuk satu app. Satu file .conf bisa memuat banyak
      * server block (subdomain + custom domain), masing-masing dengan peran:
      *
      *   - serve block     : `{server_name, ssl}` — proxy ke app; bila `ssl=true`

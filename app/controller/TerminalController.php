@@ -5,7 +5,7 @@ namespace app\controller;
 
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerExec;
-use app\library\Storage\SiteStore;
+use app\library\Storage\AppStore;
 use RuntimeException;
 use support\Request;
 use Workerman\Connection\TcpConnection;
@@ -34,13 +34,13 @@ class TerminalController
 
     public function open(Request $request, string $id)
     {
-        $site = (new SiteStore())->find($id);
-        if ($site === null) {
-            return json(['code' => 404, 'msg' => 'Site tidak ditemukan.']);
+        $app = (new AppStore())->find($id);
+        if ($app === null) {
+            return json(['code' => 404, 'msg' => 'App tidak ditemukan.']);
         }
-        $container = $this->resolveContainer($site, (string) $request->post('container', ''));
+        $container = $this->resolveContainer($app, (string) $request->post('container', ''));
         if ($container === null) {
-            return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik site ini.']);
+            return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
         }
 
         $opts = [
@@ -49,12 +49,12 @@ class TerminalController
         ];
 
         try {
-            $session = (new DockerExec())->open((string) $site['id'], $container, $opts);
+            $session = (new DockerExec())->open((string) $app['id'], $container, $opts);
         } catch (RuntimeException $e) {
             return json(['code' => 400, 'msg' => $e->getMessage()]);
         }
 
-        $this->audit($site, $container, 'open shell ' . $session['shell'] . ($opts['user'] !== '' ? ' (user ' . $opts['user'] . ')' : ''));
+        $this->audit($app, $container, 'open shell ' . $session['shell'] . ($opts['user'] !== '' ? ' (user ' . $opts['user'] . ')' : ''));
         return json(['code' => 0, 'data' => $session]);
     }
 
@@ -175,13 +175,13 @@ class TerminalController
 
     public function run(Request $request, string $id)
     {
-        $site = (new SiteStore())->find($id);
-        if ($site === null) {
-            return json(['code' => 404, 'msg' => 'Site tidak ditemukan.']);
+        $app = (new AppStore())->find($id);
+        if ($app === null) {
+            return json(['code' => 404, 'msg' => 'App tidak ditemukan.']);
         }
-        $container = $this->resolveContainer($site, (string) $request->post('container', ''));
+        $container = $this->resolveContainer($app, (string) $request->post('container', ''));
         if ($container === null) {
-            return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik site ini.']);
+            return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
         }
         $command = trim((string) $request->post('command', ''));
         if ($command === '') {
@@ -198,7 +198,7 @@ class TerminalController
             return json(['code' => 500, 'msg' => $e->getMessage()]);
         }
 
-        $this->audit($site, $container, 'run: ' . substr($command, 0, 120));
+        $this->audit($app, $container, 'run: ' . substr($command, 0, 120));
         return json(['code' => 0, 'data' => $result]);
     }
 
@@ -207,23 +207,23 @@ class TerminalController
     // ==================================================================
 
     /**
-     * Validasi bahwa container benar-benar milik site ini (bukan container acak).
-     * Cek dari data tersimpan sites.json, lalu fallback ke Engine API (label project
+     * Validasi bahwa container benar-benar milik app ini (bukan container acak).
+     * Cek dari data tersimpan apps.json, lalu fallback ke Engine API (label project
      * compose) bila data tersimpan belum sinkron.
      */
-    private function resolveContainer(array $site, string $container): ?string
+    private function resolveContainer(array $app, string $container): ?string
     {
         if ($container === '' || strpbrk($container, " \t\n\r/\\") !== false) {
             return null;
         }
-        foreach (($site['containers'] ?? []) as $c) {
+        foreach (($app['containers'] ?? []) as $c) {
             if (($c['container_name'] ?? '') === $container) {
                 return $container;
             }
         }
         try {
             $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
-            foreach ($docker->listContainersForProject((string) ($site['name'] ?? '')) as $lc) {
+            foreach ($docker->listContainersForProject((string) ($app['name'] ?? '')) as $lc) {
                 foreach (($lc['Names'] ?? []) as $name) {
                     if ($name === $container || $name === '/' . $container) {
                         return $container;
@@ -236,7 +236,7 @@ class TerminalController
         return null;
     }
 
-    private function audit(array $site, string $container, string $action): void
+    private function audit(array $app, string $container, string $action): void
     {
         $user = (string) (current_user()['username'] ?? '?');
         $dir = runtime_path() . '/logs/terminal';
@@ -246,8 +246,8 @@ class TerminalController
         $line = json_encode([
             'ts' => date('c'),
             'user' => $user,
-            'site' => (string) ($site['name'] ?? ''),
-            'site_id' => (string) ($site['id'] ?? ''),
+            'app' => (string) ($app['name'] ?? ''),
+            'app_id' => (string) ($app['id'] ?? ''),
             'container' => $container,
             'action' => $action,
         ], JSON_UNESCAPED_UNICODE);

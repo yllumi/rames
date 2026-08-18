@@ -17,7 +17,7 @@ class AuthController
     public function loginForm(Request $request)
     {
         if (current_user()) {
-            return redirect('/sites');
+            return redirect('/apps');
         }
         return view('auth/login');
     }
@@ -26,7 +26,7 @@ class AuthController
     {
         $username = trim((string) $request->post('username', ''));
         $password = (string) $request->post('password', '');
-        $redirectTo = (string) $request->post('redirect', '/sites');
+        $redirectTo = (string) $request->post('redirect', '/apps');
 
         $user = (new UserStore())->verify($username, $password);
         if ($user === null) {
@@ -56,6 +56,6 @@ class AuthController
         if ($to !== '' && str_starts_with($to, '/') && !str_starts_with($to, '//')) {
             return $to;
         }
-        return '/sites';
+        return '/apps';
     }
 }

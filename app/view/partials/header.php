@@ -12,7 +12,7 @@
 <header class="topbar sticky-top">
   <nav class="navbar navbar-expand-lg">
     <div class="container">
-      <a class="navbar-brand brand" href="/sites"><img src="/logo-small.png" alt="rames" width="28" height="28" class="rounded-2 flex-shrink-0">rames</a>
+      <a class="navbar-brand brand" href="/apps"><img src="/logo-small.png" alt="rames" width="28" height="28" class="rounded-2 flex-shrink-0">rames</a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNav"
               aria-controls="mainNav" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
@@ -20,7 +20,7 @@
       <div class="collapse navbar-collapse" id="mainNav">
         <ul class="navbar-nav ms-auto align-items-lg-center gap-lg-1">
           <li class="nav-item">
-            <a class="nav-link <?= ($active ?? '') === 'sites' ? 'active' : '' ?>" href="/sites">Sites</a>
+            <a class="nav-link <?= ($active ?? '') === 'apps' ? 'active' : '' ?>" href="/apps">Apps</a>
           </li>
           <li class="nav-item">
             <a class="nav-link <?= ($active ?? '') === 'ssl' ? 'active' : '' ?>" href="/ssl">SSL</a>

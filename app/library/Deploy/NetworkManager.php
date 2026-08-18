@@ -8,12 +8,12 @@ use RuntimeException;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Manajemen external network per site (fitur "Network" di detail site).
+ * Manajemen external network per app (fitur "Network" di detail app).
  *
- * Sumber kebenaran: field "external_networks" di sites.json (daftar nama network
+ * Sumber kebenaran: field "external_networks" di apps.json (daftar nama network
  * Docker yang sudah ada — biasanya shared network yang dibuat lewat halaman /networks).
  *
- * Representasi di disk: sites/{name}/docker-compose.override.networks.yml —
+ * Representasi di disk: apps/{name}/docker-compose.override.networks.yml —
  * mendeklarasikan setiap network sebagai `external: true` (top-level) dan
  * menambahkan tiap service ke network itu bersama network default project:
  *
@@ -29,26 +29,26 @@ use Symfony\Component\Yaml\Yaml;
  * Merge compose untuk `services.*.networks` bersifat union (mapping), sehingga
  * network bawaan base compose tetap dipertahankan dan network eksternal ditambahkan.
  *
- * File override berada di direktori repo site (untracked git, sama seperti override
+ * File override berada di direktori repo app (untracked git, sama seperti override
  * ports/env) sehingga tidak konflik dengan `git pull --ff-only`. Sinkronisasi
  * dipanggil dari controller (saveNetworks) dan LocalDeployer (deploy/rebuild/
- * rollback/applyEnv) agar file di disk selalu konsisten dengan sites.json.
+ * rollback/applyEnv) agar file di disk selalu konsisten dengan apps.json.
  */
 class NetworkManager
 {
     public const OVERRIDE_FILE = 'docker-compose.override.networks.yml';
 
     /**
-     * Sinkronkan file override external networks dengan state site. Idempoten.
+     * Sinkronkan file override external networks dengan state app. Idempoten.
      *
-     * @param array             $site         array site (membaca field external_networks)
-     * @param string            $dir          direktori site
-     * @param array<int,string> $composeFiles daftar compose files site
+     * @param array             $app         array app (membaca field external_networks)
+     * @param string            $dir          direktori app
+     * @param array<int,string> $composeFiles daftar compose files app
      * @return bool true bila external networks aktif (file ditulis), false bila kosong
      */
-    public function sync(array $site, string $dir, array $composeFiles): bool
+    public function sync(array $app, string $dir, array $composeFiles): bool
     {
-        $networks = $this->networksOf($site);
+        $networks = $this->networksOf($app);
         if ($networks === []) {
             $this->removeOverride($dir);
             return false;
@@ -58,10 +58,10 @@ class NetworkManager
     }
 
     /**
-     * Tulis override external networks ke direktori site.
+     * Tulis override external networks ke direktori app.
      *
-     * @param string            $dir          direktori site
-     * @param array<int,string> $composeFiles daftar compose files site
+     * @param string            $dir          direktori app
+     * @param array<int,string> $composeFiles daftar compose files app
      * @param array<int,string> $networks     nama network eksternal (sudah tervalidasi)
      */
     public function writeOverride(string $dir, array $composeFiles, array $networks): void
@@ -88,7 +88,7 @@ class NetworkManager
     }
 
     /**
-     * Hapus override file dari direktori site (saat external networks dikosongkan).
+     * Hapus override file dari direktori app (saat external networks dikosongkan).
      */
     public function removeOverride(string $dir): void
     {
@@ -127,9 +127,9 @@ class NetworkManager
     /**
      * @return array<int,string>
      */
-    private function networksOf(array $site): array
+    private function networksOf(array $app): array
     {
-        $networks = $site['external_networks'] ?? [];
+        $networks = $app['external_networks'] ?? [];
         if (!is_array($networks)) {
             return [];
         }

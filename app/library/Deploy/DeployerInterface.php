@@ -14,25 +14,25 @@ interface DeployerInterface
 {
     /**
      * Build & jalankan container, collect info container, tulis config Nginx.
-     * Mengembalikan site yang sudah diperbarui (containers + status).
+     * Mengembalikan app yang sudah diperbarui (containers + status).
      *
-     * @param array        $site
+     * @param array        $app
      * @param callable     $logger callable(string $stage, string $message): void
      * @return array
      */
-    public function deploy(array $site, callable $logger): array;
+    public function deploy(array $app, callable $logger): array;
 
     /**
      * Rebuild: pull ulang repo, lalu up -d --build.
      *
-     * @param array    $site
+     * @param array    $app
      * @param callable $logger callable(string $stage, string $message): void
      * @return array
      */
-    public function rebuild(array $site, callable $logger): array;
+    public function rebuild(array $app, callable $logger): array;
 
     /**
-     * Rollback site ke versi (ref git) yang pernah sukses.
+     * Rollback app ke versi (ref git) yang pernah sukses.
      *
      * - Checkout source ke ref lama, lalu up -d --build, collect container,
      *   tulis ulang config Nginx.
@@ -40,31 +40,31 @@ interface DeployerInterface
      * - Bila build versi lama GAGAL, otomatis kembali ke versi yang tadinya
      *   aktif (prevRef) — restore best-effort. Jika restore juga gagal, lempar
      *   exception (worker akan menandai status error).
-     * - Mengembalikan site yang sudah diperbarui (containers + status +
+     * - Mengembalikan app yang sudah diperbarui (containers + status +
      *   deploy_history).
      *
-     * @param array    $site
+     * @param array    $app
      * @param string   $ref  SHA commit target rollback (full SHA)
      * @param callable $logger callable(string $stage, string $message): void
      * @return array
      */
-    public function rollback(array $site, string $ref, callable $logger): array;
+    public function rollback(array $app, string $ref, callable $logger): array;
 
-    public function stop(array $site): void;
+    public function stop(array $app): void;
 
-    public function start(array $site): void;
+    public function start(array $app): void;
 
     /**
-     * Terapkan perubahan environment variable site TANPA rebuild source:
+     * Terapkan perubahan environment variable app TANPA rebuild source:
      * tulis ulang managed env file + override env, lalu `docker compose up -d`
      * (tanpa --build) — hanya container yang environment-nya berubah yang
-     * diciptakan ulang. Mengembalikan site yang diperbarui (containers).
+     * diciptakan ulang. Mengembalikan app yang diperbarui (containers).
      *
-     * @param array    $site
+     * @param array    $app
      * @param callable $logger callable(string $stage, string $message): void
      * @return array
      */
-    public function applyEnv(array $site, callable $logger): array;
+    public function applyEnv(array $app, callable $logger): array;
 
     /**
      * Teardown: down container + hapus config Nginx.
@@ -72,13 +72,13 @@ interface DeployerInterface
      * Bila $preserveVolumes === null → `down -v` (hapus SEMUA volume termasuk
      * anonymous — jalur "hapus total"). Bila array → `down` tanpa -v lalu hapus
      * hanya volume project yang TIDAK ada di $preserveVolumes. Named volume yang
-     * dipertahankan akan dipakai ulang otomatis saat site dibuat ulang dengan
-     * nama yang sama (project name compose = nama site).
+     * dipertahankan akan dipakai ulang otomatis saat app dibuat ulang dengan
+     * nama yang sama (project name compose = nama app).
      *
-     * @param array       $site
+     * @param array       $app
      * @param array|null  $preserveVolumes daftar nama volume yang dipertahankan, atau null = hapus semua
      */
-    public function teardown(array $site, ?array $preserveVolumes = null): void;
+    public function teardown(array $app, ?array $preserveVolumes = null): void;
 
     /**
      * Nama-nama named volume milik project compose (untuk UI konfirmasi delete).
@@ -101,11 +101,11 @@ interface DeployerInterface
     public function ensureWritable(): void;
 
     /**
-     * Konten config Nginx untuk site.
+     * Konten config Nginx untuk app.
      */
-    public function renderNginxConfig(array $site): string;
+    public function renderNginxConfig(array $app): string;
 
-    public function writeNginxConfig(array $site): void;
+    public function writeNginxConfig(array $app): void;
 
-    public function removeNginxConfig(array $site): void;
+    public function removeNginxConfig(array $app): void;
 }

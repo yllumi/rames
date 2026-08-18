@@ -6,15 +6,15 @@ namespace app\library\Storage;
 use RuntimeException;
 
 /**
- * Penyimpanan site (database/sites.json). Struktur site mengikuti SPECS.md §7.1.
+ * Penyimpanan app (database/apps.json). Struktur app mengikuti SPECS.md §7.1.
  */
-class SiteStore
+class AppStore
 {
     private JsonStore $store;
 
     public function __construct(?string $filePath = null)
     {
-        $this->store = new JsonStore($filePath ?? (config('deploy.database_path') . '/sites.json'));
+        $this->store = new JsonStore($filePath ?? (config('deploy.database_path') . '/apps.json'));
     }
 
     /**
@@ -27,9 +27,9 @@ class SiteStore
 
     public function find(string $id): ?array
     {
-        foreach ($this->all() as $site) {
-            if (($site['id'] ?? '') === $id) {
-                return $site;
+        foreach ($this->all() as $app) {
+            if (($app['id'] ?? '') === $id) {
+                return $app;
             }
         }
         return null;
@@ -37,9 +37,9 @@ class SiteStore
 
     public function findByName(string $name): ?array
     {
-        foreach ($this->all() as $site) {
-            if (($site['name'] ?? '') === $name) {
-                return $site;
+        foreach ($this->all() as $app) {
+            if (($app['name'] ?? '') === $name) {
+                return $app;
             }
         }
         return null;
@@ -50,40 +50,40 @@ class SiteStore
         return $this->findByName($name) !== null;
     }
 
-    public function create(array $site): array
+    public function create(array $app): array
     {
-        $site['id'] = $site['id'] ?? bin2hex(random_bytes(8));
-        $site['created_at'] = $site['created_at'] ?? date('c');
-        $site['updated_at'] = date('c');
+        $app['id'] = $app['id'] ?? bin2hex(random_bytes(8));
+        $app['created_at'] = $app['created_at'] ?? date('c');
+        $app['updated_at'] = date('c');
 
-        $this->store->update(function (array &$data) use ($site): void {
+        $this->store->update(function (array &$data) use ($app): void {
             foreach ($data as $existing) {
-                if (($existing['name'] ?? '') === $site['name']) {
-                    throw new RuntimeException("Nama site \"{$site['name']}\" sudah dipakai.");
+                if (($existing['name'] ?? '') === $app['name']) {
+                    throw new RuntimeException("Nama app \"{$app['name']}\" sudah dipakai.");
                 }
             }
-            $data[] = $site;
+            $data[] = $app;
         });
 
-        return $site;
+        return $app;
     }
 
     /**
-     * Update site by id; mutator(array &$site): void.
+     * Update app by id; mutator(array &$app): void.
      */
     public function update(string $id, callable $mutator): array
     {
         $updated = null;
         $this->store->update(function (array &$data) use ($id, $mutator, &$updated): void {
-            foreach ($data as &$site) {
-                if (($site['id'] ?? '') === $id) {
-                    $mutator($site);
-                    $site['updated_at'] = date('c');
-                    $updated = $site;
+            foreach ($data as &$app) {
+                if (($app['id'] ?? '') === $id) {
+                    $mutator($app);
+                    $app['updated_at'] = date('c');
+                    $updated = $app;
                     return;
                 }
             }
-            throw new RuntimeException("Site tidak ditemukan: {$id}");
+            throw new RuntimeException("App tidak ditemukan: {$id}");
         });
 
         return $updated ?? [];

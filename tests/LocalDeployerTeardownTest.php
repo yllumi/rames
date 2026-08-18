@@ -139,10 +139,10 @@ class TeardownTestDeployer extends LocalDeployer
 {
     public function __construct(DockerComposeRunner $compose, TeardownFakeDockerClient $docker)
     {
-        parent::__construct($compose, $docker, new TeardownFakeNginxGenerator(), '/tmp/rames-sites', new EnvManager(sys_get_temp_dir() . '/rames-test-env'), new NetworkManager());
+        parent::__construct($compose, $docker, new TeardownFakeNginxGenerator(), '/tmp/rames-apps', new EnvManager(sys_get_temp_dir() . '/rames-test-env'), new NetworkManager());
     }
 
-    public function renderNginxConfig(array $site): string
+    public function renderNginxConfig(array $app): string
     {
         return 'mock';
     }
@@ -165,10 +165,10 @@ class LocalDeployerTeardownTest extends TestCase
         $this->deployer = new TeardownTestDeployer($this->compose, $this->docker);
     }
 
-    private function makeSite(): array
+    private function makeApp(): array
     {
         return [
-            'id' => 'site-1',
+            'id' => 'app-1',
             'name' => 'myapp',
             'compose_files' => ['docker-compose.yml'],
             'status' => 'running',
@@ -180,7 +180,7 @@ class LocalDeployerTeardownTest extends TestCase
         $this->docker->volumes = [
             ['Name' => 'myapp_db', 'Labels' => ['com.docker.compose.project' => 'myapp']],
         ];
-        $this->deployer->teardown($this->makeSite(), null);
+        $this->deployer->teardown($this->makeApp(), null);
 
         $this->assertSame([true], $this->compose->downCalls); // down -v
         $this->assertSame([], $this->compose->removedVolumes);
@@ -192,7 +192,7 @@ class LocalDeployerTeardownTest extends TestCase
             ['Name' => 'myapp_db', 'Labels' => ['com.docker.compose.project' => 'myapp']],
             ['Name' => 'myapp_cache', 'Labels' => ['com.docker.compose.project' => 'myapp']],
         ];
-        $this->deployer->teardown($this->makeSite(), ['myapp_db', 'myapp_cache']);
+        $this->deployer->teardown($this->makeApp(), ['myapp_db', 'myapp_cache']);
 
         $this->assertSame([false], $this->compose->downCalls); // down TANPA -v
         $this->assertSame([], $this->compose->removedVolumes);
@@ -205,7 +205,7 @@ class LocalDeployerTeardownTest extends TestCase
             ['Name' => 'myapp_cache', 'Labels' => ['com.docker.compose.project' => 'myapp']],
             ['Name' => 'myapp_logs', 'Labels' => ['com.docker.compose.project' => 'myapp']],
         ];
-        $this->deployer->teardown($this->makeSite(), ['myapp_db']);
+        $this->deployer->teardown($this->makeApp(), ['myapp_db']);
 
         $this->assertSame([false], $this->compose->downCalls);
         sort($this->compose->removedVolumes);
@@ -218,7 +218,7 @@ class LocalDeployerTeardownTest extends TestCase
             ['Name' => 'myapp_db', 'Labels' => ['com.docker.compose.project' => 'myapp']],
             ['Name' => 'myapp_cache', 'Labels' => ['com.docker.compose.project' => 'myapp']],
         ];
-        $this->deployer->teardown($this->makeSite(), []);
+        $this->deployer->teardown($this->makeApp(), []);
 
         $this->assertSame([false], $this->compose->downCalls);
         sort($this->compose->removedVolumes);
@@ -248,9 +248,9 @@ class LocalDeployerTeardownTest extends TestCase
             ['Name' => 'halo_db', 'Labels' => ['com.docker.compose.project' => 'halo']],
         ];
 
-        $site = $this->makeSite();
-        $site['name'] = 'halo';
-        $this->deployer->teardown($site, null); // purge
+        $app = $this->makeApp();
+        $app['name'] = 'halo';
+        $this->deployer->teardown($app, null); // purge
 
         $this->assertSame(['c1'], $this->docker->stopped); // hanya running yang distop
         sort($this->docker->removedContainers);
@@ -269,9 +269,9 @@ class LocalDeployerTeardownTest extends TestCase
             ['Name' => 'proj_cache', 'Labels' => ['com.docker.compose.project' => 'proj']],
         ];
 
-        $site = $this->makeSite();
-        $site['name'] = 'proj';
-        $this->deployer->teardown($site, ['proj_db']);
+        $app = $this->makeApp();
+        $app['name'] = 'proj';
+        $this->deployer->teardown($app, ['proj_db']);
 
         $this->assertSame(['c1'], $this->docker->removedContainers);
         $this->assertSame(['n1'], $this->docker->removedNetworks);

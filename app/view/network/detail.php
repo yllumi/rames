@@ -29,37 +29,37 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
     <div class="card h-100">
       <div class="card-header"><h2 class="h6 mb-0">Info Network</h2></div>
       <div class="card-body py-2">
-        <dl class="site-info mb-0">
-          <div class="site-info-item">
+        <dl class="app-info mb-0">
+          <div class="app-info-item">
             <dt class="k">Driver</dt>
             <dd class="v mb-0"><?= e((string) ($network['Driver'] ?? '-')) ?></dd>
           </div>
-          <div class="site-info-item">
+          <div class="app-info-item">
             <dt class="k">Scope</dt>
             <dd class="v mb-0"><?= e((string) ($network['Scope'] ?? '-')) ?></dd>
           </div>
-          <div class="site-info-item">
+          <div class="app-info-item">
             <dt class="k">Subnet</dt>
             <dd class="v mb-0 small mono"><?= e((string) ($ipam['Subnet'] ?? '-')) ?></dd>
           </div>
-          <div class="site-info-item">
+          <div class="app-info-item">
             <dt class="k">Gateway</dt>
             <dd class="v mb-0 small mono"><?= e((string) ($ipam['Gateway'] ?? '-')) ?></dd>
           </div>
-          <div class="site-info-item">
+          <div class="app-info-item">
             <dt class="k">IP Range</dt>
             <dd class="v mb-0 small mono"><?= e((string) ($ipam['IPRange'] ?? '-')) ?></dd>
           </div>
-          <div class="site-info-item">
+          <div class="app-info-item">
             <dt class="k">Dibuat</dt>
             <dd class="v mb-0 small"><?= e((string) ($network['Created'] ?? '-')) ?></dd>
           </div>
-          <div class="site-info-item">
+          <div class="app-info-item">
             <dt class="k">ID</dt>
             <dd class="v mb-0 small mono"><?= e(substr((string) ($network['Id'] ?? ''), 0, 12)) ?></dd>
           </div>
           <?php if (is_array($labels) && $labels !== []): ?>
-          <div class="site-info-item">
+          <div class="app-info-item">
             <dt class="k">Labels</dt>
             <dd class="v mb-0 small">
               <?php foreach ($labels as $lk => $lv): ?>
@@ -108,8 +108,8 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
           <button class="btn btn-primary btn-sm">Hubungkan container</button>
           <p class="text-muted small mb-0">
             Catatan: koneksi manual ini <strong>hilang</strong> bila container diciptakan ulang
-            compose (Rebuild/Rollback/Stop-Start). Untuk koneksi lintas-site yang persisten,
-            gunakan tab <strong>Network</strong> di detail site (external network via compose).
+            compose (Rebuild/Rollback/Stop-Start). Untuk koneksi lintas-app yang persisten,
+            gunakan tab <strong>Network</strong> di detail app (external network via compose).
           </p>
         </form>
         <?php endif; ?>

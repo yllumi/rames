@@ -7,10 +7,10 @@ use app\library\Support\ProcessRunner;
 use RuntimeException;
 
 /**
- * Kelola pasangan kunci SSH (deploy key) per site untuk clone/pull repo
+ * Kelola pasangan kunci SSH (deploy key) per app untuk clone/pull repo
  * private via SSH.
  *
- * Alur: sistem membangkitkan keypair ed25519 per site, private key disimpan
+ * Alur: sistem membangkitkan keypair ed25519 per app, private key disimpan
  * lokal (tidak pernah keluar server), public key ditampilkan ke user untuk
  * ditambahkan sebagai Deploy Key di repo (GitHub/GitLab Settings → Deploy keys).
  *
@@ -47,7 +47,7 @@ class SshKeyManager
     }
 
     /**
-     * Path private key sebuah site.
+     * Path private key sebuah app.
      */
     public function privateKeyPath(string $name): string
     {
@@ -55,7 +55,7 @@ class SshKeyManager
     }
 
     /**
-     * Path public key sebuah site.
+     * Path public key sebuah app.
      */
     public function publicKeyPath(string $name): string
     {
@@ -63,7 +63,7 @@ class SshKeyManager
     }
 
     /**
-     * Apakah pasangan kunci site sudah ada.
+     * Apakah pasangan kunci app sudah ada.
      */
     public function exists(string $name): bool
     {
@@ -71,7 +71,7 @@ class SshKeyManager
     }
 
     /**
-     * Generate pasangan kunci ed25519 (tanpa passphrase) untuk sebuah site.
+     * Generate pasangan kunci ed25519 (tanpa passphrase) untuk sebuah app.
      * Dipanggil sebelum clone saat wizard create; jika sudah ada, dipakai ulang
      * (mis. user mencoba Analisis Repo ulang setelah menambah deploy key).
      *
@@ -101,7 +101,7 @@ class SshKeyManager
     }
 
     /**
-     * Isi public key sebuah site, atau null bila belum ada.
+     * Isi public key sebuah app, atau null bila belum ada.
      */
     public function publicKey(string $name): ?string
     {
@@ -114,7 +114,7 @@ class SshKeyManager
     }
 
     /**
-     * Hapus pasangan kunci site (private + public). Dipakai saat delete site.
+     * Hapus pasangan kunci app (private + public). Dipakai saat delete app.
      */
     public function remove(string $name): void
     {

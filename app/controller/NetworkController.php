@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Docker\DockerClient;
-use app\library\Storage\SiteStore;
+use app\library\Storage\AppStore;
 use support\Request;
 
 /**
@@ -15,8 +15,8 @@ use support\Request;
  * Proteksi hapus network (berlapis, di controller BUKAN hanya di UI):
  *  - Network built-in/system (bridge, host, none, ingress, docker_gwbridge) → blok.
  *  - Network yang masih dipakai container → blok (Engine juga menolak dengan 409).
- *  - Network compose milik site yang masih ada di sites.json → blok
- *    (dikelola lewat halaman site; hindari merusak networking site yang berjalan).
+ *  - Network compose milik app yang masih ada di apps.json → blok
+ *    (dikelola lewat halaman app; hindari merusak networking app yang berjalan).
  */
 class NetworkController
 {
@@ -24,7 +24,7 @@ class NetworkController
     private const PROTECTED_NAMES = ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge'];
 
     /**
-     * Daftar semua network + status (built-in / dikelola site / dipakai / bebas).
+     * Daftar semua network + status (built-in / dikelola app / dipakai / bebas).
      */
     public function index(Request $request)
     {
@@ -292,7 +292,7 @@ class NetworkController
 
         $project = (string) (($target['Labels'] ?? [])['com.docker.compose.project'] ?? '');
         if ($project !== '' && isset($activeProjects[$project])) {
-            flash_set('error', "Network \"{$name}\" dikelola site \"{$project}\" (compose) — kelola lewat halaman site, bukan di sini.");
+            flash_set('error', "Network \"{$name}\" dikelola app \"{$project}\" (compose) — kelola lewat halaman app, bukan di sini.");
             return redirect('/networks');
         }
 
@@ -334,13 +334,13 @@ class NetworkController
     }
 
     /**
-     * @return array<string,bool> nama project site yang masih ada di sites.json
+     * @return array<string,bool> nama project app yang masih ada di apps.json
      */
     private function activeProjects(): array
     {
         $names = [];
-        foreach ((new SiteStore())->all() as $site) {
-            $names[(string) ($site['name'] ?? '')] = true;
+        foreach ((new AppStore())->all() as $app) {
+            $names[(string) ($app['name'] ?? '')] = true;
         }
         return $names;
     }

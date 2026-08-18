@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Test NetworkManager — penulis override external networks per site.
+ * Test NetworkManager — penulis override external networks per app.
  * Verifikasi: deklarasi `external: true` + tiap service di-join ke network
  * eksternal bersama network default project.
  */

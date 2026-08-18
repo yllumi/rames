@@ -17,16 +17,16 @@ class PortManager
     }
 
     /**
-     * Semua host port yang sudah terpakai dari seluruh site.
+     * Semua host port yang sudah terpakai dari seluruh app.
      *
-     * @param array<int,array> $sites
+     * @param array<int,array> $apps
      * @return array<int,int>
      */
-    public function usedHostPorts(array $sites): array
+    public function usedHostPorts(array $apps): array
     {
         $used = [];
-        foreach ($sites as $site) {
-            foreach ($site['containers'] ?? [] as $container) {
+        foreach ($apps as $app) {
+            foreach ($app['containers'] ?? [] as $container) {
                 $port = $container['host_port'] ?? null;
                 if ($port !== null && (int) $port > 0) {
                     $used[(int) $port] = (int) $port;

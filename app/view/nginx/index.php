@@ -5,12 +5,12 @@
   <div>
     <h1 class="h3 mb-1">Nginx</h1>
     <p class="text-muted mb-0">
-      Status &amp; reload <strong>Nginx host</strong> — berlaku global untuk semua site.
+      Status &amp; reload <strong>Nginx host</strong> — berlaku global untuk semua app.
       Reload dijalankan lewat helper container via Docker socket (validasi
       <span class="mono">nginx -t</span> lalu reload tanpa downtime).
     </p>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/sites">&larr; Sites</a>
+  <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Apps</a>
 </div>
 
 <div class="card">

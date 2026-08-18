@@ -13,20 +13,20 @@ use app\library\Git\GitService;
 use app\library\Git\SshKeyManager;
 use app\library\Nginx\NginxReloader;
 use app\library\SSL\SslIssuer;
-use app\library\Storage\SiteStore;
+use app\library\Storage\AppStore;
 use RuntimeException;
 use support\Request;
 use Symfony\Component\Yaml\Tag\TaggedValue;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Site Management (SPECS.md §7).
+ * App Management (SPECS.md §7).
  *
  * Controller hanya mediator — seluruh logika bisnis di app/library.
  * Tidak ada state di properti controller (Webman persistent, lihat
  * copilot-instructions).
  */
-class SiteController
+class AppController
 {
     // ==================================================================
     // Daftar & detail
@@ -34,16 +34,16 @@ class SiteController
 
     public function index(Request $request)
     {
-        return view('site/index', ['sites' => (new SiteStore())->all()]);
+        return view('app/index', ['apps' => (new AppStore())->all()]);
     }
 
     public function detail(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
 
         $deployer = DeployerFactory::create();
@@ -51,7 +51,7 @@ class SiteController
         // status container live (best effort — engine mungkin tidak tersedia)
         $live = [];
         try {
-            $live = $deployer->getContainers($site['name']);
+            $live = $deployer->getContainers($app['name']);
         } catch (\Throwable $e) {
             // pakai data tersimpan
         }
@@ -59,13 +59,13 @@ class SiteController
         // named volume project (untuk modal konfirmasi delete)
         $volumes = [];
         try {
-            $volumes = $deployer->getProjectVolumes($site['name']);
+            $volumes = $deployer->getProjectVolumes($app['name']);
         } catch (\Throwable $e) {
             // engine tidak tersedia — modal tampil tanpa daftar volume
         }
 
-        // Network eksternal (shared) yang bisa di-join site ini. Kandidat:
-        // bukan built-in & bukan milik site aktif (compose) — biasanya shared
+        // Network eksternal (shared) yang bisa di-join app ini. Kandidat:
+        // bukan built-in & bukan milik app aktif (compose) — biasanya shared
         // network yang dibuat lewat halaman /networks.
         $availableNetworks = [];
         try {
@@ -81,7 +81,7 @@ class SiteController
                 }
                 $project = (string) (($n['Labels'] ?? [])['com.docker.compose.project'] ?? '');
                 if ($project !== '' && isset($activeNames[$project])) {
-                    continue; // network milik site aktif dikelola lewat site tsb
+                    continue; // network milik app aktif dikelola lewat app tsb
                 }
                 $availableNetworks[] = $nname;
             }
@@ -90,18 +90,18 @@ class SiteController
             // engine tidak tersedia — form tampil tanpa daftar
         }
 
-        // Public key deploy key site (untuk repo private via SSH)
+        // Public key deploy key app (untuk repo private via SSH)
         $sshPubkey = null;
-        if (($site['auth_method'] ?? 'none') === 'ssh') {
-            $sshPubkey = (new SshKeyManager())->publicKey($site['name']);
+        if (($app['auth_method'] ?? 'none') === 'ssh') {
+            $sshPubkey = (new SshKeyManager())->publicKey($app['name']);
         }
 
         // Riwayat deploy (terbaru dulu) + versi aktif untuk tombol rollback
-        $deployHistory = array_reverse($site['deploy_history'] ?? []);
-        $activeSha = $this->resolveActiveSha($site);
+        $deployHistory = array_reverse($app['deploy_history'] ?? []);
+        $activeSha = $this->resolveActiveSha($app);
 
-        return view('site/detail', [
-            'site' => $site,
+        return view('app/detail', [
+            'app' => $app,
             'live' => $live,
             'volumes' => $volumes,
             'availableNetworks' => $availableNetworks,
@@ -112,21 +112,21 @@ class SiteController
     }
 
     /**
-     * Halaman khusus riwayat versi site (checkpoint rollback).
+     * Halaman khusus riwayat versi app (checkpoint rollback).
      */
     public function versions(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
 
-        return view('site/versions', [
-            'site' => $site,
-            'deployHistory' => array_reverse($site['deploy_history'] ?? []),
-            'activeSha' => $this->resolveActiveSha($site),
+        return view('app/versions', [
+            'app' => $app,
+            'deployHistory' => array_reverse($app['deploy_history'] ?? []),
+            'activeSha' => $this->resolveActiveSha($app),
         ]);
     }
 
@@ -136,7 +136,7 @@ class SiteController
 
     public function createForm(Request $request)
     {
-        return view('site/create');
+        return view('app/create');
     }
 
     public function createPreview(Request $request)
@@ -152,15 +152,15 @@ class SiteController
         try {
             $this->validateCreateInput($name, $repoUrl, $branch, $authMethod);
 
-            $store = new SiteStore();
+            $store = new AppStore();
             if ($store->nameExists($name)) {
-                throw new RuntimeException("Nama site \"{$name}\" sudah dipakai.");
+                throw new RuntimeException("Nama app \"{$name}\" sudah dipakai.");
             }
 
-            $sitesPath = (string) config('deploy.sites_path');
-            $dest = $sitesPath . '/' . $name;
+            $appsPath = (string) config('deploy.apps_path');
+            $dest = $appsPath . '/' . $name;
             if (is_dir($dest)) {
-                // area sites_path dikelola sistem — bersihkan lalu clone ulang
+                // area apps_path dikelola sistem — bersihkan lalu clone ulang
                 $this->cleanupDir($dest);
             }
 
@@ -193,11 +193,11 @@ class SiteController
 
             // simpan data pending (belum commit) di session
             $primary = $this->defaultPrimary($services);
-            $request->session()->set('pending_site', [
+            $request->session()->set('pending_app', [
                 'name' => $name,
                 'repo_url' => $repoUrl,
                 'branch' => $branch,
-                'local_path' => 'sites/' . $name,
+                'local_path' => 'apps/' . $name,
                 'compose_file' => $composeFile,
                 'services' => $services,
                 'primary_service' => $primary,
@@ -205,13 +205,13 @@ class SiteController
                 'ssh_key' => $authMethod === 'ssh' ? 'keys/' . $name : null,
             ]);
 
-            return redirect('/sites/create/confirm');
+            return redirect('/apps/create/confirm');
         } catch (\Throwable $e) {
             // Repo private via SSH: kalau clone gagal (deploy key belum ditambahkan),
             // tampilkan public key di form agar user bisa menambahkannya ke repo
             // lalu mencoba Analisis Repo lagi (kunci dipakai ulang).
             if ($authMethod === 'ssh' && $keyManager->exists($name)) {
-                return view('site/create', [
+                return view('app/create', [
                     'sshPubkey' => $keyManager->publicKey($name),
                     'auth_method' => $authMethod,
                     'preview_error' => $e->getMessage(),
@@ -224,7 +224,7 @@ class SiteController
                 $keyManager->remove($name);
             }
             flash_set('error', $e->getMessage());
-            return redirect('/sites/create');
+            return redirect('/apps/create');
         }
     }
 
@@ -234,18 +234,18 @@ class SiteController
 
     public function confirmForm(Request $request)
     {
-        $pending = $request->session()->get('pending_site');
+        $pending = $request->session()->get('pending_app');
         if (!$pending) {
-            return redirect('/sites/create');
+            return redirect('/apps/create');
         }
-        return view('site/confirm', ['pending' => $pending]);
+        return view('app/confirm', ['pending' => $pending]);
     }
 
     public function confirmCreate(Request $request)
     {
-        $pending = $request->session()->get('pending_site');
+        $pending = $request->session()->get('pending_app');
         if (!$pending) {
-            return redirect('/sites/create');
+            return redirect('/apps/create');
         }
 
         $serviceInput = (array) $request->post('services', []);
@@ -262,9 +262,9 @@ class SiteController
             $composeFiles = [$pending['compose_file']];
             $this->writeOverride($pending, $services, $composeFiles);
 
-            $site = (new SiteStore())->create([
+            $app = (new AppStore())->create([
                 'name' => $pending['name'],
-                'subdomain' => site_subdomain($pending['name']),
+                'subdomain' => app_subdomain($pending['name']),
                 'repo_url' => $pending['repo_url'],
                 'branch' => $pending['branch'],
                 'local_path' => $pending['local_path'],
@@ -280,11 +280,11 @@ class SiteController
                 'containers' => [],
             ]);
 
-            $request->session()->delete('pending_site');
+            $request->session()->delete('pending_app');
 
-            $spawned = $this->spawnWorker($site['id'], 'deploy');
+            $spawned = $this->spawnWorker($app['id'], 'deploy');
             if (!$spawned) {
-                (new SiteStore())->update($site['id'], function (array &$s): void {
+                (new AppStore())->update($app['id'], function (array &$s): void {
                     $s['status'] = 'error';
                     $s['stage'] = null;
                     $s['message'] = 'Gagal menjalankan worker deploy. Cek log & coba Rebuild.';
@@ -296,20 +296,20 @@ class SiteController
             if ($request->expectsJson()) {
                 return json([
                     'code' => $spawned ? 0 : 1,
-                    'id' => $site['id'],
-                    'name' => $site['name'],
+                    'id' => $app['id'],
+                    'name' => $app['name'],
                     'error' => $spawned ? null : 'Gagal menjalankan worker deploy.',
                 ]);
             }
 
-            flash_set('success', 'Site "' . $site['name'] . '" sedang di-deploy.');
-            return redirect('/sites/' . $site['id']);
+            flash_set('success', 'App "' . $app['name'] . '" sedang di-deploy.');
+            return redirect('/apps/' . $app['id']);
         } catch (\Throwable $e) {
             if ($request->expectsJson()) {
                 return json(['code' => 1, 'error' => $e->getMessage()]);
             }
             flash_set('error', $e->getMessage());
-            return redirect('/sites/create/confirm');
+            return redirect('/apps/create/confirm');
         }
     }
 
@@ -319,19 +319,19 @@ class SiteController
 
     public function status(Request $request, string $id)
     {
-        $site = (new SiteStore())->find($id);
-        if ($site === null) {
-            return json(['code' => 404, 'msg' => 'Site tidak ditemukan.']);
+        $app = (new AppStore())->find($id);
+        if ($app === null) {
+            return json(['code' => 404, 'msg' => 'App tidak ditemukan.']);
         }
         return json([
             'code' => 0,
-            'site' => [
-                'id' => $site['id'],
-                'name' => $site['name'],
-                'status' => $site['status'] ?? 'unknown',
-                'stage' => $site['stage'] ?? null,
-                'message' => $site['message'] ?? '',
-                'error' => $site['error'] ?? null,
+            'app' => [
+                'id' => $app['id'],
+                'name' => $app['name'],
+                'status' => $app['status'] ?? 'unknown',
+                'stage' => $app['stage'] ?? null,
+                'message' => $app['message'] ?? '',
+                'error' => $app['error'] ?? null,
             ],
         ]);
     }
@@ -342,35 +342,35 @@ class SiteController
 
     public function rebuild(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            $msg = 'Site tidak ditemukan.';
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            $msg = 'App tidak ditemukan.';
             if ($request->expectsJson()) {
                 return json(['code' => 1, 'error' => $msg]);
             }
             flash_set('error', $msg);
-            return redirect('/sites');
+            return redirect('/apps');
         }
 
-        // Tolak rebuild ganda saat site sedang diproses worker lain.
-        if (($site['status'] ?? '') === 'deploying') {
-            $msg = 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.';
+        // Tolak rebuild ganda saat app sedang diproses worker lain.
+        if (($app['status'] ?? '') === 'deploying') {
+            $msg = 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.';
             if ($request->expectsJson()) {
                 return json(['code' => 1, 'error' => $msg, 'busy' => true]);
             }
             flash_set('error', $msg);
-            return redirect('/sites/' . $id);
+            return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
         if (!is_dir($dir)) {
-            $msg = 'Direktori site tidak ada. Site mungkin sudah dihapus.';
+            $msg = 'Direktori app tidak ada. App mungkin sudah dihapus.';
             if ($request->expectsJson()) {
                 return json(['code' => 1, 'error' => $msg]);
             }
             flash_set('error', $msg);
-            return redirect('/sites/' . $id);
+            return redirect('/apps/' . $id);
         }
 
         $store->update($id, function (array &$s): void {
@@ -403,11 +403,11 @@ class SiteController
             }
             flash_set('success', 'Rebuild dijalankan.');
         }
-        return redirect('/sites/' . $id);
+        return redirect('/apps/' . $id);
     }
 
     /**
-     * Rollback site ke versi (commit) yang pernah sukses.
+     * Rollback app ke versi (commit) yang pernah sukses.
      *
      * Ref divalidasi: harus ada di deploy_history dengan status sukses/restored
      * dan bukan versi yang sedang aktif. Ditandai busy (status deploying) agar
@@ -415,26 +415,26 @@ class SiteController
      */
     public function rollback(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
-        if (($site['status'] ?? '') === 'deploying') {
-            flash_set('error', 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
-            return redirect('/sites/' . $id);
+        if (($app['status'] ?? '') === 'deploying') {
+            flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
         }
 
         $ref = trim((string) $request->post('ref', ''));
         if ($ref === '' || !preg_match('/^[0-9a-fA-F]{7,40}$/', $ref)) {
             flash_set('error', 'Ref rollback tidak valid.');
-            return redirect('/sites/' . $id);
+            return redirect('/apps/' . $id);
         }
 
         // Cari di history — resolve ke full SHA bila user kirim short SHA.
         $fullRef = '';
-        foreach (($site['deploy_history'] ?? []) as $h) {
+        foreach (($app['deploy_history'] ?? []) as $h) {
             if (in_array(($h['status'] ?? ''), ['success', 'restored'], true) && str_starts_with((string) ($h['sha'] ?? ''), $ref)) {
                 $fullRef = (string) $h['sha'];
                 break;
@@ -442,19 +442,19 @@ class SiteController
         }
         if ($fullRef === '') {
             flash_set('error', 'Ref tidak ditemukan di riwayat deploy yang sukses.');
-            return redirect('/sites/' . $id);
+            return redirect('/apps/' . $id);
         }
 
         // Tolak rollback ke versi yang sedang aktif (no-op).
-        if ($fullRef === $this->resolveActiveSha($site)) {
+        if ($fullRef === $this->resolveActiveSha($app)) {
             flash_set('error', 'Ref yang dipilih adalah versi yang sedang aktif.');
-            return redirect('/sites/' . $id);
+            return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
         if (!is_dir($dir)) {
-            flash_set('error', 'Direktori site tidak ada. Site mungkin sudah dihapus.');
-            return redirect('/sites/' . $id);
+            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+            return redirect('/apps/' . $id);
         }
 
         $store->update($id, function (array &$s): void {
@@ -475,58 +475,58 @@ class SiteController
         } else {
             flash_set('success', 'Rollback ke ' . substr($fullRef, 0, 7) . ' dijalankan.');
         }
-        return redirect('/sites/' . $id);
+        return redirect('/apps/' . $id);
     }
 
     public function stop(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
         try {
-            DeployerFactory::create()->stop($site);
+            DeployerFactory::create()->stop($app);
             $store->update($id, function (array &$s): void {
                 $s['status'] = 'stopped';
                 $s['message'] = 'Stopped';
             });
-            flash_set('success', 'Site dihentikan.');
+            flash_set('success', 'App dihentikan.');
         } catch (\Throwable $e) {
             flash_set('error', 'Gagal stop: ' . $e->getMessage());
         }
-        return redirect('/sites/' . $id);
+        return redirect('/apps/' . $id);
     }
 
     public function start(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
         try {
-            DeployerFactory::create()->start($site);
+            DeployerFactory::create()->start($app);
             $store->update($id, function (array &$s): void {
                 $s['status'] = 'running';
                 $s['message'] = 'Running';
             });
-            flash_set('success', 'Site dijalankan.');
+            flash_set('success', 'App dijalankan.');
         } catch (\Throwable $e) {
             flash_set('error', 'Gagal start: ' . $e->getMessage());
         }
-        return redirect('/sites/' . $id);
+        return redirect('/apps/' . $id);
     }
 
     public function delete(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
 
         // mode: preserve (default, aman — volume tercentang dipertahankan) atau
@@ -540,33 +540,33 @@ class SiteController
         try {
             if ($mode === 'purge') {
                 // Hapus total: down -v (semua volume termasuk anonymous terhapus).
-                DeployerFactory::create()->teardown($site, null);
+                DeployerFactory::create()->teardown($app, null);
             } else {
                 // Default aman: pertahankan volume tercentang (data DB dll. tetap
-                // ada, dipakai ulang bila site dibuat ulang dengan nama sama).
-                DeployerFactory::create()->teardown($site, $preserve);
+                // ada, dipakai ulang bila app dibuat ulang dengan nama sama).
+                DeployerFactory::create()->teardown($app, $preserve);
             }
 
-            $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+            $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
             if (is_dir($dir)) {
                 $this->cleanupDir($dir);
             }
 
-            // Bersihkan pasangan kunci SSH deploy key site
-            if (($site['auth_method'] ?? 'none') === 'ssh') {
-                (new SshKeyManager())->remove($site['name']);
+            // Bersihkan pasangan kunci SSH deploy key app
+            if (($app['auth_method'] ?? 'none') === 'ssh') {
+                (new SshKeyManager())->remove($app['name']);
             }
 
-            // Bersihkan managed env file site (override env di dalam dir site
+            // Bersihkan managed env file app (override env di dalam dir app
             // ikut terhapus bersama cleanupDir).
-            (new EnvManager())->remove($site['name']);
+            (new EnvManager())->remove($app['name']);
 
             $store->delete($id);
-            flash_set('success', 'Site "' . $site['name'] . '" dihapus.');
+            flash_set('success', 'App "' . $app['name'] . '" dihapus.');
         } catch (\Throwable $e) {
             flash_set('error', 'Gagal menghapus: ' . $e->getMessage());
         }
-        return redirect('/sites');
+        return redirect('/apps');
     }
 
     // ==================================================================
@@ -574,36 +574,36 @@ class SiteController
     // ==================================================================
 
     /**
-     * Set / ganti custom domain site.
+     * Set / ganti custom domain app.
      *
-     * Validasi: FQDN publik valid, bukan subdomain bawaan site sendiri, unik di
-     * semua site (subdomain & custom domain site lain). Bila ada custom domain
+     * Validasi: FQDN publik valid, bukan subdomain bawaan app sendiri, unik di
+     * semua app (subdomain & custom domain app lain). Bila ada custom domain
      * lama yang punya sertifikat, di-revoke dulu. Setelah tersimpan, config
      * Nginx ditulis ulang (subdomain → redirect ke custom domain).
      */
     public function setDomain(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
 
         $domain = strtolower(trim((string) $request->post('domain', '')));
-        $subdomain = site_subdomain($site['name']);
-        $oldCustom = (string) ($site['custom_domain'] ?? '');
+        $subdomain = app_subdomain($app['name']);
+        $oldCustom = (string) ($app['custom_domain'] ?? '');
 
         try {
             if (!SslIssuer::isPublicDomain($domain)) {
                 throw new RuntimeException('Custom domain harus FQDN publik yang valid (mis. example.org).');
             }
             if ($domain === $subdomain) {
-                throw new RuntimeException('Custom domain tidak boleh sama dengan subdomain bawaan site.');
+                throw new RuntimeException('Custom domain tidak boleh sama dengan subdomain bawaan app.');
             }
             if ($domain === $oldCustom) {
                 flash_set('info', 'Custom domain sudah di-set ke ' . $domain . '.');
-                return redirect('/sites/' . $id);
+                return redirect('/apps/' . $id);
             }
             $this->assertDomainUnique($store, $id, $domain);
 
@@ -626,13 +626,13 @@ class SiteController
                 $s['custom_needs_ssl'] = false;
             });
 
-            $site = $store->find($id);
-            if ($site !== null) {
+            $app = $store->find($id);
+            if ($app !== null) {
                 try {
-                    $this->applyNginxConfig($site);
+                    $this->applyNginxConfig($app);
                 } catch (\Throwable $e) {
                     flash_set('error', 'Custom domain ' . $domain . ' tersimpan, tetapi gagal menulis config Nginx: ' . $e->getMessage() . ' (jalankan Rebuild untuk menerapkan).');
-                    return redirect('/sites/' . $id);
+                    return redirect('/apps/' . $id);
                 }
             }
 
@@ -642,26 +642,26 @@ class SiteController
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
         }
-        return redirect('/sites/' . $id);
+        return redirect('/apps/' . $id);
     }
 
     /**
-     * Hapus custom domain site. Sertifikat SSL domain (bila ada) di-revoke;
+     * Hapus custom domain app. Sertifikat SSL domain (bila ada) di-revoke;
      * bila revoke gagal, domain tetap dihapus dari config (recovery via Rebuild).
      */
     public function removeDomain(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
 
-        $customDomain = (string) ($site['custom_domain'] ?? '');
+        $customDomain = (string) ($app['custom_domain'] ?? '');
         if ($customDomain === '') {
-            flash_set('info', 'Site tidak memiliki custom domain.');
-            return redirect('/sites/' . $id);
+            flash_set('info', 'App tidak memiliki custom domain.');
+            return redirect('/apps/' . $id);
         }
 
         $revokeError = null;
@@ -681,10 +681,10 @@ class SiteController
             $s['custom_needs_ssl'] = false;
         });
 
-        $site = $store->find($id);
-        if ($site !== null) {
+        $app = $store->find($id);
+        if ($app !== null) {
             try {
-                $this->applyNginxConfig($site);
+                $this->applyNginxConfig($app);
                 // Reload nginx host agar subdomain kembali melayani app (best-effort).
                 $reloadNote = $this->reloadNginxNote();
                 if ($reloadNote !== '') {
@@ -700,15 +700,15 @@ class SiteController
         } else {
             flash_set('success', 'Custom domain ' . $customDomain . ' dihapus. Sertifikat SSL-nya di-revoke.');
         }
-        return redirect('/sites/' . $id);
+        return redirect('/apps/' . $id);
     }
 
     /**
-     * Tulis ulang config Nginx site (dipakai saat custom domain di-set/dihapus).
+     * Tulis ulang config Nginx app (dipakai saat custom domain di-set/dihapus).
      */
-    private function applyNginxConfig(array $site): void
+    private function applyNginxConfig(array $app): void
     {
-        DeployerFactory::create()->writeNginxConfig($site);
+        DeployerFactory::create()->writeNginxConfig($app);
     }
 
     /**
@@ -726,20 +726,20 @@ class SiteController
     }
 
     /**
-     * Pastikan sebuah domain belum dipakai site lain (sebagai subdomain bawaan
-     * maupun custom domain). Subdomain site itu sendiri sudah dicek pemanggil.
+     * Pastikan sebuah domain belum dipakai app lain (sebagai subdomain bawaan
+     * maupun custom domain). Subdomain app itu sendiri sudah dicek pemanggil.
      */
-    private function assertDomainUnique(SiteStore $store, string $excludeId, string $domain): void
+    private function assertDomainUnique(AppStore $store, string $excludeId, string $domain): void
     {
         foreach ($store->all() as $other) {
             if (($other['id'] ?? '') === $excludeId) {
                 continue;
             }
             if (($other['subdomain'] ?? '') === $domain) {
-                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai subdomain site "' . ($other['name'] ?? '?') . '".');
+                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai subdomain app "' . ($other['name'] ?? '?') . '".');
             }
             if (($other['custom_domain'] ?? '') === $domain) {
-                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai custom domain site "' . ($other['name'] ?? '?') . '".');
+                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai custom domain app "' . ($other['name'] ?? '?') . '".');
             }
         }
     }
@@ -749,29 +749,29 @@ class SiteController
     // ==================================================================
 
     /**
-     * Simpan environment variable site (POST /sites/{id}/env).
+     * Simpan environment variable app (POST /apps/{id}/env).
      *
      * Validasi ketat format kunci, lalu: tulis managed env file + override env
-     * (EnvManager), persist ke sites.json, dan auto-recreate container via
+     * (EnvManager), persist ke apps.json, dan auto-recreate container via
      * `docker compose up -d` (tanpa build) agar perubahan langsung diterapkan.
      */
     public function saveEnv(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
-        if (($site['status'] ?? '') === 'deploying') {
-            flash_set('error', 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
-            return redirect('/sites/' . $id);
+        if (($app['status'] ?? '') === 'deploying') {
+            flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
         if (!is_dir($dir)) {
-            flash_set('error', 'Direktori site tidak ada. Site mungkin sudah dihapus.');
-            return redirect('/sites/' . $id);
+            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+            return redirect('/apps/' . $id);
         }
 
         try {
@@ -780,15 +780,15 @@ class SiteController
                 array_map('strval', (array) $request->post('env_delete', [])),
                 static fn (string $k): bool => $k !== ''
             ));
-            $env = $this->normalizeEnv($posted, $deleteKeys, is_array($site['env'] ?? null) ? $site['env'] : []);
+            $env = $this->normalizeEnv($posted, $deleteKeys, is_array($app['env'] ?? null) ? $app['env'] : []);
 
             // 1) Tulis file dulu (managed + override). Gagal => tidak ada state
-            //    yang berubah (sites.json belum disentuh, tetap konsisten).
+            //    yang berubah (apps.json belum disentuh, tetap konsisten).
             $envManager = new EnvManager();
-            $composeFiles = $site['compose_files'] ?? ['docker-compose.yml'];
-            $envManager->sync(['name' => $site['name'], 'env' => $env], $dir, $composeFiles);
+            $composeFiles = $app['compose_files'] ?? ['docker-compose.yml'];
+            $envManager->sync(['name' => $app['name'], 'env' => $env], $dir, $composeFiles);
 
-            // 2) Persist ke sites.json (env + compose_files).
+            // 2) Persist ke apps.json (env + compose_files).
             $store->update($id, function (array &$s) use ($env): void {
                 $s['env'] = $env;
                 $files = $s['compose_files'] ?? ['docker-compose.yml'];
@@ -801,9 +801,9 @@ class SiteController
 
             // 3) Auto-recreate container (up -d tanpa build). Sinkron & cepat;
             //    kegagalan penerapan tidak menggagalkan penyimpanan.
-            $site = $store->find($id) ?? $site;
+            $app = $store->find($id) ?? $app;
             try {
-                $applied = DeployerFactory::create()->applyEnv($site, static function (string $stage, string $message): void {
+                $applied = DeployerFactory::create()->applyEnv($app, static function (string $stage, string $message): void {
                 });
                 $store->update($id, function (array &$s) use ($applied): void {
                     $s['containers'] = $applied['containers'] ?? [];
@@ -818,42 +818,42 @@ class SiteController
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
         }
-        return redirect('/sites/' . $id);
+        return redirect('/apps/' . $id);
     }
 
     /**
-     * Import variabel yang belum ada dari .env.example di direktori site
-     * (POST /sites/{id}/env/import). Hanya mengisi nilai default; TIDAK
+     * Import variabel yang belum ada dari .env.example di direktori app
+     * (POST /apps/{id}/env/import). Hanya mengisi nilai default; TIDAK
      * auto-recreate — user meninjau nilainya dulu, lalu klik "Simpan & Terapkan".
      */
     public function importEnv(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
-        if (($site['status'] ?? '') === 'deploying') {
-            flash_set('error', 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
-            return redirect('/sites/' . $id);
+        if (($app['status'] ?? '') === 'deploying') {
+            flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
         if (!is_dir($dir)) {
-            flash_set('error', 'Direktori site tidak ada. Site mungkin sudah dihapus.');
-            return redirect('/sites/' . $id);
+            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+            return redirect('/apps/' . $id);
         }
 
         try {
             $envManager = new EnvManager();
             $example = $envManager->parseEnvExample($dir);
             if ($example === []) {
-                flash_set('error', 'Tidak ada .env.example di direktori site (atau tidak dapat di-parse).');
-                return redirect('/sites/' . $id);
+                flash_set('error', 'Tidak ada .env.example di direktori app (atau tidak dapat di-parse).');
+                return redirect('/apps/' . $id);
             }
 
-            $env = is_array($site['env'] ?? null) ? $site['env'] : [];
+            $env = is_array($app['env'] ?? null) ? $app['env'] : [];
             $added = 0;
             foreach ($example as $key => $value) {
                 if (!array_key_exists($key, $env)) {
@@ -863,13 +863,13 @@ class SiteController
             }
 
             if ($added === 0) {
-                flash_set('info', 'Semua variabel di .env.example sudah ada di site.');
-                return redirect('/sites/' . $id);
+                flash_set('info', 'Semua variabel di .env.example sudah ada di app.');
+                return redirect('/apps/' . $id);
             }
 
             // Simpan + tulis file (tanpa recreate — biarkan user meninjau dulu).
-            $composeFiles = $site['compose_files'] ?? ['docker-compose.yml'];
-            $envManager->sync(['name' => $site['name'], 'env' => $env], $dir, $composeFiles);
+            $composeFiles = $app['compose_files'] ?? ['docker-compose.yml'];
+            $envManager->sync(['name' => $app['name'], 'env' => $env], $dir, $composeFiles);
             $store->update($id, function (array &$s) use ($env): void {
                 $s['env'] = $env;
                 $files = $s['compose_files'] ?? ['docker-compose.yml'];
@@ -882,35 +882,35 @@ class SiteController
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
         }
-        return redirect('/sites/' . $id);
+        return redirect('/apps/' . $id);
     }
 
     /**
-     * Simpan external network site (POST /sites/{id}/network).
+     * Simpan external network app (POST /apps/{id}/network).
      *
-     * Menghubungkan seluruh service site ke shared network (via compose override
+     * Menghubungkan seluruh service app ke shared network (via compose override
      * `external: true` + `networks: [default, <ext>]`) agar persisten lintas
      * Rebuild/Rollback. Validasi ketat: nama network & keberadaannya di Engine;
-     * lalu tulis override, persist ke sites.json, dan recreate container
+     * lalu tulis override, persist ke apps.json, dan recreate container
      * (`up -d` tanpa build) untuk menerapkan.
      */
     public function saveNetworks(Request $request, string $id)
     {
-        $store = new SiteStore();
-        $site = $store->find($id);
-        if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
-            return redirect('/sites');
+        $store = new AppStore();
+        $app = $store->find($id);
+        if ($app === null) {
+            flash_set('error', 'App tidak ditemukan.');
+            return redirect('/apps');
         }
-        if (($site['status'] ?? '') === 'deploying') {
-            flash_set('error', 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
-            return redirect('/sites/' . $id);
+        if (($app['status'] ?? '') === 'deploying') {
+            flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
         if (!is_dir($dir)) {
-            flash_set('error', 'Direktori site tidak ada. Site mungkin sudah dihapus.');
-            return redirect('/sites/' . $id);
+            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+            return redirect('/apps/' . $id);
         }
 
         // Normalisasi pilihan dari form + validasi format nama.
@@ -922,7 +922,7 @@ class SiteController
             }
             if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/', $name)) {
                 flash_set('error', "Nama network tidak valid: {$name}");
-                return redirect('/sites/' . $id);
+                return redirect('/apps/' . $id);
             }
             if (!in_array($name, $selected, true)) {
                 $selected[] = $name;
@@ -940,21 +940,21 @@ class SiteController
                 foreach ($selected as $name) {
                     if (!isset($existing[$name]) || in_array($name, ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge'], true)) {
                         flash_set('error', "Network \"{$name}\" tidak ditemukan (atau built-in). Buat shared network dulu di halaman Networks.");
-                        return redirect('/sites/' . $id);
+                        return redirect('/apps/' . $id);
                     }
                 }
             } catch (\Throwable $e) {
                 flash_set('error', 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage());
-                return redirect('/sites/' . $id);
+                return redirect('/apps/' . $id);
             }
         }
 
         try {
-            // 1) Tulis override dulu — gagal => state sites.json tidak berubah.
-            $composeFiles = $site['compose_files'] ?? ['docker-compose.yml'];
-            (new NetworkManager())->sync(['name' => $site['name'], 'external_networks' => $selected], $dir, $composeFiles);
+            // 1) Tulis override dulu — gagal => state apps.json tidak berubah.
+            $composeFiles = $app['compose_files'] ?? ['docker-compose.yml'];
+            (new NetworkManager())->sync(['name' => $app['name'], 'external_networks' => $selected], $dir, $composeFiles);
 
-            // 2) Persist ke sites.json (external_networks + compose_files).
+            // 2) Persist ke apps.json (external_networks + compose_files).
             $store->update($id, function (array &$s) use ($selected): void {
                 $s['external_networks'] = $selected;
                 $files = $s['compose_files'] ?? ['docker-compose.yml'];
@@ -966,9 +966,9 @@ class SiteController
             });
 
             // 3) Recreate container (up -d tanpa build) agar network diterapkan.
-            $site = $store->find($id) ?? $site;
+            $app = $store->find($id) ?? $app;
             try {
-                $applied = DeployerFactory::create()->applyEnv($site, static function (string $stage, string $message): void {
+                $applied = DeployerFactory::create()->applyEnv($app, static function (string $stage, string $message): void {
                 });
                 $store->update($id, function (array &$s) use ($applied): void {
                     $s['containers'] = $applied['containers'] ?? [];
@@ -983,7 +983,7 @@ class SiteController
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
         }
-        return redirect('/sites/' . $id);
+        return redirect('/apps/' . $id);
     }
 
     /**
@@ -997,7 +997,7 @@ class SiteController
      *
      * @param array $posted     baris env[i][key] / env[i][value]
      * @param array $deleteKeys kunci yang ditandai hapus
-     * @param array $existing   env lama dari sites.json
+     * @param array $existing   env lama dari apps.json
      * @return array<string,string>
      */
     private function normalizeEnv(array $posted, array $deleteKeys, array $existing): array
@@ -1042,10 +1042,10 @@ class SiteController
     private function validateCreateInput(string $name, string $repoUrl, string $branch, string $authMethod = 'none'): void
     {
         if (!preg_match('/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/', $name)) {
-            throw new RuntimeException('Nama site hanya boleh huruf kecil a-z, angka, dan strip (-).');
+            throw new RuntimeException('Nama app hanya boleh huruf kecil a-z, angka, dan strip (-).');
         }
         if (strlen($name) > 63) {
-            throw new RuntimeException('Nama site maksimal 63 karakter.');
+            throw new RuntimeException('Nama app maksimal 63 karakter.');
         }
         if (!in_array($authMethod, ['none', 'ssh'], true)) {
             throw new RuntimeException('Metode akses repo tidak valid.');
@@ -1113,7 +1113,7 @@ class SiteController
     {
         $range = config('deploy.port_range', ['start' => 30000, 'end' => 30999]);
         $portManager = new PortManager((int) $range['start'], (int) $range['end']);
-        $usedPorts = $portManager->usedHostPorts((new SiteStore())->all());
+        $usedPorts = $portManager->usedHostPorts((new AppStore())->all());
 
         $localUsed = [];
         foreach ($services as $svcName => $svc) {
@@ -1176,7 +1176,7 @@ class SiteController
      */
     private function writeOverride(array $pending, array $services, array &$composeFiles): void
     {
-        $dir = (string) config('deploy.sites_path') . '/' . $pending['name'];
+        $dir = (string) config('deploy.apps_path') . '/' . $pending['name'];
         $reset = ['services' => []];
         $ports = ['services' => []];
 
@@ -1228,15 +1228,15 @@ class SiteController
      *     proc_get_status/proc_close di dalam worker tetap membaca exit code
      *     proses anaknya (git/docker) dengan benar.
      */
-    private function spawnWorker(string $siteId, string $mode, ?string $arg = null): bool
+    private function spawnWorker(string $appId, string $mode, ?string $arg = null): bool
     {
         $logDir = runtime_path('logs/deploy');
         if (!is_dir($logDir)) {
             @mkdir($logDir, 0775, true);
         }
-        $logFile = $logDir . '/' . $siteId . '.log';
+        $logFile = $logDir . '/' . $appId . '.log';
 
-        $command = [PHP_BINARY, base_path('cli/deploy.php'), $siteId, $mode];
+        $command = [PHP_BINARY, base_path('cli/deploy.php'), $appId, $mode];
         if ($arg !== null && $arg !== '') {
             $command[] = $arg;
         }
@@ -1281,9 +1281,9 @@ class SiteController
      * SHA versi yang sedang aktif = entri sukses/restored terakhir di history.
      * Dipakai untuk menampilkan "versi aktif" dan mencegah rollback ke versi aktif.
      */
-    private function resolveActiveSha(array $site): string
+    private function resolveActiveSha(array $app): string
     {
-        foreach (array_reverse($site['deploy_history'] ?? []) as $h) {
+        foreach (array_reverse($app['deploy_history'] ?? []) as $h) {
             if (in_array(($h['status'] ?? ''), ['success', 'restored'], true)) {
                 return (string) ($h['sha'] ?? '');
             }
@@ -1292,7 +1292,7 @@ class SiteController
     }
 
     /**
-     * Hapus direktori beserta isinya (hanya dipakai untuk area sites_path).
+     * Hapus direktori beserta isinya (hanya dipakai untuk area apps_path).
      */
     private function cleanupDir(string $dir): void
     {

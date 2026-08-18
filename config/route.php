@@ -18,7 +18,7 @@ use app\controller\AuthController;
 use app\controller\IndexController;
 use app\controller\NetworkController;
 use app\controller\NginxController;
-use app\controller\SiteController;
+use app\controller\AppController;
 use app\controller\SslController;
 use app\controller\TerminalController;
 use app\controller\UserController;
@@ -41,38 +41,38 @@ Route::get('/logout', [AuthController::class, 'logout']);
 |--------------------------------------------------------------------------
 */
 Route::get('/', [IndexController::class, 'index']);
-Route::get('/sites', [SiteController::class, 'index']);
+Route::get('/apps', [AppController::class, 'index']);
 
-// Wizard create site
-Route::get('/sites/create', [SiteController::class, 'createForm']);
-Route::post('/sites/create', [SiteController::class, 'createPreview']);
-Route::get('/sites/create/confirm', [SiteController::class, 'confirmForm']);
-Route::post('/sites/create/confirm', [SiteController::class, 'confirmCreate']);
+// Wizard create app
+Route::get('/apps/create', [AppController::class, 'createForm']);
+Route::post('/apps/create', [AppController::class, 'createPreview']);
+Route::get('/apps/create/confirm', [AppController::class, 'confirmForm']);
+Route::post('/apps/create/confirm', [AppController::class, 'confirmCreate']);
 
 // Detail & polling
-Route::get('/sites/{id}', [SiteController::class, 'detail']);
-Route::get('/sites/{id}/versions', [SiteController::class, 'versions']);
-Route::get('/api/sites/{id}/status', [SiteController::class, 'status']);
+Route::get('/apps/{id}', [AppController::class, 'detail']);
+Route::get('/apps/{id}/versions', [AppController::class, 'versions']);
+Route::get('/api/apps/{id}/status', [AppController::class, 'status']);
 
-// Aksi site
-Route::post('/sites/{id}/rebuild', [SiteController::class, 'rebuild']);
-Route::post('/sites/{id}/rollback', [SiteController::class, 'rollback']);
-Route::post('/sites/{id}/stop', [SiteController::class, 'stop']);
-Route::post('/sites/{id}/start', [SiteController::class, 'start']);
-Route::post('/sites/{id}/delete', [SiteController::class, 'delete']);
+// Aksi app
+Route::post('/apps/{id}/rebuild', [AppController::class, 'rebuild']);
+Route::post('/apps/{id}/rollback', [AppController::class, 'rollback']);
+Route::post('/apps/{id}/stop', [AppController::class, 'stop']);
+Route::post('/apps/{id}/start', [AppController::class, 'start']);
+Route::post('/apps/{id}/delete', [AppController::class, 'delete']);
 
 // Custom domain
-Route::post('/sites/{id}/domain/set', [SiteController::class, 'setDomain']);
-Route::post('/sites/{id}/domain/remove', [SiteController::class, 'removeDomain']);
+Route::post('/apps/{id}/domain/set', [AppController::class, 'setDomain']);
+Route::post('/apps/{id}/domain/remove', [AppController::class, 'removeDomain']);
 
-// Environment variables per site
-Route::post('/sites/{id}/env', [SiteController::class, 'saveEnv']);
-Route::post('/sites/{id}/env/import', [SiteController::class, 'importEnv']);
+// Environment variables per app
+Route::post('/apps/{id}/env', [AppController::class, 'saveEnv']);
+Route::post('/apps/{id}/env/import', [AppController::class, 'importEnv']);
 
-// External network per site (shared network lintas-site)
-Route::post('/sites/{id}/network', [SiteController::class, 'saveNetworks']);
+// External network per app (shared network lintas-app)
+Route::post('/apps/{id}/network', [AppController::class, 'saveNetworks']);
 
-// Halaman & reload Nginx host (global — berlaku untuk semua site)
+// Halaman & reload Nginx host (global — berlaku untuk semua app)
 Route::get('/nginx', [NginxController::class, 'index']);
 Route::post('/nginx/reload', [NginxController::class, 'reload']);
 
@@ -100,11 +100,11 @@ Route::post('/networks/{id}/delete', [NetworkController::class, 'delete']);
 | dilindungi AuthMiddleware (401 JSON untuk /api/* bila belum login).
 |--------------------------------------------------------------------------
 */
-Route::post('/api/sites/{id}/terminal/open', [TerminalController::class, 'open']);
-Route::get('/api/sites/{id}/terminal/{token}/stream', [TerminalController::class, 'stream']);
-Route::post('/api/sites/{id}/terminal/{token}/input', [TerminalController::class, 'input']);
-Route::post('/api/sites/{id}/terminal/{token}/close', [TerminalController::class, 'close']);
-Route::post('/api/sites/{id}/terminal/run', [TerminalController::class, 'run']);
+Route::post('/api/apps/{id}/terminal/open', [TerminalController::class, 'open']);
+Route::get('/api/apps/{id}/terminal/{token}/stream', [TerminalController::class, 'stream']);
+Route::post('/api/apps/{id}/terminal/{token}/input', [TerminalController::class, 'input']);
+Route::post('/api/apps/{id}/terminal/{token}/close', [TerminalController::class, 'close']);
+Route::post('/api/apps/{id}/terminal/run', [TerminalController::class, 'run']);
 
 /*
 |--------------------------------------------------------------------------

@@ -90,9 +90,9 @@ class TestLocalDeployer extends LocalDeployer
     /** @var array<int,array> */
     public array $containers = [];
 
-    public function __construct(DockerComposeRunner $compose, NginxConfigGenerator $nginx, string $sitesPath)
+    public function __construct(DockerComposeRunner $compose, NginxConfigGenerator $nginx, string $appsPath)
     {
-        parent::__construct($compose, new FakeDockerClient(), $nginx, $sitesPath, new EnvManager(sys_get_temp_dir() . '/rames-test-env'), new NetworkManager());
+        parent::__construct($compose, new FakeDockerClient(), $nginx, $appsPath, new EnvManager(sys_get_temp_dir() . '/rames-test-env'), new NetworkManager());
     }
 
     public function getContainers(string $project): array
@@ -100,11 +100,11 @@ class TestLocalDeployer extends LocalDeployer
         return $this->containers;
     }
 
-    public function writeNginxConfig(array $site): void
+    public function writeNginxConfig(array $app): void
     {
     }
 
-    public function renderNginxConfig(array $site): string
+    public function renderNginxConfig(array $app): string
     {
         return 'mock';
     }
@@ -117,14 +117,14 @@ class TestLocalDeployer extends LocalDeployer
 class LocalDeployerRollbackTest extends TestCase
 {
     private GitTestFixture $fx;
-    private string $siteDir;
+    private string $appDir;
     private array $containers;
 
     protected function setUp(): void
     {
         $this->fx = GitTestFixture::create();
-        $this->siteDir = $this->fx->workDir . '/sites/myapp';
-        $this->fx->cloneShallow($this->siteDir); // clone shallow seperti sistem create
+        $this->appDir = $this->fx->workDir . '/apps/myapp';
+        $this->fx->cloneShallow($this->appDir); // clone shallow seperti sistem create
         $this->containers = [
             [
                 'service_name' => 'web',
@@ -144,19 +144,19 @@ class LocalDeployerRollbackTest extends TestCase
 
     private function makeDeployer(FakeComposeRunner $compose, FakeNginxGenerator $nginx): TestLocalDeployer
     {
-        $deployer = new TestLocalDeployer($compose, $nginx, $this->fx->workDir . '/sites');
+        $deployer = new TestLocalDeployer($compose, $nginx, $this->fx->workDir . '/apps');
         $deployer->containers = $this->containers;
         return $deployer;
     }
 
-    private function makeSite(): array
+    private function makeApp(): array
     {
         return [
-            'id' => 'site-1',
+            'id' => 'app-1',
             'name' => 'myapp',
             'branch' => 'main',
             'repo_url' => $this->fx->origin,
-            'local_path' => 'sites/myapp',
+            'local_path' => 'apps/myapp',
             'primary_service' => 'web',
             'status' => 'running',
             'auth_method' => 'none',
@@ -170,20 +170,20 @@ class LocalDeployerRollbackTest extends TestCase
         $compose = new FakeComposeRunner();
         $deployer = $this->makeDeployer($compose, new FakeNginxGenerator());
 
-        $site = $deployer->rollback($this->makeSite(), $this->fx->v1, fn () => null);
+        $app = $deployer->rollback($this->makeApp(), $this->fx->v1, fn () => null);
 
-        $this->assertSame('running', $site['status']);
+        $this->assertSame('running', $app['status']);
         // source benar-benar pindah ke v1
-        $this->assertSame($this->fx->v1, (new GitService())->revParse($this->siteDir));
-        $this->assertFileExists($this->siteDir . '/v1.txt');
-        $this->assertFileDoesNotExist($this->siteDir . '/v2.txt');
+        $this->assertSame($this->fx->v1, (new GitService())->revParse($this->appDir));
+        $this->assertFileExists($this->appDir . '/v1.txt');
+        $this->assertFileDoesNotExist($this->appDir . '/v2.txt');
         // compose up dijalankan dengan build
         $this->assertSame([['up', 'myapp', true]], $compose->calls);
         // history tercatat
-        $this->assertCount(1, $site['deploy_history']);
-        $this->assertSame('rollback', $site['deploy_history'][0]['action']);
-        $this->assertSame('success', $site['deploy_history'][0]['status']);
-        $this->assertSame($this->fx->v1, $site['deploy_history'][0]['sha']);
+        $this->assertCount(1, $app['deploy_history']);
+        $this->assertSame('rollback', $app['deploy_history'][0]['action']);
+        $this->assertSame('success', $app['deploy_history'][0]['status']);
+        $this->assertSame($this->fx->v1, $app['deploy_history'][0]['sha']);
     }
 
     public function testRollbackRestoresPreviousVersionWhenBuildFails(): void
@@ -192,13 +192,13 @@ class LocalDeployerRollbackTest extends TestCase
         $compose->upFailRemaining = 1; // up rollback gagal, up restore sukses
         $deployer = $this->makeDeployer($compose, new FakeNginxGenerator());
 
-        $site = $deployer->rollback($this->makeSite(), $this->fx->v1, fn () => null);
+        $app = $deployer->rollback($this->makeApp(), $this->fx->v1, fn () => null);
 
-        $this->assertSame('running', $site['status']);
+        $this->assertSame('running', $app['status']);
         // source dikembalikan ke v2 (versi yang tadinya aktif)
-        $this->assertSame($this->fx->v2, (new GitService())->revParse($this->siteDir));
+        $this->assertSame($this->fx->v2, (new GitService())->revParse($this->appDir));
         $this->assertCount(2, $compose->calls); // rollback + restore
-        $last = $site['deploy_history'][0];
+        $last = $app['deploy_history'][0];
         $this->assertSame('rollback', $last['action']);
         $this->assertSame('restored', $last['status']);
         $this->assertSame($this->fx->v2, $last['sha']);
@@ -209,7 +209,7 @@ class LocalDeployerRollbackTest extends TestCase
         $deployer = $this->makeDeployer(new FakeComposeRunner(), new FakeNginxGenerator());
 
         $this->expectException(RuntimeException::class);
-        $deployer->rollback($this->makeSite(), $this->fx->v2, fn () => null);
+        $deployer->rollback($this->makeApp(), $this->fx->v2, fn () => null);
     }
 
     public function testRollbackThrowsWhenRestoreAlsoFails(): void
@@ -220,22 +220,22 @@ class LocalDeployerRollbackTest extends TestCase
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('docker compose up gagal (simulasi)');
-        $deployer->rollback($this->makeSite(), $this->fx->v1, fn () => null);
+        $deployer->rollback($this->makeApp(), $this->fx->v1, fn () => null);
     }
 
     public function testRecordHistoryKeepsLastTwentyEntries(): void
     {
         $deployer = $this->makeDeployer(new FakeComposeRunner(), new FakeNginxGenerator());
-        $site = $this->makeSite();
+        $app = $this->makeApp();
 
         $method = new \ReflectionMethod(LocalDeployer::class, 'recordHistory');
         for ($i = 0; $i < 25; $i++) {
             $sha = str_pad((string) $i, 40, '0', STR_PAD_LEFT);
-            $site = $method->invoke($deployer, $site, $sha, 'rebuild', 'success');
+            $app = $method->invoke($deployer, $app, $sha, 'rebuild', 'success');
         }
 
-        $this->assertCount(20, $site['deploy_history']);
-        $this->assertSame(str_pad('5', 40, '0', STR_PAD_LEFT), $site['deploy_history'][0]['sha']);
-        $this->assertSame(str_pad('24', 40, '0', STR_PAD_LEFT), $site['deploy_history'][19]['sha']);
+        $this->assertCount(20, $app['deploy_history']);
+        $this->assertSame(str_pad('5', 40, '0', STR_PAD_LEFT), $app['deploy_history'][0]['sha']);
+        $this->assertSame(str_pad('24', 40, '0', STR_PAD_LEFT), $app['deploy_history'][19]['sha']);
     }
 }

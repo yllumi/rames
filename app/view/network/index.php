@@ -15,11 +15,11 @@ foreach ($rows as $r) {
     <h1 class="h3 mb-1">Networks</h1>
     <p class="text-muted mb-0">
       Kelola <span class="mono">network Docker</span> host: buat <strong>shared network</strong>
-      lintas-site, hubungkan/putuskan container, dan hapus network yang tidak terpakai.
-      Network built-in &amp; milik site aktif tidak bisa dihapus dari sini.
+      lintas-app, hubungkan/putuskan container, dan hapus network yang tidak terpakai.
+      Network built-in &amp; milik app aktif tidak bisa dihapus dari sini.
     </p>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/sites">&larr; Sites</a>
+  <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Apps</a>
 </div>
 
 <?php if ($engineError): ?>
@@ -67,7 +67,7 @@ foreach ($rows as $r) {
               <?php if ($r['builtin']): ?>
                 <span class="badge badge-stopped">built-in</span>
               <?php elseif ($r['managed']): ?>
-                <span class="badge badge-stopped">dikelola site</span>
+                <span class="badge badge-stopped">dikelola app</span>
               <?php elseif ($r['in_use']): ?>
                 <span class="badge badge-running">dipakai</span>
               <?php else: ?>
@@ -130,7 +130,7 @@ foreach ($rows as $r) {
           <div class="form-check">
             <input class="form-check-input" type="checkbox" name="attachable" value="1" id="net-attachable" checked>
             <label class="form-check-label small" for="net-attachable">
-              <strong>Attachable</strong> — izinkan container lain / site lain ikut bergabung (untuk shared network lintas-site)
+              <strong>Attachable</strong> — izinkan container lain / app lain ikut bergabung (untuk shared network lintas-app)
             </label>
           </div>
           <div class="form-check">

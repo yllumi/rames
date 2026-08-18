@@ -7,7 +7,7 @@ namespace Tests;
  * Fixture repo git lokal: origin berisi 2 commit (v1, v2) di branch `main`.
  *
  * Dipakai test GitService & LocalDeployer tanpa jaringan:
- *   - clone shallow dari path lokal (seperti sistem saat create site)
+ *   - clone shallow dari path lokal (seperti sistem saat create app)
  *   - fetch arbitrary SHA — origin dikonfigurasi
  *     `uploadpack.allowReachableSHA1InWant` / `allowAnySHA1InWant`, prasyarat
  *     rollback pada clone shallow (SPECS.md §7.5).

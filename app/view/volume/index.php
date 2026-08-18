@@ -15,10 +15,10 @@ foreach ($rows as $r) {
     <h1 class="h3 mb-1">Volumes</h1>
     <p class="text-muted mb-0">
       Volume ber-label <span class="mono">docker compose</span>. Volume <strong>yatim</strong>
-      ditinggalkan site yang dihapus dengan mode "pertahankan volume" — bisa dibersihkan di sini.
+      ditinggalkan app yang dihapus dengan mode "pertahankan volume" — bisa dibersihkan di sini.
     </p>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/sites">&larr; Sites</a>
+  <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Apps</a>
 </div>
 
 <?php if ($engineError): ?>

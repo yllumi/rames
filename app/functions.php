@@ -73,11 +73,11 @@ if (!function_exists('flash_pull')) {
     }
 }
 
-if (!function_exists('site_subdomain')) {
+if (!function_exists('app_subdomain')) {
     /**
-     * Subdomain site = {name}.{APP_DOMAIN}.
+     * Subdomain app = {name}.{APP_DOMAIN}.
      */
-    function site_subdomain(string $name): string
+    function app_subdomain(string $name): string
     {
         return $name . '.' . config('deploy.app_domain', 'example.com');
     }

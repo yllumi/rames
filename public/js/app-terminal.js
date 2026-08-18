@@ -1,5 +1,5 @@
 /* Terminal container (docker exec) — interaktif (xterm.js + SSE) & one-shot run command.
- * Dipakai di halaman detail site (tab Container). Semua mutasi via POST + token CSRF;
+ * Dipakai di halaman detail app (tab Container). Semua mutasi via POST + token CSRF;
  * output interaktif di-stream via Server-Sent Events (GET). */
 (function () {
   'use strict';
@@ -49,7 +49,7 @@
 
   var term = null;
   var fitAddon = null;
-  var termState = { siteId: '', container: '', token: null, es: null, connected: false };
+  var termState = { appId: '', container: '', token: null, es: null, connected: false };
   var focusTimer = null;
 
   // Batch input keyboard: ketikan diakumulasi lalu dikirim dalam SATU POST per
@@ -66,7 +66,7 @@
     }
     var data = inputBuffer;
     inputBuffer = '';
-    post('/api/sites/' + encodeURIComponent(termState.siteId) + '/terminal/' + encodeURIComponent(termState.token) + '/input', { data: data });
+    post('/api/apps/' + encodeURIComponent(termState.appId) + '/terminal/' + encodeURIComponent(termState.token) + '/input', { data: data });
   }
 
   function queueInput(data) {
@@ -109,11 +109,11 @@
     stopKeepFocus();
     flushInput();
     if (termState.token) {
-      var sid = termState.siteId;
+      var sid = termState.appId;
       var tok = termState.token;
       termState.token = null;
       termState.connected = false;
-      post('/api/sites/' + encodeURIComponent(sid) + '/terminal/' + encodeURIComponent(tok) + '/close', {});
+      post('/api/apps/' + encodeURIComponent(sid) + '/terminal/' + encodeURIComponent(tok) + '/close', {});
     }
     closeStream();
   }
@@ -121,12 +121,12 @@
   function sendResize() {
     if (!term || !termState.token) return;
     var cmd = 'stty cols ' + term.cols + ' rows ' + term.rows + '\n';
-    post('/api/sites/' + encodeURIComponent(termState.siteId) + '/terminal/' + encodeURIComponent(termState.token) + '/input', { data: cmd });
+    post('/api/apps/' + encodeURIComponent(termState.appId) + '/terminal/' + encodeURIComponent(termState.token) + '/input', { data: cmd });
   }
 
-  function connectStream(siteId, token) {
+  function connectStream(appId, token) {
     closeStream();
-    var es = new EventSource('/api/sites/' + encodeURIComponent(siteId) + '/terminal/' + encodeURIComponent(token) + '/stream');
+    var es = new EventSource('/api/apps/' + encodeURIComponent(appId) + '/terminal/' + encodeURIComponent(token) + '/stream');
     termState.es = es;
 
     es.addEventListener('output', function (ev) {
@@ -180,7 +180,7 @@
     term.focus();
     host.addEventListener('mousedown', function () { if (term) term.focus(); });
 
-    termState.siteId = p.siteId;
+    termState.appId = p.appId;
     termState.container = p.container;
     termState.token = null;
     termState.connected = false;
@@ -196,7 +196,7 @@
     });
 
     // Buka sesi interaktif
-    post('/api/sites/' + encodeURIComponent(p.siteId) + '/terminal/open', {
+    post('/api/apps/' + encodeURIComponent(p.appId) + '/terminal/open', {
       container: p.container,
       shell: p.shell || 'sh',
       user: p.user || ''
@@ -208,7 +208,7 @@
       }
       termState.token = d.data.token;
       showStatus('text-success', 'Terhubung — ' + (d.data.shell || p.shell) + ' @ ' + p.container);
-      connectStream(p.siteId, d.data.token);
+      connectStream(p.appId, d.data.token);
       if (term) term.focus();
       setTimeout(sendResize, 300);
     }).catch(function () {
@@ -245,7 +245,7 @@
     if (!btn) return;
     ev.preventDefault();
     pendingTerm = {
-      siteId: btn.getAttribute('data-site') || '',
+      appId: btn.getAttribute('data-app') || '',
       container: btn.getAttribute('data-container') || '',
       shell: btn.getAttribute('data-shell') || 'sh',
       user: btn.getAttribute('data-user') || ''
@@ -258,7 +258,7 @@
   // One-shot run command (non-interaktif)
   // ==================================================================
 
-  function openRunModal(siteId, container) {
+  function openRunModal(appId, container) {
     el('run-title').textContent = container;
     el('run-container').value = container;
     el('run-command').value = '';
@@ -276,7 +276,7 @@
   if (runForm) {
     runForm.addEventListener('submit', function (ev) {
       ev.preventDefault();
-      var siteId = runForm.getAttribute('data-site') || '';
+      var appId = runForm.getAttribute('data-app') || '';
       var container = el('run-container').value;
       var command = el('run-command').value.trim();
       var out = el('run-output');
@@ -292,7 +292,7 @@
       err.classList.add('d-none');
       sp.classList.remove('d-none');
 
-      post('/api/sites/' + encodeURIComponent(siteId) + '/terminal/run', {
+      post('/api/apps/' + encodeURIComponent(appId) + '/terminal/run', {
         container: container,
         command: command,
         timeout: 120
@@ -321,7 +321,7 @@
     var btn = ev.target.closest('.run-btn');
     if (!btn) return;
     ev.preventDefault();
-    openRunModal(btn.getAttribute('data-site') || '', btn.getAttribute('data-container') || '');
+    openRunModal(btn.getAttribute('data-app') || '', btn.getAttribute('data-container') || '');
   });
 
   // Tutup sesi bila pindah halaman (fire-and-forget)

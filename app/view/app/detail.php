@@ -1,14 +1,14 @@
 <?php
-$pageTitle = $site['name'];
-$active = 'sites';
-$status = $site['status'] ?? 'unknown';
+$pageTitle = $app['name'];
+$active = 'apps';
+$status = $app['status'] ?? 'unknown';
 $isBusy = in_array($status, ['deploying'], true);
 
 // custom domain + status SSL-nya
-$customDomain = (string) ($site['custom_domain'] ?? '');
-$customSslStatus = (string) ($site['custom_ssl_status'] ?? 'disabled');
-$customSslExpiresAt = $site['custom_ssl_expires_at'] ?? null;
-$customSslError = $site['custom_ssl_error'] ?? null;
+$customDomain = (string) ($app['custom_domain'] ?? '');
+$customSslStatus = (string) ($app['custom_ssl_status'] ?? 'disabled');
+$customSslExpiresAt = $app['custom_ssl_expires_at'] ?? null;
+$customSslError = $app['custom_ssl_error'] ?? null;
 $customSslActive = $customSslStatus === 'active';
 $customSslPending = $customSslStatus === 'pending';
 $customSslFailed = $customSslStatus === 'failed';
@@ -19,7 +19,7 @@ $liveByName = [];
 foreach ($live as $lc) {
     $liveByName[$lc['container_name']] = $lc;
 }
-$containers = $site['containers'] ?? [];
+$containers = $app['containers'] ?? [];
 foreach ($containers as &$c) {
     $lc = $liveByName[$c['container_name']] ?? null;
     if ($lc) {
@@ -34,20 +34,20 @@ unset($c);
 
 <div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <div class="d-flex align-items-center gap-3 flex-wrap">
-    <h1 class="h3 mb-0 mono"><?= e($site['name']) ?></h1>
-    <span class="badge badge-<?= e($status) ?>" id="site-status"><?= e($status) ?></span>
+    <h1 class="h3 mb-0 mono"><?= e($app['name']) ?></h1>
+    <span class="badge badge-<?= e($status) ?>" id="app-status"><?= e($status) ?></span>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/sites">&larr; Daftar Sites</a>
+  <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Daftar Apps</a>
 </div>
 
-<!-- Panel progres deploy/rebuild. Muncul saat site busy (mis. usai me-refresh),
+<!-- Panel progres deploy/rebuild. Muncul saat app busy (mis. usai me-refresh),
      atau langsung saat tombol Rebuild ditekan via AJAX. -->
 <div id="deploy-progress" class="card mb-4<?= $isBusy ? '' : ' d-none' ?>" data-busy="<?= $isBusy ? '1' : '0' ?>">
   <div class="card-body">
     <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
       <span class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></span>
-      <strong id="deploy-stage"><?= $isBusy ? e($site['stage'] ?? 'deploying') : '...' ?></strong>
-      <span id="deploy-message" class="text-muted small"><?= $isBusy ? e($site['message'] ?? '') : '' ?></span>
+      <strong id="deploy-stage"><?= $isBusy ? e($app['stage'] ?? 'deploying') : '...' ?></strong>
+      <span id="deploy-message" class="text-muted small"><?= $isBusy ? e($app['message'] ?? '') : '' ?></span>
     </div>
     <div class="progress" style="height:8px;">
       <div id="deploy-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary" role="progressbar"
@@ -59,55 +59,55 @@ unset($c);
 </div>
 
 <?php if ($status === 'error'): ?>
-  <div class="alert alert-danger" role="alert"><strong>Error:</strong> <?= e($site['error'] ?? $site['message'] ?? '') ?></div>
+  <div class="alert alert-danger" role="alert"><strong>Error:</strong> <?= e($app['error'] ?? $app['message'] ?? '') ?></div>
 <?php endif; ?>
 
 <?php if (!$isBusy): ?>
-<div class="d-flex flex-wrap gap-2 mb-4" id="site-actions">
-  <form method="post" action="/sites/<?= e($site['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm">↻ Rebuild</button></form>
+<div class="d-flex flex-wrap gap-2 mb-4" id="app-actions">
+  <form method="post" action="/apps/<?= e($app['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm">↻ Rebuild</button></form>
 
   <?php if ($status === 'running'): ?>
-    <form method="post" action="/sites/<?= e($site['id']) ?>/stop"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm">■ Stop</button></form>
+    <form method="post" action="/apps/<?= e($app['id']) ?>/stop"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm">■ Stop</button></form>
   <?php elseif ($status === 'stopped'): ?>
-    <form method="post" action="/sites/<?= e($site['id']) ?>/start"><?= csrf_field() ?><button class="btn btn-success btn-sm">▶ Start</button></form>
+    <form method="post" action="/apps/<?= e($app['id']) ?>/start"><?= csrf_field() ?><button class="btn btn-success btn-sm">▶ Start</button></form>
   <?php endif; ?>
 </div>
 <?php endif; ?>
 
-<!-- Tab bar navigasi section site (scroll horizontal di layar sempit) -->
-<ul class="nav nav-pills tab-scroll mb-3" id="siteTabs" role="tablist">
+<!-- Tab bar navigasi section app (scroll horizontal di layar sempit) -->
+<ul class="nav nav-pills tab-scroll mb-3" id="appTabs" role="tablist">
   <li class="nav-item" role="presentation"><button class="nav-link active" id="tab-info-btn" data-bs-toggle="tab" data-bs-target="#tab-info" type="button" role="tab" aria-controls="tab-info" aria-selected="true">Info</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-containers-btn" data-bs-toggle="tab" data-bs-target="#tab-containers" type="button" role="tab" aria-controls="tab-containers" aria-selected="false">Container</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-deploy-btn" data-bs-toggle="tab" data-bs-target="#tab-deploy" type="button" role="tab" aria-controls="tab-deploy" aria-selected="false">Deployment</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-env-btn" data-bs-toggle="tab" data-bs-target="#tab-env" type="button" role="tab" aria-controls="tab-env" aria-selected="false">Environment</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-network-btn" data-bs-toggle="tab" data-bs-target="#tab-network" type="button" role="tab" aria-controls="tab-network" aria-selected="false">Network</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-domain-btn" data-bs-toggle="tab" data-bs-target="#tab-domain" type="button" role="tab" aria-controls="tab-domain" aria-selected="false">Domain &amp; SSL</button></li>
-  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-delete-btn" data-bs-toggle="tab" data-bs-target="#tab-delete" type="button" role="tab" aria-controls="tab-delete" aria-selected="false">Hapus Site</button></li>
+  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-delete-btn" data-bs-toggle="tab" data-bs-target="#tab-delete" type="button" role="tab" aria-controls="tab-delete" aria-selected="false">Hapus App</button></li>
 </ul>
 
-<div class="tab-content" id="siteTabContent">
+<div class="tab-content" id="appTabContent">
 
   <!-- ============ Tab: Info ============ -->
   <div class="tab-pane fade show active" id="tab-info" role="tabpanel" aria-labelledby="tab-info-btn">
     <div class="card mb-4">
       <div class="card-body py-2">
-    <dl class="site-info mb-0">
-      <div class="site-info-item">
+    <dl class="app-info mb-0">
+      <div class="app-info-item">
         <dt class="k">Subdomain</dt>
-        <dd class="v mb-0"><a href="http://<?= e($site['subdomain']) ?>" target="_blank" rel="noopener"><?= e($site['subdomain']) ?></a><?php if ($customDomain): ?> <span class="text-muted small">(redirect → <?= e($customDomain) ?>)</span><?php endif; ?></dd>
+        <dd class="v mb-0"><a href="http://<?= e($app['subdomain']) ?>" target="_blank" rel="noopener"><?= e($app['subdomain']) ?></a><?php if ($customDomain): ?> <span class="text-muted small">(redirect → <?= e($customDomain) ?>)</span><?php endif; ?></dd>
       </div>
-      <div class="site-info-item">
+      <div class="app-info-item">
         <dt class="k">Repo</dt>
-        <dd class="v mb-0"><?= e($site['repo_url']) ?></dd>
+        <dd class="v mb-0"><?= e($app['repo_url']) ?></dd>
       </div>
-      <div class="site-info-item">
+      <div class="app-info-item">
         <dt class="k">Branch</dt>
-        <dd class="v mb-0"><?= e($site['branch'] ?? 'main') ?></dd>
+        <dd class="v mb-0"><?= e($app['branch'] ?? 'main') ?></dd>
       </div>
-      <div class="site-info-item">
+      <div class="app-info-item">
         <dt class="k">Akses repo</dt>
         <dd class="v mb-0">
-          <?php if (($site['auth_method'] ?? 'none') === 'ssh'): ?>
+          <?php if (($app['auth_method'] ?? 'none') === 'ssh'): ?>
             SSH deploy key
             <?php if ($sshPubkey): ?>
               <a class="small fw-normal ms-1" data-bs-toggle="collapse" href="#deploykey-card" role="button" aria-expanded="false" aria-controls="deploykey-card">lihat public key</a>
@@ -117,23 +117,23 @@ unset($c);
           <?php endif; ?>
         </dd>
       </div>
-      <div class="site-info-item">
+      <div class="app-info-item">
         <dt class="k">Primary Service</dt>
-        <dd class="v mb-0"><?= e($site['primary_service'] ?? '-') ?></dd>
+        <dd class="v mb-0"><?= e($app['primary_service'] ?? '-') ?></dd>
       </div>
-      <div class="site-info-item">
+      <div class="app-info-item">
         <dt class="k">Lokasi</dt>
-        <dd class="v mb-0 small"><?= e($site['local_path'] ?? '') ?></dd>
+        <dd class="v mb-0 small"><?= e($app['local_path'] ?? '') ?></dd>
       </div>
-      <div class="site-info-item">
+      <div class="app-info-item">
         <dt class="k">Compose Files</dt>
-        <dd class="v mb-0 small"><?= e(implode(', ', $site['compose_files'] ?? ['docker-compose.yml'])) ?></dd>
+        <dd class="v mb-0 small"><?= e(implode(', ', $app['compose_files'] ?? ['docker-compose.yml'])) ?></dd>
       </div>
     </dl>
   </div>
 </div>
 
-    <?php if (($site['auth_method'] ?? 'none') === 'ssh' && $sshPubkey): ?>
+    <?php if (($app['auth_method'] ?? 'none') === 'ssh' && $sshPubkey): ?>
     <div class="collapse" id="deploykey-card">
       <div class="card mb-4">
         <div class="card-header"><h2 class="h6 mb-0">SSH Deploy Key</h2></div>
@@ -160,12 +160,12 @@ unset($c);
   </div>
   <div class="card-body">
     <?php if ($customDomain): ?>
-      <dl class="site-info mb-3">
-        <div class="site-info-item">
+      <dl class="app-info mb-3">
+        <div class="app-info-item">
           <dt class="k">Domain</dt>
           <dd class="v mb-0"><a href="<?= $customSslActive ? 'https' : 'http' ?>://<?= e($customDomain) ?>" target="_blank" rel="noopener"><?= e($customDomain) ?></a></dd>
         </div>
-        <div class="site-info-item">
+        <div class="app-info-item">
           <dt class="k">Status SSL</dt>
           <dd class="v mb-0">
             <span class="badge badge-<?= $customSslActive ? 'running' : ($customSslPending ? 'deploying' : ($customSslFailed ? 'error' : 'stopped')) ?>"><?= e($customSslStatus) ?></span>
@@ -174,7 +174,7 @@ unset($c);
             <?php endif; ?>
           </dd>
         </div>
-        <div class="site-info-item">
+        <div class="app-info-item">
           <dt class="k">Subdomain bawaan</dt>
           <dd class="v mb-0 small"><span class="text-muted">redirect ke custom domain</span></dd>
         </div>
@@ -188,7 +188,7 @@ unset($c);
         <?php elseif ($customSslPending): ?>
           <span class="text-muted small">proses penerbitan SSL ...</span>
         <?php elseif ($sslSupported): ?>
-          <form method="post" action="/ssl/<?= e($site['id']) ?>/enable" class="d-inline">
+          <form method="post" action="/ssl/<?= e($app['id']) ?>/enable" class="d-inline">
             <?= csrf_field() ?>
             <input type="hidden" name="domain" value="<?= e($customDomain) ?>">
             <button class="btn btn-<?= $customSslFailed ? 'outline-danger' : 'primary' ?> btn-sm">
@@ -198,13 +198,13 @@ unset($c);
         <?php else: ?>
           <span class="text-muted small">SSL tidak didukung untuk APP_DOMAIN saat ini</span>
         <?php endif; ?>
-        <form method="post" action="/sites/<?= e($site['id']) ?>/domain/remove"
+        <form method="post" action="/apps/<?= e($app['id']) ?>/domain/remove"
               onsubmit="return confirm('Hapus custom domain <?= e($customDomain) ?>? Sertifikat SSL-nya (bila ada) akan di-revoke.');">
           <?= csrf_field() ?><button class="btn btn-outline-danger btn-sm">✕ Hapus domain</button>
         </form>
       </div>
     <?php else: ?>
-      <form method="post" action="/sites/<?= e($site['id']) ?>/domain/set" class="row g-2 align-items-center">
+      <form method="post" action="/apps/<?= e($app['id']) ?>/domain/set" class="row g-2 align-items-center">
         <?= csrf_field() ?>
         <div class="col-auto flex-grow-1">
           <input type="text" name="domain" class="form-control form-control-sm mono" placeholder="mis. example.org" required>
@@ -222,25 +222,25 @@ unset($c);
   <!-- ============ Tab: Environment ============ -->
   <div class="tab-pane fade" id="tab-env" role="tabpanel" aria-labelledby="tab-env-btn">
     <?php
-    $envVars = is_array($site['env'] ?? null) ? $site['env'] : [];
-    $envExampleExists = is_file((string) config('deploy.sites_path') . '/' . $site['name'] . '/.env.example');
+    $envVars = is_array($app['env'] ?? null) ? $app['env'] : [];
+    $envExampleExists = is_file((string) config('deploy.apps_path') . '/' . $app['name'] . '/.env.example');
     ?>
 
     <section class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <h2 class="h6 mb-0">Environment Variables</h2>
     <?php if ($envExampleExists): ?>
-      <form method="post" action="/sites/<?= e($site['id']) ?>/env/import" class="d-inline">
+      <form method="post" action="/apps/<?= e($app['id']) ?>/env/import" class="d-inline">
         <?= csrf_field() ?>
         <button class="btn btn-outline-secondary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>⇩ Import dari .env.example</button>
       </form>
     <?php endif; ?>
   </div>
   <div class="">
-    <form method="post" action="/sites/<?= e($site['id']) ?>/env" id="env-form">
+    <form method="post" action="/apps/<?= e($app['id']) ?>/env" id="env-form">
       <?= csrf_field() ?>
       <?php if (empty($envVars)): ?>
-        <p class="text-muted small mb-3">Belum ada environment variable. Tambahkan variabel untuk aplikasi site (mis. kredensial database), lalu klik <strong>Simpan &amp; Terapkan</strong>.</p>
+        <p class="text-muted small mb-3">Belum ada environment variable. Tambahkan variabel untuk aplikasi app (mis. kredensial database), lalu klik <strong>Simpan &amp; Terapkan</strong>.</p>
       <?php endif; ?>
       <div class="table-responsive">
         <table class="table align-middle mb-3" id="env-table">
@@ -274,13 +274,13 @@ unset($c);
           Nilai ter-mask; klik 👁 untuk melihat. Perubahan diterapkan dengan menciptakan
           ulang container yang env-nya berubah (tanpa rebuild source). Variabel tersedia
           untuk substitusi <code>${VAR}</code> di <span class="mono">docker-compose.yml</span>
-          dan di-inject ke environment <strong>semua container</strong> site.
+          dan di-inject ke environment <strong>semua container</strong> app.
         </p>
         <div class="d-flex flex-wrap gap-2 align-items-center">
           <button type="button" class="btn btn-outline-secondary btn-sm" id="env-add-row">＋ Tambah variabel</button>
           <button type="submit" class="btn btn-primary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>Simpan &amp; Terapkan</button>
           <?php if ($isBusy): ?>
-            <span class="text-muted small">Dinonaktifkan sementara site sedang diproses.</span>
+            <span class="text-muted small">Dinonaktifkan sementara app sedang diproses.</span>
           <?php endif; ?>
         </div>
       </div>
@@ -320,25 +320,25 @@ unset($c);
 })();
 </script>
   </div>
-  <!-- ============ Tab: Network (external network lintas-site) ============ -->
+  <!-- ============ Tab: Network (external network lintas-app) ============ -->
   <div class="tab-pane fade" id="tab-network" role="tabpanel" aria-labelledby="tab-network-btn">
     <?php
-    $extNetworks = is_array($site['external_networks'] ?? null) ? $site['external_networks'] : [];
+    $extNetworks = is_array($app['external_networks'] ?? null) ? $app['external_networks'] : [];
     ?>
     <section class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <h2 class="h6 mb-0">External Networks</h2>
-        <span class="text-muted small">shared network lintas-site (via compose external)</span>
+        <span class="text-muted small">shared network lintas-app (via compose external)</span>
       </div>
       <div class="card-body">
         <p class="text-muted small mb-3">
-          Hubungkan site ini ke <strong>shared network</strong> agar container-nya bisa
-          saling berkomunikasi dengan site lain. Buat network lewat halaman
+          Hubungkan app ini ke <strong>shared network</strong> agar container-nya bisa
+          saling berkomunikasi dengan app lain. Buat network lewat halaman
           <a href="/networks">Networks</a>, lalu centang di sini dan klik
           <strong>Simpan &amp; Terapkan</strong> — container diciptakan ulang dan
           koneksi ini <strong>persisten</strong> (tidak hilang saat Rebuild/Rollback).
         </p>
-        <form method="post" action="/sites/<?= e($site['id']) ?>/network">
+        <form method="post" action="/apps/<?= e($app['id']) ?>/network">
           <?= csrf_field() ?>
           <?php if (empty($availableNetworks)): ?>
             <div class="alert alert-info py-2 small mb-3">
@@ -359,7 +359,7 @@ unset($c);
           <div class="d-flex flex-wrap gap-2 align-items-center">
             <button type="submit" class="btn btn-primary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>Simpan &amp; Terapkan</button>
             <?php if ($isBusy): ?>
-              <span class="text-muted small">Dinonaktifkan sementara site sedang diproses.</span>
+              <span class="text-muted small">Dinonaktifkan sementara app sedang diproses.</span>
             <?php endif; ?>
           </div>
         </form>
@@ -385,7 +385,7 @@ unset($c);
       <?php foreach ($containers as $c): ?>
       <?php $cRunning = ($c['status'] ?? '') === 'running'; ?>
       <tr>
-        <td><strong><?= e($c['service_name'] ?? '-') ?></strong><?= ($site['primary_service'] ?? '') === ($c['service_name'] ?? '') ? ' <span class="text-muted small">(primary)</span>' : '' ?></td>
+        <td><strong><?= e($c['service_name'] ?? '-') ?></strong><?= ($app['primary_service'] ?? '') === ($c['service_name'] ?? '') ? ' <span class="text-muted small">(primary)</span>' : '' ?></td>
         <td><?= e($c['container_name'] ?? '-') ?></td>
         <td class="small"><?= e($c['image'] ?? '-') ?></td>
         <td class="small">
@@ -399,10 +399,10 @@ unset($c);
         <td class="text-end text-nowrap">
           <?php if ($cRunning): ?>
             <button type="button" class="btn btn-outline-secondary btn-sm terminal-btn"
-                    data-site="<?= e($site['id']) ?>" data-container="<?= e($c['container_name'] ?? '') ?>"
+                    data-app="<?= e($app['id']) ?>" data-container="<?= e($c['container_name'] ?? '') ?>"
                     data-shell="sh" title="Buka shell interaktif (docker exec -it sh)">⌁ Terminal</button>
             <button type="button" class="btn btn-outline-primary btn-sm run-btn ms-1"
-                    data-site="<?= e($site['id']) ?>" data-container="<?= e($c['container_name'] ?? '') ?>"
+                    data-app="<?= e($app['id']) ?>" data-container="<?= e($c['container_name'] ?? '') ?>"
                     title="Jalankan perintah satu kali (docker exec ... sh -c)">> Run</button>
           <?php else: ?>
             <span class="text-muted small">-</span>
@@ -424,7 +424,7 @@ unset($c);
         <h2 class="h6 mb-0">Riwayat Deployment</h2>
     <div class="d-flex align-items-center gap-2">
       <span class="text-muted small">Versi aktif: <code><?= $activeSha !== '' ? e(substr((string) $activeSha, 0, 7)) : '-' ?></code></span>
-      <a class="btn btn-outline-secondary btn-sm" href="/sites/<?= e($site['id']) ?>/versions">Semua versi &rarr;</a>
+      <a class="btn btn-outline-secondary btn-sm" href="/apps/<?= e($app['id']) ?>/versions">Semua versi &rarr;</a>
     </div>
   </div>
   <?php if (empty($deployHistory)): ?>
@@ -457,8 +457,8 @@ unset($c);
         </td>
         <td class="text-end">
           <?php if ($isRollbackTarget): ?>
-            <form method="post" action="/sites/<?= e($site['id']) ?>/rollback" class="d-inline"
-                  onsubmit="return confirm('Rollback site <?= e($site['name']) ?> ke commit <?= e($hShort) ?>?\n\nSource code akan diganti ke versi itu dan container di-build ulang. Volume/data tidak dihapus.');">
+            <form method="post" action="/apps/<?= e($app['id']) ?>/rollback" class="d-inline"
+                  onsubmit="return confirm('Rollback app <?= e($app['name']) ?> ke commit <?= e($hShort) ?>?\n\nSource code akan diganti ke versi itu dan container di-build ulang. Volume/data tidak dihapus.');">
               <?= csrf_field() ?>
               <input type="hidden" name="ref" value="<?= e((string) ($h['sha'] ?? '')) ?>">
               <button class="btn btn-outline-warning btn-sm">↶ Rollback</button>
@@ -475,13 +475,13 @@ unset($c);
   <?php endif; ?>
   <?php if (count($deployHistory) > 5): ?>
   <div class="card-footer text-end">
-    <a class="btn btn-outline-secondary btn-sm" href="/sites/<?= e($site['id']) ?>/versions">Lihat semua <?= count($deployHistory) ?> versi &rarr;</a>
+    <a class="btn btn-outline-secondary btn-sm" href="/apps/<?= e($app['id']) ?>/versions">Lihat semua <?= count($deployHistory) ?> versi &rarr;</a>
   </div>
   <?php endif; ?>
   </section>
   </div>
 
-  <!-- ============ Tab: Hapus Site ============ -->
+  <!-- ============ Tab: Hapus App ============ -->
   <div class="tab-pane fade" id="tab-delete" role="tabpanel" aria-labelledby="tab-delete-btn">
     <section class="card mb-4 border-danger">
       <div class="card-header">
@@ -489,16 +489,16 @@ unset($c);
       </div>
       <div class="card-body">
         <p class="text-muted small mb-3">
-          Menghapus site akan menghentikan &amp; menghapus container, config Nginx, dan
+          Menghapus app akan menghentikan &amp; menghapus container, config Nginx, dan
           direktori lokal. Pilih mode di dialog konfirmasi:
           <strong>pertahankan volume</strong> (data database tetap ada dan dipakai ulang
-          bila site dibuat ulang dengan nama sama) atau <strong>hapus total</strong>
+          bila app dibuat ulang dengan nama sama) atau <strong>hapus total</strong>
           (termasuk semua volume — data hilang permanen).
         </p>
         <?php if ($isBusy): ?>
-          <span class="text-muted small">Dinonaktifkan sementara site sedang diproses.</span>
+          <span class="text-muted small">Dinonaktifkan sementara app sedang diproses.</span>
         <?php else: ?>
-          <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteModal">✕ Delete site</button>
+          <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteModal">✕ Delete app</button>
         <?php endif; ?>
       </div>
     </section>
@@ -509,18 +509,18 @@ unset($c);
 <!-- Modal konfirmasi delete: pilih volume yang dipertahankan -->
 <div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
-    <form method="post" action="/sites/<?= e($site['id']) ?>/delete" class="modal-content">
+    <form method="post" action="/apps/<?= e($app['id']) ?>/delete" class="modal-content">
       <?= csrf_field() ?>
       <div class="modal-header">
-        <h5 class="modal-title" id="deleteModalLabel">Hapus site <?= e($site['name']) ?></h5>
+        <h5 class="modal-title" id="deleteModalLabel">Hapus app <?= e($app['name']) ?></h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
       </div>
       <div class="modal-body">
         <p class="text-muted small mb-3">
           Container, config Nginx, dan direktori lokal akan dihapus.
           <strong>Volume yang dicentang dipertahankan</strong> dan akan dipakai
-          ulang otomatis bila site dibuat ulang dengan nama
-          <span class="mono"><?= e($site['name']) ?></span>
+          ulang otomatis bila app dibuat ulang dengan nama
+          <span class="mono"><?= e($app['name']) ?></span>
           (data seperti database tidak hilang).
         </p>
         <?php if (empty($volumes)): ?>
@@ -542,7 +542,7 @@ unset($c);
         <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Batal</button>
         <button type="submit" name="mode" value="preserve" class="btn btn-danger btn-sm">Hapus &amp; pertahankan volume</button>
         <button type="submit" name="mode" value="purge" class="btn btn-outline-danger btn-sm"
-                onclick="return confirm('Hapus TOTAL site <?= e($site['name']) ?> termasuk SEMUA volume (data database dll. ikut terhapus permanen)? Tindakan ini tidak bisa dibatalkan.');">Hapus total (semua volume)</button>
+                onclick="return confirm('Hapus TOTAL app <?= e($app['name']) ?> termasuk SEMUA volume (data database dll. ikut terhapus permanen)? Tindakan ini tidak bisa dibatalkan.');">Hapus total (semua volume)</button>
       </div>
     </form>
   </div>
@@ -560,8 +560,8 @@ function copyDetailKey() {
 }
 
 (function () {
-  var SITE_ID = '<?= e($site['id']) ?>';
-  var STATUS_URL = '/api/sites/' + SITE_ID + '/status';
+  var SITE_ID = '<?= e($app['id']) ?>';
+  var STATUS_URL = '/api/apps/' + SITE_ID + '/status';
   var POLL_MS = 3000;
   var MAX_TICKS = 600; // ~30 menit
 
@@ -576,7 +576,7 @@ function copyDetailKey() {
   var stageEl = document.getElementById('deploy-stage');
   var msgEl = document.getElementById('deploy-message');
   var errEl = document.getElementById('deploy-error');
-  var statusBadge = document.getElementById('site-status');
+  var statusBadge = document.getElementById('app-status');
 
   var timer = null;
   var ticks = 0;
@@ -609,7 +609,7 @@ function copyDetailKey() {
     if (errEl) errEl.classList.add('d-none');
     if (panel) panel.classList.remove('d-none');
     setStage(stage, message);
-    var actions = document.getElementById('site-actions');
+    var actions = document.getElementById('app-actions');
     if (actions) actions.classList.add('d-none');
   }
 
@@ -626,17 +626,17 @@ function copyDetailKey() {
       fetch(STATUS_URL, { headers: { 'Accept': 'application/json' } })
         .then(function (r) { return r.json(); })
         .then(function (d) {
-          if (!d || !d.site) return;
-          var st = d.site.status || 'unknown';
+          if (!d || !d.app) return;
+          var st = d.app.status || 'unknown';
           if (statusBadge) {
             statusBadge.textContent = st;
             statusBadge.className = 'badge badge-' + st;
           }
-          setStage(d.site.stage, d.site.message);
+          setStage(d.app.stage, d.app.message);
           if (st !== 'deploying') {
             stopPoll();
             if (st === 'error') {
-              showError(d.site.error || d.site.message || 'Proses gagal.');
+              showError(d.app.error || d.app.message || 'Proses gagal.');
             } else {
               // selesai: reload sebentar lagi agar halaman menampilkan state final
               setTimeout(function () { window.location.reload(); }, 600);
@@ -651,9 +651,9 @@ function copyDetailKey() {
     }, POLL_MS);
   }
 
-  // Bila halaman dibuka saat site sedang diproses (mis. usai me-refresh), langsung poll.
+  // Bila halaman dibuka saat app sedang diproses (mis. usai me-refresh), langsung poll.
   if (panel && panel.getAttribute('data-busy') === '1') {
-    startPoll('<?= e($site['stage'] ?? 'deploying') ?>', '<?= e($site['message'] ?? '') ?>');
+    startPoll('<?= e($app['stage'] ?? 'deploying') ?>', '<?= e($app['message'] ?? '') ?>');
   }
 
   // Rebuild via AJAX: tanpa navigasi halaman, tanpa risiko timeout/refresh.
@@ -679,13 +679,13 @@ function copyDetailKey() {
         } else {
           showError((d && (d.error || d.msg)) ? (d.error || d.msg) : 'Gagal memulai rebuild.');
           if (rebuildBtn) { rebuildBtn.disabled = false; rebuildBtn.textContent = '↻ Rebuild'; }
-          var actions = document.getElementById('site-actions');
+          var actions = document.getElementById('app-actions');
           if (actions) actions.classList.remove('d-none');
         }
       }).catch(function () {
         showError('Gagal terhubung ke server. Periksa koneksi lalu coba lagi.');
         if (rebuildBtn) { rebuildBtn.disabled = false; rebuildBtn.textContent = '↻ Rebuild'; }
-        var actions = document.getElementById('site-actions');
+        var actions = document.getElementById('app-actions');
         if (actions) actions.classList.remove('d-none');
       });
     });
@@ -719,7 +719,7 @@ function copyDetailKey() {
 <div class="modal fade" id="run-modal" tabindex="-1" aria-labelledby="run-title" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
-      <form id="run-form" data-site="<?= e($site['id']) ?>">
+      <form id="run-form" data-app="<?= e($app['id']) ?>">
         <div class="modal-header py-2">
           <h5 class="modal-title small mb-0 mono" id="run-title">Run command</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
@@ -748,7 +748,7 @@ function copyDetailKey() {
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
 <script src="/vendor/xterm/xterm.js"></script>
 <script src="/vendor/xterm/addons/fit/fit.js"></script>
-<script src="/js/site-terminal.js?v=4"></script>
+<script src="/js/app-terminal.js?v=4"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>
 

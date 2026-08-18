@@ -26,7 +26,7 @@ class GitServiceTest extends TestCase
 
     public function testShallowCloneThenRollbackToOldSha(): void
     {
-        $dest = $this->fx->workDir . '/site';
+        $dest = $this->fx->workDir . '/app';
         $git = new GitService();
         $git->clone($this->fx->origin, 'main', $dest);
 

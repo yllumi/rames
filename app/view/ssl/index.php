@@ -15,9 +15,9 @@ $anyPending = false;
 <div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <div>
     <h1 class="h3 mb-1">SSL / Let's Encrypt</h1>
-    <p class="text-muted mb-0">Sertifikat TLS otomatis per domain (subdomain atau custom domain site).</p>
+    <p class="text-muted mb-0">Sertifikat TLS otomatis per domain (subdomain atau custom domain app).</p>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/sites">&larr; Sites</a>
+  <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Apps</a>
 </div>
 
 <?php if (!$sslSupported): ?>
@@ -30,12 +30,12 @@ $anyPending = false;
 
 <div class="card">
   <?php if (empty($rows)): ?>
-    <div class="card-body text-muted small">Belum ada site/domain.</div>
+    <div class="card-body text-muted small">Belum ada app/domain.</div>
   <?php else: ?>
   <div class="table-responsive">
   <table class="table table-hover align-middle mb-0">
     <thead>
-      <tr><th>Domain</th><th>Site</th><th>Status SSL</th><th>Kedaluwarsa</th><th>Aksi</th></tr>
+      <tr><th>Domain</th><th>App</th><th>Status SSL</th><th>Kedaluwarsa</th><th>Aksi</th></tr>
     </thead>
     <tbody>
       <?php foreach ($rows as $r): ?>
@@ -46,8 +46,8 @@ $anyPending = false;
             <?php if (!empty($r['is_custom'])): ?><span class="text-muted small">(custom)</span><?php endif; ?>
           </td>
           <td>
-            <a href="/sites/<?= e($r['site']['id']) ?>"><?= e($r['site']['name']) ?></a>
-            <span class="text-muted small">(<?= e($r['site']['status'] ?? 'unknown') ?>)</span>
+            <a href="/apps/<?= e($r['app']['id']) ?>"><?= e($r['app']['name']) ?></a>
+            <span class="text-muted small">(<?= e($r['app']['status'] ?? 'unknown') ?>)</span>
           </td>
           <td>
             <span class="badge <?= e($badges[$st] ?? 'badge-stopped') ?>"><?= e($st) ?></span>
@@ -62,7 +62,7 @@ $anyPending = false;
             <?php elseif ($st === 'active'): ?>
               <span class="text-muted small">aktif</span>
             <?php elseif ($sslSupported): ?>
-              <form method="post" action="/ssl/<?= e($r['site']['id']) ?>/enable" class="d-inline">
+              <form method="post" action="/ssl/<?= e($r['app']['id']) ?>/enable" class="d-inline">
                 <?= csrf_field() ?>
                 <button class="btn btn-<?= $st === 'failed' ? 'outline-danger' : 'primary' ?> btn-sm">
                   <?= $st === 'failed' ? '↻ Retry SSL' : 'Aktifkan SSL' ?>

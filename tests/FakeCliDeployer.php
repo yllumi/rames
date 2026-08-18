@@ -19,47 +19,47 @@ class FakeCliDeployer implements DeployerInterface
         return new self();
     }
 
-    public function deploy(array $site, callable $logger): array
+    public function deploy(array $app, callable $logger): array
     {
-        return $this->finish($site, 'deploy');
+        return $this->finish($app, 'deploy');
     }
 
-    public function rebuild(array $site, callable $logger): array
+    public function rebuild(array $app, callable $logger): array
     {
-        return $this->finish($site, 'rebuild');
+        return $this->finish($app, 'rebuild');
     }
 
-    public function rollback(array $site, string $ref, callable $logger): array
+    public function rollback(array $app, string $ref, callable $logger): array
     {
         if ((string) getenv('FAKE_DEPLOYER_FAIL') !== '') {
             throw new RuntimeException('fake deployer gagal (test)');
         }
         $logger('rollback', "Rollback ke {$ref} ...");
-        $site['deploy_history'] = $site['deploy_history'] ?? [];
-        $site['deploy_history'][] = [
+        $app['deploy_history'] = $app['deploy_history'] ?? [];
+        $app['deploy_history'][] = [
             'sha' => $ref,
             'short' => substr($ref, 0, 7),
             'action' => 'rollback',
             'status' => 'success',
             'created_at' => date('c'),
         ];
-        return $this->finish($site, 'rollback');
+        return $this->finish($app, 'rollback');
     }
 
-    public function stop(array $site): void
+    public function stop(array $app): void
     {
     }
 
-    public function start(array $site): void
+    public function start(array $app): void
     {
     }
 
-    public function applyEnv(array $site, callable $logger): array
+    public function applyEnv(array $app, callable $logger): array
     {
-        return $this->finish($site, 'apply-env');
+        return $this->finish($app, 'apply-env');
     }
 
-    public function teardown(array $site, ?array $preserveVolumes = null): void
+    public function teardown(array $app, ?array $preserveVolumes = null): void
     {
     }
 
@@ -77,26 +77,26 @@ class FakeCliDeployer implements DeployerInterface
     {
     }
 
-    public function renderNginxConfig(array $site): string
+    public function renderNginxConfig(array $app): string
     {
         return 'mock';
     }
 
-    public function writeNginxConfig(array $site): void
+    public function writeNginxConfig(array $app): void
     {
     }
 
-    public function removeNginxConfig(array $site): void
+    public function removeNginxConfig(array $app): void
     {
     }
 
-    private function finish(array $site, string $action): array
+    private function finish(array $app, string $action): array
     {
-        $site['status'] = 'running';
-        $site['stage'] = null;
-        $site['message'] = 'Running';
-        $site['error'] = null;
-        $site['containers'] = [];
-        return $site;
+        $app['status'] = 'running';
+        $app['stage'] = null;
+        $app['message'] = 'Running';
+        $app['error'] = null;
+        $app['containers'] = [];
+        return $app;
     }
 }

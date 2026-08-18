@@ -1,4 +1,4 @@
-<?php $pageTitle = 'Confirm Site'; $active = 'sites'; ?>
+<?php $pageTitle = 'Confirm App'; $active = 'apps'; ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
 <div class="page-head mb-4">
@@ -8,7 +8,7 @@
   </div>
 </div>
 
-<form method="post" action="/sites/create/confirm" id="deploy-confirm-form">
+<form method="post" action="/apps/create/confirm" id="deploy-confirm-form">
   <?= csrf_field() ?>
 
   <div class="card mb-3">
@@ -62,9 +62,9 @@
   <div class="d-flex gap-2">
     <button type="submit" class="btn btn-primary" id="deploy-btn">
       <span class="spinner-border spinner-border-sm d-none" id="deploy-btn-spinner" role="status" aria-hidden="true"></span>
-      Deploy Site
+      Deploy App
     </button>
-    <a class="btn btn-outline-secondary" href="/sites/create">Kembali</a>
+    <a class="btn btn-outline-secondary" href="/apps/create">Kembali</a>
   </div>
 </form>
 
@@ -110,8 +110,8 @@
     }).then(function (res) {
       var d = res.data || {};
       if (res.ok && d.code === 0 && d.id) {
-        // menuju detail site — halaman itu otomatis mem-poll progres build
-        window.location.href = '/sites/' + d.id;
+        // menuju detail app — halaman itu otomatis mem-poll progres build
+        window.location.href = '/apps/' + d.id;
         return;
       }
       var msg = d.error || d.msg;

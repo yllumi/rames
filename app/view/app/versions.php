@@ -1,31 +1,31 @@
 <?php
-$pageTitle = $site['name'] . ' · Versi';
-$active = 'sites';
-$status = $site['status'] ?? 'unknown';
+$pageTitle = $app['name'] . ' · Versi';
+$active = 'apps';
+$status = $app['status'] ?? 'unknown';
 $isBusy = in_array($status, ['deploying'], true);
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
 <div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <div class="d-flex align-items-center gap-3 flex-wrap">
-    <h1 class="h3 mb-0 mono"><?= e($site['name']) ?></h1>
-    <span class="badge badge-<?= e($status) ?>" id="site-status"><?= e($status) ?></span>
+    <h1 class="h3 mb-0 mono"><?= e($app['name']) ?></h1>
+    <span class="badge badge-<?= e($status) ?>" id="app-status"><?= e($status) ?></span>
     <span class="text-muted small">Riwayat versi &amp; rollback</span>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/sites/<?= e($site['id']) ?>">&larr; Detail site</a>
+  <a class="btn btn-outline-secondary btn-sm" href="/apps/<?= e($app['id']) ?>">&larr; Detail app</a>
 </div>
 
 <?php if ($isBusy): ?>
   <div class="alert alert-info d-flex align-items-start gap-2" role="alert">
     <span class="spinner-border spinner-border-sm text-info mt-1 flex-shrink-0" role="status" aria-hidden="true"></span>
-    <div>Sedang <strong><?= e($site['stage'] ?? 'deploying') ?></strong>: <?= e($site['message'] ?? '') ?></div>
+    <div>Sedang <strong><?= e($app['stage'] ?? 'deploying') ?></strong>: <?= e($app['message'] ?? '') ?></div>
   </div>
 <?php endif; ?>
 
 <div class="card mb-4">
   <div class="card-body py-2">
-    <dl class="site-info mb-0">
-      <div class="site-info-item">
+    <dl class="app-info mb-0">
+      <div class="app-info-item">
         <dt class="k">Versi aktif</dt>
         <dd class="v mb-0">
           <?php if ($activeSha !== ''): ?>
@@ -35,13 +35,13 @@ $isBusy = in_array($status, ['deploying'], true);
           <?php endif; ?>
         </dd>
       </div>
-      <div class="site-info-item">
+      <div class="app-info-item">
         <dt class="k">Repo</dt>
-        <dd class="v mb-0"><?= e($site['repo_url']) ?></dd>
+        <dd class="v mb-0"><?= e($app['repo_url']) ?></dd>
       </div>
-      <div class="site-info-item">
+      <div class="app-info-item">
         <dt class="k">Branch</dt>
-        <dd class="v mb-0"><?= e($site['branch'] ?? 'main') ?></dd>
+        <dd class="v mb-0"><?= e($app['branch'] ?? 'main') ?></dd>
       </div>
     </dl>
   </div>
@@ -83,8 +83,8 @@ $isBusy = in_array($status, ['deploying'], true);
         <td class="small text-muted"><?= $hMsg !== '' ? e($hMsg) : '-' ?></td>
         <td class="text-end">
           <?php if ($canRollback): ?>
-            <form method="post" action="/sites/<?= e($site['id']) ?>/rollback" class="d-inline"
-                  onsubmit="return confirm('Rollback site <?= e($site['name']) ?> ke commit <?= e($hShort) ?>?\n\nSource code akan diganti ke versi itu dan container di-build ulang. Volume/data tidak dihapus.');">
+            <form method="post" action="/apps/<?= e($app['id']) ?>/rollback" class="d-inline"
+                  onsubmit="return confirm('Rollback app <?= e($app['name']) ?> ke commit <?= e($hShort) ?>?\n\nSource code akan diganti ke versi itu dan container di-build ulang. Volume/data tidak dihapus.');">
               <?= csrf_field() ?>
               <input type="hidden" name="ref" value="<?= e($hSha) ?>">
               <button class="btn btn-outline-warning btn-sm">↶ Rollback</button>

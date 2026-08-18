@@ -8,18 +8,18 @@ use RuntimeException;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Manajemen environment variable per site (fitur "Environment Variables").
+ * Manajemen environment variable per app (fitur "Environment Variables").
  *
- * Sumber kebenaran: field "env" di sites.json (map KEY => value, urutan terjaga).
+ * Sumber kebenaran: field "env" di apps.json (map KEY => value, urutan terjaga).
  * Representasi di disk:
  *   1) Managed env file : {database_path}/env/{name}.env — dipakai docker
  *      compose lewat flag `--env-file` untuk substitusi ${VAR} di compose file.
- *   2) Override file    : sites/{name}/docker-compose.override.env.yml —
+ *   2) Override file    : apps/{name}/docker-compose.override.env.yml —
  *      meng-inject `environment:` LITERAL ke SETIAP service agar nilai benar-benar
  *      sampai ke environment container (mis. kredensial DB) tanpa bergantung pada
  *      referensi ${VAR} di docker-compose.yml repo.
  *
- * Managed file berada di LUAR direktori repo site (database/env/, gitignored)
+ * Managed file berada di LUAR direktori repo app (database/env/, gitignored)
  * sehingga tidak pernah konflik dengan `git pull --ff-only` saat Rebuild.
  * Semua mutasi memakai flock/LOCK_EX; file env di-chmod 0600 (bisa berisi secret).
  */
@@ -35,11 +35,11 @@ class EnvManager
     }
 
     /**
-     * Path managed env file untuk sebuah site.
+     * Path managed env file untuk sebuah app.
      */
-    public function managedPath(string $siteName): string
+    public function managedPath(string $appName): string
     {
-        return $this->envDir . '/' . $siteName . '.env';
+        return $this->envDir . '/' . $appName . '.env';
     }
 
     /**
@@ -49,10 +49,10 @@ class EnvManager
      *
      * @param array<string,string> $env
      */
-    public function write(string $siteName, array $env): void
+    public function write(string $appName, array $env): void
     {
         if ($env === []) {
-            $this->remove($siteName);
+            $this->remove($appName);
             return;
         }
         if (!is_dir($this->envDir)) {
@@ -67,7 +67,7 @@ class EnvManager
             $lines[] = $key . '=' . $this->quoteValue((string) $value);
         }
 
-        $path = $this->managedPath($siteName);
+        $path = $this->managedPath($appName);
         if (@file_put_contents($path, implode("\n", $lines) . "\n", LOCK_EX) === false) {
             throw new RuntimeException('Gagal menulis env file: ' . $path);
         }
@@ -75,11 +75,11 @@ class EnvManager
     }
 
     /**
-     * Hapus managed env file site (saat env dikosongkan atau site dihapus).
+     * Hapus managed env file app (saat env dikosongkan atau app dihapus).
      */
-    public function remove(string $siteName): void
+    public function remove(string $appName): void
     {
-        $path = $this->managedPath($siteName);
+        $path = $this->managedPath($appName);
         if (is_file($path)) {
             @unlink($path);
         }
@@ -90,8 +90,8 @@ class EnvManager
      * service dari base compose. Nilai yang tidak relevan bagi sebuah service
      * akan diabaikan oleh runtime service tsb.
      *
-     * @param string              $dir          direktori site
-     * @param array<int,string>   $composeFiles daftar compose files site
+     * @param string              $dir          direktori app
+     * @param array<int,string>   $composeFiles daftar compose files app
      * @param array<string,string> $env         map KEY => value
      */
     public function writeOverride(string $dir, array $composeFiles, array $env): void
@@ -113,7 +113,7 @@ class EnvManager
     }
 
     /**
-     * Hapus override file dari direktori site (saat env dikosongkan).
+     * Hapus override file dari direktori app (saat env dikosongkan).
      */
     public function removeOverride(string $dir): void
     {
@@ -124,27 +124,27 @@ class EnvManager
     }
 
     /**
-     * Sinkronkan file env (managed + override) dengan state site. Idempoten —
+     * Sinkronkan file env (managed + override) dengan state app. Idempoten —
      * dipanggil dari controller (saveEnv) dan LocalDeployer (deploy/rebuild/
-     * rollback/applyEnv) agar file di disk selalu konsisten dengan sites.json.
+     * rollback/applyEnv) agar file di disk selalu konsisten dengan apps.json.
      *
      * @return bool true bila env aktif (file ditulis), false bila dikosongkan
      */
-    public function sync(array $site, string $dir, array $composeFiles): bool
+    public function sync(array $app, string $dir, array $composeFiles): bool
     {
-        $env = $this->envOf($site);
+        $env = $this->envOf($app);
         if ($env === []) {
-            $this->remove((string) ($site['name'] ?? ''));
+            $this->remove((string) ($app['name'] ?? ''));
             $this->removeOverride($dir);
             return false;
         }
-        $this->write((string) ($site['name'] ?? ''), $env);
+        $this->write((string) ($app['name'] ?? ''), $env);
         $this->writeOverride($dir, $composeFiles, $env);
         return true;
     }
 
     /**
-     * Parse file .env.example di direktori site untuk fitur import.
+     * Parse file .env.example di direktori app untuk fitur import.
      * Mendukung komentar (#), baris kosong, dan nilai ber-quote tunggal/ganda.
      *
      * @return array<string,string>
@@ -209,9 +209,9 @@ class EnvManager
     /**
      * @return array<string,string>
      */
-    private function envOf(array $site): array
+    private function envOf(array $app): array
     {
-        $env = $site['env'] ?? [];
+        $env = $app['env'] ?? [];
         if (!is_array($env)) {
             return [];
         }

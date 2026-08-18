@@ -5,19 +5,19 @@ namespace app\controller;
 
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
-use app\library\Storage\SiteStore;
+use app\library\Storage\AppStore;
 use support\Request;
 
 /**
  * Halaman Volume — melihat volume ber-label compose & membersihkan volume yatim
- * (ditinggalkan site yang dihapus dengan mode "pertahankan volume"). Controller
+ * (ditinggalkan app yang dihapus dengan mode "pertahankan volume"). Controller
  * hanya mediator — akses Docker lewat library (DockerClient / DockerComposeRunner).
  */
 class VolumeController
 {
     /**
      * Daftar volume ber-label com.docker.compose.project. Volume "yatim" =
-     * project-nya sudah tidak ada di sites.json (site dihapus) dan bisa dibersihkan.
+     * project-nya sudah tidak ada di apps.json (app dihapus) dan bisa dibersihkan.
      */
     public function index(Request $request)
     {
@@ -65,7 +65,7 @@ class VolumeController
 
     /**
      * Hapus volume yatim. Menerima `volumes[]` (pilihan) atau `purge_orphans=1`
-     * (semua yatim). Volume milik site yang masih aktif DITOLAK (pengaman).
+     * (semua yatim). Volume milik app yang masih aktif DITOLAK (pengaman).
      */
     public function purge(Request $request)
     {
@@ -109,7 +109,7 @@ class VolumeController
                 return redirect('/volumes');
             }
             if (!isset($volumeProject[$name]) || isset($projectNames[$volumeProject[$name]])) {
-                flash_set('error', "Volume {$name} tidak yatim atau masih dipakai site aktif — dilewati.");
+                flash_set('error', "Volume {$name} tidak yatim atau masih dipakai app aktif — dilewati.");
                 continue;
             }
             $valid[] = $name;
@@ -129,13 +129,13 @@ class VolumeController
     }
 
     /**
-     * @return array<string,bool> nama project site yang masih ada di sites.json
+     * @return array<string,bool> nama project app yang masih ada di apps.json
      */
     private function activeProjectNames(): array
     {
         $names = [];
-        foreach ((new SiteStore())->all() as $site) {
-            $names[(string) ($site['name'] ?? '')] = true;
+        foreach ((new AppStore())->all() as $app) {
+            $names[(string) ($app['name'] ?? '')] = true;
         }
         return $names;
     }

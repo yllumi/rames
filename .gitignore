@@ -9,7 +9,7 @@
 /.phpunit.cache
 
 # runtime data dashboard deployer
-/sites
+/apps
 /nginx-status
 /database/*.json
 /database/*.bak

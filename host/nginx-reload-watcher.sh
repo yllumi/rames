@@ -2,7 +2,7 @@
 #
 # Rames — Nginx reload watcher (host) — SPECS.md §8.3
 #
-# Memantau direktori config Nginx site (sites-available/ yang di-mount ke
+# Memantau direktori config Nginx app (sites-available/ yang di-mount ke
 # dashboard container). Begitu ada file .conf baru/berubah/dihapus:
 #   1. `nginx -t` — bila gagal, log error dan JANGAN reload (config lama tetap aktif)
 #   2. bila valid, `nginx -s reload` (zero-downtime, bukan restart)
@@ -13,7 +13,7 @@
 # saja (host/systemd/dashboard-nginx-watcher.sudoers).
 #
 # Konfigurasi via environment (bisa di-set di /etc/rames/nginx-watcher.env):
-#   WATCH_DIR      direktori config site yang dipantau (default: /etc/nginx/sites-available)
+#   WATCH_DIR      direktori config app yang dipantau (default: /etc/nginx/sites-available)
 #   NGINX_BIN      binary nginx host        (default: /usr/sbin/nginx)
 #   NGINX_CONF     config utama nginx       (default: /etc/nginx/nginx.conf)
 #   STATUS_FILE    file status untuk dashboard (default: /app/nginx-status/last-reload.json)

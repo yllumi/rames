@@ -10,8 +10,8 @@ use support\Request;
 /**
  * Halaman & aksi Nginx (status + reload host dari dashboard).
  *
- * Nginx bersifat GLOBAL (berlaku untuk semua site) — status & tombol reload
- * dipindah ke halaman tersendiri /nginx, bukan di detail site.
+ * Nginx bersifat GLOBAL (berlaku untuk semua app) — status & tombol reload
+ * dipindah ke halaman tersendiri /nginx, bukan di detail app.
  */
 class NginxController
 {
@@ -40,7 +40,7 @@ class NginxController
         // kembali ke halaman asal (hanya path internal untuk hindari open redirect)
         $back = (string) $request->header('referer', '');
         if ($back === '' || $back[0] !== '/' || str_starts_with($back, '//') || str_starts_with($back, '/\\')) {
-            $back = '/sites';
+            $back = '/apps';
         }
         return redirect($back);
     }

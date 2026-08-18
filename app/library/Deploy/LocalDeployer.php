@@ -19,80 +19,80 @@ class LocalDeployer implements DeployerInterface
         private readonly DockerComposeRunner $compose,
         private readonly DockerClient $dockerClient,
         private readonly NginxConfigGenerator $nginx,
-        private readonly string $sitesPath,
+        private readonly string $appsPath,
         private readonly EnvManager $env,
         private readonly NetworkManager $network,
     ) {
     }
 
-    public function deploy(array $site, callable $logger): array
+    public function deploy(array $app, callable $logger): array
     {
         // fail-fast: cek prasyarat tulis Nginx SEBELUM build yang lama
         $this->nginx->ensureWritable();
 
-        $project = $site['name'];
-        $dir = $this->siteDir($site);
-        $files = $this->resolveComposeFiles($site, $dir);
+        $project = $app['name'];
+        $dir = $this->appDir($app);
+        $files = $this->resolveComposeFiles($app, $dir);
 
         // Sinkronkan managed env file + override env + external networks
         // (idempoten, aman bila kosong)
-        $this->env->sync($site, $dir, $files);
-        $this->network->sync($site, $dir, $files);
+        $this->env->sync($app, $dir, $files);
+        $this->network->sync($app, $dir, $files);
 
         $logger('build', 'Menjalankan docker compose up -d --build ...');
-        $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
+        $this->compose->up($project, $dir, $files, true, $this->appEnvFile($app));
 
         $logger('collect', 'Mengumpulkan info container ...');
-        $site['containers'] = $this->getContainers($project);
+        $app['containers'] = $this->getContainers($project);
 
         $logger('nginx', 'Menulis config Nginx ...');
-        $this->writeNginxConfig($site);
+        $this->writeNginxConfig($app);
 
-        $site['status'] = 'running';
+        $app['status'] = 'running';
         $logger('done', 'Deploy selesai.');
-        $site = $this->recordHistory($site, (new GitService())->revParse($dir), 'deploy', 'success');
-        return $site;
+        $app = $this->recordHistory($app, (new GitService())->revParse($dir), 'deploy', 'success');
+        return $app;
     }
 
-    public function rebuild(array $site, callable $logger): array
+    public function rebuild(array $app, callable $logger): array
     {
         $this->nginx->ensureWritable();
 
-        $project = $site['name'];
-        $dir = $this->siteDir($site);
-        $files = $this->resolveComposeFiles($site, $dir);
-        $branch = $site['branch'] ?? 'main';
+        $project = $app['name'];
+        $dir = $this->appDir($app);
+        $files = $this->resolveComposeFiles($app, $dir);
+        $branch = $app['branch'] ?? 'main';
         $git = new GitService();
 
         $logger('pull', 'git pull --ff-only ...');
         // Re-attach branch dulu bila HEAD detached (sisa rollback), agar pull valid.
         $git->ensureBranch($dir, $branch);
-        $git->pull($dir, $branch, $this->siteSshKeyPath($site));
+        $git->pull($dir, $branch, $this->appSshKeyPath($app));
 
         // Sinkronkan managed env file + override env + external networks
         // (idempoten, aman bila kosong)
-        $this->env->sync($site, $dir, $files);
-        $this->network->sync($site, $dir, $files);
+        $this->env->sync($app, $dir, $files);
+        $this->network->sync($app, $dir, $files);
 
         $logger('build', 'docker compose up -d --build ...');
-        $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
+        $this->compose->up($project, $dir, $files, true, $this->appEnvFile($app));
 
-        $site['containers'] = $this->getContainers($project);
-        $this->writeNginxConfig($site);
+        $app['containers'] = $this->getContainers($project);
+        $this->writeNginxConfig($app);
 
-        $site['status'] = 'running';
+        $app['status'] = 'running';
         $logger('done', 'Rebuild selesai.');
-        $site = $this->recordHistory($site, $git->revParse($dir), 'rebuild', 'success');
-        return $site;
+        $app = $this->recordHistory($app, $git->revParse($dir), 'rebuild', 'success');
+        return $app;
     }
 
-    public function rollback(array $site, string $ref, callable $logger): array
+    public function rollback(array $app, string $ref, callable $logger): array
     {
         $this->nginx->ensureWritable();
 
-        $project = $site['name'];
-        $dir = $this->siteDir($site);
-        $files = $this->resolveComposeFiles($site, $dir);
+        $project = $app['name'];
+        $dir = $this->appDir($app);
+        $files = $this->resolveComposeFiles($app, $dir);
         $git = new GitService();
 
         // Versi aktif saat ini — dijadikan target restore bila rollback gagal.
@@ -103,47 +103,47 @@ class LocalDeployer implements DeployerInterface
 
         $logger('rollback', "Mengembalikan source ke {$ref} ...");
         try {
-            $git->fetchSha($dir, $ref, $this->siteSshKeyPath($site));
+            $git->fetchSha($dir, $ref, $this->appSshKeyPath($app));
             $git->checkout($dir, $ref);
 
             // Sinkronkan managed env file + override env + external networks
             // (idempoten, aman bila kosong)
-            $this->env->sync($site, $dir, $files);
-            $this->network->sync($site, $dir, $files);
+            $this->env->sync($app, $dir, $files);
+            $this->network->sync($app, $dir, $files);
 
             $logger('build', 'docker compose up -d --build ...');
-            $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
+            $this->compose->up($project, $dir, $files, true, $this->appEnvFile($app));
 
-            $site['containers'] = $this->getContainers($project);
-            $this->writeNginxConfig($site);
+            $app['containers'] = $this->getContainers($project);
+            $this->writeNginxConfig($app);
 
-            $site['status'] = 'running';
+            $app['status'] = 'running';
             $logger('done', 'Rollback selesai.');
-            return $this->recordHistory($site, $ref, 'rollback', 'success');
+            return $this->recordHistory($app, $ref, 'rollback', 'success');
         } catch (\Throwable $e) {
             // Auto-fallback: kembali ke versi yang tadinya aktif (best-effort).
             $logger('restore', "Rollback gagal, mencoba kembali ke {$prevRef} ...");
             try {
                 $git->checkout($dir, $prevRef);
-                $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
-                $site['containers'] = $this->getContainers($project);
-                $this->writeNginxConfig($site);
-                $site['status'] = 'running';
+                $this->compose->up($project, $dir, $files, true, $this->appEnvFile($app));
+                $app['containers'] = $this->getContainers($project);
+                $this->writeNginxConfig($app);
+                $app['status'] = 'running';
                 $logger('restore', 'Restore ke versi sebelumnya berhasil.');
-                return $this->recordHistory($site, $prevRef, 'rollback', 'restored', 'Rollback gagal (' . $e->getMessage() . '); dikembalikan ke versi sebelumnya.');
+                return $this->recordHistory($app, $prevRef, 'rollback', 'restored', 'Rollback gagal (' . $e->getMessage() . '); dikembalikan ke versi sebelumnya.');
             } catch (\Throwable $restoreError) {
-                $site['status'] = 'error';
+                $app['status'] = 'error';
                 $logger('error', 'Rollback dan restore keduanya gagal: ' . $restoreError->getMessage());
-                $this->recordHistory($site, $prevRef, 'rollback', 'error', 'Rollback & restore gagal: ' . $restoreError->getMessage());
+                $this->recordHistory($app, $prevRef, 'rollback', 'error', 'Rollback & restore gagal: ' . $restoreError->getMessage());
                 throw $e;
             }
         }
     }
 
-    public function stop(array $site): void
+    public function stop(array $app): void
     {
-        $dir = $this->siteDir($site);
-        $this->compose->stop($site['name'], $dir, $this->resolveComposeFiles($site, $dir), $this->siteEnvFile($site));
+        $dir = $this->appDir($app);
+        $this->compose->stop($app['name'], $dir, $this->resolveComposeFiles($app, $dir), $this->appEnvFile($app));
     }
 
     public function ensureWritable(): void
@@ -151,10 +151,10 @@ class LocalDeployer implements DeployerInterface
         $this->nginx->ensureWritable();
     }
 
-    public function start(array $site): void
+    public function start(array $app): void
     {
-        $dir = $this->siteDir($site);
-        $this->compose->start($site['name'], $dir, $this->resolveComposeFiles($site, $dir), $this->siteEnvFile($site));
+        $dir = $this->appDir($app);
+        $this->compose->start($app['name'], $dir, $this->resolveComposeFiles($app, $dir), $this->appEnvFile($app));
     }
 
     /**
@@ -163,29 +163,29 @@ class LocalDeployer implements DeployerInterface
      * (tanpa --build) — compose menciptakan ulang hanya container yang
      * environment-nya berubah.
      */
-    public function applyEnv(array $site, callable $logger): array
+    public function applyEnv(array $app, callable $logger): array
     {
-        $project = $site['name'];
-        $dir = $this->siteDir($site);
-        $files = $this->resolveComposeFiles($site, $dir);
+        $project = $app['name'];
+        $dir = $this->appDir($app);
+        $files = $this->resolveComposeFiles($app, $dir);
 
-        $this->env->sync($site, $dir, $files);
-        $this->network->sync($site, $dir, $files);
+        $this->env->sync($app, $dir, $files);
+        $this->network->sync($app, $dir, $files);
 
         $logger('build', 'Menciptakan ulang container dengan environment baru ...');
-        $this->compose->up($project, $dir, $files, false, $this->siteEnvFile($site));
+        $this->compose->up($project, $dir, $files, false, $this->appEnvFile($app));
 
-        $site['containers'] = $this->getContainers($project);
-        $site['status'] = 'running';
+        $app['containers'] = $this->getContainers($project);
+        $app['status'] = 'running';
         $logger('done', 'Environment diterapkan.');
-        return $site;
+        return $app;
     }
 
-    public function teardown(array $site, ?array $preserveVolumes = null): void
+    public function teardown(array $app, ?array $preserveVolumes = null): void
     {
-        $project = $site['name'];
-        $dir = $this->siteDir($site);
-        $files = $this->resolveComposeFiles($site, $dir);
+        $project = $app['name'];
+        $dir = $this->appDir($app);
+        $files = $this->resolveComposeFiles($app, $dir);
 
         // Hapus project lewat docker compose. Bila project TIDAK bisa dimuat
         // (mis. override stale mereferensikan service yang sudah tidak ada di
@@ -193,7 +193,7 @@ class LocalDeployer implements DeployerInterface
         // an image nor a build context specified"), `down` melempar exception;
         // lanjut ke pembersihan manual via Engine API di bawah.
         try {
-            $this->compose->down($project, $dir, $files, $preserveVolumes === null, $this->siteEnvFile($site));
+            $this->compose->down($project, $dir, $files, $preserveVolumes === null, $this->appEnvFile($app));
         } catch (\Throwable $e) {
             // abaikan — teardownViaApi() menyelesaikan sisanya.
         }
@@ -206,7 +206,7 @@ class LocalDeployer implements DeployerInterface
         if ($preserveVolumes !== null) {
             // Pertahankan volume terpilih: down tanpa -v, lalu hapus hanya volume
             // project yang TIDAK dipertahankan. Volume yang dipertahankan akan
-            // dipakai ulang saat site dibuat ulang dengan nama sama (project = nama site).
+            // dipakai ulang saat app dibuat ulang dengan nama sama (project = nama app).
             $remove = array_values(array_diff(
                 $this->volumeNamesForProject($project),
                 $preserveVolumes
@@ -215,18 +215,18 @@ class LocalDeployer implements DeployerInterface
                 $this->compose->removeVolumes($remove);
             }
         }
-        $this->removeNginxConfig($site);
+        $this->removeNginxConfig($app);
     }
 
     /**
-     * Daftar compose_files site dengan perbaikan override stale bila direktori
-     * site ada. Lihat repairStaleOverrides().
+     * Daftar compose_files app dengan perbaikan override stale bila direktori
+     * app ada. Lihat repairStaleOverrides().
      *
      * @return array<int,string>
      */
-    private function resolveComposeFiles(array $site, string $dir): array
+    private function resolveComposeFiles(array $app, string $dir): array
     {
-        $files = $site['compose_files'] ?? ['docker-compose.yml'];
+        $files = $app['compose_files'] ?? ['docker-compose.yml'];
         if (is_dir($dir)) {
             $this->repairStaleOverrides($dir, $files);
         }
@@ -367,15 +367,15 @@ class LocalDeployer implements DeployerInterface
         return $containers;
     }
 
-    public function renderNginxConfig(array $site): string
+    public function renderNginxConfig(array $app): string
     {
-        $hostPort = $this->primaryHostPort($site);
-        $subdomain = site_subdomain($site['name']);
-        $customDomain = (string) ($site['custom_domain'] ?? '');
+        $hostPort = $this->primaryHostPort($app);
+        $subdomain = app_subdomain($app['name']);
+        $customDomain = (string) ($app['custom_domain'] ?? '');
 
         // Tanpa custom domain: subdomain melayani app (perilaku default).
         if ($customDomain === '') {
-            $ssl = ($site['ssl_status'] ?? null) === 'active';
+            $ssl = ($app['ssl_status'] ?? null) === 'active';
             return $this->nginx->render($hostPort, [
                 ['server_name' => $subdomain, 'ssl' => $ssl],
             ]);
@@ -384,7 +384,7 @@ class LocalDeployer implements DeployerInterface
         // Dengan custom domain: subdomain redirect (301) ke custom domain,
         // custom domain melayani app. Redirect pakai https bila SSL custom aktif,
         // selain itu http agar tidak memutus akses sebelum cert terpasang.
-        $customSsl = ($site['custom_ssl_status'] ?? null) === 'active';
+        $customSsl = ($app['custom_ssl_status'] ?? null) === 'active';
         $target = ($customSsl ? 'https://' : 'http://') . $customDomain;
 
         return $this->nginx->render($hostPort, [
@@ -393,25 +393,25 @@ class LocalDeployer implements DeployerInterface
         ]);
     }
 
-    public function writeNginxConfig(array $site): void
+    public function writeNginxConfig(array $app): void
     {
-        $this->nginx->write($site['name'], $this->renderNginxConfig($site));
+        $this->nginx->write($app['name'], $this->renderNginxConfig($app));
     }
 
-    public function removeNginxConfig(array $site): void
+    public function removeNginxConfig(array $app): void
     {
-        $this->nginx->remove($site['name']);
+        $this->nginx->remove($app['name']);
     }
 
     /**
-     * Tambahkan entri ke deploy_history site (dipertahankan max 20 entri).
+     * Tambahkan entri ke deploy_history app (dipertahankan max 20 entri).
      * Entry dengan status sukses/restored menjadi kandidat rollback.
      *
-     * @return array site yang sudah diperbarui (deploy_history ditambah)
+     * @return array app yang sudah diperbarui (deploy_history ditambah)
      */
-    private function recordHistory(array $site, string $sha, string $action, string $status, string $message = ''): array
+    private function recordHistory(array $app, string $sha, string $action, string $status, string $message = ''): array
     {
-        $history = $site['deploy_history'] ?? [];
+        $history = $app['deploy_history'] ?? [];
         $history[] = [
             'sha' => $sha,
             'short' => substr($sha, 0, 7),
@@ -420,13 +420,13 @@ class LocalDeployer implements DeployerInterface
             'message' => $message,
             'created_at' => date('c'),
         ];
-        $site['deploy_history'] = array_slice($history, -20);
-        return $site;
+        $app['deploy_history'] = array_slice($history, -20);
+        return $app;
     }
 
-    private function siteDir(array $site): string
+    private function appDir(array $app): string
     {
-        return $this->sitesPath . '/' . $site['name'];
+        return $this->appsPath . '/' . $app['name'];
     }
 
     /**
@@ -444,28 +444,28 @@ class LocalDeployer implements DeployerInterface
     }
 
     /**
-     * Path managed env file site bila site punya env vars (file sudah ditulis),
+     * Path managed env file app bila app punya env vars (file sudah ditulis),
      * atau null. Dipakai sebagai argumen `--env-file` docker compose.
      */
-    private function siteEnvFile(array $site): ?string
+    private function appEnvFile(array $app): ?string
     {
-        if (empty($site['env'])) {
+        if (empty($app['env'])) {
             return null;
         }
-        $path = $this->env->managedPath((string) $site['name']);
+        $path = $this->env->managedPath((string) $app['name']);
         return is_file($path) ? $path : null;
     }
 
     /**
-     * Path private key SSH deploy key site, atau null untuk repo publik.
-     * Site menyimpan path relatif (mis. "keys/{name}") terhadap database_path.
+     * Path private key SSH deploy key app, atau null untuk repo publik.
+     * App menyimpan path relatif (mis. "keys/{name}") terhadap database_path.
      */
-    private function siteSshKeyPath(array $site): ?string
+    private function appSshKeyPath(array $app): ?string
     {
-        if (($site['auth_method'] ?? 'none') !== 'ssh') {
+        if (($app['auth_method'] ?? 'none') !== 'ssh') {
             return null;
         }
-        $key = (string) ($site['ssh_key'] ?? '');
+        $key = (string) ($app['ssh_key'] ?? '');
         if ($key === '') {
             return null;
         }
@@ -473,16 +473,16 @@ class LocalDeployer implements DeployerInterface
         return is_file($path) ? $path : null;
     }
 
-    private function primaryHostPort(array $site): int
+    private function primaryHostPort(array $app): int
     {
-        $primary = $site['primary_service'] ?? null;
-        foreach ($site['containers'] ?? [] as $c) {
+        $primary = $app['primary_service'] ?? null;
+        foreach ($app['containers'] ?? [] as $c) {
             if ($primary === null || $c['service_name'] === $primary) {
                 if (($c['host_port'] ?? null) !== null) {
                     return (int) $c['host_port'];
                 }
             }
         }
-        throw new RuntimeException('Tidak ada host port untuk primary service site "' . ($site['name'] ?? '') . '".');
+        throw new RuntimeException('Tidak ada host port untuk primary service app "' . ($app['name'] ?? '') . '".');
     }
 }

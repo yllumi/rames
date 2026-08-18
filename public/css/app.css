@@ -122,20 +122,20 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 .badge-stopped, .badge-unknown { color: #5b7a84; background: rgba(13, 90, 80, .08); }
 .badge-error { color: #be123c; background: rgba(225, 29, 72, .10); }
 
-/* ---------- Site info (detail) ---------- */
-.site-info { display: flex; flex-wrap: wrap; margin: 0; }
-.site-info-item { flex: 1 1 100%; padding: 12px 2px; }
-.site-info-item + .site-info-item { border-top: 1px solid var(--border); }
+/* ---------- App info (detail) ---------- */
+.app-info { display: flex; flex-wrap: wrap; margin: 0; }
+.app-info-item { flex: 1 1 100%; padding: 12px 2px; }
+.app-info-item + .app-info-item { border-top: 1px solid var(--border); }
 @media (min-width: 768px) {
-  .site-info-item { flex: 1 1 50%; }
-  .site-info-item:nth-child(-n+2) { border-top: 0; }
-  .site-info-item:nth-child(even) { padding-left: 20px; border-left: 1px solid var(--border); }
+  .app-info-item { flex: 1 1 50%; }
+  .app-info-item:nth-child(-n+2) { border-top: 0; }
+  .app-info-item:nth-child(even) { padding-left: 20px; border-left: 1px solid var(--border); }
 }
-.site-info .k {
+.app-info .k {
   font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
   color: var(--bs-secondary-color, #5b7a84); margin-bottom: 3px; font-weight: 600;
 }
-.site-info .v { font-weight: 600; word-break: break-word; font-size: 13.5px; }
+.app-info .v { font-weight: 600; word-break: break-word; font-size: 13.5px; }
 
 /* ---------- Tabs (scroll horizontal di layar sempit) ---------- */
 .nav-pills.tab-scroll {

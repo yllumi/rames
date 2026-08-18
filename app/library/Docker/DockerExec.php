@@ -6,7 +6,7 @@ namespace app\library\Docker;
 use RuntimeException;
 
 /**
- * Menjalankan `docker exec` ke container milik site (eksekusi pada daemon host via docker.sock).
+ * Menjalankan `docker exec` ke container milik app (eksekusi pada daemon host via docker.sock).
  *
  * Dua mode:
  *  1. runCommand()      — eksekusi satu-perintah (non-interaktif); output lengkap dikembalikan.
@@ -17,7 +17,7 @@ use RuntimeException;
  *
  * Keamanan:
  *  - Seluruh command memakai bentuk array + bypass_shell (tanpa shell host) → bebas injection.
- *  - Container yang boleh di-exec divalidasi milik site di controller (tidak diterima mentah).
+ *  - Container yang boleh di-exec divalidasi milik app di controller (tidak diterima mentah).
  *  - Token sesi acak (16 byte) — tak tertebak, bertindak sebagai capability.
  *  - Shell dibatasi whitelist.
  */
@@ -72,7 +72,7 @@ class DockerExec
      * @return array{token:string, pid:int, shell:string, container:string}
      * @throws RuntimeException
      */
-    public function open(string $siteId, string $container, array $opts = []): array
+    public function open(string $appId, string $container, array $opts = []): array
     {
         $this->pruneStale();
         $this->assertCapacity();
@@ -109,7 +109,7 @@ class DockerExec
         // Catatan: util-linux `script` hanya menerima command lewat -c (string), dan
         // string tsb dieksekusi oleh shell INTERNAL script. Seluruh bagian perintah
         // di-escape dengan escapeshellarg + variabel sudah divalidasi (container milik
-        // site, shell whitelist, user regex) → tidak ada jalur command injection.
+        // app, shell whitelist, user regex) → tidak ada jalur command injection.
         $dockerCmd = escapeshellarg($this->dockerBinary) . ' exec -it';
         if ($user !== '') {
             $dockerCmd .= ' -u ' . escapeshellarg($user);
@@ -168,7 +168,7 @@ class DockerExec
         }
         file_put_contents($dir . '/session.json', json_encode([
             'token' => $token,
-            'site_id' => $siteId,
+            'app_id' => $appId,
             'container' => $container,
             'shell' => $shell,
             'user' => $user,
@@ -186,15 +186,15 @@ class DockerExec
     }
 
     /**
-     * Validasi token milik site; kembalikan metadata sesi atau null.
+     * Validasi token milik app; kembalikan metadata sesi atau null.
      */
-    public function sessionInfo(string $token, string $siteId): ?array
+    public function sessionInfo(string $token, string $appId): ?array
     {
         if (!preg_match('/^[a-f0-9]{32}$/', $token)) {
             return null;
         }
         $meta = $this->metaOf($token);
-        if ($meta === [] || ($meta['site_id'] ?? '') !== $siteId) {
+        if ($meta === [] || ($meta['app_id'] ?? '') !== $appId) {
             return null;
         }
         return $meta;

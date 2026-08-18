@@ -33,8 +33,8 @@ class DockerComposeRunner
     private function baseArgs(string $project, string $dir, array $files, ?string $envFile = null): array
     {
         $args = [$this->composeBinary, 'compose', '-p', $project, '--project-directory', $dir];
-        // Managed env file per site → substitusi ${VAR} memakai nilai yang dikelola
-        // dashboard (di luar repo site, jadi bebas konflik git pull).
+        // Managed env file per app → substitusi ${VAR} memakai nilai yang dikelola
+        // dashboard (di luar repo app, jadi bebas konflik git pull).
         if ($envFile !== null && $envFile !== '' && is_file($envFile)) {
             $args[] = '--env-file';
             $args[] = $envFile;
@@ -69,7 +69,7 @@ class DockerComposeRunner
 
     /**
      * Hapus volume bernama (docker volume rm). Dipakai teardown selektif:
-     * menghapus volume project yang TIDAK dipertahankan saat site dihapus.
+     * menghapus volume project yang TIDAK dipertahankan saat app dihapus.
      * Bentuk array + bypass_shell → bebas command injection (nama volume argumen).
      *
      * @param array<int,string> $names

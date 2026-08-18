@@ -129,7 +129,7 @@ class SslIssuer
      * Cabut (revoke) sertifikat Let's Encrypt untuk sebuah domain lalu hapus
      * direktori cert-nya. No-op bila sertifikat tidak (lagi) ada di disk.
      *
-     * Dipakai saat custom domain dihapus/diganti dari site — sertifikat lama
+     * Dipakai saat custom domain dihapus/diganti dari app — sertifikat lama
      * tidak boleh dibiarkan aktif untuk domain yang tidak lagi dikelola.
      *
      * @throws RuntimeException bila certbot revoke gagal

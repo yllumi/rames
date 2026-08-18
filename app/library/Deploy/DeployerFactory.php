@@ -31,7 +31,7 @@ class DeployerFactory
                 confPath: (string) config('deploy.nginx_conf_path', '/etc/nginx/sites-available'),
                 enabledPath: (string) config('deploy.nginx_enabled_path', ''),
             ),
-            sitesPath: (string) config('deploy.sites_path'),
+            appsPath: (string) config('deploy.apps_path'),
             env: new EnvManager(),
             network: new NetworkManager(),
         );

@@ -60,7 +60,7 @@ class EnvManagerTest extends TestCase
 
     public function testParseEnvExample(): void
     {
-        $dir = $this->tmp . '/site';
+        $dir = $this->tmp . '/app';
         mkdir($dir, 0777, true);
         file_put_contents($dir . '/.env.example', "# contoh\nAPP_KEY=base64:abc\nDB_HOST='localhost'\n\nKOSONG=\n# komentar\ndb_port=\"5432\"\n");
 
@@ -81,7 +81,7 @@ class EnvManagerTest extends TestCase
 
     public function testWriteOverrideInjectsToAllServices(): void
     {
-        $dir = $this->tmp . '/site';
+        $dir = $this->tmp . '/app';
         mkdir($dir, 0777, true);
         file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx\n  worker:\n    image: busybox\n");
 
@@ -99,7 +99,7 @@ class EnvManagerTest extends TestCase
 
     public function testSyncActiveWritesFiles(): void
     {
-        $dir = $this->tmp . '/site';
+        $dir = $this->tmp . '/app';
         mkdir($dir, 0777, true);
         file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx\n");
 
@@ -113,7 +113,7 @@ class EnvManagerTest extends TestCase
 
     public function testSyncEmptyRemovesFiles(): void
     {
-        $dir = $this->tmp . '/site';
+        $dir = $this->tmp . '/app';
         mkdir($dir, 0777, true);
         file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx\n");
 
@@ -129,7 +129,7 @@ class EnvManagerTest extends TestCase
 
     public function testSyncIgnoresInvalidKeys(): void
     {
-        $dir = $this->tmp . '/site';
+        $dir = $this->tmp . '/app';
         mkdir($dir, 0777, true);
         file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx\n");
 

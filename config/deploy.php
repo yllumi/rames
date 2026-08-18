@@ -9,20 +9,20 @@ declare(strict_types=1);
  */
 
 return [
-    // Domain dasar; subdomain site = {name}.{app_domain}
+    // Domain dasar; subdomain app = {name}.{app_domain}
     'app_domain' => getenv('APP_DOMAIN') ?: 'example.com',
 
     // Port akses dashboard dari luar (informasional)
     'app_port' => (int) (getenv('APP_PORT') ?: 8000),
 
-    // Rentang host port yang diizinkan untuk container site
+    // Rentang host port yang diizinkan untuk container app
     'port_range' => [
         'start' => (int) (getenv('PORT_RANGE_START') ?: 30000),
         'end' => (int) (getenv('PORT_RANGE_END') ?: 30999),
     ],
 
-    // Direktori hasil clone tiap site
-    'sites_path' => getenv('SITES_PATH') ?: (base_path() . '/sites'),
+    // Direktori hasil clone tiap app
+    'apps_path' => getenv('APPS_PATH') ?: (base_path() . '/apps'),
 
     // Direktori config Nginx host yang di-mount ke container dashboard
     'nginx_conf_path' => getenv('NGINX_CONF_PATH') ?: '/etc/nginx/sites-available',
@@ -38,10 +38,10 @@ return [
     'nginx_bin' => getenv('NGINX_BIN') ?: '/usr/sbin/nginx',
     'nginx_reload_image' => getenv('NGINX_RELOAD_IMAGE') ?: 'alpine',
 
-    // Direktori penyimpanan JSON (auth.json, sites.json)
+    // Direktori penyimpanan JSON (auth.json, apps.json)
     'database_path' => getenv('DATABASE_PATH') ?: (base_path() . '/database'),
 
-    // Direktori pasangan kunci SSH (deploy key per site) + known_hosts
+    // Direktori pasangan kunci SSH (deploy key per app) + known_hosts
     'ssh_keys_path' => getenv('SSH_KEYS_PATH') ?: (base_path() . '/database/keys'),
     'git_known_hosts' => getenv('GIT_KNOWN_HOSTS') ?: (base_path() . '/database/keys/known_hosts'),
 

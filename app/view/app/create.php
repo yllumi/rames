@@ -1,4 +1,4 @@
-<?php $pageTitle = 'Create Site'; $active = 'sites'; ?>
+<?php $pageTitle = 'Create App'; $active = 'apps'; ?>
 <?php
 // State tambahan: saat clone repo private gagal, form dirender ulang bersama
 // public key deploy key supaya user bisa menambahkannya ke repo lalu coba lagi.
@@ -14,7 +14,7 @@ $formBranch = $form_branch ?? 'main';
 
 <div class="page-head mb-4">
   <div>
-    <h1 class="h3 mb-1">Create Site</h1>
+    <h1 class="h3 mb-1">Create App</h1>
     <p class="text-muted mb-0">Clone repo → deteksi port → konfirmasi → deploy.</p>
   </div>
 </div>
@@ -38,10 +38,10 @@ $formBranch = $form_branch ?? 'main';
     </div>
     <?php endif; ?>
 
-    <form method="post" action="/sites/create">
+    <form method="post" action="/apps/create">
       <?= csrf_field() ?>
       <div class="mb-3">
-        <label class="form-label" for="name">Nama site (slug)</label>
+        <label class="form-label" for="name">Nama app (slug)</label>
         <input type="text" class="form-control" id="name" name="name" placeholder="myapp" value="<?= e($formName) ?>" required>
         <div class="form-text">Hanya huruf kecil a-z, angka, dan strip (-). Dipakai sebagai subdomain &amp; nama direktori.</div>
       </div>
@@ -72,7 +72,7 @@ $formBranch = $form_branch ?? 'main';
 
       <div class="d-flex gap-2">
         <button type="submit" class="btn btn-primary">Analisis Repo</button>
-        <a class="btn btn-outline-secondary" href="/sites">Batal</a>
+        <a class="btn btn-outline-secondary" href="/apps">Batal</a>
       </div>
     </form>
   </div>

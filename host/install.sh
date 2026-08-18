@@ -363,14 +363,14 @@ print_summary() {
     echo "${C_GREEN} Rames terpasang!${C_RESET}"
     echo "${C_GREEN}==================================================${C_RESET}"
     echo "  Dashboard : http://localhost:${port}"
-    echo "  Subdomain : {site}.${domain}"
+    echo "  Subdomain : {app}.${domain}"
     echo
     echo "  Service aktif:"
     echo "    - dashboard-nginx-watcher.service (reload otomatis Nginx)"
     echo "    - certbot-renew.timer (renewal SSL 2×/hari)"
     echo
     echo "  Langkah berikutnya:"
-    echo "    - Buka dashboard, login, lalu Create Site dari repo Git berisi docker-compose.yml"
+    echo "    - Buka dashboard, login, lalu Create App dari repo Git berisi docker-compose.yml"
     echo "    - Pastikan DNS *.${domain} mengarah ke IP server ini"
     echo "    - Periksa service: systemctl status dashboard-nginx-watcher certbot-renew.timer"
 }
