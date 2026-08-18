@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Deploy\DeployerFactory;
+use app\library\Deploy\EnvManager;
 use app\library\Docker\ComposeParser;
 use app\library\Docker\PortManager;
 use app\library\Git\GitService;
@@ -531,6 +532,10 @@ class SiteController
                 (new SshKeyManager())->remove($site['name']);
             }
 
+            // Bersihkan managed env file site (override env di dalam dir site
+            // ikut terhapus bersama cleanupDir).
+            (new EnvManager())->remove($site['name']);
+
             $store->delete($id);
             flash_set('success', 'Site "' . $site['name'] . '" dihapus.');
         } catch (\Throwable $e) {
@@ -712,6 +717,196 @@ class SiteController
                 throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai custom domain site "' . ($other['name'] ?? '?') . '".');
             }
         }
+    }
+
+    // ==================================================================
+    // Environment variables (fitur "Environment Variables")
+    // ==================================================================
+
+    /**
+     * Simpan environment variable site (POST /sites/{id}/env).
+     *
+     * Validasi ketat format kunci, lalu: tulis managed env file + override env
+     * (EnvManager), persist ke sites.json, dan auto-recreate container via
+     * `docker compose up -d` (tanpa build) agar perubahan langsung diterapkan.
+     */
+    public function saveEnv(Request $request, string $id)
+    {
+        $store = new SiteStore();
+        $site = $store->find($id);
+        if ($site === null) {
+            flash_set('error', 'Site tidak ditemukan.');
+            return redirect('/sites');
+        }
+        if (($site['status'] ?? '') === 'deploying') {
+            flash_set('error', 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/sites/' . $id);
+        }
+
+        $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+        if (!is_dir($dir)) {
+            flash_set('error', 'Direktori site tidak ada. Site mungkin sudah dihapus.');
+            return redirect('/sites/' . $id);
+        }
+
+        try {
+            $posted = (array) $request->post('env', []);
+            $deleteKeys = array_values(array_filter(
+                array_map('strval', (array) $request->post('env_delete', [])),
+                static fn (string $k): bool => $k !== ''
+            ));
+            $env = $this->normalizeEnv($posted, $deleteKeys, is_array($site['env'] ?? null) ? $site['env'] : []);
+
+            // 1) Tulis file dulu (managed + override). Gagal => tidak ada state
+            //    yang berubah (sites.json belum disentuh, tetap konsisten).
+            $envManager = new EnvManager();
+            $composeFiles = $site['compose_files'] ?? ['docker-compose.yml'];
+            $envManager->sync(['name' => $site['name'], 'env' => $env], $dir, $composeFiles);
+
+            // 2) Persist ke sites.json (env + compose_files).
+            $store->update($id, function (array &$s) use ($env): void {
+                $s['env'] = $env;
+                $files = $s['compose_files'] ?? ['docker-compose.yml'];
+                $files = array_values(array_filter($files, static fn (string $f): bool => $f !== EnvManager::OVERRIDE_FILE));
+                if ($env !== []) {
+                    $files[] = EnvManager::OVERRIDE_FILE; // selalu terakhir → menang atas repo
+                }
+                $s['compose_files'] = $files;
+            });
+
+            // 3) Auto-recreate container (up -d tanpa build). Sinkron & cepat;
+            //    kegagalan penerapan tidak menggagalkan penyimpanan.
+            $site = $store->find($id) ?? $site;
+            try {
+                $applied = DeployerFactory::create()->applyEnv($site, static function (string $stage, string $message): void {
+                });
+                $store->update($id, function (array &$s) use ($applied): void {
+                    $s['containers'] = $applied['containers'] ?? [];
+                    $s['status'] = 'running';
+                    $s['message'] = 'Running';
+                    $s['error'] = null;
+                });
+                flash_set('success', 'Environment variable disimpan & container diciptakan ulang.');
+            } catch (\Throwable $e) {
+                flash_set('error', 'Environment variable tersimpan, tetapi gagal menerapkan ke container: ' . $e->getMessage() . ' — coba Rebuild untuk menerapkan.');
+            }
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+        return redirect('/sites/' . $id);
+    }
+
+    /**
+     * Import variabel yang belum ada dari .env.example di direktori site
+     * (POST /sites/{id}/env/import). Hanya mengisi nilai default; TIDAK
+     * auto-recreate — user meninjau nilainya dulu, lalu klik "Simpan & Terapkan".
+     */
+    public function importEnv(Request $request, string $id)
+    {
+        $store = new SiteStore();
+        $site = $store->find($id);
+        if ($site === null) {
+            flash_set('error', 'Site tidak ditemukan.');
+            return redirect('/sites');
+        }
+        if (($site['status'] ?? '') === 'deploying') {
+            flash_set('error', 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/sites/' . $id);
+        }
+
+        $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+        if (!is_dir($dir)) {
+            flash_set('error', 'Direktori site tidak ada. Site mungkin sudah dihapus.');
+            return redirect('/sites/' . $id);
+        }
+
+        try {
+            $envManager = new EnvManager();
+            $example = $envManager->parseEnvExample($dir);
+            if ($example === []) {
+                flash_set('error', 'Tidak ada .env.example di direktori site (atau tidak dapat di-parse).');
+                return redirect('/sites/' . $id);
+            }
+
+            $env = is_array($site['env'] ?? null) ? $site['env'] : [];
+            $added = 0;
+            foreach ($example as $key => $value) {
+                if (!array_key_exists($key, $env)) {
+                    $env[$key] = $value;
+                    $added++;
+                }
+            }
+
+            if ($added === 0) {
+                flash_set('info', 'Semua variabel di .env.example sudah ada di site.');
+                return redirect('/sites/' . $id);
+            }
+
+            // Simpan + tulis file (tanpa recreate — biarkan user meninjau dulu).
+            $composeFiles = $site['compose_files'] ?? ['docker-compose.yml'];
+            $envManager->sync(['name' => $site['name'], 'env' => $env], $dir, $composeFiles);
+            $store->update($id, function (array &$s) use ($env): void {
+                $s['env'] = $env;
+                $files = $s['compose_files'] ?? ['docker-compose.yml'];
+                $files = array_values(array_filter($files, static fn (string $f): bool => $f !== EnvManager::OVERRIDE_FILE));
+                $files[] = EnvManager::OVERRIDE_FILE;
+                $s['compose_files'] = $files;
+            });
+
+            flash_set('success', "Diimport {$added} variabel dari .env.example. Tinjau nilainya, lalu klik \"Simpan & Terapkan\" untuk menerapkan ke container.");
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+        return redirect('/sites/' . $id);
+    }
+
+    /**
+     * Normalisasi & validasi input env var dari form.
+     *
+     * - Kunci wajib ^[A-Za-z_][A-Za-z0-9_]*$ (validasi ketat).
+     * - Nilai tidak boleh mengandung baris baru.
+     * - Kunci duplikat di form ditolak.
+     * - Kunci yang ditandai hapus (env_delete[]) dibuang.
+     * - Existing yang tidak di-overwrite form tetap dipertahankan (tidak hilang).
+     *
+     * @param array $posted     baris env[i][key] / env[i][value]
+     * @param array $deleteKeys kunci yang ditandai hapus
+     * @param array $existing   env lama dari sites.json
+     * @return array<string,string>
+     */
+    private function normalizeEnv(array $posted, array $deleteKeys, array $existing): array
+    {
+        $env = [];
+        foreach ($posted as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $key = trim((string) ($row['key'] ?? ''));
+            if ($key === '' || in_array($key, $deleteKeys, true)) {
+                continue;
+            }
+            if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $key)) {
+                throw new RuntimeException("Nama variabel tidak valid: \"{$key}\". Gunakan huruf/angka/underscore, diawali huruf atau underscore.");
+            }
+            $value = (string) ($row['value'] ?? '');
+            if (str_contains($value, "\n") || str_contains($value, "\r")) {
+                throw new RuntimeException("Nilai untuk \"{$key}\" tidak boleh mengandung baris baru.");
+            }
+            if (array_key_exists($key, $env)) {
+                throw new RuntimeException("Variabel \"{$key}\" duplikat. Hapus salah satunya.");
+            }
+            $env[$key] = $value;
+        }
+
+        // Sisa existing yang tidak dihapus & tidak di-overwrite form.
+        foreach ($existing as $key => $value) {
+            $key = (string) $key;
+            if (in_array($key, $deleteKeys, true) || array_key_exists($key, $env)) {
+                continue;
+            }
+            $env[$key] = (string) $value;
+        }
+        return $env;
     }
 
     // ==================================================================

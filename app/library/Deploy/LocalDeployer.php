@@ -20,6 +20,7 @@ class LocalDeployer implements DeployerInterface
         private readonly DockerClient $dockerClient,
         private readonly NginxConfigGenerator $nginx,
         private readonly string $sitesPath,
+        private readonly EnvManager $env,
     ) {
     }
 
@@ -32,8 +33,11 @@ class LocalDeployer implements DeployerInterface
         $dir = $this->siteDir($site);
         $files = $this->resolveComposeFiles($site, $dir);
 
+        // Sinkronkan managed env file + override env (idempoten, aman bila kosong)
+        $this->env->sync($site, $dir, $files);
+
         $logger('build', 'Menjalankan docker compose up -d --build ...');
-        $this->compose->up($project, $dir, $files, true);
+        $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
 
         $logger('collect', 'Mengumpulkan info container ...');
         $site['containers'] = $this->getContainers($project);
@@ -62,8 +66,11 @@ class LocalDeployer implements DeployerInterface
         $git->ensureBranch($dir, $branch);
         $git->pull($dir, $branch, $this->siteSshKeyPath($site));
 
+        // Sinkronkan managed env file + override env (idempoten, aman bila kosong)
+        $this->env->sync($site, $dir, $files);
+
         $logger('build', 'docker compose up -d --build ...');
-        $this->compose->up($project, $dir, $files, true);
+        $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
 
         $site['containers'] = $this->getContainers($project);
         $this->writeNginxConfig($site);
@@ -94,8 +101,11 @@ class LocalDeployer implements DeployerInterface
             $git->fetchSha($dir, $ref, $this->siteSshKeyPath($site));
             $git->checkout($dir, $ref);
 
+            // Sinkronkan managed env file + override env (idempoten, aman bila kosong)
+            $this->env->sync($site, $dir, $files);
+
             $logger('build', 'docker compose up -d --build ...');
-            $this->compose->up($project, $dir, $files, true);
+            $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
 
             $site['containers'] = $this->getContainers($project);
             $this->writeNginxConfig($site);
@@ -108,7 +118,7 @@ class LocalDeployer implements DeployerInterface
             $logger('restore', "Rollback gagal, mencoba kembali ke {$prevRef} ...");
             try {
                 $git->checkout($dir, $prevRef);
-                $this->compose->up($project, $dir, $files, true);
+                $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
                 $site['containers'] = $this->getContainers($project);
                 $this->writeNginxConfig($site);
                 $site['status'] = 'running';
@@ -126,7 +136,7 @@ class LocalDeployer implements DeployerInterface
     public function stop(array $site): void
     {
         $dir = $this->siteDir($site);
-        $this->compose->stop($site['name'], $dir, $this->resolveComposeFiles($site, $dir));
+        $this->compose->stop($site['name'], $dir, $this->resolveComposeFiles($site, $dir), $this->siteEnvFile($site));
     }
 
     public function ensureWritable(): void
@@ -137,7 +147,30 @@ class LocalDeployer implements DeployerInterface
     public function start(array $site): void
     {
         $dir = $this->siteDir($site);
-        $this->compose->start($site['name'], $dir, $this->resolveComposeFiles($site, $dir));
+        $this->compose->start($site['name'], $dir, $this->resolveComposeFiles($site, $dir), $this->siteEnvFile($site));
+    }
+
+    /**
+     * Terapkan perubahan environment variable tanpa rebuild source:
+     * tulis ulang managed env file + override, lalu `docker compose up -d`
+     * (tanpa --build) — compose menciptakan ulang hanya container yang
+     * environment-nya berubah.
+     */
+    public function applyEnv(array $site, callable $logger): array
+    {
+        $project = $site['name'];
+        $dir = $this->siteDir($site);
+        $files = $this->resolveComposeFiles($site, $dir);
+
+        $this->env->sync($site, $dir, $files);
+
+        $logger('build', 'Menciptakan ulang container dengan environment baru ...');
+        $this->compose->up($project, $dir, $files, false, $this->siteEnvFile($site));
+
+        $site['containers'] = $this->getContainers($project);
+        $site['status'] = 'running';
+        $logger('done', 'Environment diterapkan.');
+        return $site;
     }
 
     public function teardown(array $site, ?array $preserveVolumes = null): void
@@ -152,7 +185,7 @@ class LocalDeployer implements DeployerInterface
         // an image nor a build context specified"), `down` melempar exception;
         // lanjut ke pembersihan manual via Engine API di bawah.
         try {
-            $this->compose->down($project, $dir, $files, $preserveVolumes === null);
+            $this->compose->down($project, $dir, $files, $preserveVolumes === null, $this->siteEnvFile($site));
         } catch (\Throwable $e) {
             // abaikan — teardownViaApi() menyelesaikan sisanya.
         }
@@ -400,6 +433,19 @@ class LocalDeployer implements DeployerInterface
             static fn (array $v): string => (string) ($v['Name'] ?? ''),
             $volumes
         ), static fn (string $name): bool => $name !== ''));
+    }
+
+    /**
+     * Path managed env file site bila site punya env vars (file sudah ditulis),
+     * atau null. Dipakai sebagai argumen `--env-file` docker compose.
+     */
+    private function siteEnvFile(array $site): ?string
+    {
+        if (empty($site['env'])) {
+            return null;
+        }
+        $path = $this->env->managedPath((string) $site['name']);
+        return is_file($path) ? $path : null;
     }
 
     /**

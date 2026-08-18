@@ -63,6 +63,10 @@ Route::post('/sites/{id}/delete', [SiteController::class, 'delete']);
 Route::post('/sites/{id}/domain/set', [SiteController::class, 'setDomain']);
 Route::post('/sites/{id}/domain/remove', [SiteController::class, 'removeDomain']);
 
+// Environment variables per site
+Route::post('/sites/{id}/env', [SiteController::class, 'saveEnv']);
+Route::post('/sites/{id}/env/import', [SiteController::class, 'importEnv']);
+
 // Reload Nginx host (via Docker socket helper container)
 Route::post('/nginx/reload', [NginxController::class, 'reload']);
 

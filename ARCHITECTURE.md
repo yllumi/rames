@@ -88,7 +88,7 @@ Controller hanya **mediator**: tidak memuat logika bisnis, tidak menyimpan state
 | Controller | Tanggung jawab |
 |---|---|
 | `AuthController` | Login/logout, session, regenerasi session id (anti fixation) |
-| `SiteController` | Wizard create site, halaman detail & halaman versi (`/sites/{id}/versions`), aksi (rebuild/rollback/stop/start/delete dengan mode preserve/purge volume), set/hapus custom domain, endpoint polling status |
+| `SiteController` | Wizard create site, halaman detail & halaman versi (`/sites/{id}/versions`), aksi (rebuild/rollback/stop/start/delete dengan mode preserve/purge volume), set/hapus custom domain, kelola environment variable site (simpan + auto-recreate, import `.env.example`), endpoint polling status |
 | `VolumeController` | Halaman `/volumes`: daftar volume ber-label compose + bersihkan volume **yatim** (ditinggalkan site yang dihapus dengan mode preserve) |
 | `UserController` | Kelola user (tambah/hapus, ganti password) |
 
@@ -123,8 +123,9 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `NginxReloader` | Reload nginx HOST via helper container (`--pid host --privileged`, chroot ke root host) pada Docker socket; tulis `last-reload.json`; dipakai tombol "Reload Nginx" + auto-reload setelah set/hapus custom domain, deploy/rebuild, dan SSL (best-effort) |
 | **SSL** | `SslIssuer` | Terbitkan/revoke sertifikat Let's Encrypt via certbot (HTTP-01 webroot / DNS-01 Cloudflare), cek kedaluwarsa cert |
 | | `SslController` | Halaman `/ssl`: daftar domain (subdomain/custom) + status SSL + tombol Aktifkan SSL / Retry |
-| **Deploy** | `DeployerInterface` | Abstraksi eksekusi deploy (siap diganti `HttpDeployer` untuk multi-server); termasuk `rollback()` |
-| | `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx (termasuk custom domain & redirect subdomain); `rollback()` = fetch+checkout ref lama + rebuild, auto-restore ke versi aktif bila gagal, catat `deploy_history` |
+| **Deploy** | `DeployerInterface` | Abstraksi eksekusi deploy (siap diganti `HttpDeployer` untuk multi-server); termasuk `rollback()` dan `applyEnv()` (terapkan env var tanpa rebuild source) |
+| | `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx (termasuk custom domain & redirect subdomain); `rollback()` = fetch+checkout ref lama + rebuild, auto-restore ke versi aktif bila gagal, catat `deploy_history`; `applyEnv()` = tulis env + `up -d` (recreate) |
+| | `EnvManager` | Kelola environment variable site: tulis managed env file (`database/env/{name}.env`, dipakai compose via `--env-file`) + override env (`docker-compose.override.env.yml`, inject `environment:` literal ke semua service); parse `.env.example` untuk import; `sync()` idempoten |
 | | `DeployerFactory` | Satu-satunya titik pembuatan `DeployerInterface` |
 
 ### 4.4 Background Worker — `cli/deploy.php`
@@ -140,10 +141,11 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 ### 4.5 Storage
 
 - `database/auth.json` — array user (id, username, password_hash, created_at).
-- `database/sites.json` — array site (struktur lengkap di SPECS §7.1): id, name, subdomain, repo_url, branch, local_path, primary_service, status, compose_files, auth_method, ssh_key, containers, timestamp.
+- `database/sites.json` — array site (struktur lengkap di SPECS §7.1): id, name, subdomain, repo_url, branch, local_path, primary_service, status, compose_files, auth_method, ssh_key, containers, timestamp, env (map KEY=value, SPECS §7.6).
 - `database/keys/` — pasangan kunci SSH (deploy key per site, chmod 0600) + `known_hosts`; private key tidak pernah keluar server.
+- `database/env/{name}.env` — managed env file per site (chmod 0600); dibaca docker compose via `--env-file`.
 - Semua mutasi lewat `JsonStore->update()` dengan `flock` → aman dari race condition.
-- Direktori `sites/`, `database/*.json`, `database/keys/`, `nginx-status/` di-gitignore (data runtime).
+- Direktori `sites/`, `database/*.json`, `database/keys/`, `database/env/`, `nginx-status/` di-gitignore (data runtime).
 
 ---
 

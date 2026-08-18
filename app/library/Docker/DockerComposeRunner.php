@@ -26,11 +26,19 @@ class DockerComposeRunner
     }
 
     /**
+     * @param array<int,string> $files
+     * @param string|null       $envFile path absolute managed env file (opsional)
      * @return array<int,string>
      */
-    private function baseArgs(string $project, string $dir, array $files): array
+    private function baseArgs(string $project, string $dir, array $files, ?string $envFile = null): array
     {
         $args = [$this->composeBinary, 'compose', '-p', $project, '--project-directory', $dir];
+        // Managed env file per site → substitusi ${VAR} memakai nilai yang dikelola
+        // dashboard (di luar repo site, jadi bebas konflik git pull).
+        if ($envFile !== null && $envFile !== '' && is_file($envFile)) {
+            $args[] = '--env-file';
+            $args[] = $envFile;
+        }
         foreach ($files as $file) {
             $args[] = '-f';
             $args[] = $dir . '/' . $file;
@@ -38,9 +46,9 @@ class DockerComposeRunner
         return $args;
     }
 
-    public function up(string $project, string $dir, array $files, bool $build = true): void
+    public function up(string $project, string $dir, array $files, bool $build = true, ?string $envFile = null): void
     {
-        $args = $this->baseArgs($project, $dir, $files);
+        $args = $this->baseArgs($project, $dir, $files, $envFile);
         $args[] = 'up';
         $args[] = '-d';
         if ($build) {
@@ -49,9 +57,9 @@ class DockerComposeRunner
         $this->mustRun($args, $dir, 'docker compose up', $this->timeout);
     }
 
-    public function down(string $project, string $dir, array $files, bool $volumes = true): void
+    public function down(string $project, string $dir, array $files, bool $volumes = true, ?string $envFile = null): void
     {
-        $args = $this->baseArgs($project, $dir, $files);
+        $args = $this->baseArgs($project, $dir, $files, $envFile);
         $args[] = 'down';
         if ($volumes) {
             $args[] = '-v';
@@ -78,16 +86,16 @@ class DockerComposeRunner
         $this->mustRun($args, sys_get_temp_dir(), 'docker volume rm', 120);
     }
 
-    public function stop(string $project, string $dir, array $files): void
+    public function stop(string $project, string $dir, array $files, ?string $envFile = null): void
     {
-        $args = $this->baseArgs($project, $dir, $files);
+        $args = $this->baseArgs($project, $dir, $files, $envFile);
         $args[] = 'stop';
         $this->mustRun($args, $dir, 'docker compose stop', 120);
     }
 
-    public function start(string $project, string $dir, array $files): void
+    public function start(string $project, string $dir, array $files, ?string $envFile = null): void
     {
-        $args = $this->baseArgs($project, $dir, $files);
+        $args = $this->baseArgs($project, $dir, $files, $envFile);
         $args[] = 'start';
         $this->mustRun($args, $dir, 'docker compose start', 120);
     }

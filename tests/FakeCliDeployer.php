@@ -54,6 +54,11 @@ class FakeCliDeployer implements DeployerInterface
     {
     }
 
+    public function applyEnv(array $site, callable $logger): array
+    {
+        return $this->finish($site, 'apply-env');
+    }
+
     public function teardown(array $site, ?array $preserveVolumes = null): void
     {
     }

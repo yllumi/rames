@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use app\library\Deploy\EnvManager;
 use app\library\Deploy\LocalDeployer;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
@@ -84,7 +85,7 @@ class TeardownFakeComposeRunner extends DockerComposeRunner
         parent::__construct(new ProcessRunner(), 'docker', 10);
     }
 
-    public function down(string $project, string $dir, array $files, bool $volumes = true): void
+    public function down(string $project, string $dir, array $files, bool $volumes = true, ?string $envFile = null): void
     {
         $this->downCalls[] = $volumes;
         if ($this->downThrows) {
@@ -137,7 +138,7 @@ class TeardownTestDeployer extends LocalDeployer
 {
     public function __construct(DockerComposeRunner $compose, TeardownFakeDockerClient $docker)
     {
-        parent::__construct($compose, $docker, new TeardownFakeNginxGenerator(), '/tmp/rames-sites');
+        parent::__construct($compose, $docker, new TeardownFakeNginxGenerator(), '/tmp/rames-sites', new EnvManager(sys_get_temp_dir() . '/rames-test-env'));
     }
 
     public function renderNginxConfig(array $site): string

@@ -15,6 +15,7 @@
 /database/*.bak
 /database/*.tmp
 /database/keys/
+/database/env/
 
 # SSL Let's Encrypt: webroot challenge & kredensial DNS provider
 /webroot/

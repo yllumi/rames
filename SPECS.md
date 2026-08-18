@@ -260,6 +260,40 @@ Rollback mengembalikan site ke **commit yang pernah sukses** (checkpoint otomati
 - `LocalDeployerRollbackTest` — rollback sukses, restore otomatis saat build gagal, no-op ke versi aktif, history cap 20.
 - `CliDeployRollbackTest` — end-to-end `cli/deploy.php` mode rollback via subproses dengan fake deployer (`DEPLOYER_CLASS` env override di `DeployerFactory`, tanpa daemon Docker): persistensi status+history, jalur error, validasi argumen.
 - `SiteStoreTest` — persistensi `deploy_history`.
+- `EnvManagerTest` — format managed env file, parse `.env.example`, override env ke semua service, sync/remove.
+
+### 7.6 Environment Variables per Site
+
+Setiap site bisa diberi **environment variable** yang dikelola dashboard (mis. kredensial database). Fitur ini melayani dua kebutuhan sekaligus:
+
+- **Substitusi `${VAR}`** di `docker-compose.yml` — dipakai docker compose via flag `--env-file` ke managed env file.
+- **Injeksi ke environment container** — variabel di-inject `environment:` **literal** ke SETIAP service melalui override file, sehingga nilai benar-benar sampai ke aplikasi tanpa bergantung pada referensi `${VAR}` di repo.
+
+**Data model (sites.json)**
+- `env` — map `{KEY: value}` (urutan terjaga). Absen/null = tidak ada env vars.
+- `compose_files` — `docker-compose.override.env.yml` ditambahkan sebagai entri **terakhir** (menang atas repo) saat `env` terisi; dihapus dari daftar bila `env` dikosongkan.
+
+**File di disk (dikelola `EnvManager`)**
+- Managed env file: `{database_path}/env/{name}.env` (di **luar** direktori repo site → tidak pernah konflik `git pull --ff-only` saat Rebuild; chmod 0600 karena bisa berisi secret).
+- Override file: `sites/{name}/docker-compose.override.env.yml`.
+
+**Alur simpan (POST `/sites/{id}/env`)**
+1. Validasi ketat: kunci `^[A-Za-z_][A-Za-z0-9_]*$`, nilai tanpa baris baru, kunci tidak duplikat.
+2. Tulis managed env file + override file (gagal → tidak ada state berubah).
+3. Persist `env` + `compose_files` ke `sites.json`.
+4. **Auto-recreate**: `docker compose up -d` (tanpa build) via `DeployerInterface::applyEnv()` — hanya container yang environment-nya berubah yang diciptakan ulang. Kegagalan penerapan tidak menggagalkan penyimpanan (flash error; recovery via Rebuild).
+
+**Import `.env.example` (POST `/sites/{id}/env/import`)**
+- Mengisi hanya kunci yang **belum ada** dari `.env.example` di direktori site (bila ada).
+- Tidak auto-recreate — user meninjau nilai hasil import dulu, lalu klik "Simpan & Terapkan".
+
+**Penerapan saat deploy/rebuild/rollback**: `LocalDeployer` selalu memanggil `EnvManager::sync()` (idempoten) sebelum `compose up`, sehingga file env di disk selalu konsisten dengan `sites.json` (aman bila file terhapus manual).
+
+**Batasan & keputusan**
+- Semua variabel di-inject ke **semua service** (nilai yang tidak relevan diabaikan runtime service) — tidak ada pemilihan service per-variabel di Phase 1.
+- Nilai di-inject **literal** (bukan `${KEY}`) agar kredensial pasti benar, tidak bergantung urutan precedence interpolasi compose.
+- Env vars tidak ikut tersimpan saat site dihapus (managed env file dibersihkan; konsisten dengan pembersihan deploy key).
+- Site lama tanpa field `env` aman (diakses dengan default kosong, tanpa migrasi data).
 
 ## 8. Reverse Proxy / Subdomain Routing
 

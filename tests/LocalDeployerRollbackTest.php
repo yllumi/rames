@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use app\library\Deploy\EnvManager;
 use app\library\Deploy\LocalDeployer;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
@@ -42,7 +43,7 @@ class FakeComposeRunner extends DockerComposeRunner
         parent::__construct(new ProcessRunner(), 'docker', 10);
     }
 
-    public function up(string $project, string $dir, array $files, bool $build = true): void
+    public function up(string $project, string $dir, array $files, bool $build = true, ?string $envFile = null): void
     {
         $this->calls[] = ['up', $project, $build];
         if ($this->upFailRemaining > 0) {
@@ -90,7 +91,7 @@ class TestLocalDeployer extends LocalDeployer
 
     public function __construct(DockerComposeRunner $compose, NginxConfigGenerator $nginx, string $sitesPath)
     {
-        parent::__construct($compose, new FakeDockerClient(), $nginx, $sitesPath);
+        parent::__construct($compose, new FakeDockerClient(), $nginx, $sitesPath, new EnvManager(sys_get_temp_dir() . '/rames-test-env'));
     }
 
     public function getContainers(string $project): array

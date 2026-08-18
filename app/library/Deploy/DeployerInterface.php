@@ -55,6 +55,18 @@ interface DeployerInterface
     public function start(array $site): void;
 
     /**
+     * Terapkan perubahan environment variable site TANPA rebuild source:
+     * tulis ulang managed env file + override env, lalu `docker compose up -d`
+     * (tanpa --build) — hanya container yang environment-nya berubah yang
+     * diciptakan ulang. Mengembalikan site yang diperbarui (containers).
+     *
+     * @param array    $site
+     * @param callable $logger callable(string $stage, string $message): void
+     * @return array
+     */
+    public function applyEnv(array $site, callable $logger): array;
+
+    /**
      * Teardown: down container + hapus config Nginx.
      *
      * Bila $preserveVolumes === null → `down -v` (hapus SEMUA volume termasuk
