@@ -6,6 +6,7 @@
 <title><?= e($pageTitle ?? 'Dashboard') ?> · Rames</title>
 <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/css/app.css">
+<meta name="csrf-token" content="<?= e(csrf_token()) ?>">
 </head>
 <body class="d-flex flex-column min-vh-100">
 <header class="topbar sticky-top">

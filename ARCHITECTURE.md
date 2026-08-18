@@ -89,6 +89,7 @@ Controller hanya **mediator**: tidak memuat logika bisnis, tidak menyimpan state
 |---|---|
 | `AuthController` | Login/logout, session, regenerasi session id (anti fixation) |
 | `SiteController` | Wizard create site, halaman detail & halaman versi (`/sites/{id}/versions`), aksi (rebuild/rollback/stop/start/delete dengan mode preserve/purge volume — tombol Delete di tab khusus "Hapus Site"), set/hapus custom domain, kelola environment variable site (simpan + auto-recreate, import `.env.example`), kelola external network (shared network lintas-site via compose override), endpoint polling status |
+| `TerminalController` | Terminal container (`docker exec`): buka sesi interaktif (open), stream output (SSE), kirim input, tutup sesi, dan one-shot run command; container divalidasi milik site; audit log ke `runtime/logs/terminal/` |
 | `NginxController` | Halaman `/nginx` (global): status reload Nginx host terakhir + tombol Reload — Nginx bersifat global (berlaku untuk semua site), di luar detail site |
 | `VolumeController` | Halaman `/volumes`: daftar volume ber-label compose + bersihkan volume **yatim** (ditinggalkan site yang dihapus dengan mode preserve) |
 | `NetworkController` | Halaman `/networks`: daftar semua network Docker (built-in diberi label & dilindungi, milik site aktif ditandai "dikelola site"), buat shared network (bridge/overlay/macvlan + IPAM + flag attachable/internal), detail network (container terhubung + connect/disconnect), hapus network dengan proteksi berlapis (built-in / dipakai container / milik site aktif ditolak) |
@@ -120,6 +121,7 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `PortManager` | Deteksi konflik port terhadap `sites.json`, saran port dari range, validasi port |
 | | `DockerClient` | Client Engine API (Guzzle + `CURLOPT_UNIX_SOCKET_PATH`): list/inspect container, list volume (per project / semua), list/inspect/buat network, connect/disconnect container ke network, hapus network, ping |
 | | `DockerComposeRunner` | CLI `docker compose` untuk **orkestrasi**: up/down/build/stop/start/pull; `removeVolumes()` untuk `docker volume rm` (teardown selektif) |
+| | `DockerExec` | Eksekusi `docker exec` ke container site: one-shot `runCommand()` (`sh -c`, timeout) & sesi interaktif `openInteractive()` — PTY via `script` (util-linux) + IPC berbasis FIFO di `runtime/terminal/{token}/` (proses detached, aman lintas-worker); `writeInput()/readOutput()/isRunning()/closeSession()` |
 | **Nginx** | `NginxConfigGenerator` | Render & tulis config `.conf` + symlink ke `sites-enabled`; `ensureWritable()` fail-fast; render multi server block per site (subdomain + custom domain, redirect 301, blok `listen 443 ssl`, `location /.well-known/acme-challenge/`) |
 | | `NginxStatusReader` | Baca status reload terakhir watcher (`last-reload.json`) |
 | | `NginxReloader` | Reload nginx HOST via helper container (`--pid host --privileged`, chroot ke root host) pada Docker socket; tulis `last-reload.json`; dipakai tombol "Reload Nginx" di halaman `/nginx` + auto-reload setelah set/hapus custom domain, deploy/rebuild, dan SSL (best-effort) |
@@ -233,6 +235,19 @@ Lalu: hapus config Nginx (+ symlink) → hapus direktori `sites/{name}` → hapu
 1. **Halaman `/networks`** (nav topbar, `NetworkController`): daftar semua network Docker dengan status — **built-in** (`bridge`/`host`/`none`/`ingress`/`docker_gwbridge`) diberi label & tidak bisa dihapus; network compose milik site aktif ditandai "dikelola site"; network yang dipakai container diblokir hapus (Engine menolak 409). Dari sini bisa **buat shared network** (driver bridge/overlay/macvlan + IPAM subnet/gateway/ip-range + flag `attachable`/`internal`), **hubungkan/putuskan container** (dengan alias network opsional), dan hapus network yang bebas.
 2. **Tab Network di detail site** — koneksi **persisten** lintas-site: pilih shared network, `NetworkManager` menulis `docker-compose.override.networks.yml` (`networks: {name}: {external: true}` + tiap service `networks: [default, <ext>...]`; merge compose `networks` bersifat union sehingga network base dipertahankan), lalu `up -d` (recreate) tanpa rebuild. Koneksi ini tidak hilang saat Rebuild/Rollback.
 3. **Catatan**: `docker network connect` manual (dari halaman detail network) **hilang** saat compose me-recreate container; untuk koneksi yang persisten gunakan tab Network di detail site.
+
+### 5.9 Terminal Container (docker exec)
+
+Tab **Container** di detail site menampilkan dua aksi per container (hanya saat status `running`):
+
+- **⌁ Terminal** — shell interaktif penuh (xterm.js di browser). Klik → modal → `POST /api/sites/{id}/terminal/open` → proses `docker exec -it <container> <shell>` di-spawn detached dengan PTY (dibungkus `script -qf -c`, util-linux; variabel di-escape `escapeshellarg`) dan IPC berbasis **FIFO** di `runtime/terminal/{token}/` (`stdin` + `stdout`; stderr digabung).
+  - **Output** di-stream ke browser via **SSE** (`GET .../stream`) memakai `Workerman\Timer` (non-blocking) + objek `ServerSentEvents`; event `output` berisi base64, event `close` saat proses berakhir.
+  - **Input** keyboard dikirim via `POST .../input` → ditulis ke FIFO stdin. Resize terminal mengirim `stty cols X rows Y` ke shell.
+  - Karena semua state hidup di file/FIFO + proses detached (bukan anak satu worker HTTP), **SSE dan POST boleh dilayani worker berbeda** (Webman multi-process) — tanpa state di memori shared.
+  - Lifecycle: sesi ditutup saat modal ditutup / `beforeunload` (`POST .../close`), saat koneksi SSE drop (`$connection->onClose`), atau di-*prune* otomatis saat buka sesi baru (TTL `terminal_session_ttl`, batas `terminal_max_sessions`).
+- **> Run** — perintah satu kali (non-interaktif): `POST .../run` → `docker exec <container> sh -c "<cmd>"` (array + `bypass_shell`, timeout `terminal_run_timeout`); output & exit code ditampilkan.
+
+Keamanan: container wajib milik site (cek `sites.json` lalu Engine API label project), shell whitelist (`sh`/`bash`/`ash`/`zsh`), semua POST kena CSRF, endpoint di balik `AuthMiddleware`, dan tiap open/run/close dicatat ke `runtime/logs/terminal/{date}.log`.
 
 ---
 

@@ -20,6 +20,7 @@ use app\controller\NetworkController;
 use app\controller\NginxController;
 use app\controller\SiteController;
 use app\controller\SslController;
+use app\controller\TerminalController;
 use app\controller\UserController;
 use app\controller\VolumeController;
 
@@ -90,6 +91,20 @@ Route::get('/networks/{id}', [NetworkController::class, 'detail']);
 Route::post('/networks/{id}/connect', [NetworkController::class, 'connect']);
 Route::post('/networks/{id}/disconnect', [NetworkController::class, 'disconnect']);
 Route::post('/networks/{id}/delete', [NetworkController::class, 'delete']);
+
+/*
+|--------------------------------------------------------------------------
+| Terminal container (docker exec interaktif & one-shot run command)
+|--------------------------------------------------------------------------
+| Stream output = SSE (GET), input/close/run = POST (kebagian CSRF). Semua
+| dilindungi AuthMiddleware (401 JSON untuk /api/* bila belum login).
+|--------------------------------------------------------------------------
+*/
+Route::post('/api/sites/{id}/terminal/open', [TerminalController::class, 'open']);
+Route::get('/api/sites/{id}/terminal/{token}/stream', [TerminalController::class, 'stream']);
+Route::post('/api/sites/{id}/terminal/{token}/input', [TerminalController::class, 'input']);
+Route::post('/api/sites/{id}/terminal/{token}/close', [TerminalController::class, 'close']);
+Route::post('/api/sites/{id}/terminal/run', [TerminalController::class, 'run']);
 
 /*
 |--------------------------------------------------------------------------

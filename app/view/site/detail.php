@@ -379,10 +379,11 @@ unset($c);
   <div class="table-responsive">
   <table class="table table-hover align-middle mb-0">
     <thead>
-      <tr><th>Service</th><th>Container</th><th>Image</th><th>Port</th><th>Status</th></tr>
+      <tr><th>Service</th><th>Container</th><th>Image</th><th>Port</th><th>Status</th><th class="text-end">Aksi</th></tr>
     </thead>
     <tbody>
       <?php foreach ($containers as $c): ?>
+      <?php $cRunning = ($c['status'] ?? '') === 'running'; ?>
       <tr>
         <td><strong><?= e($c['service_name'] ?? '-') ?></strong><?= ($site['primary_service'] ?? '') === ($c['service_name'] ?? '') ? ' <span class="text-muted small">(primary)</span>' : '' ?></td>
         <td><?= e($c['container_name'] ?? '-') ?></td>
@@ -395,6 +396,18 @@ unset($c);
           <?php endif; ?>
         </td>
         <td><span class="badge badge-<?= e($c['status'] ?? 'unknown') ?>"><?= e($c['status'] ?? 'unknown') ?></span></td>
+        <td class="text-end text-nowrap">
+          <?php if ($cRunning): ?>
+            <button type="button" class="btn btn-outline-secondary btn-sm terminal-btn"
+                    data-site="<?= e($site['id']) ?>" data-container="<?= e($c['container_name'] ?? '') ?>"
+                    data-shell="sh" title="Buka shell interaktif (docker exec -it sh)">⌁ Terminal</button>
+            <button type="button" class="btn btn-outline-primary btn-sm run-btn ms-1"
+                    data-site="<?= e($site['id']) ?>" data-container="<?= e($c['container_name'] ?? '') ?>"
+                    title="Jalankan perintah satu kali (docker exec ... sh -c)">> Run</button>
+          <?php else: ?>
+            <span class="text-muted small">-</span>
+          <?php endif; ?>
+        </td>
       </tr>
       <?php endforeach; ?>
     </tbody>
@@ -679,6 +692,63 @@ function copyDetailKey() {
   }
 })();
 </script>
+
+<!-- ============ Terminal container (docker exec) ============ -->
+
+<!-- Modal terminal interaktif (xterm.js + SSE) -->
+<div class="modal fade" id="terminal-modal" tabindex="-1" aria-labelledby="terminal-title" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h5 class="modal-title small mb-0 mono" id="terminal-title">Terminal</h5>
+        <span id="terminal-status" class="small text-muted ms-2 me-auto"></span>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body p-0">
+        <div id="terminal-host" style="height:420px; background:#101014;"></div>
+      </div>
+      <div class="modal-footer py-1">
+        <span class="text-muted small me-auto">Ketik perintah shell di dalam terminal. Ketik <code>exit</code> untuk menutup sesi.</span>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Tutup</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal one-shot run command (non-interaktif) -->
+<div class="modal fade" id="run-modal" tabindex="-1" aria-labelledby="run-title" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="run-form" data-site="<?= e($site['id']) ?>">
+        <div class="modal-header py-2">
+          <h5 class="modal-title small mb-0 mono" id="run-title">Run command</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="run-container">
+          <label class="form-label small" for="run-command">Perintah (dijalankan sebagai <code>sh -c</code> di dalam container):</label>
+          <textarea id="run-command" class="form-control form-control-sm mono" rows="3"
+                    placeholder="mis. ls -la /app&#10;php artisan migrate --force&#10;cat /etc/os-release"></textarea>
+          <div id="run-error" class="alert alert-danger py-2 small mt-3 mb-0 d-none" role="alert"></div>
+          <pre id="run-output" class="mt-3 mb-1 p-2 rounded border mono small d-none"
+               style="max-height:320px; overflow:auto; background:#0d1117; color:#e6e6e6;"></pre>
+          <div class="d-flex justify-content-between align-items-center mt-2">
+            <span id="run-exit" class="small text-muted"></span>
+            <button type="submit" class="btn btn-primary btn-sm">
+              <span id="run-spinner" class="spinner-border spinner-border-sm d-none me-1" role="status" aria-hidden="true"></span>
+              Jalankan
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<link rel="stylesheet" href="/vendor/xterm/xterm.css">
+<script src="/vendor/xterm/xterm.js"></script>
+<script src="/vendor/xterm/addons/fit/fit.js"></script>
+<script src="/js/site-terminal.js?v=4"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>
 

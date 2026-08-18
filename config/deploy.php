@@ -57,6 +57,13 @@ return [
 
     // Socket Docker Engine
     'docker_socket' => getenv('DOCKER_SOCKET') ?: '/var/run/docker.sock',
+    'docker_binary' => getenv('DOCKER_BINARY') ?: 'docker',
+
+    // Terminal container (docker exec interaktif & one-shot run command)
+    'terminal_script_bin' => getenv('TERMINAL_SCRIPT_BIN') ?: 'script',   // PTY wrapper (util-linux)
+    'terminal_run_timeout' => (int) (getenv('TERMINAL_RUN_TIMEOUT') ?: 120),   // detik, run command one-shot
+    'terminal_session_ttl' => (int) (getenv('TERMINAL_SESSION_TTL') ?: 3600),  // detik, umur maks sesi interaktif
+    'terminal_max_sessions' => (int) (getenv('TERMINAL_MAX_SESSIONS') ?: 20),  // batas sesi aktif serentak
 
     // Timeout (detik) untuk operasi docker compose / git yang panjang
     'deploy_timeout' => (int) (getenv('DEPLOY_TIMEOUT') ?: 600),

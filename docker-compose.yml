@@ -27,6 +27,12 @@ services:
       SSL_CA_SERVER: "${SSL_CA_SERVER:-production}"
       SSL_WEBROOT: "${SSL_WEBROOT:-}"
       CLOUDFLARE_CREDS: "${CLOUDFLARE_CREDS:-}"
+      # Terminal container (docker exec)
+      DOCKER_BINARY: "${DOCKER_BINARY:-docker}"
+      TERMINAL_SCRIPT_BIN: "${TERMINAL_SCRIPT_BIN:-script}"
+      TERMINAL_RUN_TIMEOUT: "${TERMINAL_RUN_TIMEOUT:-120}"
+      TERMINAL_SESSION_TTL: "${TERMINAL_SESSION_TTL:-3600}"
+      TERMINAL_MAX_SESSIONS: "${TERMINAL_MAX_SESSIONS:-20}"
     volumes:
       # Penting: kode di-mount di path yang SAMA dengan host (${PWD}). Karena
       # docker compose dijalankan DI DALAM container namun daemon-nya di host,
