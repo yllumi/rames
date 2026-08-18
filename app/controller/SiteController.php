@@ -256,7 +256,8 @@ class SiteController
 
             $request->session()->delete('pending_site');
 
-            if (!$this->spawnWorker($site['id'], 'deploy')) {
+            $spawned = $this->spawnWorker($site['id'], 'deploy');
+            if (!$spawned) {
                 (new SiteStore())->update($site['id'], function (array &$s): void {
                     $s['status'] = 'error';
                     $s['stage'] = null;
@@ -265,9 +266,22 @@ class SiteController
                 });
             }
 
+            // Panggilan AJAX (fetch) mengembalikan JSON; form biasa tetap redirect.
+            if ($request->expectsJson()) {
+                return json([
+                    'code' => $spawned ? 0 : 1,
+                    'id' => $site['id'],
+                    'name' => $site['name'],
+                    'error' => $spawned ? null : 'Gagal menjalankan worker deploy.',
+                ]);
+            }
+
             flash_set('success', 'Site "' . $site['name'] . '" sedang di-deploy.');
             return redirect('/sites/' . $site['id']);
         } catch (\Throwable $e) {
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $e->getMessage()]);
+            }
             flash_set('error', $e->getMessage());
             return redirect('/sites/create/confirm');
         }
@@ -305,13 +319,31 @@ class SiteController
         $store = new SiteStore();
         $site = $store->find($id);
         if ($site === null) {
-            flash_set('error', 'Site tidak ditemukan.');
+            $msg = 'Site tidak ditemukan.';
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $msg]);
+            }
+            flash_set('error', $msg);
             return redirect('/sites');
+        }
+
+        // Tolak rebuild ganda saat site sedang diproses worker lain.
+        if (($site['status'] ?? '') === 'deploying') {
+            $msg = 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.';
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $msg, 'busy' => true]);
+            }
+            flash_set('error', $msg);
+            return redirect('/sites/' . $id);
         }
 
         $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
         if (!is_dir($dir)) {
-            flash_set('error', 'Direktori site tidak ada. Site mungkin sudah dihapus.');
+            $msg = 'Direktori site tidak ada. Site mungkin sudah dihapus.';
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $msg]);
+            }
+            flash_set('error', $msg);
             return redirect('/sites/' . $id);
         }
 
@@ -329,8 +361,20 @@ class SiteController
                 $s['message'] = 'Gagal menjalankan worker rebuild.';
                 $s['error'] = 'Gagal spawn worker rebuild.';
             });
-            flash_set('error', 'Gagal menjalankan rebuild.');
+            $msg = 'Gagal menjalankan rebuild.';
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $msg]);
+            }
+            flash_set('error', $msg);
         } else {
+            if ($request->expectsJson()) {
+                return json([
+                    'code' => 0,
+                    'status' => 'deploying',
+                    'stage' => 'queued',
+                    'message' => 'Rebuild dimulai.',
+                ]);
+            }
             flash_set('success', 'Rebuild dijalankan.');
         }
         return redirect('/sites/' . $id);
@@ -848,7 +892,20 @@ class SiteController
     }
 
     /**
-     * Spawn background worker deploy (detached).
+     * Spawn background worker deploy (detached, non-blocking).
+     *
+     * Dipakai pcntl_fork + pcntl_exec (tanpa shell, sesuai konvensi anti
+     * command injection). Alasan: proc_open + proc_close BLOCKING sampai worker
+     * selesai — request HTTP yang memanggilnya menggantung selama build (bisa
+     * menit), sehingga timeout/refresh browser tampak "menggagalkan" deploy.
+     * Dengan fork + exec + SIGCHLD:
+     *   - request langsung kembali (hanya fork, tidak menunggu build);
+     *   - worker berjalan detached (posix_setsid) dan tetap lanjut meski HTTP
+     *     worker di-restart atau browser ditutup;
+     *   - di HTTP worker SIGCHLD di-ignore (kernel otomatis reap anak => tanpa
+     *     zombie); di worker anak SIGCHLD di-reset ke SIG_DFL sebelum exec agar
+     *     proc_get_status/proc_close di dalam worker tetap membaca exit code
+     *     proses anaknya (git/docker) dengan benar.
      */
     private function spawnWorker(string $siteId, string $mode, ?string $arg = null): bool
     {
@@ -862,18 +919,40 @@ class SiteController
         if ($arg !== null && $arg !== '') {
             $command[] = $arg;
         }
-        $descriptors = [
-            0 => ['file', '/dev/null', 'r'],
-            1 => ['file', $logFile, 'a'],
-            2 => ['file', $logFile, 'a'],
-        ];
 
-        $proc = @proc_open($command, $descriptors, $pipes, base_path(), null, ['bypass_shell' => true]);
-        if (!is_resource($proc)) {
+        // Otomatis-reap anak saat selesai supaya tidak menumpuk zombie.
+        @pcntl_signal(SIGCHLD, SIG_IGN);
+
+        $pid = @pcntl_fork();
+        if ($pid === -1) {
             return false;
         }
-        // proc_close langsung (tanpa pipe interaktif) => proses berjalan detached
-        @proc_close($proc);
+
+        if ($pid === 0) {
+            // Proses anak: lepas dari sesi/terminal, ganti stdio ke /dev/null,
+            // lalu ganti image proses menjadi worker (cli/deploy.php). Logging
+            // ditangani worker sendiri via file_put_contents ke logFile.
+            @posix_setsid();
+            @fclose(STDIN);
+            @fclose(STDOUT);
+            @fclose(STDERR);
+            // Buka ulang fd 0/1/2 ke /dev/null (fd reuse — tidak ada posix_dup2).
+            // Variabel sengaja dipertahankan sampai pcntl_exec agar fd tetap terbuka.
+            $nullIn = @fopen('/dev/null', 'r');
+            $nullOut = @fopen('/dev/null', 'w');
+            $nullErr = @fopen('/dev/null', 'w');
+            // RESET SIGCHLD ke default sebelum exec. Tanpa ini worker mewarisi
+            // SIGCHLD=SIG_IGN dari HTTP worker → kernel auto-reap proses anak
+            // (git/docker) saat keluar, sehingga proc_get_status/proc_close di
+            // ProcessRunner kehilangan exit code (selalu -1) dan perintah yang
+            // sukses (mis. `git checkout main` → "Already on 'main'") dianggap
+            // gagal. Disposisi SIG_DFL bertahan melewati exec.
+            @pcntl_signal(SIGCHLD, SIG_DFL);
+            pcntl_exec(PHP_BINARY, array_slice($command, 1));
+            // Hanya tercapai bila exec gagal.
+            exit(127);
+        }
+
         return true;
     }
 

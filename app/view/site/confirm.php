@@ -8,7 +8,7 @@
   </div>
 </div>
 
-<form method="post" action="/sites/create/confirm">
+<form method="post" action="/sites/create/confirm" id="deploy-confirm-form">
   <?= csrf_field() ?>
 
   <div class="card mb-3">
@@ -60,9 +60,73 @@
   <p class="text-muted small">Port yang berkonflik sudah otomatis diganti dari rentang <code><?= e(config('deploy.port_range.start')) ?>–<?= e(config('deploy.port_range.end')) ?></code>. Sesuaikan bila perlu.</p>
 
   <div class="d-flex gap-2">
-    <button type="submit" class="btn btn-primary">Deploy Site</button>
+    <button type="submit" class="btn btn-primary" id="deploy-btn">
+      <span class="spinner-border spinner-border-sm d-none" id="deploy-btn-spinner" role="status" aria-hidden="true"></span>
+      Deploy Site
+    </button>
     <a class="btn btn-outline-secondary" href="/sites/create">Kembali</a>
   </div>
 </form>
+
+<div id="deploy-error" class="alert alert-danger d-none mt-3" role="alert"></div>
+
+<script>
+(function () {
+  var form = document.getElementById('deploy-confirm-form');
+  var btn = document.getElementById('deploy-btn');
+  var spinner = document.getElementById('deploy-btn-spinner');
+  var errorBox = document.getElementById('deploy-error');
+
+  if (!form) return;
+
+  function showError(msg) {
+    if (errorBox) {
+      errorBox.textContent = msg;
+      errorBox.classList.remove('d-none');
+    }
+    if (btn) btn.disabled = false;
+    if (spinner) spinner.classList.add('d-none');
+  }
+
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    if (errorBox) errorBox.classList.add('d-none');
+    if (btn) btn.disabled = true;
+    if (spinner) spinner.classList.remove('d-none');
+
+    fetch(form.action, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: new FormData(form)
+    }).then(function (r) {
+      return r.json().then(function (d) {
+        return { ok: r.ok, status: r.status, data: d };
+      }).catch(function () {
+        return { ok: r.ok, status: r.status, data: null };
+      });
+    }).then(function (res) {
+      var d = res.data || {};
+      if (res.ok && d.code === 0 && d.id) {
+        // menuju detail site — halaman itu otomatis mem-poll progres build
+        window.location.href = '/sites/' + d.id;
+        return;
+      }
+      var msg = d.error || d.msg;
+      if (!msg) {
+        msg = res.status === 419
+          ? 'Sesi kedaluwarsa. Muat ulang halaman lalu coba lagi.'
+          : 'Gagal memulai deploy. Silakan coba lagi.';
+      }
+      showError(msg);
+      if (res.status === 419) setTimeout(function () { window.location.reload(); }, 1500);
+    }).catch(function () {
+      showError('Gagal terhubung ke server. Periksa koneksi lalu coba lagi.');
+    });
+  });
+})();
+</script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

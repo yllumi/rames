@@ -129,7 +129,8 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 
 ### 4.4 Background Worker — `cli/deploy.php`
 
-- Dipanggil detached oleh `SiteController` lewat `proc_open` (stdout/stderr → log file, tanpa blokir worker HTTP).
+- Dipanggil detached oleh `SiteController` via **`pcntl_fork` + `pcntl_exec`** (bukan `proc_open`). Alasan: `proc_close()` memblokir request sampai worker selesai — build bisa berlangsung menit, sehingga timeout/refresh browser tampak "menggagalkan" deploy. Dengan fork + exec + `SIGCHLD=SIG_IGN`: request langsung kembali (hanya fork), worker berjalan detached (`posix_setsid`, stdio → `/dev/null`) dan tetap lanjut meski HTTP worker di-restart, serta tanpa zombie (kernel otomatis reap). Logging tetap oleh worker sendiri (`file_put_contents`).
+- UI deploy/rebuild memakai **AJAX + polling**: `fetch` pada tombol (tanpa navigasi halaman) + polling `/api/sites/{id}/status` menampilkan progres live (progress bar + stage + pesan). Bila halaman di-refresh saat build berjalan, page mendeteksi status `deploying` (panel `data-busy`) lalu melanjutkan polling otomatis sampai `running`/`error`.
 - Mode: `deploy`, `rebuild`, `rollback` (dengan argumen ref SHA). Pipeline per tahap menulis status ke `sites.json` (via `SiteStore->update`, `flock`), sehingga UI bisa *poll*:
   `deploying` → `build` → `collect` → `nginx` → `running` (atau `error`).
 - Setelah selesai, persisten `containers` dan `deploy_history` kembali ke `sites.json`.

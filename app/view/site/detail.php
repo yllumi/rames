@@ -40,16 +40,25 @@ unset($c);
   <a class="btn btn-outline-secondary btn-sm" href="/sites">&larr; Daftar Sites</a>
 </div>
 
-<?php if ($isBusy): ?>
-  <div class="alert alert-info d-flex align-items-start gap-2" role="alert">
-    <span class="spinner-border spinner-border-sm text-info mt-1 flex-shrink-0" role="status" aria-hidden="true"></span>
-    <div>
-      Sedang <strong><?= e($site['stage'] ?? 'deploying') ?></strong>:
-      <span id="site-message"><?= e($site['message'] ?? '') ?></span><br>
-      <span class="text-muted small">(halaman akan refresh otomatis)</span>
+<!-- Panel progres deploy/rebuild. Muncul saat site busy (mis. usai me-refresh),
+     atau langsung saat tombol Rebuild ditekan via AJAX. -->
+<div id="deploy-progress" class="card mb-4<?= $isBusy ? '' : ' d-none' ?>" data-busy="<?= $isBusy ? '1' : '0' ?>">
+  <div class="card-body">
+    <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+      <span class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></span>
+      <strong id="deploy-stage"><?= $isBusy ? e($site['stage'] ?? 'deploying') : '...' ?></strong>
+      <span id="deploy-message" class="text-muted small"><?= $isBusy ? e($site['message'] ?? '') : '' ?></span>
     </div>
+    <div class="progress" style="height:8px;">
+      <div id="deploy-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary" role="progressbar"
+           style="width:5%" aria-valuenow="5" aria-valuemin="0" aria-valuemax="100"></div>
+    </div>
+    <div id="deploy-error" class="alert alert-danger py-2 small mt-3 mb-0 d-none" role="alert"></div>
+    <p class="text-muted small mt-2 mb-0">Proses berjalan di latar belakang — Anda boleh me-refresh halaman atau pindah halaman; build tetap berjalan dan progres dilanjutkan otomatis.</p>
   </div>
-<?php elseif ($status === 'error'): ?>
+</div>
+
+<?php if ($status === 'error'): ?>
   <div class="alert alert-danger" role="alert"><strong>Error:</strong> <?= e($site['error'] ?? $site['message'] ?? '') ?></div>
 <?php endif; ?>
 
@@ -180,8 +189,8 @@ unset($c);
 <?php endif; ?>
 
 <?php if (!$isBusy): ?>
-<div class="d-flex flex-wrap gap-2 mb-4">
-  <form method="post" action="/sites/<?= e($site['id']) ?>/rebuild"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm">↻ Rebuild</button></form>
+<div class="d-flex flex-wrap gap-2 mb-4" id="site-actions">
+  <form method="post" action="/sites/<?= e($site['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm">↻ Rebuild</button></form>
 
   <?php if ($status === 'running'): ?>
     <form method="post" action="/sites/<?= e($site['id']) ?>/stop"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm">■ Stop</button></form>
@@ -361,32 +370,140 @@ function copyDetailKey() {
   try { navigator.clipboard.writeText(t.value); } catch (e) {}
   try { document.execCommand('copy'); } catch (e) {}
 }
+
+(function () {
+  var SITE_ID = '<?= e($site['id']) ?>';
+  var STATUS_URL = '/api/sites/' + SITE_ID + '/status';
+  var POLL_MS = 3000;
+  var MAX_TICKS = 600; // ~30 menit
+
+  // pemetaan tahap worker -> persentase progres (perkiraan)
+  var STAGE_PERCENT = {
+    queued: 5, pull: 15, clone: 15, build: 40, collect: 70,
+    nginx: 85, rollback: 20, restore: 60, done: 100
+  };
+
+  var panel = document.getElementById('deploy-progress');
+  var bar = document.getElementById('deploy-progress-bar');
+  var stageEl = document.getElementById('deploy-stage');
+  var msgEl = document.getElementById('deploy-message');
+  var errEl = document.getElementById('deploy-error');
+  var statusBadge = document.getElementById('site-status');
+
+  var timer = null;
+  var ticks = 0;
+
+  function setStage(stage, message) {
+    if (stageEl) stageEl.textContent = stage || '...';
+    if (msgEl) msgEl.textContent = message || '';
+    if (bar) {
+      var pct = stage === 'done' || stage === 'error' ? 100
+        : (STAGE_PERCENT[stage] !== undefined ? STAGE_PERCENT[stage] : 50);
+      bar.style.width = pct + '%';
+      bar.setAttribute('aria-valuenow', String(pct));
+      bar.classList.toggle('progress-bar-animated', pct < 100);
+      bar.classList.toggle('progress-bar-striped', pct < 100);
+    }
+  }
+
+  function showError(msg) {
+    if (errEl) {
+      errEl.textContent = msg;
+      errEl.classList.remove('d-none');
+    }
+    if (bar) {
+      bar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+      bar.style.width = '100%';
+    }
+  }
+
+  function showPanel(stage, message) {
+    if (errEl) errEl.classList.add('d-none');
+    if (panel) panel.classList.remove('d-none');
+    setStage(stage, message);
+    var actions = document.getElementById('site-actions');
+    if (actions) actions.classList.add('d-none');
+  }
+
+  function stopPoll() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+
+  function startPoll(initialStage, initialMessage) {
+    stopPoll();
+    ticks = 0;
+    setStage(initialStage || 'queued', initialMessage || '');
+    timer = setInterval(function () {
+      ticks++;
+      fetch(STATUS_URL, { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d || !d.site) return;
+          var st = d.site.status || 'unknown';
+          if (statusBadge) {
+            statusBadge.textContent = st;
+            statusBadge.className = 'badge badge-' + st;
+          }
+          setStage(d.site.stage, d.site.message);
+          if (st !== 'deploying') {
+            stopPoll();
+            if (st === 'error') {
+              showError(d.site.error || d.site.message || 'Proses gagal.');
+            } else {
+              // selesai: reload sebentar lagi agar halaman menampilkan state final
+              setTimeout(function () { window.location.reload(); }, 600);
+            }
+          }
+        })
+        .catch(function () {});
+      if (ticks > MAX_TICKS) {
+        stopPoll();
+        showError('Waktu tunggu habis. Muat ulang halaman untuk melihat status terakhir.');
+      }
+    }, POLL_MS);
+  }
+
+  // Bila halaman dibuka saat site sedang diproses (mis. usai me-refresh), langsung poll.
+  if (panel && panel.getAttribute('data-busy') === '1') {
+    startPoll('<?= e($site['stage'] ?? 'deploying') ?>', '<?= e($site['message'] ?? '') ?>');
+  }
+
+  // Rebuild via AJAX: tanpa navigasi halaman, tanpa risiko timeout/refresh.
+  var rebuildForm = document.getElementById('rebuild-form');
+  if (rebuildForm) {
+    var rebuildBtn = document.getElementById('rebuild-btn');
+    rebuildForm.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      showPanel('queued', 'Menunggu worker rebuild ...');
+      if (rebuildBtn) { rebuildBtn.disabled = true; rebuildBtn.textContent = 'Membangun ulang ...'; }
+      fetch(rebuildForm.action, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: new FormData(rebuildForm)
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; });
+      }).then(function (d) {
+        if (d && d.code === 0) {
+          startPoll('queued', d.message || 'Menunggu worker rebuild ...');
+        } else {
+          showError((d && (d.error || d.msg)) ? (d.error || d.msg) : 'Gagal memulai rebuild.');
+          if (rebuildBtn) { rebuildBtn.disabled = false; rebuildBtn.textContent = '↻ Rebuild'; }
+          var actions = document.getElementById('site-actions');
+          if (actions) actions.classList.remove('d-none');
+        }
+      }).catch(function () {
+        showError('Gagal terhubung ke server. Periksa koneksi lalu coba lagi.');
+        if (rebuildBtn) { rebuildBtn.disabled = false; rebuildBtn.textContent = '↻ Rebuild'; }
+        var actions = document.getElementById('site-actions');
+        if (actions) actions.classList.remove('d-none');
+      });
+    });
+  }
+})();
 </script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>
 
-<?php if ($isBusy): ?>
-<script>
-(function () {
-  var url = '/api/sites/<?= e($site['id']) ?>/status';
-  var ticks = 0;
-  var timer = setInterval(function () {
-    ticks++;
-    fetch(url).then(function (r) { return r.json(); }).then(function (d) {
-      if (d && d.site) {
-        var s = document.getElementById('site-status');
-        var m = document.getElementById('site-message');
-        if (s) s.textContent = d.site.status;
-        if (m) m.textContent = d.site.message || '';
-        if (d.site.status !== 'deploying') {
-          clearInterval(timer);
-          window.location.reload();
-        }
-      }
-    }).catch(function () {});
-    // batas aman polling
-    if (ticks > 600) clearInterval(timer);
-  }, 3000);
-})();
-</script>
-<?php endif; ?>
