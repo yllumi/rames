@@ -21,6 +21,7 @@ class LocalDeployer implements DeployerInterface
         private readonly NginxConfigGenerator $nginx,
         private readonly string $sitesPath,
         private readonly EnvManager $env,
+        private readonly NetworkManager $network,
     ) {
     }
 
@@ -33,8 +34,10 @@ class LocalDeployer implements DeployerInterface
         $dir = $this->siteDir($site);
         $files = $this->resolveComposeFiles($site, $dir);
 
-        // Sinkronkan managed env file + override env (idempoten, aman bila kosong)
+        // Sinkronkan managed env file + override env + external networks
+        // (idempoten, aman bila kosong)
         $this->env->sync($site, $dir, $files);
+        $this->network->sync($site, $dir, $files);
 
         $logger('build', 'Menjalankan docker compose up -d --build ...');
         $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
@@ -66,8 +69,10 @@ class LocalDeployer implements DeployerInterface
         $git->ensureBranch($dir, $branch);
         $git->pull($dir, $branch, $this->siteSshKeyPath($site));
 
-        // Sinkronkan managed env file + override env (idempoten, aman bila kosong)
+        // Sinkronkan managed env file + override env + external networks
+        // (idempoten, aman bila kosong)
         $this->env->sync($site, $dir, $files);
+        $this->network->sync($site, $dir, $files);
 
         $logger('build', 'docker compose up -d --build ...');
         $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
@@ -101,8 +106,10 @@ class LocalDeployer implements DeployerInterface
             $git->fetchSha($dir, $ref, $this->siteSshKeyPath($site));
             $git->checkout($dir, $ref);
 
-            // Sinkronkan managed env file + override env (idempoten, aman bila kosong)
+            // Sinkronkan managed env file + override env + external networks
+            // (idempoten, aman bila kosong)
             $this->env->sync($site, $dir, $files);
+            $this->network->sync($site, $dir, $files);
 
             $logger('build', 'docker compose up -d --build ...');
             $this->compose->up($project, $dir, $files, true, $this->siteEnvFile($site));
@@ -163,6 +170,7 @@ class LocalDeployer implements DeployerInterface
         $files = $this->resolveComposeFiles($site, $dir);
 
         $this->env->sync($site, $dir, $files);
+        $this->network->sync($site, $dir, $files);
 
         $logger('build', 'Menciptakan ulang container dengan environment baru ...');
         $this->compose->up($project, $dir, $files, false, $this->siteEnvFile($site));

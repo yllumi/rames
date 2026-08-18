@@ -88,9 +88,10 @@ Controller hanya **mediator**: tidak memuat logika bisnis, tidak menyimpan state
 | Controller | Tanggung jawab |
 |---|---|
 | `AuthController` | Login/logout, session, regenerasi session id (anti fixation) |
-| `SiteController` | Wizard create site, halaman detail & halaman versi (`/sites/{id}/versions`), aksi (rebuild/rollback/stop/start/delete dengan mode preserve/purge volume — tombol Delete di tab khusus "Hapus Site"), set/hapus custom domain, kelola environment variable site (simpan + auto-recreate, import `.env.example`), endpoint polling status |
+| `SiteController` | Wizard create site, halaman detail & halaman versi (`/sites/{id}/versions`), aksi (rebuild/rollback/stop/start/delete dengan mode preserve/purge volume — tombol Delete di tab khusus "Hapus Site"), set/hapus custom domain, kelola environment variable site (simpan + auto-recreate, import `.env.example`), kelola external network (shared network lintas-site via compose override), endpoint polling status |
 | `NginxController` | Halaman `/nginx` (global): status reload Nginx host terakhir + tombol Reload — Nginx bersifat global (berlaku untuk semua site), di luar detail site |
 | `VolumeController` | Halaman `/volumes`: daftar volume ber-label compose + bersihkan volume **yatim** (ditinggalkan site yang dihapus dengan mode preserve) |
+| `NetworkController` | Halaman `/networks`: daftar semua network Docker (built-in diberi label & dilindungi, milik site aktif ditandai "dikelola site"), buat shared network (bridge/overlay/macvlan + IPAM + flag attachable/internal), detail network (container terhubung + connect/disconnect), hapus network dengan proteksi berlapis (built-in / dipakai container / milik site aktif ditolak) |
 | `UserController` | Kelola user (tambah/hapus, ganti password) |
 
 ### 4.2 Middleware — `app/middleware/`
@@ -117,7 +118,7 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `SshKeyManager` | Generate/read/hapus pasangan kunci SSH (deploy key per site) di `database/keys/` |
 | **Docker** | `ComposeParser` | Parse `docker-compose.yml` (short/long syntax port, IP binding) via `symfony/yaml` |
 | | `PortManager` | Deteksi konflik port terhadap `sites.json`, saran port dari range, validasi port |
-| | `DockerClient` | Client Engine API (Guzzle + `CURLOPT_UNIX_SOCKET_PATH`) untuk operasi **baca**: list/inspect container, list volume (per project / semua), ping |
+| | `DockerClient` | Client Engine API (Guzzle + `CURLOPT_UNIX_SOCKET_PATH`): list/inspect container, list volume (per project / semua), list/inspect/buat network, connect/disconnect container ke network, hapus network, ping |
 | | `DockerComposeRunner` | CLI `docker compose` untuk **orkestrasi**: up/down/build/stop/start/pull; `removeVolumes()` untuk `docker volume rm` (teardown selektif) |
 | **Nginx** | `NginxConfigGenerator` | Render & tulis config `.conf` + symlink ke `sites-enabled`; `ensureWritable()` fail-fast; render multi server block per site (subdomain + custom domain, redirect 301, blok `listen 443 ssl`, `location /.well-known/acme-challenge/`) |
 | | `NginxStatusReader` | Baca status reload terakhir watcher (`last-reload.json`) |
@@ -125,8 +126,9 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | **SSL** | `SslIssuer` | Terbitkan/revoke sertifikat Let's Encrypt via certbot (HTTP-01 webroot / DNS-01 Cloudflare), cek kedaluwarsa cert |
 | | `SslController` | Halaman `/ssl`: daftar domain (subdomain/custom) + status SSL + tombol Aktifkan SSL / Retry |
 | **Deploy** | `DeployerInterface` | Abstraksi eksekusi deploy (siap diganti `HttpDeployer` untuk multi-server); termasuk `rollback()` dan `applyEnv()` (terapkan env var tanpa rebuild source) |
-| | `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx (termasuk custom domain & redirect subdomain); `rollback()` = fetch+checkout ref lama + rebuild, auto-restore ke versi aktif bila gagal, catat `deploy_history`; `applyEnv()` = tulis env + `up -d` (recreate) |
-| | `EnvManager` | Kelola environment variable site: tulis managed env file (`database/env/{name}.env`, dipakai compose via `--env-file`) + override env (`docker-compose.override.env.yml`, inject `environment:` literal ke semua service); parse `.env.example` untuk import; `sync()` idempoten |
+| `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx (termasuk custom domain & redirect subdomain); `rollback()` = fetch+checkout ref lama + rebuild, auto-restore ke versi aktif bila gagal, catat `deploy_history`; `applyEnv()` = tulis env + external networks + `up -d` (recreate); deploy/rebuild/rollback ikut `sync()` env + external networks |
+| `EnvManager` | Kelola environment variable site: tulis managed env file (`database/env/{name}.env`, dipakai compose via `--env-file`) + override env (`docker-compose.override.env.yml`, inject `environment:` literal ke semua service); parse `.env.example` untuk import; `sync()` idempoten |
+| `NetworkManager` | Kelola external network site: tulis `docker-compose.override.networks.yml` (deklarasi `external: true` + `networks: [default, <ext>]` ke semua service; merge compose `networks` union); `sync()` idempoten; dipanggil controller & `LocalDeployer` agar file konsisten dengan `sites.json` |
 | | `DeployerFactory` | Satu-satunya titik pembuatan `DeployerInterface` |
 
 ### 4.4 Background Worker — `cli/deploy.php`
@@ -225,6 +227,12 @@ Lalu: hapus config Nginx (+ symlink) → hapus direktori `sites/{name}` → hapu
 5. Bila build versi lama **gagal** → auto-`git checkout` kembali ke versi aktif sebelumnya + `up -d --build` (restore best-effort); bila restore gagal → status `error`.
 6. Non-destruktif: volume Docker tidak dihapus (`down -v` tidak dijalankan). Override ports dashboard (`docker-compose.override*.yml`, untracked) dipertahankan — hanya source tracked yang ikut ke versi lama. Rebuild berikutnya memanggil `git checkout {branch}` dulu untuk keluar dari detached HEAD.
 7. Unit test fitur: `tests/` (PHPUnit 10) — jalankan `composer test`. `DeployerFactory` mendukung override env `DEPLOYER_CLASS` (hook test) untuk fake deployer tanpa daemon Docker; `cli/deploy.php` mode rollback diuji end-to-end via subproses (`CliDeployRollbackTest`).
+
+### 5.8 Kelola Network & Shared Network Lintas-Site
+
+1. **Halaman `/networks`** (nav topbar, `NetworkController`): daftar semua network Docker dengan status — **built-in** (`bridge`/`host`/`none`/`ingress`/`docker_gwbridge`) diberi label & tidak bisa dihapus; network compose milik site aktif ditandai "dikelola site"; network yang dipakai container diblokir hapus (Engine menolak 409). Dari sini bisa **buat shared network** (driver bridge/overlay/macvlan + IPAM subnet/gateway/ip-range + flag `attachable`/`internal`), **hubungkan/putuskan container** (dengan alias network opsional), dan hapus network yang bebas.
+2. **Tab Network di detail site** — koneksi **persisten** lintas-site: pilih shared network, `NetworkManager` menulis `docker-compose.override.networks.yml` (`networks: {name}: {external: true}` + tiap service `networks: [default, <ext>...]`; merge compose `networks` bersifat union sehingga network base dipertahankan), lalu `up -d` (recreate) tanpa rebuild. Koneksi ini tidak hilang saat Rebuild/Rollback.
+3. **Catatan**: `docker network connect` manual (dari halaman detail network) **hilang** saat compose me-recreate container; untuk koneksi yang persisten gunakan tab Network di detail site.
 
 ---
 

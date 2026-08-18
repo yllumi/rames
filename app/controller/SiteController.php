@@ -5,7 +5,9 @@ namespace app\controller;
 
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\EnvManager;
+use app\library\Deploy\NetworkManager;
 use app\library\Docker\ComposeParser;
+use app\library\Docker\DockerClient;
 use app\library\Docker\PortManager;
 use app\library\Git\GitService;
 use app\library\Git\SshKeyManager;
@@ -62,6 +64,32 @@ class SiteController
             // engine tidak tersedia — modal tampil tanpa daftar volume
         }
 
+        // Network eksternal (shared) yang bisa di-join site ini. Kandidat:
+        // bukan built-in & bukan milik site aktif (compose) — biasanya shared
+        // network yang dibuat lewat halaman /networks.
+        $availableNetworks = [];
+        try {
+            $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+            $activeNames = [];
+            foreach ($store->all() as $s) {
+                $activeNames[(string) ($s['name'] ?? '')] = true;
+            }
+            foreach ($docker->listNetworks() as $n) {
+                $nname = (string) ($n['Name'] ?? '');
+                if ($nname === '' || in_array($nname, ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge'], true)) {
+                    continue;
+                }
+                $project = (string) (($n['Labels'] ?? [])['com.docker.compose.project'] ?? '');
+                if ($project !== '' && isset($activeNames[$project])) {
+                    continue; // network milik site aktif dikelola lewat site tsb
+                }
+                $availableNetworks[] = $nname;
+            }
+            sort($availableNetworks);
+        } catch (\Throwable $e) {
+            // engine tidak tersedia — form tampil tanpa daftar
+        }
+
         // Public key deploy key site (untuk repo private via SSH)
         $sshPubkey = null;
         if (($site['auth_method'] ?? 'none') === 'ssh') {
@@ -76,6 +104,7 @@ class SiteController
             'site' => $site,
             'live' => $live,
             'volumes' => $volumes,
+            'availableNetworks' => $availableNetworks,
             'sshPubkey' => $sshPubkey,
             'deployHistory' => $deployHistory,
             'activeSha' => $activeSha,
@@ -850,6 +879,107 @@ class SiteController
             });
 
             flash_set('success', "Diimport {$added} variabel dari .env.example. Tinjau nilainya, lalu klik \"Simpan & Terapkan\" untuk menerapkan ke container.");
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+        return redirect('/sites/' . $id);
+    }
+
+    /**
+     * Simpan external network site (POST /sites/{id}/network).
+     *
+     * Menghubungkan seluruh service site ke shared network (via compose override
+     * `external: true` + `networks: [default, <ext>]`) agar persisten lintas
+     * Rebuild/Rollback. Validasi ketat: nama network & keberadaannya di Engine;
+     * lalu tulis override, persist ke sites.json, dan recreate container
+     * (`up -d` tanpa build) untuk menerapkan.
+     */
+    public function saveNetworks(Request $request, string $id)
+    {
+        $store = new SiteStore();
+        $site = $store->find($id);
+        if ($site === null) {
+            flash_set('error', 'Site tidak ditemukan.');
+            return redirect('/sites');
+        }
+        if (($site['status'] ?? '') === 'deploying') {
+            flash_set('error', 'Site sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/sites/' . $id);
+        }
+
+        $dir = (string) config('deploy.sites_path') . '/' . $site['name'];
+        if (!is_dir($dir)) {
+            flash_set('error', 'Direktori site tidak ada. Site mungkin sudah dihapus.');
+            return redirect('/sites/' . $id);
+        }
+
+        // Normalisasi pilihan dari form + validasi format nama.
+        $selected = [];
+        foreach (array_map('strval', (array) $request->post('external_networks', [])) as $name) {
+            $name = trim($name);
+            if ($name === '') {
+                continue;
+            }
+            if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/', $name)) {
+                flash_set('error', "Nama network tidak valid: {$name}");
+                return redirect('/sites/' . $id);
+            }
+            if (!in_array($name, $selected, true)) {
+                $selected[] = $name;
+            }
+        }
+
+        // Validasi network benar-benar ada di Engine (bukan built-in).
+        if ($selected !== []) {
+            try {
+                $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+                $existing = [];
+                foreach ($docker->listNetworks() as $n) {
+                    $existing[(string) ($n['Name'] ?? '')] = true;
+                }
+                foreach ($selected as $name) {
+                    if (!isset($existing[$name]) || in_array($name, ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge'], true)) {
+                        flash_set('error', "Network \"{$name}\" tidak ditemukan (atau built-in). Buat shared network dulu di halaman Networks.");
+                        return redirect('/sites/' . $id);
+                    }
+                }
+            } catch (\Throwable $e) {
+                flash_set('error', 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage());
+                return redirect('/sites/' . $id);
+            }
+        }
+
+        try {
+            // 1) Tulis override dulu — gagal => state sites.json tidak berubah.
+            $composeFiles = $site['compose_files'] ?? ['docker-compose.yml'];
+            (new NetworkManager())->sync(['name' => $site['name'], 'external_networks' => $selected], $dir, $composeFiles);
+
+            // 2) Persist ke sites.json (external_networks + compose_files).
+            $store->update($id, function (array &$s) use ($selected): void {
+                $s['external_networks'] = $selected;
+                $files = $s['compose_files'] ?? ['docker-compose.yml'];
+                $files = array_values(array_filter($files, static fn (string $f): bool => $f !== NetworkManager::OVERRIDE_FILE));
+                if ($selected !== []) {
+                    $files[] = NetworkManager::OVERRIDE_FILE; // selalu terakhir
+                }
+                $s['compose_files'] = $files;
+            });
+
+            // 3) Recreate container (up -d tanpa build) agar network diterapkan.
+            $site = $store->find($id) ?? $site;
+            try {
+                $applied = DeployerFactory::create()->applyEnv($site, static function (string $stage, string $message): void {
+                });
+                $store->update($id, function (array &$s) use ($applied): void {
+                    $s['containers'] = $applied['containers'] ?? [];
+                    $s['status'] = 'running';
+                    $s['message'] = 'Running';
+                    $s['error'] = null;
+                });
+                flash_set('success', 'External networks disimpan & container diciptakan ulang.');
+            } catch (\Throwable $e) {
+                flash_set('error', 'External networks tersimpan, tetapi gagal diterapkan ke container: ' . $e->getMessage() . ' — pastikan network eksternal ada, lalu coba Rebuild.');
+            }
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
         }

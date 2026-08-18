@@ -5,6 +5,7 @@ namespace Tests;
 
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\LocalDeployer;
+use app\library\Deploy\NetworkManager;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
 use app\library\Git\GitService;
@@ -91,7 +92,7 @@ class TestLocalDeployer extends LocalDeployer
 
     public function __construct(DockerComposeRunner $compose, NginxConfigGenerator $nginx, string $sitesPath)
     {
-        parent::__construct($compose, new FakeDockerClient(), $nginx, $sitesPath, new EnvManager(sys_get_temp_dir() . '/rames-test-env'));
+        parent::__construct($compose, new FakeDockerClient(), $nginx, $sitesPath, new EnvManager(sys_get_temp_dir() . '/rames-test-env'), new NetworkManager());
     }
 
     public function getContainers(string $project): array

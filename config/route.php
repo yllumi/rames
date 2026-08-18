@@ -16,6 +16,7 @@ use Webman\Route;
 
 use app\controller\AuthController;
 use app\controller\IndexController;
+use app\controller\NetworkController;
 use app\controller\NginxController;
 use app\controller\SiteController;
 use app\controller\SslController;
@@ -67,6 +68,9 @@ Route::post('/sites/{id}/domain/remove', [SiteController::class, 'removeDomain']
 Route::post('/sites/{id}/env', [SiteController::class, 'saveEnv']);
 Route::post('/sites/{id}/env/import', [SiteController::class, 'importEnv']);
 
+// External network per site (shared network lintas-site)
+Route::post('/sites/{id}/network', [SiteController::class, 'saveNetworks']);
+
 // Halaman & reload Nginx host (global — berlaku untuk semua site)
 Route::get('/nginx', [NginxController::class, 'index']);
 Route::post('/nginx/reload', [NginxController::class, 'reload']);
@@ -78,6 +82,14 @@ Route::post('/ssl/{id}/enable', [SslController::class, 'enable']);
 // Volume Docker (lihat & bersihkan volume yatim)
 Route::get('/volumes', [VolumeController::class, 'index']);
 Route::post('/volumes/purge', [VolumeController::class, 'purge']);
+
+// Network Docker (lihat, buat, hubungkan/putuskan container, hapus)
+Route::get('/networks', [NetworkController::class, 'index']);
+Route::post('/networks/create', [NetworkController::class, 'create']);
+Route::get('/networks/{id}', [NetworkController::class, 'detail']);
+Route::post('/networks/{id}/connect', [NetworkController::class, 'connect']);
+Route::post('/networks/{id}/disconnect', [NetworkController::class, 'disconnect']);
+Route::post('/networks/{id}/delete', [NetworkController::class, 'delete']);
 
 /*
 |--------------------------------------------------------------------------

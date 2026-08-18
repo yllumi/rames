@@ -33,6 +33,7 @@ class DeployerFactory
             ),
             sitesPath: (string) config('deploy.sites_path'),
             env: new EnvManager(),
+            network: new NetworkManager(),
         );
     }
 }

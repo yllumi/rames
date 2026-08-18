@@ -5,6 +5,7 @@ namespace Tests;
 
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\LocalDeployer;
+use app\library\Deploy\NetworkManager;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
 use app\library\Nginx\NginxConfigGenerator;
@@ -138,7 +139,7 @@ class TeardownTestDeployer extends LocalDeployer
 {
     public function __construct(DockerComposeRunner $compose, TeardownFakeDockerClient $docker)
     {
-        parent::__construct($compose, $docker, new TeardownFakeNginxGenerator(), '/tmp/rames-sites', new EnvManager(sys_get_temp_dir() . '/rames-test-env'));
+        parent::__construct($compose, $docker, new TeardownFakeNginxGenerator(), '/tmp/rames-sites', new EnvManager(sys_get_temp_dir() . '/rames-test-env'), new NetworkManager());
     }
 
     public function renderNginxConfig(array $site): string

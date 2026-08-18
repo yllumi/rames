@@ -28,6 +28,9 @@
             <a class="nav-link <?= ($active ?? '') === 'volumes' ? 'active' : '' ?>" href="/volumes">Volumes</a>
           </li>
           <li class="nav-item">
+            <a class="nav-link <?= ($active ?? '') === 'networks' ? 'active' : '' ?>" href="/networks">Networks</a>
+          </li>
+          <li class="nav-item">
             <a class="nav-link <?= ($active ?? '') === 'nginx' ? 'active' : '' ?>" href="/nginx">Nginx</a>
           </li>
           <li class="nav-item">
@@ -37,8 +40,6 @@
           <li class="nav-item user ms-lg-3">
             <span class="avatar"><?= e(strtoupper(substr($__u['username'] ?? '?', 0, 1))) ?></span>
             <span class="fw-semibold"><?= e($__u['username'] ?? '') ?></span>
-          </li>
-          <li class="nav-item ms-lg-2 mt-2 mt-lg-0">
             <a class="btn btn-outline-secondary btn-sm" href="/logout">Logout</a>
           </li>
         </ul>
