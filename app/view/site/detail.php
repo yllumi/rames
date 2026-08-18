@@ -62,8 +62,36 @@ unset($c);
   <div class="alert alert-danger" role="alert"><strong>Error:</strong> <?= e($site['error'] ?? $site['message'] ?? '') ?></div>
 <?php endif; ?>
 
-<div class="card mb-4">
-  <div class="card-body py-2">
+<?php if (!$isBusy): ?>
+<div class="d-flex flex-wrap gap-2 mb-4" id="site-actions">
+  <form method="post" action="/sites/<?= e($site['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm">↻ Rebuild</button></form>
+
+  <?php if ($status === 'running'): ?>
+    <form method="post" action="/sites/<?= e($site['id']) ?>/stop"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm">■ Stop</button></form>
+  <?php elseif ($status === 'stopped'): ?>
+    <form method="post" action="/sites/<?= e($site['id']) ?>/start"><?= csrf_field() ?><button class="btn btn-success btn-sm">▶ Start</button></form>
+  <?php endif; ?>
+
+  <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteModal">✕ Delete</button>
+</div>
+<?php endif; ?>
+
+<!-- Tab bar navigasi section site -->
+<ul class="nav nav-tabs mb-3" id="siteTabs" role="tablist">
+  <li class="nav-item" role="presentation"><button class="nav-link active" id="tab-info-btn" data-bs-toggle="tab" data-bs-target="#tab-info" type="button" role="tab" aria-controls="tab-info" aria-selected="true">Info</button></li>
+  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-containers-btn" data-bs-toggle="tab" data-bs-target="#tab-containers" type="button" role="tab" aria-controls="tab-containers" aria-selected="false">Container</button></li>
+  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-deploy-btn" data-bs-toggle="tab" data-bs-target="#tab-deploy" type="button" role="tab" aria-controls="tab-deploy" aria-selected="false">Deployment</button></li>
+  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-env-btn" data-bs-toggle="tab" data-bs-target="#tab-env" type="button" role="tab" aria-controls="tab-env" aria-selected="false">Environment</button></li>
+  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-domain-btn" data-bs-toggle="tab" data-bs-target="#tab-domain" type="button" role="tab" aria-controls="tab-domain" aria-selected="false">Domain &amp; SSL</button></li>
+  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-nginx-btn" data-bs-toggle="tab" data-bs-target="#tab-nginx" type="button" role="tab" aria-controls="tab-nginx" aria-selected="false">Nginx</button></li>
+</ul>
+
+<div class="tab-content" id="siteTabContent">
+
+  <!-- ============ Tab: Info ============ -->
+  <div class="tab-pane fade show active" id="tab-info" role="tabpanel" aria-labelledby="tab-info-btn">
+    <div class="card mb-4">
+      <div class="card-body py-2">
     <dl class="site-info mb-0">
       <div class="site-info-item">
         <dt class="k">Subdomain</dt>
@@ -106,9 +134,27 @@ unset($c);
   </div>
 </div>
 
-<section class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <h2 class="h6 mb-0">Custom Domain</h2>
+    <?php if (($site['auth_method'] ?? 'none') === 'ssh' && $sshPubkey): ?>
+    <div class="collapse" id="deploykey-card">
+      <div class="card mb-4">
+        <div class="card-header"><h2 class="h6 mb-0">SSH Deploy Key</h2></div>
+        <div class="card-body">
+          <p class="text-muted small mb-2">Tambahkan public key ini sebagai <strong>Deploy Key</strong> di repo Anda bila belum (GitHub/GitLab: <em>Settings → Deploy keys</em>). Diperlukan untuk <code>git pull</code> saat <strong>Rebuild</strong>.</p>
+          <div class="input-group">
+            <textarea id="ssh-pubkey-detail" class="form-control mono form-control-sm" rows="4" readonly><?= e($sshPubkey) ?></textarea>
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyDetailKey()">Salin</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <?php endif; ?>
+  </div>
+
+  <!-- ============ Tab: Domain & SSL ============ -->
+  <div class="tab-pane fade" id="tab-domain" role="tabpanel" aria-labelledby="tab-domain-btn">
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="h6 mb-0">Custom Domain</h2>
     <?php if ($customDomain): ?>
       <a class="btn btn-outline-secondary btn-sm" href="/ssl">Kelola SSL &rarr;</a>
     <?php endif; ?>
@@ -172,15 +218,18 @@ unset($c);
     <?php endif; ?>
   </div>
 </section>
+  </div>
 
-<?php
-$envVars = is_array($site['env'] ?? null) ? $site['env'] : [];
-$envExampleExists = is_file((string) config('deploy.sites_path') . '/' . $site['name'] . '/.env.example');
-?>
+  <!-- ============ Tab: Environment ============ -->
+  <div class="tab-pane fade" id="tab-env" role="tabpanel" aria-labelledby="tab-env-btn">
+    <?php
+    $envVars = is_array($site['env'] ?? null) ? $site['env'] : [];
+    $envExampleExists = is_file((string) config('deploy.sites_path') . '/' . $site['name'] . '/.env.example');
+    ?>
 
-<section class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-    <h2 class="h6 mb-0">Environment Variables</h2>
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <h2 class="h6 mb-0">Environment Variables</h2>
     <?php if ($envExampleExists): ?>
       <form method="post" action="/sites/<?= e($site['id']) ?>/env/import" class="d-inline">
         <?= csrf_field() ?>
@@ -269,81 +318,13 @@ $envExampleExists = is_file((string) config('deploy.sites_path') . '/' . $site['
   });
 })();
 </script>
-
-<?php if (($site['auth_method'] ?? 'none') === 'ssh' && $sshPubkey): ?>
-<div class="collapse" id="deploykey-card">
-  <div class="card mb-4">
-    <div class="card-header"><h2 class="h6 mb-0">SSH Deploy Key</h2></div>
-    <div class="card-body">
-      <p class="text-muted small mb-2">Tambahkan public key ini sebagai <strong>Deploy Key</strong> di repo Anda bila belum (GitHub/GitLab: <em>Settings → Deploy keys</em>). Diperlukan untuk <code>git pull</code> saat <strong>Rebuild</strong>.</p>
-      <div class="input-group">
-        <textarea id="ssh-pubkey-detail" class="form-control mono form-control-sm" rows="4" readonly><?= e($sshPubkey) ?></textarea>
-        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyDetailKey()">Salin</button>
-      </div>
-    </div>
   </div>
-</div>
-<?php endif; ?>
 
-<?php if (!$isBusy): ?>
-<div class="d-flex flex-wrap gap-2 mb-4" id="site-actions">
-  <form method="post" action="/sites/<?= e($site['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm">↻ Rebuild</button></form>
-
-  <?php if ($status === 'running'): ?>
-    <form method="post" action="/sites/<?= e($site['id']) ?>/stop"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm">■ Stop</button></form>
-  <?php elseif ($status === 'stopped'): ?>
-    <form method="post" action="/sites/<?= e($site['id']) ?>/start"><?= csrf_field() ?><button class="btn btn-success btn-sm">▶ Start</button></form>
-  <?php endif; ?>
-
-  <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteModal">✕ Delete</button>
-</div>
-
-<!-- Modal konfirmasi delete: pilih volume yang dipertahankan -->
-<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <form method="post" action="/sites/<?= e($site['id']) ?>/delete" class="modal-content">
-      <?= csrf_field() ?>
-      <div class="modal-header">
-        <h5 class="modal-title" id="deleteModalLabel">Hapus site <?= e($site['name']) ?></h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
-      </div>
-      <div class="modal-body">
-        <p class="text-muted small mb-3">
-          Container, config Nginx, dan direktori lokal akan dihapus.
-          <strong>Volume yang dicentang dipertahankan</strong> dan akan dipakai
-          ulang otomatis bila site dibuat ulang dengan nama
-          <span class="mono"><?= e($site['name']) ?></span>
-          (data seperti database tidak hilang).
-        </p>
-        <?php if (empty($volumes)): ?>
-          <div class="alert alert-info py-2 small mb-0">Tidak ada named volume terdeteksi untuk project ini (atau Docker Engine tidak dapat diakses).</div>
-        <?php else: ?>
-          <label class="form-label fw-semibold">Pilih volume yang dipertahankan:</label>
-          <div class="border rounded p-2 mb-2" style="max-height:220px; overflow-y:auto;">
-            <?php foreach ($volumes as $v): ?>
-              <div class="form-check">
-                <input class="form-check-input" type="checkbox" name="preserve_volumes[]" value="<?= e($v) ?>" id="vol-<?= e($v) ?>" checked>
-                <label class="form-check-label small mono" for="vol-<?= e($v) ?>"><?= e($v) ?></label>
-              </div>
-            <?php endforeach; ?>
-          </div>
-          <p class="text-muted small mb-0">Volume yang <strong>tidak</strong> dicentang ikut dihapus.</p>
-        <?php endif; ?>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Batal</button>
-        <button type="submit" name="mode" value="preserve" class="btn btn-danger btn-sm">Hapus &amp; pertahankan volume</button>
-        <button type="submit" name="mode" value="purge" class="btn btn-outline-danger btn-sm"
-                onclick="return confirm('Hapus TOTAL site <?= e($site['name']) ?> termasuk SEMUA volume (data database dll. ikut terhapus permanen)? Tindakan ini tidak bisa dibatalkan.');">Hapus total (semua volume)</button>
-      </div>
-    </form>
-  </div>
-</div>
-<?php endif; ?>
-
-<section class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <h2 class="h6 mb-0">Containers</h2>
+  <!-- ============ Tab: Container ============ -->
+  <div class="tab-pane fade" id="tab-containers" role="tabpanel" aria-labelledby="tab-containers-btn">
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="h6 mb-0">Containers</h2>
     <span class="text-muted small"><?= count($containers) ?> container</span>
   </div>
   <?php if (empty($containers)): ?>
@@ -374,11 +355,14 @@ $envExampleExists = is_file((string) config('deploy.sites_path') . '/' . $site['
   </table>
   </div>
   <?php endif; ?>
-</section>
+  </section>
+  </div>
 
-<section class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-    <h2 class="h6 mb-0">Riwayat Deployment</h2>
+  <!-- ============ Tab: Deployment ============ -->
+  <div class="tab-pane fade" id="tab-deploy" role="tabpanel" aria-labelledby="tab-deploy-btn">
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <h2 class="h6 mb-0">Riwayat Deployment</h2>
     <div class="d-flex align-items-center gap-2">
       <span class="text-muted small">Versi aktif: <code><?= $activeSha !== '' ? e(substr((string) $activeSha, 0, 7)) : '-' ?></code></span>
       <a class="btn btn-outline-secondary btn-sm" href="/sites/<?= e($site['id']) ?>/versions">Semua versi &rarr;</a>
@@ -435,11 +419,14 @@ $envExampleExists = is_file((string) config('deploy.sites_path') . '/' . $site['
     <a class="btn btn-outline-secondary btn-sm" href="/sites/<?= e($site['id']) ?>/versions">Lihat semua <?= count($deployHistory) ?> versi &rarr;</a>
   </div>
   <?php endif; ?>
-</section>
+  </section>
+  </div>
 
-<section class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <h2 class="h6 mb-0">Nginx</h2>
+  <!-- ============ Tab: Nginx ============ -->
+  <div class="tab-pane fade" id="tab-nginx" role="tabpanel" aria-labelledby="tab-nginx-btn">
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="h6 mb-0">Nginx</h2>
     <form method="post" action="/nginx/reload" class="d-inline">
       <?= csrf_field() ?>
       <button class="btn btn-outline-secondary btn-sm" title="Validasi config lalu reload nginx host">↻ Reload Nginx</button>
@@ -456,7 +443,53 @@ $envExampleExists = is_file((string) config('deploy.sites_path') . '/' . $site['
       <div class="text-muted small mb-0">Belum ada status reload. Klik <strong>Reload Nginx</strong> untuk mengaktifkan config terbaru (mis. setelah set custom domain atau aktifkan SSL).</div>
     <?php endif; ?>
   </div>
-</section>
+  </section>
+  </div>
+</div>
+
+<?php if (!$isBusy): ?>
+<!-- Modal konfirmasi delete: pilih volume yang dipertahankan -->
+<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <form method="post" action="/sites/<?= e($site['id']) ?>/delete" class="modal-content">
+      <?= csrf_field() ?>
+      <div class="modal-header">
+        <h5 class="modal-title" id="deleteModalLabel">Hapus site <?= e($site['name']) ?></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-3">
+          Container, config Nginx, dan direktori lokal akan dihapus.
+          <strong>Volume yang dicentang dipertahankan</strong> dan akan dipakai
+          ulang otomatis bila site dibuat ulang dengan nama
+          <span class="mono"><?= e($site['name']) ?></span>
+          (data seperti database tidak hilang).
+        </p>
+        <?php if (empty($volumes)): ?>
+          <div class="alert alert-info py-2 small mb-0">Tidak ada named volume terdeteksi untuk project ini (atau Docker Engine tidak dapat diakses).</div>
+        <?php else: ?>
+          <label class="form-label fw-semibold">Pilih volume yang dipertahankan:</label>
+          <div class="border rounded p-2 mb-2" style="max-height:220px; overflow-y:auto;">
+            <?php foreach ($volumes as $v): ?>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="preserve_volumes[]" value="<?= e($v) ?>" id="vol-<?= e($v) ?>" checked>
+                <label class="form-check-label small mono" for="vol-<?= e($v) ?>"><?= e($v) ?></label>
+              </div>
+            <?php endforeach; ?>
+          </div>
+          <p class="text-muted small mb-0">Volume yang <strong>tidak</strong> dicentang ikut dihapus.</p>
+        <?php endif; ?>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Batal</button>
+        <button type="submit" name="mode" value="preserve" class="btn btn-danger btn-sm">Hapus &amp; pertahankan volume</button>
+        <button type="submit" name="mode" value="purge" class="btn btn-outline-danger btn-sm"
+                onclick="return confirm('Hapus TOTAL site <?= e($site['name']) ?> termasuk SEMUA volume (data database dll. ikut terhapus permanen)? Tindakan ini tidak bisa dibatalkan.');">Hapus total (semua volume)</button>
+      </div>
+    </form>
+  </div>
+</div>
+<?php endif; ?>
 
 <script>
 function copyDetailKey() {
