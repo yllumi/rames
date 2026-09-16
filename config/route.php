@@ -19,6 +19,7 @@ use app\controller\IndexController;
 use app\controller\NetworkController;
 use app\controller\NginxController;
 use app\controller\AppController;
+use app\controller\DatabaseController;
 use app\controller\SslController;
 use app\controller\TerminalController;
 use app\controller\UserController;
@@ -91,6 +92,29 @@ Route::get('/networks/{id}', [NetworkController::class, 'detail']);
 Route::post('/networks/{id}/connect', [NetworkController::class, 'connect']);
 Route::post('/networks/{id}/disconnect', [NetworkController::class, 'disconnect']);
 Route::post('/networks/{id}/delete', [NetworkController::class, 'delete']);
+
+/*
+|--------------------------------------------------------------------------
+| Database manager (MySQL/MariaDB di container) — phpMyAdmin mini
+|--------------------------------------------------------------------------
+| Halaman global /database + halaman kelola per container. Profile koneksi
+| (host/port/kredensial) hidup di session; semua POST kena CSRF & AuthMiddleware.
+|--------------------------------------------------------------------------
+*/
+Route::get('/database', [DatabaseController::class, 'index']);
+Route::get('/database/{container}', [DatabaseController::class, 'manage']);
+Route::post('/database/{container}/connect', [DatabaseController::class, 'connect']);
+Route::post('/database/{container}/disconnect', [DatabaseController::class, 'disconnect']);
+Route::post('/database/{container}/query', [DatabaseController::class, 'query']);
+Route::post('/database/{container}/row/insert', [DatabaseController::class, 'rowInsert']);
+Route::post('/database/{container}/row/update', [DatabaseController::class, 'rowUpdate']);
+Route::post('/database/{container}/row/delete', [DatabaseController::class, 'rowDelete']);
+Route::post('/database/{container}/user/create', [DatabaseController::class, 'userCreate']);
+Route::post('/database/{container}/user/delete', [DatabaseController::class, 'userDelete']);
+Route::post('/database/{container}/user/grant', [DatabaseController::class, 'userGrant']);
+Route::post('/database/{container}/user/revoke', [DatabaseController::class, 'userRevoke']);
+Route::post('/database/{container}/export', [DatabaseController::class, 'export']);
+Route::post('/database/{container}/import', [DatabaseController::class, 'import']);
 
 /*
 |--------------------------------------------------------------------------

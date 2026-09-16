@@ -33,6 +33,12 @@ services:
       TERMINAL_RUN_TIMEOUT: "${TERMINAL_RUN_TIMEOUT:-120}"
       TERMINAL_SESSION_TTL: "${TERMINAL_SESSION_TTL:-3600}"
       TERMINAL_MAX_SESSIONS: "${TERMINAL_MAX_SESSIONS:-20}"
+      # Database manager (phpMyAdmin mini)
+      DB_CONNECT_TIMEOUT: "${DB_CONNECT_TIMEOUT:-10}"
+      DB_BROWSE_PER_PAGE: "${DB_BROWSE_PER_PAGE:-50}"
+      DB_MAX_ROWS: "${DB_MAX_ROWS:-500}"
+      DB_EXPORT_TIMEOUT: "${DB_EXPORT_TIMEOUT:-600}"
+      DB_IMPORT_TIMEOUT: "${DB_IMPORT_TIMEOUT:-600}"
     volumes:
       # Penting: kode di-mount di path yang SAMA dengan host (${PWD}). Karena
       # docker compose dijalankan DI DALAM container namun daemon-nya di host,

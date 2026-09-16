@@ -6,6 +6,7 @@ namespace app\controller;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\NetworkManager;
+use app\library\Db\DbContainerDetector;
 use app\library\Docker\ComposeParser;
 use app\library\Docker\DockerClient;
 use app\library\Docker\PortManager;
@@ -100,6 +101,14 @@ class AppController
         $deployHistory = array_reverse($app['deploy_history'] ?? []);
         $activeSha = $this->resolveActiveSha($app);
 
+        // Container MySQL/MariaDB milik app (untuk tab Database).
+        $dbContainers = [];
+        try {
+            $dbContainers = (new DbContainerDetector())->detectForApp($app);
+        } catch (\Throwable $e) {
+            // engine tidak tersedia — tab Database tidak muncul
+        }
+
         return view('app/detail', [
             'app' => $app,
             'live' => $live,
@@ -108,6 +117,7 @@ class AppController
             'sshPubkey' => $sshPubkey,
             'deployHistory' => $deployHistory,
             'activeSha' => $activeSha,
+            'dbContainers' => $dbContainers,
         ]);
     }
 

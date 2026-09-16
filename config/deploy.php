@@ -65,6 +65,14 @@ return [
     'terminal_session_ttl' => (int) (getenv('TERMINAL_SESSION_TTL') ?: 3600),  // detik, umur maks sesi interaktif
     'terminal_max_sessions' => (int) (getenv('TERMINAL_MAX_SESSIONS') ?: 20),  // batas sesi aktif serentak
 
+    // Database manager (phpMyAdmin mini) — koneksi PDO ke MySQL/MariaDB container
+    'dashboard_container' => getenv('HOSTNAME') ?: getenv('DASHBOARD_CONTAINER') ?: 'rames-webman',
+    'db_connect_timeout' => (int) (getenv('DB_CONNECT_TIMEOUT') ?: 10),   // detik, timeout koneksi PDO
+    'db_browse_per_page' => (int) (getenv('DB_BROWSE_PER_PAGE') ?: 50),   // baris per halaman browse
+    'db_max_rows' => (int) (getenv('DB_MAX_ROWS') ?: 500),                // batas baris hasil SQL editor
+    'db_export_timeout' => (int) (getenv('DB_EXPORT_TIMEOUT') ?: 600),    // detik, timeout mysqldump
+    'db_import_timeout' => (int) (getenv('DB_IMPORT_TIMEOUT') ?: 600),    // detik, timeout restore
+
     // Timeout (detik) untuk operasi docker compose / git yang panjang
     'deploy_timeout' => (int) (getenv('DEPLOY_TIMEOUT') ?: 600),
 ];

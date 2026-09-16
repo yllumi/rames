@@ -61,6 +61,21 @@ class DockerExec
         return $runner->run($args, null, $timeout > 0 ? $timeout : $this->runTimeout, ['TERM' => 'xterm']);
     }
 
+    /**
+     * Jalankan satu perintah di dalam container sambil mengirim konten ke stdin
+     * (mis. restore database: mysql < dump.sql). Command diteruskan sebagai satu
+     * argumen ke `sh -c` di dalam container (tanpa shell host) — aman dari
+     * command injection di sisi dashboard.
+     *
+     * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
+     */
+    public function runCommandWithInput(string $container, string $command, string $input, int $timeout = 0): array
+    {
+        $args = [$this->dockerBinary, 'exec', '-i', $container, 'sh', '-c', $command];
+        $runner = new \app\library\Support\ProcessRunner();
+        return $runner->run($args, null, $timeout > 0 ? $timeout : $this->runTimeout, ['TERM' => 'xterm'], $input);
+    }
+
     // ==================================================================
     // Mode 2 — sesi interaktif (PTY + FIFO)
     // ==================================================================

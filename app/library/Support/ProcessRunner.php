@@ -21,9 +21,10 @@ class ProcessRunner
      * @param string|null       $cwd    working directory
      * @param int               $timeout detik (0 = tanpa batas)
      * @param array<string,string> $env  environment tambahan
+     * @param string|null       $stdin  konten yang ditulis ke stdin (null = langsung tutup)
      * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
      */
-    public function run(array $command, ?string $cwd = null, int $timeout = 300, array $env = []): array
+    public function run(array $command, ?string $cwd = null, int $timeout = 300, array $env = [], ?string $stdin = null): array
     {
         $descriptors = [
             0 => ['pipe', 'r'],
@@ -43,7 +44,10 @@ class ProcessRunner
             throw new RuntimeException('Gagal menjalankan proses: ' . implode(' ', $command));
         }
 
-        // Tanpa input interaktif — tutup stdin segera
+        // Tulis stdin bila disediakan, lalu tutup (EOF) — tanpa input interaktif.
+        if ($stdin !== null) {
+            fwrite($pipes[0], $stdin);
+        }
         fclose($pipes[0]);
 
         stream_set_blocking($pipes[1], false);
