@@ -199,10 +199,21 @@ class DatabaseController
         $sql = (string) $request->post('sql', '');
         $back = $this->backUrl($container, $request);
 
+        // Database aktif: dari sidebar (field tersembunyi di form) atau fallback
+        // ke database awal hasil deteksi kredensial.
+        $db = trim((string) $request->post('db', ''));
+        if ($db === '') {
+            $db = trim((string) ($profile['database'] ?? ''));
+        }
+
         try {
-            $pdo = (new DbClient())->connect($profile);
+            $dbClient = new DbClient();
+            $pdo = $dbClient->connect($profile);
+            if ($db !== '' && preg_match('/^[a-zA-Z0-9_]+$/', $db)) {
+                $dbClient->selectDatabase($pdo, $db);
+            }
             $start = microtime(true);
-            $result = (new DbClient())->execute($pdo, $sql);
+            $result = $dbClient->execute($pdo, $sql);
             $result['elapsedMs'] = (int) round((microtime(true) - $start) * 1000);
             $request->session()->set('db_last_result', $result);
             $this->audit($app, $container, 'query: ' . mb_substr($sql, 0, 120));
@@ -482,6 +493,13 @@ class DatabaseController
         }
 
         $databases = $dbClient->databases($pdo);
+        if ($dbName === '') {
+            // Default ke database awal hasil deteksi kredensial bila valid.
+            $defaultDb = trim((string) ($profile['database'] ?? ''));
+            if ($defaultDb !== '' && in_array($defaultDb, $databases, true)) {
+                $dbName = $defaultDb;
+            }
+        }
         if ($dbName !== '' && !in_array($dbName, $databases, true)) {
             $dbName = '';
         }

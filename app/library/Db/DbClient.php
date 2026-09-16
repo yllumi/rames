@@ -57,6 +57,16 @@ class DbClient
     }
 
     /**
+     * Pilih database aktif (USE) agar query tanpa nama database tetap jalan
+     * (mis. `SELECT * FROM users` di SQL editor).
+     */
+    public function selectDatabase(PDO $pdo, string $db): void
+    {
+        $this->assertIdentifier($db);
+        $pdo->exec('USE `' . $this->backtick($db) . '`');
+    }
+
+    /**
      * Daftar tabel & view dalam sebuah database.
      *
      * @return array<int,array{name:string, type:string}>
