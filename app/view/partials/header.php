@@ -37,13 +37,18 @@
           <li class="nav-item">
             <a class="nav-link <?= ($active ?? '') === 'nginx' ? 'active' : '' ?>" href="/nginx">Nginx</a>
           </li>
+          <?php if (is_admin()): ?>
           <li class="nav-item">
             <a class="nav-link <?= ($active ?? '') === 'users' ? 'active' : '' ?>" href="/users">Users</a>
           </li>
+          <?php endif; ?>
           <?php $__u = current_user(); ?>
           <li class="nav-item user ms-lg-3">
             <span class="avatar"><?= e(strtoupper(substr($__u['username'] ?? '?', 0, 1))) ?></span>
             <span class="fw-semibold"><?= e($__u['username'] ?? '') ?></span>
+            <?php if (is_admin($__u)): ?>
+              <span class="badge text-bg-primary" title="Admin: kelola user & lihat semua app">admin</span>
+            <?php endif; ?>
             <a class="btn btn-outline-secondary btn-sm" href="/logout">Logout</a>
           </li>
         </ul>

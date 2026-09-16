@@ -4,6 +4,21 @@ $active = 'apps';
 $status = $app['status'] ?? 'unknown';
 $isBusy = in_array($status, ['deploying'], true);
 
+// Hak akses user saat ini pada app (diatur AppAccess — satu pintu otorisasi).
+$access = $access ?? [];
+$role = $access['role'] ?? null;
+$isOwner = $role === \app\library\Auth\AppAccess::ROLE_OWNER;
+$abilities = $access['abilities'] ?? [];
+$canOperate = (bool) ($abilities['operate'] ?? false);
+$canDelete = (bool) ($abilities['delete'] ?? false);
+$canShare = (bool) ($abilities['sharing'] ?? false);
+$canEnv = (bool) ($abilities['env'] ?? false);
+$canNetwork = (bool) ($abilities['network'] ?? false);
+$canDomain = (bool) ($abilities['domain'] ?? false);
+$canSsl = (bool) ($abilities['ssl'] ?? false);
+$canTerminal = (bool) ($abilities['terminal'] ?? false);
+$canDb = (bool) ($abilities['database'] ?? false);
+
 // custom domain + status SSL-nya
 $customDomain = (string) ($app['custom_domain'] ?? '');
 $customSslStatus = (string) ($app['custom_ssl_status'] ?? 'disabled');
@@ -36,9 +51,20 @@ unset($c);
   <div class="d-flex align-items-center gap-3 flex-wrap">
     <h1 class="h3 mb-0 mono"><?= e($app['name']) ?></h1>
     <span class="badge badge-<?= e($status) ?>" id="app-status"><?= e($status) ?></span>
+    <?php if ($role !== null): ?>
+      <span class="badge text-bg-<?= $isOwner || $role === 'admin' ? 'primary' : 'secondary' ?>"
+            title="Hak akses Anda pada app ini"><?= e(app_role_label($role)) ?></span>
+    <?php endif; ?>
   </div>
   <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Daftar Apps</a>
 </div>
+
+<?php if (!$canOperate): ?>
+  <div class="alert alert-info py-2 small" role="alert">
+    Anda punya akses <strong>read-only</strong> (Viewer) ke app ini — hanya bisa melihat status,
+    riwayat deploy, dan konfigurasi. Hubungi pemilik app untuk mengubah akses.
+  </div>
+<?php endif; ?>
 
 <!-- Panel progres deploy/rebuild. Muncul saat app busy (mis. usai me-refresh),
      atau langsung saat tombol Rebuild ditekan via AJAX. -->
@@ -62,7 +88,7 @@ unset($c);
   <div class="alert alert-danger" role="alert"><strong>Error:</strong> <?= e($app['error'] ?? $app['message'] ?? '') ?></div>
 <?php endif; ?>
 
-<?php if (!$isBusy): ?>
+<?php if (!$isBusy && $canOperate): ?>
 <div class="d-flex flex-wrap gap-2 mb-4" id="app-actions">
   <form method="post" action="/apps/<?= e($app['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm">↻ Rebuild</button></form>
 
@@ -85,7 +111,12 @@ unset($c);
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-db-btn" data-bs-toggle="tab" data-bs-target="#tab-db" type="button" role="tab" aria-controls="tab-db" aria-selected="false">Database</button></li>
   <?php endif; ?>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-domain-btn" data-bs-toggle="tab" data-bs-target="#tab-domain" type="button" role="tab" aria-controls="tab-domain" aria-selected="false">Domain &amp; SSL</button></li>
+  <?php if ($canShare || !empty($access['members'])): ?>
+  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-access-btn" data-bs-toggle="tab" data-bs-target="#tab-access" type="button" role="tab" aria-controls="tab-access" aria-selected="false">Akses</button></li>
+  <?php endif; ?>
+  <?php if ($canDelete): ?>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-delete-btn" data-bs-toggle="tab" data-bs-target="#tab-delete" type="button" role="tab" aria-controls="tab-delete" aria-selected="false">Hapus App</button></li>
+  <?php endif; ?>
 </ul>
 
 <div class="tab-content" id="appTabContent">
@@ -186,11 +217,14 @@ unset($c);
         <div class="alert alert-danger py-2 small"><?= e($customSslError) ?></div>
       <?php endif; ?>
       <div class="d-flex flex-wrap gap-2 align-items-center">
+        <?php if (!$canDomain): ?>
+          <span class="text-muted small">Anda tidak punya hak mengubah domain app ini.</span>
+        <?php else: ?>
         <?php if ($customSslActive): ?>
           <span class="text-muted small">SSL aktif</span>
         <?php elseif ($customSslPending): ?>
           <span class="text-muted small">proses penerbitan SSL ...</span>
-        <?php elseif ($sslSupported): ?>
+        <?php elseif ($sslSupported && $canSsl): ?>
           <form method="post" action="/ssl/<?= e($app['id']) ?>/enable" class="d-inline">
             <?= csrf_field() ?>
             <input type="hidden" name="domain" value="<?= e($customDomain) ?>">
@@ -205,7 +239,10 @@ unset($c);
               onsubmit="return confirm('Hapus custom domain <?= e($customDomain) ?>? Sertifikat SSL-nya (bila ada) akan di-revoke.');">
           <?= csrf_field() ?><button class="btn btn-outline-danger btn-sm">✕ Hapus domain</button>
         </form>
+        <?php endif; ?>
       </div>
+    <?php elseif (!$canDomain): ?>
+      <p class="text-muted small mb-0">Belum ada custom domain. Anda tidak punya hak mengubahnya.</p>
     <?php else: ?>
       <form method="post" action="/apps/<?= e($app['id']) ?>/domain/set" class="row g-2 align-items-center">
         <?= csrf_field() ?>
@@ -232,7 +269,7 @@ unset($c);
     <section class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <h2 class="h6 mb-0">Environment Variables</h2>
-    <?php if ($envExampleExists): ?>
+    <?php if ($envExampleExists && $canEnv): ?>
       <form method="post" action="/apps/<?= e($app['id']) ?>/env/import" class="d-inline">
         <?= csrf_field() ?>
         <button class="btn btn-outline-secondary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>⇩ Import dari .env.example</button>
@@ -240,6 +277,12 @@ unset($c);
     <?php endif; ?>
   </div>
   <div class="">
+    <?php if (!$canEnv): ?>
+      <p class="text-muted small mb-0 p-3">
+        Environment variable app ini hanya bisa dilihat user dengan hak <strong>Operator</strong> ke atas
+        (nilainya bisa berisi kredensial database/API).
+      </p>
+    <?php else: ?>
     <form method="post" action="/apps/<?= e($app['id']) ?>/env" id="env-form">
       <?= csrf_field() ?>
       <?php if (empty($envVars)): ?>
@@ -288,6 +331,7 @@ unset($c);
         </div>
       </div>
     </form>
+    <?php endif; ?>
   </div>
 </section>
 
@@ -341,6 +385,17 @@ unset($c);
           <strong>Simpan &amp; Terapkan</strong> — container diciptakan ulang dan
           koneksi ini <strong>persisten</strong> (tidak hilang saat Rebuild/Rollback).
         </p>
+        <?php if (!$canNetwork): ?>
+          <?php if (empty($extNetworks)): ?>
+            <p class="text-muted small mb-0">App ini tidak terhubung ke external network.</p>
+          <?php else: ?>
+            <div class="border rounded p-2 mb-0">
+              <?php foreach ($extNetworks as $n): ?>
+                <span class="badge text-bg-secondary me-1 mono"><?= e((string) $n) ?></span>
+              <?php endforeach; ?>
+            </div>
+          <?php endif; ?>
+        <?php else: ?>
         <form method="post" action="/apps/<?= e($app['id']) ?>/network">
           <?= csrf_field() ?>
           <?php if (empty($availableNetworks)): ?>
@@ -366,6 +421,7 @@ unset($c);
             <?php endif; ?>
           </div>
         </form>
+        <?php endif; ?>
       </div>
     </section>
   </div>
@@ -389,7 +445,11 @@ unset($c);
                 <td class="small"><?= e($dc['image']) ?></td>
                 <td><span class="badge badge-<?= e($dc['state'] ?? 'unknown') ?>"><?= e($dc['state'] ?? 'unknown') ?></span></td>
                 <td class="text-end">
-                  <a class="btn btn-outline-primary btn-sm" href="/database/<?= e(rawurlencode($dc['container_name'])) ?>">Kelola DB &rarr;</a>
+                  <?php if ($canDb): ?>
+                    <a class="btn btn-outline-primary btn-sm" href="/database/<?= e(rawurlencode($dc['container_name'])) ?>">Kelola DB &rarr;</a>
+                  <?php else: ?>
+                    <span class="text-muted small">tanpa hak</span>
+                  <?php endif; ?>
                 </td>
               </tr>
             <?php endforeach; ?>
@@ -430,7 +490,7 @@ unset($c);
         </td>
         <td><span class="badge badge-<?= e($c['status'] ?? 'unknown') ?>"><?= e($c['status'] ?? 'unknown') ?></span></td>
         <td class="text-end text-nowrap">
-          <?php if ($cRunning): ?>
+          <?php if ($cRunning && $canTerminal): ?>
             <button type="button" class="btn btn-outline-secondary btn-sm terminal-btn"
                     data-app="<?= e($app['id']) ?>" data-container="<?= e($c['container_name'] ?? '') ?>"
                     data-shell="sh" title="Buka shell interaktif (docker exec -it sh)">⌁ Terminal</button>
@@ -476,7 +536,8 @@ unset($c);
         $hBadge = in_array($hStatus, ['success', 'restored'], true) ? 'running' : ($hStatus === 'error' ? 'error' : 'stopped');
         $hMsg = (string) ($h['message'] ?? '');
         $hMsgShort = strlen($hMsg) > 80 ? substr($hMsg, 0, 80) . '…' : $hMsg;
-        $isRollbackTarget = in_array($hStatus, ['success', 'restored'], true) && ($h['sha'] ?? '') !== $activeSha && !$isBusy;
+        $isRollbackTarget = in_array($hStatus, ['success', 'restored'], true) && ($h['sha'] ?? '') !== $activeSha && !$isBusy
+            && $canOperate;
       ?>
       <tr>
         <td><code><?= e($hShort) ?></code><?= ($h['sha'] ?? '') === $activeSha ? ' <span class="text-muted small">(aktif)</span>' : '' ?></td>
@@ -514,7 +575,141 @@ unset($c);
   </section>
   </div>
 
+  <!-- ============ Tab: Akses (kepemilikan & sharing) ============ -->
+  <?php if ($canShare || !empty($access['members'])): ?>
+  <div class="tab-pane fade" id="tab-access" role="tabpanel" aria-labelledby="tab-access-btn">
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <h2 class="h6 mb-0">Akses App</h2>
+        <span class="text-muted small">owner + user yang dibagikan</span>
+      </div>
+      <div class="card-body">
+        <dl class="app-info mb-3">
+          <div class="app-info-item">
+            <dt class="k">Owner</dt>
+            <dd class="v mb-0">
+              <?php if (!empty($access['owner'])): ?>
+                <span class="mono"><?= e((string) $access['owner']['username']) ?></span>
+              <?php else: ?>
+                <span class="text-muted">(belum ada owner)</span>
+              <?php endif; ?>
+            </dd>
+          </div>
+        </dl>
+
+        <div class="alert alert-info py-2 small">
+          <strong>Viewer</strong> — hanya lihat (read-only).
+          <strong>Operator</strong> — deploy/rebuild/rollback/stop/start, environment, network, domain &amp; SSL, terminal, database.
+          <strong>Owner</strong> — semua di atas + hapus app, transfer kepemilikan, dan atur akses.
+        </div>
+
+        <h3 class="h6 mt-4">User dengan akses</h3>
+        <?php if (empty($access['members'])): ?>
+          <p class="text-muted small mb-0">Belum ada user lain yang punya akses ke app ini.</p>
+        <?php else: ?>
+        <div class="table-responsive mb-3">
+          <table class="table align-middle mb-0">
+            <thead><tr><th>User</th><th>Role</th><th>Ditambahkan</th><th class="text-end"></th></tr></thead>
+            <tbody>
+              <?php foreach ($access['members'] as $m): ?>
+              <tr>
+                <td class="mono">
+                  <?= e((string) $m['username']) ?>
+                  <?php if (empty($m['exists'])): ?><span class="text-muted small">(tidak ada di daftar user)</span><?php endif; ?>
+                </td>
+                <td>
+                  <?php if ($canShare): ?>
+                  <form method="post" action="/apps/<?= e($app['id']) ?>/members" class="d-flex gap-1 align-items-center">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="user_id" value="<?= e((string) $m['id']) ?>">
+                    <select name="role" class="form-select form-select-sm" style="width:auto;">
+                      <?php foreach (\app\library\Auth\AppAccess::ASSIGNABLE_ROLES as $__r): ?>
+                        <option value="<?= e($__r) ?>" <?= ((string) $m['role']) === $__r ? 'selected' : '' ?>><?= e(app_role_label($__r)) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <button class="btn btn-outline-secondary btn-sm">Ubah</button>
+                  </form>
+                  <?php else: ?>
+                    <span class="badge text-bg-secondary"><?= e(app_role_label((string) $m['role'])) ?></span>
+                  <?php endif; ?>
+                </td>
+                <td class="small text-muted"><?= e((string) $m['added_at']) ?></td>
+                <td class="text-end">
+                  <?php if ($canShare): ?>
+                  <form method="post" action="/apps/<?= e($app['id']) ?>/members/<?= e(rawurlencode((string) $m['id'])) ?>/remove"
+                        onsubmit="return confirm('Cabut akses <?= e((string) $m['username']) ?> dari app ini?');">
+                    <?= csrf_field() ?>
+                    <button class="btn btn-outline-danger btn-sm">Cabut</button>
+                  </form>
+                  <?php endif; ?>
+                </td>
+              </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($canShare): ?>
+          <?php if (empty($access['candidates'])): ?>
+            <p class="text-muted small mb-0">Semua user sudah punya akses ke app ini.</p>
+          <?php else: ?>
+          <h3 class="h6 mt-4">Bagikan ke user lain</h3>
+          <form method="post" action="/apps/<?= e($app['id']) ?>/members" class="row g-2 align-items-end">
+            <?= csrf_field() ?>
+            <div class="col-md-5">
+              <label class="form-label small mb-1" for="member-user">User</label>
+              <select class="form-select form-select-sm" id="member-user" name="user_id" required>
+                <option value="">— pilih user —</option>
+                <?php foreach ($access['candidates'] as $u): ?>
+                  <option value="<?= e((string) $u['id']) ?>"><?= e((string) $u['username']) ?></option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small mb-1" for="member-role">Role</label>
+              <select class="form-select form-select-sm" id="member-role" name="role">
+                <option value="viewer">Viewer — read-only</option>
+                <option value="operator" selected>Operator — deploy, terminal, env, DB</option>
+                <option value="owner">Owner — + hapus app &amp; kelola akses</option>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <button class="btn btn-primary btn-sm w-100">Beri Akses</button>
+            </div>
+          </form>
+          <?php endif; ?>
+
+          <hr class="my-4">
+          <h3 class="h6">Transfer kepemilikan</h3>
+          <form method="post" action="/apps/<?= e($app['id']) ?>/owner" class="row g-2 align-items-end"
+                onsubmit="return confirm('Pindahkan kepemilikan app ini ke user tersebut? Anda tetap terdaftar sebagai co-owner (role owner).');">
+            <?= csrf_field() ?>
+            <div class="col-md-5">
+              <label class="form-label small mb-1" for="owner-user">Owner baru</label>
+              <select class="form-select form-select-sm" id="owner-user" name="user_id" required>
+                <option value="">— pilih user —</option>
+                <?php foreach (($access['users'] ?? []) as $u): ?>
+                  <?php if ((string) $u['id'] === (string) ($access['owner_id'] ?? '')) { continue; } ?>
+                  <option value="<?= e((string) $u['id']) ?>"><?= e((string) $u['username']) ?></option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <button class="btn btn-outline-primary btn-sm w-100">Transfer Owner</button>
+            </div>
+            <div class="col-12">
+              <p class="text-muted small mb-0">Owner lama tetap punya akses (sebagai co-owner) supaya serah-terima tidak memutus akses mendadak.</p>
+            </div>
+          </form>
+        <?php endif; ?>
+      </div>
+    </section>
+  </div>
+  <?php endif; ?>
+
   <!-- ============ Tab: Hapus App ============ -->
+  <?php if ($canDelete): ?>
   <div class="tab-pane fade" id="tab-delete" role="tabpanel" aria-labelledby="tab-delete-btn">
     <section class="card mb-4 border-danger">
       <div class="card-header">
@@ -536,9 +731,10 @@ unset($c);
       </div>
     </section>
   </div>
+  <?php endif; ?>
 </div>
 
-<?php if (!$isBusy): ?>
+<?php if (!$isBusy && $canDelete): ?>
 <!-- Modal konfirmasi delete: pilih volume yang dipertahankan -->
 <div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -779,6 +975,18 @@ function copyDetailKey() {
 </div>
 
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
+<script>
+// Aktifkan tab sesuai hash URL (mis. redirect balik ke #access setelah POST form
+// ubah akses). Bootstrap dimuat di footer, jadi tunggu DOMContentLoaded.
+document.addEventListener('DOMContentLoaded', function () {
+  var hash = (location.hash || '').replace('#', '');
+  if (!hash) return;
+  var btn = document.getElementById('tab-' + hash + '-btn');
+  if (!btn || typeof bootstrap === 'undefined') return;
+  new bootstrap.Tab(btn).show();
+});
+</script>
+
 <script src="/vendor/xterm/xterm.js"></script>
 <script src="/vendor/xterm/addons/fit/fit.js"></script>
 <script src="/js/app-terminal.js?v=4"></script>

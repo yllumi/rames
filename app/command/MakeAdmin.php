@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\command;
 
+use app\library\Auth\OwnershipMigrator;
 use app\library\Auth\UserStore;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -33,6 +34,11 @@ class MakeAdmin extends Command
 
         if (count($store->all()) > 0) {
             $output->writeln('<error>auth.json sudah punya user. Gunakan halaman "Manage Users" di dashboard untuk menambah user.</error>');
+            // Instalasi lama: tetap bantu migrasi app yang belum punya owner.
+            $migrated = (new OwnershipMigrator())->run();
+            if ($migrated > 0) {
+                $output->writeln('<info>' . $migrated . ' app lama tanpa owner di-assign ke admin pertama.</info>');
+            }
             return Command::SUCCESS;
         }
 
@@ -54,6 +60,15 @@ class MakeAdmin extends Command
         $output->writeln('<info>User admin berhasil dibuat.</info>');
         $output->writeln('<info>  username : ' . $user['username'] . '</info>');
         $output->writeln('<info>  password : ' . $password . '</info>');
+        $output->writeln('<info>  role     : admin (user pertama otomatis admin)</info>');
+
+        // App lama (dibuat sebelum fitur ownership) di-assign ke admin ini supaya
+        // tidak hilang dari daftar semua user.
+        $migrated = (new OwnershipMigrator())->run((string) $user['id']);
+        if ($migrated > 0) {
+            $output->writeln('<info>  migrated : ' . $migrated . ' app lama di-assign ke admin ini</info>');
+        }
+
         $output->writeln('');
         $output->writeln('<comment>Segera ganti password lewat halaman "Manage Users" di dashboard.</comment>');
         $output->writeln('');

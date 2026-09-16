@@ -9,6 +9,13 @@ $active = 'database';
   <span class="text-muted small">Kelola MySQL/MariaDB di dalam container (phpMyAdmin mini)</span>
 </div>
 
+<?php if (!($isAdmin ?? false)): ?>
+  <div class="alert alert-info py-2 small" role="alert">
+    Hanya container database dari <strong>app milik Anda</strong> dan <strong>app yang dibagikan</strong> kepada Anda
+    yang ditampilkan di sini.
+  </div>
+<?php endif; ?>
+
 <?php if ($engineError): ?>
   <div class="alert alert-danger" role="alert"><?= e($engineError) ?></div>
 <?php endif; ?>
@@ -20,7 +27,11 @@ $active = 'database';
   </div>
   <?php if (empty($rows)): ?>
     <div class="card-body text-muted small">
-      Tidak ada container MySQL/MariaDB yang terdeteksi.
+      <?php if ($isAdmin ?? false): ?>
+        Tidak ada container MySQL/MariaDB yang terdeteksi.
+      <?php else: ?>
+        Tidak ada container database pada app milik Anda / yang dibagikan ke Anda.
+      <?php endif; ?>
       Deteksi otomatis berdasarkan nama image (<span class="mono">mysql</span>,
       <span class="mono">mariadb</span>, <span class="mono">percona</span>) atau
       environment <span class="mono">MYSQL_*</span> / <span class="mono">MARIADB_*</span>.
@@ -34,6 +45,7 @@ $active = 'database';
           <th>Image</th>
           <th>Status</th>
           <th>Kepemilikan</th>
+          <?php if ($isAdmin ?? false): ?><th>Owner</th><?php endif; ?>
           <th class="text-end">Aksi</th>
         </tr>
       </thead>
@@ -50,8 +62,16 @@ $active = 'database';
               <span class="badge text-bg-secondary">eksternal</span>
             <?php endif; ?>
           </td>
+          <?php if ($isAdmin ?? false): ?>
+          <?php $__owner = (string) (($ownerNamesByApp ?? [])[(string) ($r['app_id'] ?? '')] ?? ''); ?>
+          <td class="small mono"><?= $__owner !== '' ? e($__owner) : '<span class="text-muted">-</span>' ?></td>
+          <?php endif; ?>
           <td class="text-end">
-            <a class="btn btn-outline-primary btn-sm" href="/database/<?= e(rawurlencode($r['container_name'])) ?>">Kelola &rarr;</a>
+            <?php if ($r['can_manage'] ?? false): ?>
+              <a class="btn btn-outline-primary btn-sm" href="/database/<?= e(rawurlencode($r['container_name'])) ?>">Kelola &rarr;</a>
+            <?php else: ?>
+              <span class="text-muted small">tanpa hak</span>
+            <?php endif; ?>
           </td>
         </tr>
         <?php endforeach; ?>

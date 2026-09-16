@@ -73,6 +73,11 @@ Route::post('/apps/{id}/env/import', [AppController::class, 'importEnv']);
 // External network per app (shared network lintas-app)
 Route::post('/apps/{id}/network', [AppController::class, 'saveNetworks']);
 
+// Kepemilikan & sharing app (owner + members)
+Route::post('/apps/{id}/members', [AppController::class, 'addMember']);
+Route::post('/apps/{id}/members/{userId}/remove', [AppController::class, 'removeMember']);
+Route::post('/apps/{id}/owner', [AppController::class, 'transferOwner']);
+
 // Halaman & reload Nginx host (global — berlaku untuk semua app)
 Route::get('/nginx', [NginxController::class, 'index']);
 Route::post('/nginx/reload', [NginxController::class, 'reload']);
@@ -139,6 +144,7 @@ Route::get('/users', [UserController::class, 'index']);
 Route::post('/users', [UserController::class, 'create']);
 Route::post('/users/{id}/delete', [UserController::class, 'delete']);
 Route::post('/users/{id}/password', [UserController::class, 'changePassword']);
+Route::post('/users/{id}/role', [UserController::class, 'changeRole']);
 
 
 

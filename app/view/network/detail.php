@@ -70,7 +70,7 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
           <?php endif; ?>
         </dl>
       </div>
-      <?php if (!$builtin): ?>
+      <?php if (!$builtin && ($canManage ?? false)): ?>
       <div class="card-footer">
         <form method="post" action="/networks/<?= e(rawurlencode($name)) ?>/delete"
               onsubmit="return confirm('Hapus network <?= e($name) ?>? Pastikan tidak dipakai container lain.');">
@@ -87,7 +87,12 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
     <div class="card h-100">
       <div class="card-header"><h2 class="h6 mb-0">Hubungkan Container</h2></div>
       <div class="card-body">
-        <?php if (empty($candidates)): ?>
+        <?php if (!($canManage ?? false)): ?>
+          <p class="text-muted small mb-0">
+            Menghubungkan/memutus container bersifat global — hanya admin.
+            Untuk koneksi lintas-app yang persisten, gunakan tab <strong>Network</strong> di detail app.
+          </p>
+        <?php elseif (empty($candidates)): ?>
           <p class="text-muted small mb-0">Tidak ada container yang bisa dihubungkan (semua container sudah berada di network ini, atau Docker Engine tidak dapat diakses).</p>
         <?php else: ?>
         <form method="post" action="/networks/<?= e(rawurlencode($name)) ?>/connect" class="vstack gap-3">
@@ -139,12 +144,16 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
         <td class="small mono"><?= e($c['ipv6'] !== '' ? $c['ipv6'] : '-') ?></td>
         <td class="small mono"><?= e($c['mac'] !== '' ? $c['mac'] : '-') ?></td>
         <td class="text-end">
+          <?php if ($canManage ?? false): ?>
           <form method="post" action="/networks/<?= e(rawurlencode($name)) ?>/disconnect" class="d-inline"
                 onsubmit="return confirm('Putuskan container <?= e($c['name']) ?> dari network <?= e($name) ?>?');">
             <?= csrf_field() ?>
             <input type="hidden" name="container" value="<?= e($c['name']) ?>">
             <button class="btn btn-outline-secondary btn-sm">Putus</button>
           </form>
+          <?php else: ?>
+            <span class="text-muted small">-</span>
+          <?php endif; ?>
         </td>
       </tr>
       <?php endforeach; ?>

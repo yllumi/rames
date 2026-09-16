@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\AppAccess;
+use app\library\Auth\AppAccessDenied;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use support\Request;
@@ -20,7 +22,8 @@ class SslController
     public function index(Request $request)
     {
         $store = new AppStore();
-        $apps = $store->all();
+        // Hanya app yang boleh diakses user ini (admin: semua app).
+        $apps = AppAccess::visible($store->all(), current_user());
 
         // SSL hanya didukung bila APP_DOMAIN adalah domain publik (mis. bukan .local)
         $sslSupported = SslIssuer::isPublicDomain((string) config('deploy.app_domain', ''));
@@ -58,6 +61,8 @@ class SslController
         return view('ssl/index', [
             'rows' => $rows,
             'sslSupported' => $sslSupported,
+            'isAdmin' => is_admin(),
+            'ownerNames' => is_admin() ? user_names() : [],
         ]);
     }
 
@@ -73,9 +78,9 @@ class SslController
         $store = new AppStore();
         $app = $store->find($id);
         if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/ssl');
+            throw new AppAccessDenied('ssl', $id);
         }
+        AppAccess::require('ssl', $app, current_user());
 
         $subdomain = app_subdomain($app['name']);
         $customDomain = (string) ($app['custom_domain'] ?? '');

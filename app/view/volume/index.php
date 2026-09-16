@@ -73,11 +73,15 @@ foreach ($rows as $r) {
     </div>
     <div class="card-footer d-flex flex-wrap gap-2 align-items-center">
       <span class="text-muted small me-auto"><?= count($rows) ?> volume (<?= $orphanCount ?> yatim)</span>
-      <button type="submit" class="btn btn-danger btn-sm"
-              onclick="return confirm('Hapus volume yang dipilih? Data pada volume itu hilang permanen.');">Hapus volume terpilih</button>
-      <?php if ($orphanCount > 0): ?>
-        <button type="submit" name="purge_orphans" value="1" class="btn btn-outline-danger btn-sm"
-                onclick="return confirm('Hapus SEMUA volume yatim (<?= $orphanCount ?> volume)? Data pada volume itu hilang permanen.');">Purge semua yatim</button>
+      <?php if ($canPurge ?? false): ?>
+        <button type="submit" class="btn btn-danger btn-sm"
+                onclick="return confirm('Hapus volume yang dipilih? Data pada volume itu hilang permanen.');">Hapus volume terpilih</button>
+        <?php if ($orphanCount > 0): ?>
+          <button type="submit" name="purge_orphans" value="1" class="btn btn-outline-danger btn-sm"
+                  onclick="return confirm('Hapus SEMUA volume yatim (<?= $orphanCount ?> volume)? Data pada volume itu hilang permanen.');">Purge semua yatim</button>
+        <?php endif; ?>
+      <?php else: ?>
+        <span class="text-muted small">Membersihkan volume bersifat global — hanya admin.</span>
       <?php endif; ?>
     </div>
   </div>

@@ -17,6 +17,9 @@ foreach ($rows as $r) {
       Kelola <span class="mono">network Docker</span> host: buat <strong>shared network</strong>
       lintas-app, hubungkan/putuskan container, dan hapus network yang tidak terpakai.
       Network built-in &amp; milik app aktif tidak bisa dihapus dari sini.
+      <?php if (!($canManage ?? false)): ?>
+        <br><span class="small">Anda hanya melihat network milik app yang bisa Anda akses — pembuatan &amp; penghapusan network hanya untuk admin.</span>
+      <?php endif; ?>
     </p>
   </div>
   <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Apps</a>
@@ -96,6 +99,7 @@ foreach ($rows as $r) {
   </div>
 
   <div class="col-lg-4">
+    <?php if ($canManage ?? false): ?>
     <div class="card">
       <div class="card-header"><h2 class="h6 mb-0">Buat Network</h2></div>
       <div class="card-body">
@@ -141,6 +145,18 @@ foreach ($rows as $r) {
         </form>
       </div>
     </div>
+    <?php else: ?>
+    <div class="card">
+      <div class="card-header"><h2 class="h6 mb-0">Shared Network</h2></div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">
+          Butuh network bersama antar app? Minta <strong>admin</strong> membuatnya di halaman ini,
+          lalu pasang di tab <strong>Network</strong> pada detail app Anda (koneksi persisten).
+        </p>
+        <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Kembali ke Apps</a>
+      </div>
+    </div>
+    <?php endif; ?>
   </div>
 
 </div>

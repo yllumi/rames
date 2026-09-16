@@ -27,6 +27,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [x] Installer otomatis host (`host/install.sh`) — setup nginx, watcher, renewal certbot, `.env`, build dashboard
 - [x] Nginx reload watcher host (`host/nginx-reload-watcher.sh` + systemd unit) (§8.3)
 - [x] Renewal certbot otomatis (`host/certbot-renew.sh` + systemd timer) (§8a)
+- [x] Kepemilikan app per user + sharing ke user lain (role viewer/operator/owner) & role global admin/member (§6.1, §7.7)
 - [ ] Log viewer real-time per container (§8c)
 - [ ] Health check & monitoring resource per container (§8d)
 - [ ] Search / filter / pagination daftar app (§8e)
@@ -36,7 +37,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 ## 3. Non-Goals (Phase 1)
 
 - Multi-server / agent sebagai service HTTP terpisah
-- Role & permission antar user — semua user yang login punya hak akses sama (lihat Goals untuk multi user tanpa role)
+- Permission granular per-resource (mis. izin terpisah untuk terminal vs database) — Phase 1 memakai 4 tingkat role tetap: admin, owner, operator, viewer (§7.7)
 - Auto-scaling, health-check lanjutan & monitoring resource penuh (metrik historis, alerting) — Phase 1 hanya ringkasan status/usage per container (§8d)
 - Log viewer streaming penuh & buffer historis — Phase 1 memakai polling tail sederhana (§8c)
 - Podman — Phase 1 tetap pakai Docker Engine yang sudah familiar; migrasi ke rootless Podman jadi pertimbangan keamanan di fase lanjutan
@@ -112,20 +113,26 @@ File: `database/auth.json`
   {
     "id": "u1",
     "username": "admin",
-    "password_hash": "$2y$10$..."
+    "password_hash": "$2y$10$...",
+    "role": "admin"
   },
   {
     "id": "u2",
     "username": "budi",
-    "password_hash": "$2y$10$..."
+    "password_hash": "$2y$10$...",
+    "role": "member"
   }
 ]
 ```
 
 - Password disimpan sebagai hash (`password_hash()` PHP, bcrypt), **bukan plaintext**.
 - Login membandingkan input dengan `password_verify()` terhadap entry yang `username`-nya cocok.
-- **Multi user, tanpa role/permission**: semua user yang terdaftar di `auth.json` punya akses penuh yang sama ke seluruh fitur dashboard (create/delete app apa pun, lihat semua data) — tidak ada konsep admin vs. member atau pembatasan per-app.
-- Dashboard menyediakan halaman sederhana "Manage Users" (tambah/hapus user, ganti password) yang bisa diakses oleh user mana pun yang sudah login — karena tidak ada role, semua user setara termasuk kemampuan menambah/menghapus user lain.
+- **Role global user** (`role`):
+  - `admin` — melihat **semua** app (beserta nama pemiliknya) dan **punya kuasa penuh** ke semua app; satu-satunya yang boleh mengelola user.
+  - `member` — hanya melihat app miliknya sendiri dan app yang **dibagikan** kepadanya; app user lain tidak terlihat sama sekali.
+- **Migrasi berkas lama**: `auth.json` tanpa field `role` diperlakukan sebagai user pertama = admin, sisanya member (dibaca saat runtime, tanpa menulis ulang berkas) — instalasi lama tidak pernah kehilangan admin.
+- Halaman **Manage Users** (`/users`) hanya bisa diakses admin: tambah/hapus user, ganti password, ubah role. Menghapus user **mengalihkan seluruh app miliknya ke admin yang menghapus**; admin terakhir tidak bisa dihapus/diturunkan. Perubahan role & penghapusan user **langsung berlaku** pada request berikutnya (session disinkronkan dengan `auth.json` oleh `AuthMiddleware`, bukan hanya saat login).
+- Kepemilikan app diatur terpisah (per app) di `apps.json` — lihat §7.7.
 
 ### 6.2 Alur
 1. User akses `/login`, isi username & password
@@ -135,7 +142,7 @@ File: `database/auth.json`
 5. Logout menghapus session
 
 ### 6.3 Provisioning awal
-Karena belum ada installer resmi di Phase 1, entry pertama di `auth.json` dibuat manual lewat script/console command (mis. `php webman make:admin`) yang generate username/password default dan menuliskannya ke file — dijalankan sekali saat setup. User tambahan berikutnya dibuat lewat halaman "Manage Users" di dashboard.
+Karena belum ada installer resmi di Phase 1, entry pertama di `auth.json` dibuat manual lewat script/console command (mis. `php webman make:admin`) yang generate username/password default dan menuliskannya ke file — dijalankan sekali saat setup. User pertama otomatis berrole **admin**. User tambahan berikutnya dibuat lewat halaman "Manage Users" di dashboard (khusus admin). Command `php webman app:assign-owner` menugaskan app lama yang belum punya owner (§7.7).
 
 ## 7. App Management
 
@@ -147,6 +154,11 @@ File: `database/apps.json` — array of app object.
   {
     "id": "b3f1c2a4-...",
     "name": "myapp",
+    "owner_id": "u1",
+    "members": {
+      "u2": { "role": "operator", "added_at": "2026-09-16T09:10:00+07:00", "added_by": "u1" },
+      "u3": { "role": "viewer",   "added_at": "2026-09-16T09:12:00+07:00", "added_by": "u1" }
+    },
     "subdomain": "myapp.example.com",
     "repo_url": "https://github.com/user/myapp.git",
     "branch": "main",
@@ -180,7 +192,9 @@ File: `database/apps.json` — array of app object.
 ```
 
 Field penting:
-- `name` — slug unik, dipakai sebagai subdomain dan nama direktori lokal (`apps/{name}`)
+- `name` — slug unik **global** (dipakai sebagai subdomain, nama project compose, dan direktori lokal `apps/{name}`), sehingga tidak ada dua app dengan nama sama meski pemiliknya berbeda
+- `owner_id` — id user pemilik app; app hanya terlihat oleh owner, member yang dibagikan, dan admin (§7.7)
+- `members` — map `userId → {role, added_at, added_by}`; role `viewer` | `operator` | `owner` (co-owner)
 - `primary_service` — nama service dalam `docker-compose.yml` yang menerima traffic dari subdomain (ditentukan user saat create, default: service pertama yang punya port exposed)
 - `containers[].host_port` — port di host yang sudah final dipakai (setelah resolusi konflik), inilah yang dipakai Nginx sebagai target `proxy_pass`
 - `auth_method` — metode akses repo: `none` (publik, anonim) atau `ssh` (deploy key per app)
@@ -203,14 +217,15 @@ Field penting:
 12. **Generate config Nginx** untuk `{name}.{APP_DOMAIN}` yang proxy ke `127.0.0.1:{host_port primary_service}`
 13. **Validasi config**: `docker exec nginx nginx -t` — jika gagal, rollback (app tetap dibuat tapi status `error`, tampilkan pesan error ke user)
 14. **Reload Nginx**: `docker exec nginx nginx -s reload`
-15. **Simpan** seluruh data app ke `apps.json` dengan `status: running`
+15. **Simpan** seluruh data app ke `apps.json` dengan `status: running` dan `owner_id` = user pembuat (§7.7)
 
 ### 7.3 Halaman Detail App
 
 Menampilkan:
 - Info umum: nama, subdomain (dengan link langsung), repo URL, branch
+- Badge hak akses user saat ini (Owner/Operator/Viewer/Admin) + tab **Akses** untuk pemilik app (§7.7)
 - Daftar container: nama, image, status (running/stopped/exited), port mapping
-- Aksi: Rebuild (pull ulang + up ulang), Stop, Start, Delete (hapus container + config nginx + file lokal)
+- Aksi: Rebuild (pull ulang + up ulang), Stop, Start, Delete (hapus container + config nginx + file lokal) — tombol yang tidak diizinkan role user **tidak ditampilkan**, dan endpoint-nya tetap menolak di server
 - Riwayat Deployment + tombol Rollback (lihat §7.5)
 
 ### 7.4 Delete App
@@ -294,6 +309,51 @@ Setiap app bisa diberi **environment variable** yang dikelola dashboard (mis. kr
 - Nilai di-inject **literal** (bukan `${KEY}`) agar kredensial pasti benar, tidak bergantung urutan precedence interpolasi compose.
 - Env vars tidak ikut tersimpan saat app dihapus (managed env file dibersihkan; konsisten dengan pembersihan deploy key).
 - App lama tanpa field `env` aman (diakses dengan default kosong, tanpa migrasi data).
+
+### 7.7 Kepemilikan & Sharing App
+
+Setiap app **dimiliki satu user (owner)** dan hanya terlihat oleh user yang berhak. App juga bisa **dibagikan** ke user lain dengan role tertentu.
+
+**Model data (apps.json)**
+- `owner_id` — id user pemilik app (dibuat saat Create App → pembuat menjadi owner).
+- `members` — `{ userId: { role, added_at, added_by } }`.
+- Role efektif user pada app (dari tertinggi): `admin` (role global) > `owner` > `operator` > `viewer`; tidak ada entri = tidak punya akses.
+
+**Matriks hak**
+
+| Aksi | viewer | operator | owner | admin |
+|---|:--:|:--:|:--:|:--:|
+| Lihat detail/status/versi/riwayat | ✅ | ✅ | ✅ | ✅ (semua app) |
+| deploy / rebuild / rollback / stop / start | — | ✅ | ✅ | ✅ |
+| Environment variable & external network | — | ✅ | ✅ | ✅ |
+| Custom domain & SSL | — | ✅ | ✅ | ✅ |
+| Terminal container & Database manager | — | ✅ | ✅ | ✅ |
+| Hapus app (preserve/purge volume) | — | — | ✅ | ✅ |
+| Atur member & transfer owner | — | — | ✅ | ✅ |
+| Operasi global: buat/hapus network, reload Nginx, purge volume yatim | — | — | — | ✅ |
+
+**Penegakan (satu pintu)**
+- `app\library\Auth\AppAccess` adalah satu-satunya tempat aturan hak: `roleFor()`, `can($ability, $app, $user)`, `require()` (melempar `AppAccessDenied`), `visible()`.
+- Semua controller (App, Terminal, Database, SSL, Volume, Network) memanggil `AppAccess`/`visible()`; tidak ada pengecekan `owner_id` yang ditulis ulang di tempat lain. `DatabaseController` memusatkan pemeriksaan pada `findOwningApp()` (dipakai semua endpoint DB).
+- **403 vs 404**: akses tidak sah → **404 Not Found** (`AppAccessDenied::render()`), supaya keberadaan app milik user lain tidak bocor. Endpoint `/api/*` menerima JSON `{"code":404}`, halaman biasa menerima halaman 404.
+- Semua endpoint aksi tetap menolak di server meski tombolnya disembunyikan di UI (defense in depth).
+
+**Penyaringan resource global**
+- `/apps` — hanya app yang boleh diakses; tab filter **Semua (admin) / Milik Saya / Dibagikan ke Saya**; kolom **Owner** untuk admin.
+- `/database` — non-admin hanya melihat container MySQL/MariaDB milik app yang bisa diaksesnya (milik sendiri + yang dibagikan); container app user lain dan container eksternal hanya tampil untuk admin. Tombol **Kelola** hanya muncul bila user punya ability `database` (operator ke atas) — endpoint-nya tetap menolak 404 bila dipaksa. Kolom Owner ditampilkan untuk admin.
+- Nilai **environment variable** (bisa berisi kredensial) hanya ditampilkan untuk role **operator** ke atas; viewer hanya melihat keterangan tanpa nilainya.
+- `/ssl`, `/database`, `/volumes`, `/networks` — daftar disaring ke app yang boleh diakses (admin: semua). Volume **yatim** (project sudah tidak ada di `apps.json`) hanya tampil untuk admin.
+- Operasi global (buat/hapus network, connect/disconnect container, reload Nginx, purge volume) hanya admin.
+- Resource teknis tetap **global** secara sengaja: keunikan `name` app, dan deteksi konflik port (`PortManager`) — agar tidak ada tabrakan port/project compose antar user.
+
+**Migrasi data lama**
+- `OwnershipMigrator` (idempoten) menugaskan app tanpa `owner_id` ke **admin pertama**; dijalankan saat login (best-effort), oleh `php webman make:admin`, atau manual:
+  - `php webman app:assign-owner [username]` — assign app tanpa owner ke user tsb (default: admin pertama).
+  - `php webman app:assign-owner --list` — audit peta owner tiap app.
+- User yang dihapus: seluruh app miliknya (dan keanggotaannya di app lain) dialihkan/dibersihkan (`AppStore::transferAllFrom`).
+- Transfer owner: owner baru menggantikan `owner_id`; owner lama tetap terdaftar sebagai **co-owner** (role `owner`) agar serah-terima tidak memutus akses mendadak.
+
+**Pengujian**: `tests/AppAccessTest.php` (matriks hak per role), `tests/AppOwnershipTest.php` (owner/members/transfer/migrasi + role user).
 
 ## 8. Reverse Proxy / Subdomain Routing
 

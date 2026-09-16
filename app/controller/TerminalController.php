@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\AppAccess;
+use app\library\Auth\AppAccessDenied;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerExec;
 use app\library\Storage\AppStore;
@@ -34,10 +36,7 @@ class TerminalController
 
     public function open(Request $request, string $id)
     {
-        $app = (new AppStore())->find($id);
-        if ($app === null) {
-            return json(['code' => 404, 'msg' => 'App tidak ditemukan.']);
-        }
+        $app = $this->requireApp($id);
         $container = $this->resolveContainer($app, (string) $request->post('container', ''));
         if ($container === null) {
             return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
@@ -64,6 +63,8 @@ class TerminalController
 
     public function stream(Request $request, string $id, string $token)
     {
+        $this->requireApp($id);
+
         $exec = new DockerExec();
         $session = $exec->sessionInfo($token, $id);
         if ($session === null) {
@@ -141,6 +142,8 @@ class TerminalController
 
     public function input(Request $request, string $id, string $token)
     {
+        $this->requireApp($id);
+
         $exec = new DockerExec();
         if ($exec->sessionInfo($token, $id) === null) {
             return json(['code' => 404, 'msg' => 'Sesi terminal tidak ditemukan atau sudah berakhir.']);
@@ -159,13 +162,14 @@ class TerminalController
 
     public function close(Request $request, string $id, string $token)
     {
+        $app = $this->requireApp($id);
         $exec = new DockerExec();
         $session = $exec->sessionInfo($token, $id);
         if ($session === null) {
             return json(['code' => 404, 'msg' => 'Sesi terminal tidak ditemukan atau sudah berakhir.']);
         }
         $exec->closeSession($token);
-        $this->audit(['name' => $id, 'id' => $id], (string) ($session['container'] ?? ''), 'close sesi terminal');
+        $this->audit($app, (string) ($session['container'] ?? ''), 'close sesi terminal');
         return json(['code' => 0]);
     }
 
@@ -175,10 +179,7 @@ class TerminalController
 
     public function run(Request $request, string $id)
     {
-        $app = (new AppStore())->find($id);
-        if ($app === null) {
-            return json(['code' => 404, 'msg' => 'App tidak ditemukan.']);
-        }
+        $app = $this->requireApp($id);
         $container = $this->resolveContainer($app, (string) $request->post('container', ''));
         if ($container === null) {
             return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
@@ -205,6 +206,23 @@ class TerminalController
     // ==================================================================
     // Helper
     // ==================================================================
+
+    /**
+     * Ambil app + pastikan user berhak memakai terminal container-nya.
+     *
+     * @throws AppAccessDenied dirender sebagai 404 oleh webman (JSON untuk
+     *                         endpoint /api/*) — app user lain tidak terbocor.
+     */
+    private function requireApp(string $id): array
+    {
+        $app = (new AppStore())->find($id);
+        if ($app === null) {
+            throw new AppAccessDenied('terminal', $id);
+        }
+        AppAccess::require('terminal', $app, current_user());
+
+        return $app;
+    }
 
     /**
      * Validasi bahwa container benar-benar milik app ini (bukan container acak).

@@ -30,6 +30,11 @@ class NginxController
      */
     public function reload(Request $request)
     {
+        if (!is_admin()) {
+            flash_set('error', 'Reload Nginx berlaku untuk seluruh host — hanya admin yang boleh melakukannya.');
+            return redirect('/nginx');
+        }
+
         $result = (new NginxReloader())->reload();
         if ($result['ok']) {
             flash_set('success', $result['message']);

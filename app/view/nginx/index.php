@@ -16,10 +16,14 @@
 <div class="card">
   <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
     <h2 class="h6 mb-0">Status Reload</h2>
+    <?php if (is_admin()): ?>
     <form method="post" action="/nginx/reload" class="d-inline">
       <?= csrf_field() ?>
       <button class="btn btn-outline-secondary btn-sm" title="Validasi config lalu reload nginx host">↻ Reload Nginx</button>
     </form>
+    <?php else: ?>
+    <span class="text-muted small">Reload hanya untuk admin (berlaku untuk seluruh host).</span>
+    <?php endif; ?>
   </div>
   <div class="card-body">
     <?php if ($status): ?>

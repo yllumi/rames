@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\middleware;
 
+use app\library\Auth\UserStore;
 use Webman\MiddlewareInterface;
 use Webman\Http\Response;
 use Webman\Http\Request;
@@ -10,6 +11,11 @@ use Webman\Http\Request;
 /**
  * Melindungi semua route dashboard kecuali /login dan aset statis.
  * (SPECS.md §11: akses dashboard harus selalu di balik autentikasi.)
+ *
+ * Selain memeriksa login, middleware menyinkronkan data user di session dengan
+ * `auth.json` pada setiap request yang dilindungi — sehingga penghapusan user
+ * atau perubahan role (admin ↔ member) langsung berlaku tanpa menunggu login
+ * ulang, dan tidak ada sesi menggantung milik user yang sudah dihapus.
  */
 class AuthMiddleware implements MiddlewareInterface
 {
@@ -28,18 +34,54 @@ class AuthMiddleware implements MiddlewareInterface
             return $handler($request);
         }
 
-        if (!$request->session()->get('user')) {
-            if ($request->expectsJson() || str_starts_with($path, '/api/')) {
-                return response(
-                    json_encode(['code' => 401, 'msg' => 'Unauthorized'], JSON_UNESCAPED_UNICODE),
-                    401,
-                    ['Content-Type' => 'application/json']
-                );
-            }
-            return redirect('/login');
+        if (!$request->session()->get('user') || !$this->syncSessionUser($request)) {
+            return $this->unauthenticated($request, $path);
         }
 
         return $handler($request);
+    }
+
+    /**
+     * Selaraskan user di session dengan `auth.json`.
+     *
+     * - user sudah dihapus → sesi dibuang (return false)
+     * - role berubah (admin ↔ member) atau field lain berubah → session diperbarui
+     *
+     * Biaya: satu pembacaan kecil `auth.json` per request terproteksi — sepadan
+     * dengan hilangnya risiko sesi "hantu" setelah user dihapus/diturunkan.
+     */
+    private function syncSessionUser(Request $request): bool
+    {
+        $session = $request->session();
+        $user = $session->get('user');
+        if (!is_array($user)) {
+            return false;
+        }
+
+        $fresh = (new UserStore())->findPublicById((string) ($user['id'] ?? ''));
+        if ($fresh === null) {
+            $session->delete('user');
+            return false;
+        }
+
+        if ($user !== $fresh) {
+            $session->set('user', $fresh);
+        }
+
+        return true;
+    }
+
+    private function unauthenticated(Request $request, string $path): Response
+    {
+        if ($request->expectsJson() || str_starts_with($path, '/api/')) {
+            return response(
+                json_encode(['code' => 401, 'msg' => 'Unauthorized'], JSON_UNESCAPED_UNICODE),
+                401,
+                ['Content-Type' => 'application/json']
+            );
+        }
+
+        return redirect('/login');
     }
 
     private function isStaticAsset(string $path): bool

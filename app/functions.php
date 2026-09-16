@@ -5,6 +5,8 @@ declare(strict_types=1);
  * Helper global dashboard deployer.
  */
 
+use app\library\Auth\AppAccess;
+use app\library\Auth\UserStore;
 use support\Request;
 
 if (!function_exists('e')) {
@@ -80,5 +82,63 @@ if (!function_exists('app_subdomain')) {
     function app_subdomain(string $name): string
     {
         return $name . '.' . config('deploy.app_domain', 'example.com');
+    }
+}
+
+if (!function_exists('is_admin')) {
+    /**
+     * Apakah user (default: user login) adalah admin global.
+     */
+    function is_admin(?array $user = null): bool
+    {
+        $user ??= current_user();
+        return ($user['role'] ?? '') === AppAccess::ROLE_ADMIN;
+    }
+}
+
+if (!function_exists('app_role')) {
+    /**
+     * Role user terhadap app (owner|operator|viewer|admin) atau null bila tidak
+     * punya akses. Selalu lewat AppAccess agar aturan hak hanya ada di satu tempat.
+     */
+    function app_role(array $app, ?array $user = null): ?string
+    {
+        return AppAccess::roleFor($app, $user ?? current_user());
+    }
+}
+
+if (!function_exists('app_can')) {
+    /**
+     * Cek hak user pada app — dipakai view untuk menyembunyikan tombol/aksi.
+     */
+    function app_can(string $ability, array $app, ?array $user = null): bool
+    {
+        return AppAccess::can($ability, $app, $user ?? current_user());
+    }
+}
+
+if (!function_exists('user_names')) {
+    /**
+     * Peta userId → username (untuk menampilkan pemilik app di daftar admin).
+     *
+     * @return array<string,string>
+     */
+    function user_names(): array
+    {
+        $names = [];
+        foreach ((new UserStore())->listWithRoles() as $user) {
+            $names[(string) ($user['id'] ?? '')] = (string) ($user['username'] ?? '');
+        }
+        return $names;
+    }
+}
+
+if (!function_exists('app_role_label')) {
+    /**
+     * Label hak akses user pada app (Owner/Operator/Viewer/Admin).
+     */
+    function app_role_label(?string $role): string
+    {
+        return AppAccess::label($role ?? '');
     }
 }

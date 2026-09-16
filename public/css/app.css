@@ -8,7 +8,9 @@
   --bs-body-line-height: 1.55;
   --bs-body-color: #12343c;
   --bs-body-bg: #f3f7f8;
-
+  --bs-link-color: #0f766e;
+  --bs-link-hover-color: #0d9488;
+  
   --accent: #0d9488;
   --accent2: #0f766e;
   --grad: linear-gradient(135deg, #2dd4bf 0%, #14b8a6 55%, #0d9488 100%);
@@ -27,11 +29,14 @@ body::before {
   content: "";
   position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background-image:
-    linear-gradient(rgba(13, 90, 80, .05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(13, 90, 80, .05) 1px, transparent 1px);
+  linear-gradient(rgba(13, 90, 80, .05) 1px, transparent 1px),
+  linear-gradient(90deg, rgba(13, 90, 80, .05) 1px, transparent 1px);
   background-size: 44px 44px;
   -webkit-mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
   mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
+}
+.nav-pills {
+  --bs-nav-pills-link-active-bg: #23c8b5;
 }
 
 /* ---------- Typography helpers ---------- */

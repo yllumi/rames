@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\AppAccess;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
 use app\library\Storage\AppStore;
@@ -22,6 +23,8 @@ class VolumeController
     public function index(Request $request)
     {
         $projectNames = $this->activeProjectNames();
+        $isAdmin = is_admin();
+        $accessible = $this->accessibleProjectNames();
         $engineError = null;
         $volumes = [];
 
@@ -38,6 +41,11 @@ class VolumeController
             $project = (string) ($labels['com.docker.compose.project'] ?? '');
             if ($project === '') {
                 continue; // hanya volume ber-label compose yang dikelola dashboard
+            }
+            // Non-admin hanya melihat volume milik app yang bisa diakses;
+            // volume yatim (project sudah tidak ada) hanya untuk admin.
+            if (!$isAdmin && !isset($accessible[$project])) {
+                continue;
             }
             $rows[] = [
                 'name' => (string) ($v['Name'] ?? ''),
@@ -60,15 +68,24 @@ class VolumeController
         return view('volume/index', [
             'rows' => $rows,
             'engineError' => $engineError,
+            'canPurge' => $isAdmin,
         ]);
     }
 
     /**
      * Hapus volume yatim. Menerima `volumes[]` (pilihan) atau `purge_orphans=1`
      * (semua yatim). Volume milik app yang masih aktif DITOLAK (pengaman).
+     *
+     * Pemurgaan volume bersifat global (volume yatim tidak bisa diatribusikan ke
+     * app yang bisa diakses) → hanya admin.
      */
     public function purge(Request $request)
     {
+        if (!is_admin()) {
+            flash_set('error', 'Membersihkan volume bersifat global — hanya admin yang boleh melakukannya.');
+            return redirect('/volumes');
+        }
+
         $projectNames = $this->activeProjectNames();
         $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
 
@@ -135,6 +152,20 @@ class VolumeController
     {
         $names = [];
         foreach ((new AppStore())->all() as $app) {
+            $names[(string) ($app['name'] ?? '')] = true;
+        }
+        return $names;
+    }
+
+    /**
+     * Nama project app yang boleh diakses user saat ini.
+     *
+     * @return array<string,bool>
+     */
+    private function accessibleProjectNames(): array
+    {
+        $names = [];
+        foreach (AppAccess::visible((new AppStore())->all(), current_user()) as $app) {
             $names[(string) ($app['name'] ?? '')] = true;
         }
         return $names;

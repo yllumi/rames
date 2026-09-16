@@ -4,7 +4,11 @@
 <div class="page-head mb-4">
   <div>
     <h1 class="h3 mb-1">Users</h1>
-    <p class="text-muted mb-0">Semua user punya hak akses penuh (tanpa role/permission, SPECS.md §6.1).</p>
+    <p class="text-muted mb-0">
+      <strong>Admin</strong> mengelola user &amp; melihat semua app. <strong>Member</strong> hanya melihat
+      app miliknya sendiri dan app yang dibagikan kepadanya (diatur di tab <strong>Akses</strong> tiap app).
+      Total <?= (int) ($totalApps ?? 0) ?> app terdaftar.
+    </p>
   </div>
 </div>
 
@@ -23,6 +27,13 @@
             <label class="form-label" for="password">Password</label>
             <input type="password" class="form-control" id="password" name="password" minlength="6" required autocomplete="new-password">
           </div>
+          <div class="mb-3">
+            <label class="form-label" for="role">Role</label>
+            <select class="form-select" id="role" name="role">
+              <option value="member" selected>Member — hanya app miliknya / yang dibagikan</option>
+              <option value="admin">Admin — kelola user &amp; lihat semua app</option>
+            </select>
+          </div>
           <button type="submit" class="btn btn-primary">Tambah User</button>
         </form>
       </div>
@@ -38,17 +49,33 @@
       <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
         <thead>
-          <tr><th>Username</th><th>Dibuat</th><th>Ganti Password</th><th></th></tr>
+          <tr><th>Username</th><th>Role</th><th>App</th><th>Dibuat</th><th>Ganti Password</th><th></th></tr>
         </thead>
         <tbody>
           <?php foreach ($users as $user): ?>
+          <?php $__self = ($currentUser['id'] ?? '') === ($user['id'] ?? ''); ?>
           <tr>
             <td>
               <span class="avatar sm"><?= e(strtoupper(substr($user['username'] ?? '?', 0, 1))) ?></span>
               <strong><?= e($user['username']) ?></strong>
-              <?php if (($currentUser['id'] ?? '') === ($user['id'] ?? '')): ?>
+              <?php if ($__self): ?>
                 <span class="text-muted small">(Anda)</span>
               <?php endif; ?>
+            </td>
+            <td>
+              <form method="post" action="/users/<?= e($user['id']) ?>/role" class="d-flex gap-1 align-items-center">
+                <?= csrf_field() ?>
+                <select name="role" class="form-select form-select-sm" style="width:auto;" <?= $__self ? 'disabled title="Tidak bisa mengubah role sendiri"' : '' ?>>
+                  <option value="member" <?= ($user['role'] ?? '') === 'member' ? 'selected' : '' ?>>Member</option>
+                  <option value="admin" <?= ($user['role'] ?? '') === 'admin' ? 'selected' : '' ?>>Admin</option>
+                </select>
+                <?php if (!$__self): ?>
+                  <button class="btn btn-outline-secondary btn-sm" type="submit">Set</button>
+                <?php endif; ?>
+              </form>
+            </td>
+            <td class="small text-muted">
+              <?= (int) (($ownerCounts ?? [])[$user['id'] ?? ''] ?? 0) ?> dimiliki
             </td>
             <td class="small text-muted"><?= e($user['created_at'] ?? '') ?></td>
             <td>
@@ -61,9 +88,9 @@
               </form>
             </td>
             <td>
-              <?php if (($currentUser['id'] ?? '') !== ($user['id'] ?? '')): ?>
+              <?php if (!$__self): ?>
               <form method="post" action="/users/<?= e($user['id']) ?>/delete"
-                    onsubmit="return confirm('Hapus user <?= e($user['username']) ?>?');">
+                    onsubmit="return confirm('Hapus user <?= e($user['username']) ?>? Semua app miliknya akan dialihkan ke Anda.');">
                 <?= csrf_field() ?>
                 <button class="btn btn-outline-danger btn-sm" type="submit">Hapus</button>
               </form>

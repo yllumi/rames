@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\AppAccess;
+use app\library\Auth\AppAccessDenied;
 use app\library\Db\DbClient;
 use app\library\Db\DbConnectionResolver;
 use app\library\Db\DbContainerDetector;
@@ -28,20 +30,57 @@ class DatabaseController
     private const MODES = ['browse', 'structure', 'sql', 'users', 'export', 'import'];
 
     // ==================================================================
-    // Daftar global semua container DB
+    // Daftar container DB (difilter per kepemilikan app)
     // ==================================================================
 
     public function index(Request $request)
     {
-        $apps = (new AppStore())->all();
+        $user = current_user();
+        $isAdmin = is_admin($user);
+
+        // Non-admin hanya melihat container DB milik app yang boleh diakses
+        // (miliknya sendiri atau yang dibagikan kepadanya); container app user
+        // lain & container eksternal disembunyikan. Admin melihat semua.
+        $apps = AppAccess::visible((new AppStore())->all(), $user);
+
+        $appById = [];
+        foreach ($apps as $app) {
+            $appById[(string) ($app['id'] ?? '')] = $app;
+        }
+
         $engineError = null;
         $rows = [];
         try {
-            $rows = (new DbContainerDetector())->detectAll($apps);
+            $rows = (new DbContainerDetector())->detectAll($apps, $isAdmin);
         } catch (\Throwable $e) {
             $engineError = 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage();
         }
-        return view('db/index', ['rows' => $rows, 'engineError' => $engineError]);
+
+        // Hak kelola per container: viewer hanya boleh melihat (ability 'database'
+        // butuh operator ke atas); container eksternal (tanpa app) hanya admin.
+        foreach ($rows as &$row) {
+            $owner = $appById[(string) ($row['app_id'] ?? '')] ?? null;
+            $row['can_manage'] = $owner !== null
+                ? AppAccess::can('database', $owner, $user)
+                : $isAdmin;
+        }
+        unset($row);
+
+        // Peta appId → username owner (kolom audit untuk admin).
+        $ownerNamesByApp = [];
+        if ($isAdmin) {
+            $names = user_names();
+            foreach ($apps as $app) {
+                $ownerNamesByApp[(string) ($app['id'] ?? '')] = $names[(string) ($app['owner_id'] ?? '')] ?? '';
+            }
+        }
+
+        return view('db/index', [
+            'rows' => $rows,
+            'engineError' => $engineError,
+            'isAdmin' => $isAdmin,
+            'ownerNamesByApp' => $ownerNamesByApp,
+        ]);
     }
 
     // ==================================================================
@@ -55,6 +94,9 @@ class DatabaseController
             return redirect('/database');
         }
 
+        // Otorisasi lebih dulu (app pemilik container) sebelum menyentuh Engine.
+        $app = $this->findOwningApp($container);
+
         try {
             $inspect = $this->inspectDbContainer($container);
         } catch (RuntimeException $e) {
@@ -62,7 +104,6 @@ class DatabaseController
             return redirect('/database');
         }
 
-        $app = $this->findOwningApp($container);
         $session = $request->session();
         $profile = $session->get('db_profile');
         $connected = is_array($profile) && ($profile['container_name'] ?? '') === $container;
@@ -615,16 +656,37 @@ class DatabaseController
         return $inspect;
     }
 
+    /**
+     * Cari app pemilik container DB + pastikan user berhak mengelolanya.
+     *
+     * Semua endpoint manager memakai method ini, sehingga otorisasi hanya ada
+     * di satu tempat. Container DB yang tidak terdaftar di apps.json (mis.
+     * dibuat manual di host) hanya boleh diakses admin.
+     *
+     * @throws AppAccessDenied dirender sebagai 404 oleh webman
+     */
     private function findOwningApp(string $container): ?array
     {
+        $owner = null;
         foreach ((new AppStore())->all() as $app) {
             foreach (($app['containers'] ?? []) as $c) {
                 if (($c['container_name'] ?? '') === $container) {
-                    return $app;
+                    $owner = $app;
+                    break 2;
                 }
             }
         }
-        return null;
+
+        if ($owner === null) {
+            if (!is_admin()) {
+                throw new AppAccessDenied('database', null);
+            }
+            return null;
+        }
+
+        AppAccess::require('database', $owner, current_user());
+
+        return $owner;
     }
 
     private function validContainerName(string $name): bool

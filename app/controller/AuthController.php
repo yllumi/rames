@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\OwnershipMigrator;
 use app\library\Auth\UserStore;
 use support\Request;
 
@@ -38,6 +39,14 @@ class AuthController
         $session = $request->session();
         $session->refresh();
         $session->set('user', $user);
+
+        // Migrasi app lama yang belum punya owner (idempoten, no-op bila bersih) —
+        // dijalankan di sini supaya hanya sekali per login, bukan tiap request.
+        try {
+            (new OwnershipMigrator())->run();
+        } catch (\Throwable $e) {
+            // migrasi bersifat best-effort; login tetap lanjut
+        }
 
         return redirect($this->safeRedirect($redirectTo));
     }

@@ -35,11 +35,23 @@ $anyPending = false;
   <div class="table-responsive">
   <table class="table table-hover align-middle mb-0">
     <thead>
-      <tr><th>Domain</th><th>App</th><th>Status SSL</th><th>Kedaluwarsa</th><th>Aksi</th></tr>
+      <tr>
+        <th>Domain</th>
+        <th>App</th>
+        <?php if ($isAdmin ?? false): ?><th>Owner</th><?php endif; ?>
+        <th>Status SSL</th>
+        <th>Kedaluwarsa</th>
+        <th>Aksi</th>
+      </tr>
     </thead>
     <tbody>
       <?php foreach ($rows as $r): ?>
-        <?php $st = $r['ssl_status']; $anyPending = $anyPending || $st === 'pending'; ?>
+        <?php
+          $st = $r['ssl_status'];
+          $anyPending = $anyPending || $st === 'pending';
+          $ownerName = (string) (($ownerNames ?? [])[(string) ($r['app']['owner_id'] ?? '')] ?? '');
+          $canSsl = app_can('ssl', $r['app']);
+        ?>
         <tr>
           <td>
             <span class="mono"><?= e($r['domain']) ?></span>
@@ -49,6 +61,9 @@ $anyPending = false;
             <a href="/apps/<?= e($r['app']['id']) ?>"><?= e($r['app']['name']) ?></a>
             <span class="text-muted small">(<?= e($r['app']['status'] ?? 'unknown') ?>)</span>
           </td>
+          <?php if ($isAdmin ?? false): ?>
+          <td class="small mono"><?= $ownerName !== '' ? e($ownerName) : '<span class="text-muted">-</span>' ?></td>
+          <?php endif; ?>
           <td>
             <span class="badge <?= e($badges[$st] ?? 'badge-stopped') ?>"><?= e($st) ?></span>
             <?php if ($st === 'pending' && !empty($r['ssl_message'])): ?>
@@ -61,7 +76,7 @@ $anyPending = false;
               <span class="text-muted small">proses ...</span>
             <?php elseif ($st === 'active'): ?>
               <span class="text-muted small">aktif</span>
-            <?php elseif ($sslSupported): ?>
+            <?php elseif ($sslSupported && $canSsl): ?>
               <form method="post" action="/ssl/<?= e($r['app']['id']) ?>/enable" class="d-inline">
                 <?= csrf_field() ?>
                 <button class="btn btn-<?= $st === 'failed' ? 'outline-danger' : 'primary' ?> btn-sm">
@@ -72,7 +87,7 @@ $anyPending = false;
                 <div class="text-danger small mt-1"><?= e($r['ssl_error']) ?></div>
               <?php endif; ?>
             <?php else: ?>
-              <span class="text-muted small">&mdash;</span>
+              <span class="text-muted small"><?= $canSsl ? '&mdash;' : 'tanpa hak' ?></span>
             <?php endif; ?>
           </td>
         </tr>

@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\AppAccess;
+use app\library\Auth\AppAccessDenied;
+use app\library\Auth\UserStore;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\NetworkManager;
@@ -35,17 +38,59 @@ class AppController
 
     public function index(Request $request)
     {
-        return view('app/index', ['apps' => (new AppStore())->all()]);
+        $store = new AppStore();
+        $user = current_user();
+        $userId = (string) ($user['id'] ?? '');
+
+        // Hanya app milik sendiri / yang dibagikan ke user ini. Admin melihat
+        // semua app (dengan label owner).
+        $visible = AppAccess::visible($store->all(), $user);
+
+        $roles = [];
+        $owned = [];
+        foreach ($visible as $app) {
+            $id = (string) $app['id'];
+            $roles[$id] = (string) (AppAccess::roleFor($app, $user) ?? '');
+            $owned[$id] = ((string) ($app['owner_id'] ?? '') === $userId);
+        }
+
+        $mine = array_filter($visible, static fn (array $a): bool => $owned[(string) $a['id']] ?? false);
+        $shared = array_filter($visible, static fn (array $a): bool => in_array(
+            $roles[(string) $a['id']] ?? '',
+            [AppAccess::ROLE_OPERATOR, AppAccess::ROLE_VIEWER],
+            true
+        ));
+
+        // Filter tab: all (default) | mine | shared.
+        $scope = (string) $request->get('scope', 'all');
+        $apps = match ($scope) {
+            'mine' => array_values($mine),
+            'shared' => array_values($shared),
+            default => $visible,
+        };
+
+        // App milik sendiri tampil lebih dulu, selebihnya alfabetis.
+        usort($apps, static function (array $a, array $b) use ($owned): int {
+            $oa = ($owned[(string) $a['id']] ?? false) ? 0 : 1;
+            $ob = ($owned[(string) $b['id']] ?? false) ? 0 : 1;
+            return $oa <=> $ob ?: strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+        });
+
+        return view('app/index', [
+            'apps' => $apps,
+            'roles' => $roles,
+            'ownedIds' => $owned,
+            'scope' => $scope,
+            'counts' => ['mine' => count($mine), 'shared' => count($shared), 'all' => count($visible)],
+            'isAdmin' => is_admin($user),
+            'ownerNames' => is_admin($user) ? user_names() : [],
+        ]);
     }
 
     public function detail(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'view');
 
         $deployer = DeployerFactory::create();
 
@@ -118,6 +163,7 @@ class AppController
             'deployHistory' => $deployHistory,
             'activeSha' => $activeSha,
             'dbContainers' => $dbContainers,
+            'access' => $this->accessContext($app),
         ]);
     }
 
@@ -126,12 +172,7 @@ class AppController
      */
     public function versions(Request $request, string $id)
     {
-        $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'view');
 
         return view('app/versions', [
             'app' => $app,
@@ -274,6 +315,8 @@ class AppController
 
             $app = (new AppStore())->create([
                 'name' => $pending['name'],
+                'owner_id' => (string) (current_user()['id'] ?? ''),
+                'members' => [],
                 'subdomain' => app_subdomain($pending['name']),
                 'repo_url' => $pending['repo_url'],
                 'branch' => $pending['branch'],
@@ -329,10 +372,7 @@ class AppController
 
     public function status(Request $request, string $id)
     {
-        $app = (new AppStore())->find($id);
-        if ($app === null) {
-            return json(['code' => 404, 'msg' => 'App tidak ditemukan.']);
-        }
+        $app = $this->findApp($id, 'view');
         return json([
             'code' => 0,
             'app' => [
@@ -353,15 +393,7 @@ class AppController
     public function rebuild(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            $msg = 'App tidak ditemukan.';
-            if ($request->expectsJson()) {
-                return json(['code' => 1, 'error' => $msg]);
-            }
-            flash_set('error', $msg);
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'deploy');
 
         // Tolak rebuild ganda saat app sedang diproses worker lain.
         if (($app['status'] ?? '') === 'deploying') {
@@ -425,12 +457,7 @@ class AppController
      */
     public function rollback(Request $request, string $id)
     {
-        $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'deploy');
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
             return redirect('/apps/' . $id);
@@ -491,11 +518,7 @@ class AppController
     public function stop(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'stop');
         try {
             DeployerFactory::create()->stop($app);
             $store->update($id, function (array &$s): void {
@@ -512,11 +535,7 @@ class AppController
     public function start(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'stop');
         try {
             DeployerFactory::create()->start($app);
             $store->update($id, function (array &$s): void {
@@ -533,11 +552,7 @@ class AppController
     public function delete(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'delete');
 
         // mode: preserve (default, aman — volume tercentang dipertahankan) atau
         // purge (hapus total termasuk semua volume).
@@ -580,6 +595,87 @@ class AppController
     }
 
     // ==================================================================
+    // Kepemilikan & sharing (owner_id + members)
+    // ==================================================================
+
+    /**
+     * Tambah / ubah akses seorang user ke app (POST /apps/{id}/members).
+     * Hanya owner app (atau admin) yang boleh — ability 'sharing'.
+     */
+    public function addMember(Request $request, string $id)
+    {
+        $store = new AppStore();
+        $this->findApp($id, 'sharing');
+
+        $userId = trim((string) $request->post('user_id', ''));
+        $role = strtolower(trim((string) $request->post('role', AppAccess::ROLE_VIEWER)));
+
+        try {
+            if (!in_array($role, AppAccess::ASSIGNABLE_ROLES, true)) {
+                throw new RuntimeException('Role tidak valid.');
+            }
+            $target = (new UserStore())->findPublicById($userId);
+            if ($target === null) {
+                throw new RuntimeException('User tidak ditemukan.');
+            }
+            $store->addMember($id, $userId, $role, (string) (current_user()['id'] ?? ''));
+            flash_set('success', 'Akses "' . $target['username'] . '" diset sebagai ' . AppAccess::label($role) . '.');
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+        return redirect('/apps/' . $id . '#access');
+    }
+
+    /**
+     * Cabut akses seorang member (POST /apps/{id}/members/{userId}/remove).
+     */
+    public function removeMember(Request $request, string $id, string $userId)
+    {
+        $store = new AppStore();
+        $this->findApp($id, 'sharing');
+
+        try {
+            $current = $store->find($id);
+            if ($current !== null && (string) ($current['owner_id'] ?? '') === $userId) {
+                throw new RuntimeException('Owner app tidak bisa dicabut. Pindahkan kepemilikan (transfer owner) lebih dulu.');
+            }
+            if ((string) (current_user()['id'] ?? '') === $userId) {
+                throw new RuntimeException('Tidak bisa mencabut akses Anda sendiri.');
+            }
+            $store->removeMember($id, $userId);
+            flash_set('success', 'Akses user dicabut.');
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+        return redirect('/apps/' . $id . '#access');
+    }
+
+    /**
+     * Pindahkan kepemilikan app ke user lain (POST /apps/{id}/owner).
+     * Owner lama tetap terdaftar sebagai co-owner (role owner) agar tidak
+     * kehilangan akses mendadak.
+     */
+    public function transferOwner(Request $request, string $id)
+    {
+        $store = new AppStore();
+        $this->findApp($id, 'sharing');
+
+        $userId = trim((string) $request->post('user_id', ''));
+
+        try {
+            $target = (new UserStore())->findPublicById($userId);
+            if ($target === null) {
+                throw new RuntimeException('User tidak ditemukan.');
+            }
+            $store->transferOwner($id, $userId, (string) (current_user()['id'] ?? ''));
+            flash_set('success', 'Kepemilikan app dipindahkan ke "' . $target['username'] . '". Anda tetap terdaftar sebagai co-owner.');
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+        return redirect('/apps/' . $id . '#access');
+    }
+
+    // ==================================================================
     // Custom domain (set / hapus)
     // ==================================================================
 
@@ -594,11 +690,7 @@ class AppController
     public function setDomain(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'domain');
 
         $domain = strtolower(trim((string) $request->post('domain', '')));
         $subdomain = app_subdomain($app['name']);
@@ -662,11 +754,7 @@ class AppController
     public function removeDomain(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'domain');
 
         $customDomain = (string) ($app['custom_domain'] ?? '');
         if ($customDomain === '') {
@@ -768,11 +856,7 @@ class AppController
     public function saveEnv(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'env');
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
             return redirect('/apps/' . $id);
@@ -839,11 +923,7 @@ class AppController
     public function importEnv(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'env');
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
             return redirect('/apps/' . $id);
@@ -907,11 +987,7 @@ class AppController
     public function saveNetworks(Request $request, string $id)
     {
         $store = new AppStore();
-        $app = $store->find($id);
-        if ($app === null) {
-            flash_set('error', 'App tidak ditemukan.');
-            return redirect('/apps');
-        }
+        $app = $this->findApp($id, 'network');
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
             return redirect('/apps/' . $id);
@@ -1048,6 +1124,83 @@ class AppController
     // ==================================================================
     // Helper privat
     // ==================================================================
+
+    /**
+     * Ambil app + pastikan user berhak melakukan `ability`.
+     *
+     * Melempar AppAccessDenied (dirender sebagai 404 oleh webman) bila app tidak
+     * ada ATAU tidak boleh diakses — supaya keberadaan app milik user lain tidak
+     * bocor lewat perbedaan pesan 403 vs 404.
+     *
+     * @throws AppAccessDenied
+     */
+    private function findApp(string $id, string $ability): array
+    {
+        $app = (new AppStore())->find($id);
+        if ($app === null) {
+            throw new AppAccessDenied($ability, $id);
+        }
+        AppAccess::require($ability, $app, current_user());
+
+        return $app;
+    }
+
+    /**
+     * Data untuk tab "Akses" di halaman detail app.
+     *
+     * @return array{role:?string, owner:?array, owner_id:string, members:array<int,array>, candidates:array<int,array>, users:array<int,array>, abilities:array<string,bool>}
+     */
+    private function accessContext(array $app): array
+    {
+        $users = (new UserStore())->listWithRoles();
+        $byId = [];
+        foreach ($users as $user) {
+            $byId[(string) ($user['id'] ?? '')] = $user;
+        }
+
+        $ownerId = (string) ($app['owner_id'] ?? '');
+        $memberIds = [];
+        $members = [];
+
+        $rawMembers = is_array($app['members'] ?? null) ? $app['members'] : [];
+        foreach ($rawMembers as $userId => $entry) {
+            $userId = (string) $userId;
+            $role = is_array($entry) ? (string) ($entry['role'] ?? '') : (string) $entry;
+            if (!in_array($role, AppAccess::ASSIGNABLE_ROLES, true)) {
+                continue;
+            }
+            $memberIds[] = $userId;
+            $members[] = [
+                'id' => $userId,
+                'username' => (string) ($byId[$userId]['username'] ?? $userId . ' (user dihapus)'),
+                'role' => $role,
+                'added_at' => is_array($entry) ? (string) ($entry['added_at'] ?? '') : '',
+                'exists' => isset($byId[$userId]),
+            ];
+        }
+
+        // Kandidat user yang belum punya akses.
+        $candidates = [];
+        foreach ($users as $user) {
+            $userId = (string) ($user['id'] ?? '');
+            if ($userId === $ownerId || in_array($userId, $memberIds, true)) {
+                continue;
+            }
+            $candidates[] = $user;
+        }
+
+        $role = AppAccess::roleFor($app, current_user());
+
+        return [
+            'role' => $role,
+            'owner' => $ownerId !== '' ? ($byId[$ownerId] ?? null) : null,
+            'owner_id' => $ownerId,
+            'members' => $members,
+            'candidates' => $candidates,
+            'users' => array_values($byId),
+            'abilities' => AppAccess::abilitiesFor($role),
+        ];
+    }
 
     private function validateCreateInput(string $name, string $repoUrl, string $branch, string $authMethod = 'none'): void
     {

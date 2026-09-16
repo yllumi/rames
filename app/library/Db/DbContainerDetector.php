@@ -46,12 +46,17 @@ class DbContainerDetector
     /**
      * Deteksi semua container DB + klasifikasi kepemilikan app.
      *
-     * @param array<int,array> $apps daftar app dari AppStore
+     * @param array<int,array> $apps           daftar app yang dipakai untuk memetakan kepemilikan
+     * @param bool             $includeUnowned true = ikut tampilkan container "eksternal" (bukan milik
+     *                                         app dalam $apps). Untuk halaman /database non-admin,
+     *                                         kirim $apps = app yang boleh diakses & $includeUnowned
+     *                                         = false sehingga hanya container milik app tsb yang
+     *                                         muncul (container app user lain tidak bocor).
      * @return array<int,array{container_name:string, container_id:string, image:string,
      *                          state:string, status:string, owned:bool,
      *                          app_id:?string, app_name:?string}>
      */
-    public function detectAll(array $apps): array
+    public function detectAll(array $apps, bool $includeUnowned = true): array
     {
         $ownerByContainer = [];
         foreach ($apps as $app) {
@@ -69,11 +74,14 @@ class DbContainerDetector
             if ($name === '') {
                 continue;
             }
+            $owner = $ownerByContainer[$name] ?? null;
+            if ($owner === null && !$includeUnowned) {
+                continue; // milik app lain / eksternal — tidak boleh ditampilkan
+            }
             $inspect = $this->docker->inspectContainer((string) ($c['Id'] ?? $name));
             if (!$this->isDbContainer($inspect)) {
                 continue;
             }
-            $owner = $ownerByContainer[$name] ?? null;
             $result[] = [
                 'container_name' => $name,
                 'container_id' => (string) ($c['Id'] ?? ''),

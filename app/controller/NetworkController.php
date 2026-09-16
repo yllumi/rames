@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\AppAccess;
 use app\library\Docker\DockerClient;
 use app\library\Storage\AppStore;
 use support\Request;
@@ -31,6 +32,9 @@ class NetworkController
         $docker = $this->docker();
         $engineError = null;
         $rows = [];
+        $isAdmin = is_admin();
+        $accessible = $this->accessibleProjects();
+        $sharedAttached = $this->sharedNetworkNames();
 
         try {
             $activeProjects = $this->activeProjects();
@@ -40,9 +44,18 @@ class NetworkController
                     continue;
                 }
                 $project = (string) (($n['Labels'] ?? [])['com.docker.compose.project'] ?? '');
-                $count = $this->containerCount($docker, $n);
                 $builtin = in_array($name, self::PROTECTED_NAMES, true);
                 $managed = $project !== '' && isset($activeProjects[$project]);
+                $isYours = $project !== '' && isset($accessible[$project]);
+                $sharedHere = isset($sharedAttached[$name]);
+
+                // Non-admin hanya melihat network milik app yang bisa diakses +
+                // shared network yang terpasang di app tersebut.
+                if (!$isAdmin && !$isYours && !$sharedHere) {
+                    continue;
+                }
+
+                $count = $this->containerCount($docker, $n);
 
                 $rows[] = [
                     'id' => (string) ($n['Id'] ?? ''),
@@ -57,7 +70,9 @@ class NetworkController
                     'builtin' => $builtin,
                     'in_use' => $count > 0,
                     'managed' => $managed,
-                    'can_delete' => !$builtin && !$managed && $count === 0,
+                    'mine' => $isYours || $sharedHere,
+                    // Hapus network = operasi global → hanya admin, dan tetap wajib bebas.
+                    'can_delete' => $isAdmin && !$builtin && !$managed && $count === 0,
                 ];
             }
 
@@ -75,6 +90,7 @@ class NetworkController
         return view('network/index', [
             'rows' => $rows,
             'engineError' => $engineError,
+            'canManage' => $isAdmin,
         ]);
     }
 
@@ -83,6 +99,11 @@ class NetworkController
      */
     public function create(Request $request)
     {
+        if (!is_admin()) {
+            flash_set('error', 'Membuat network bersifat global (lintas app) — hanya admin yang boleh melakukannya.');
+            return redirect('/networks');
+        }
+
         $name = strtolower(trim((string) $request->post('name', '')));
         $driver = (string) $request->post('driver', 'bridge');
         $subnet = trim((string) $request->post('subnet', ''));
@@ -204,6 +225,7 @@ class NetworkController
             'candidates' => $candidates,
             'engineError' => $engineError,
             'builtin' => in_array($name, self::PROTECTED_NAMES, true),
+            'canManage' => is_admin(),
         ]);
     }
 
@@ -212,6 +234,11 @@ class NetworkController
      */
     public function connect(Request $request, string $id)
     {
+        if (!is_admin()) {
+            flash_set('error', 'Menghubungkan container ke network bersifat global — hanya admin yang boleh melakukannya. Gunakan tab Network di detail app untuk koneksi persisten.');
+            return redirect('/networks');
+        }
+
         $container = trim((string) $request->post('container', ''));
         $alias = trim((string) $request->post('alias', ''));
 
@@ -242,6 +269,11 @@ class NetworkController
      */
     public function disconnect(Request $request, string $id)
     {
+        if (!is_admin()) {
+            flash_set('error', 'Memutus container dari network bersifat global — hanya admin yang boleh melakukannya. Gunakan tab Network di detail app untuk koneksi persisten.');
+            return redirect('/networks');
+        }
+
         $container = trim((string) $request->post('container', ''));
         if ($container === '') {
             flash_set('error', 'Container tidak valid.');
@@ -262,6 +294,11 @@ class NetworkController
      */
     public function delete(Request $request, string $id)
     {
+        if (!is_admin()) {
+            flash_set('error', 'Menghapus network bersifat global — hanya admin yang boleh melakukannya.');
+            return redirect('/networks');
+        }
+
         $docker = $this->docker();
         $activeProjects = $this->activeProjects();
 
@@ -341,6 +378,40 @@ class NetworkController
         $names = [];
         foreach ((new AppStore())->all() as $app) {
             $names[(string) ($app['name'] ?? '')] = true;
+        }
+        return $names;
+    }
+
+    /**
+     * Nama project app yang boleh diakses user saat ini (dasar filter halaman).
+     *
+     * @return array<string,bool>
+     */
+    private function accessibleProjects(): array
+    {
+        $names = [];
+        foreach (AppAccess::visible((new AppStore())->all(), current_user()) as $app) {
+            $names[(string) ($app['name'] ?? '')] = true;
+        }
+        return $names;
+    }
+
+    /**
+     * Shared network yang terpasang di app yang boleh diakses user ini
+     * (field `external_networks` di apps.json).
+     *
+     * @return array<string,bool>
+     */
+    private function sharedNetworkNames(): array
+    {
+        $names = [];
+        foreach (AppAccess::visible((new AppStore())->all(), current_user()) as $app) {
+            foreach ((array) ($app['external_networks'] ?? []) as $net) {
+                $net = (string) $net;
+                if ($net !== '') {
+                    $names[$net] = true;
+                }
+            }
         }
         return $names;
     }

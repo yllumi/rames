@@ -69,7 +69,8 @@ $isBusy = in_array($status, ['deploying'], true);
         $hBadge = in_array($hStatus, ['success', 'restored'], true) ? 'running' : ($hStatus === 'error' ? 'error' : 'stopped');
         $hMsg = (string) ($h['message'] ?? '');
         $isActive = $hSha !== '' && $hSha === $activeSha;
-        $canRollback = in_array($hStatus, ['success', 'restored'], true) && !$isActive && !$isBusy;
+        $canRollback = in_array($hStatus, ['success', 'restored'], true) && !$isActive && !$isBusy
+            && app_can('deploy', $app);
       ?>
       <tr class="<?= $isActive ? 'table-active' : '' ?>">
         <td class="small">
