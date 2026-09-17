@@ -225,6 +225,7 @@ Menampilkan:
 - Info umum: nama, subdomain (dengan link langsung), repo URL, branch
 - Badge hak akses user saat ini (Owner/Operator/Viewer/Admin) + tab **Akses** untuk pemilik app (§7.7)
 - Daftar container: nama, image, status (running/stopped/exited), port mapping
+- **Log container** (popup modal): tombol `⧉ Log` di header app (container default = service primary) dan di tiap baris container pada tab Container → modal berisi dropdown container, pilihan jumlah baris (50–2000), toggle **Auto** (muat ulang tiap 3 detik), tombol muat ulang & salin, serta panel log monospace (auto-scroll bila user ada di dasar panel). Log diambil `docker logs` (stdout+stderr, dengan timestamp) lewat `GET /api/apps/{id}/logs`; bisa dilihat sejak role **Viewer**. Modal tertutup → polling berhenti.
 - Aksi: Rebuild (pull ulang + up ulang), Stop, Start, Delete (hapus container + config nginx + file lokal) — tombol yang tidak diizinkan role user **tidak ditampilkan**, dan endpoint-nya tetap menolak di server
 - Riwayat Deployment + tombol Rollback (lihat §7.5)
 
@@ -242,6 +243,8 @@ Langkah umum:
 4. Hapus entry dari `apps.json`
 
 Volume yatim (ditinggalkan app yang dihapus dengan mode preserve) dapat dilihat & dibersihkan di halaman **/volumes** — hanya volume yang project-nya sudah tidak ada di `apps.json` yang bisa di-purge (volume app aktif ditolak).
+
+Halaman **/volumes** juga menampilkan **ukuran storage terpakai tiap volume** (kolom _Ukuran_ + total di footer). Ukuran diambil dari Docker Engine (`GET /system/df`, tipe `volume`) dan dimuat **asinkron** lewat `GET /api/volumes/usage` setelah tabel tampil — Engine harus menelusuri filesystem tiap volume sehingga render halaman tidak boleh menunggunya. Volume yang ukurannya tidak bisa dihitung Engine ditandai `N/A` dan tidak ikut dijumlahkan; hanya volume yang boleh diakses user yang dihitung (aturan penyaringan sama dengan daftar).
 
 ### 7.5 Rollback App ke Versi Sebelumnya
 
@@ -328,13 +331,14 @@ Setiap app **dimiliki satu user (owner)** dan hanya terlihat oleh user yang berh
 | Environment variable & external network | — | ✅ | ✅ | ✅ |
 | Custom domain & SSL | — | ✅ | ✅ | ✅ |
 | Terminal container & Database manager | — | ✅ | ✅ | ✅ |
+| Lihat log container (popup modal) | ✅ | ✅ | ✅ | ✅ |
 | Hapus app (preserve/purge volume) | — | — | ✅ | ✅ |
 | Atur member & transfer owner | — | — | ✅ | ✅ |
 | Operasi global: buat/hapus network, reload Nginx, purge volume yatim | — | — | — | ✅ |
 
 **Penegakan (satu pintu)**
 - `app\library\Auth\AppAccess` adalah satu-satunya tempat aturan hak: `roleFor()`, `can($ability, $app, $user)`, `require()` (melempar `AppAccessDenied`), `visible()`.
-- Semua controller (App, Terminal, Database, SSL, Volume, Network) memanggil `AppAccess`/`visible()`; tidak ada pengecekan `owner_id` yang ditulis ulang di tempat lain. `DatabaseController` memusatkan pemeriksaan pada `findOwningApp()` (dipakai semua endpoint DB).
+- Semua controller (App, Terminal, Log, Database, SSL, Volume, Network) memanggil `AppAccess`/`visible()`; tidak ada pengecekan `owner_id` yang ditulis ulang di tempat lain. `DatabaseController` memusatkan pemeriksaan pada `findOwningApp()` (dipakai semua endpoint DB).
 - **403 vs 404**: akses tidak sah → **404 Not Found** (`AppAccessDenied::render()`), supaya keberadaan app milik user lain tidak bocor. Endpoint `/api/*` menerima JSON `{"code":404}`, halaman biasa menerima halaman 404.
 - Semua endpoint aksi tetap menolak di server meski tombolnya disembunyikan di UI (defense in depth).
 

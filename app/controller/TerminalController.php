@@ -5,7 +5,7 @@ namespace app\controller;
 
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
-use app\library\Docker\DockerClient;
+use app\library\Docker\AppContainers;
 use app\library\Docker\DockerExec;
 use app\library\Storage\AppStore;
 use RuntimeException;
@@ -37,7 +37,7 @@ class TerminalController
     public function open(Request $request, string $id)
     {
         $app = $this->requireApp($id);
-        $container = $this->resolveContainer($app, (string) $request->post('container', ''));
+        $container = AppContainers::resolve($app, (string) $request->post('container', ''));
         if ($container === null) {
             return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
         }
@@ -180,7 +180,7 @@ class TerminalController
     public function run(Request $request, string $id)
     {
         $app = $this->requireApp($id);
-        $container = $this->resolveContainer($app, (string) $request->post('container', ''));
+        $container = AppContainers::resolve($app, (string) $request->post('container', ''));
         if ($container === null) {
             return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
         }
@@ -222,36 +222,6 @@ class TerminalController
         AppAccess::require('terminal', $app, current_user());
 
         return $app;
-    }
-
-    /**
-     * Validasi bahwa container benar-benar milik app ini (bukan container acak).
-     * Cek dari data tersimpan apps.json, lalu fallback ke Engine API (label project
-     * compose) bila data tersimpan belum sinkron.
-     */
-    private function resolveContainer(array $app, string $container): ?string
-    {
-        if ($container === '' || strpbrk($container, " \t\n\r/\\") !== false) {
-            return null;
-        }
-        foreach (($app['containers'] ?? []) as $c) {
-            if (($c['container_name'] ?? '') === $container) {
-                return $container;
-            }
-        }
-        try {
-            $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
-            foreach ($docker->listContainersForProject((string) ($app['name'] ?? '')) as $lc) {
-                foreach (($lc['Names'] ?? []) as $name) {
-                    if ($name === $container || $name === '/' . $container) {
-                        return $container;
-                    }
-                }
-            }
-        } catch (\Throwable $e) {
-            // engine tidak tersedia — andalkan data tersimpan
-        }
-        return null;
     }
 
     private function audit(array $app, string $container, string $action): void

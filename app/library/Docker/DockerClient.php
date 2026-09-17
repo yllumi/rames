@@ -111,6 +111,66 @@ class DockerClient
     }
 
     /**
+     * Ringkasan pemakaian disk Engine (`GET /system/df`) — sumber ukuran terpakai
+     * volume (`Volumes[].UsageData.Size` / `RefCount`).
+     *
+     * Daemon lama yang belum mengenal parameter `type` (< API 1.42) akan
+     * mengabaikannya dan menghitung semua tipe objek — hasil tetap valid, hanya
+     * lebih lambat. Karena Engine harus menelusuri filesystem tiap volume,
+     * panggilan ini bisa memakan waktu → panggil dari endpoint terpisah (AJAX)
+     * dengan timeout lebih longgar, bukan saat merender halaman.
+     *
+     * @param array<int,string> $types container|image|volume|build-cache (kosong = semua)
+     * @return array
+     */
+    public function getDiskUsage(array $types = ['volume']): array
+    {
+        // Docker mengharapkan `type` sebagai parameter berulang
+        // (`type=volume&type=image`) — array Guzzle akan ter-encode jadi
+        // `type[0]=...` dan diabaikan daemon (menghitung semua tipe objek).
+        $query = $types === []
+            ? []
+            : 'type=' . implode('&type=', array_map('rawurlencode', array_values($types)));
+        try {
+            $resp = $this->client->get('/system/df', ['query' => $query]);
+        } catch (GuzzleException $e) {
+            throw new RuntimeException('Gagal terhubung ke Docker Engine: ' . $e->getMessage(), 0, $e);
+        }
+        return $this->decode($resp, 'gagal menghitung pemakaian disk');
+    }
+
+    /**
+     * Log container (`GET /containers/{id}/logs`, non-streaming).
+     *
+     * Container tanpa TTY mengembalikan stream **multiplexed** (tiap frame
+     * ber-header 8 byte) → hasil mentah dikembalikan apa adanya; bersihkan
+     * dengan `ContainerLogs::demultiplex()`.
+     *
+     * @param int  $tail       jumlah baris terakhir yang diambil
+     * @param bool $timestamps sertakan timestamp per baris
+     */
+    public function containerLogs(string $id, int $tail = 200, bool $timestamps = true): string
+    {
+        $query = [
+            'stdout' => 1,
+            'stderr' => 1,
+            'tail' => max(1, $tail),
+            'timestamps' => $timestamps ? 1 : 0,
+        ];
+        try {
+            $resp = $this->client->get('/containers/' . rawurlencode($id) . '/logs', ['query' => $query]);
+        } catch (GuzzleException $e) {
+            throw new RuntimeException('Gagal terhubung ke Docker Engine: ' . $e->getMessage(), 0, $e);
+        }
+        if ($resp->getStatusCode() >= 300) {
+            throw new RuntimeException(
+                'Gagal mengambil log container: HTTP ' . $resp->getStatusCode() . ' ' . $resp->getReasonPhrase()
+            );
+        }
+        return (string) $resp->getBody();
+    }
+
+    /**
      * Detail container per ID.
      *
      * @return array

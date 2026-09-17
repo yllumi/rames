@@ -16,6 +16,7 @@ use Webman\Route;
 
 use app\controller\AuthController;
 use app\controller\IndexController;
+use app\controller\LogController;
 use app\controller\NetworkController;
 use app\controller\NginxController;
 use app\controller\AppController;
@@ -54,6 +55,8 @@ Route::post('/apps/create/confirm', [AppController::class, 'confirmCreate']);
 Route::get('/apps/{id}', [AppController::class, 'detail']);
 Route::get('/apps/{id}/versions', [AppController::class, 'versions']);
 Route::get('/api/apps/{id}/status', [AppController::class, 'status']);
+// Log container app (popup modal di detail app)
+Route::get('/api/apps/{id}/logs', [LogController::class, 'index']);
 
 // Aksi app
 Route::post('/apps/{id}/rebuild', [AppController::class, 'rebuild']);
@@ -89,6 +92,8 @@ Route::post('/ssl/{id}/enable', [SslController::class, 'enable']);
 // Volume Docker (lihat & bersihkan volume yatim)
 Route::get('/volumes', [VolumeController::class, 'index']);
 Route::post('/volumes/purge', [VolumeController::class, 'purge']);
+// Ukuran terpakai tiap volume (AJAX — GET /system/df bisa lambat)
+Route::get('/api/volumes/usage', [VolumeController::class, 'usage']);
 
 // Network Docker (lihat, buat, hubungkan/putuskan container, hapus)
 Route::get('/networks', [NetworkController::class, 'index']);

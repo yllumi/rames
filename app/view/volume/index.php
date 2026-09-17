@@ -16,6 +16,8 @@ foreach ($rows as $r) {
     <p class="text-muted mb-0">
       Volume ber-label <span class="mono">docker compose</span>. Volume <strong>yatim</strong>
       ditinggalkan app yang dihapus dengan mode "pertahankan volume" — bisa dibersihkan di sini.
+      Kolom <strong>Ukuran</strong> menampilkan storage terpakai tiap volume (dihitung Docker Engine
+      dan dimuat setelah tabel tampil).
     </p>
   </div>
   <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Apps</a>
@@ -41,6 +43,7 @@ foreach ($rows as $r) {
           <th>Volume</th>
           <th>Project</th>
           <th>Driver</th>
+          <th class="text-end">Ukuran</th>
           <th>Mountpoint</th>
           <th>Dibuat</th>
           <th>Status</th>
@@ -57,6 +60,7 @@ foreach ($rows as $r) {
           <td><span class="mono"><?= e($r['name']) ?></span></td>
           <td><span class="mono"><?= e($r['project']) ?></span></td>
           <td class="small"><?= e($r['driver']) ?></td>
+          <td class="small text-end text-muted" data-volume-size="<?= e($r['name']) ?>" title="Menghitung ukuran terpakai ...">&hellip;</td>
           <td class="small text-muted"><?= e($r['mountpoint']) ?></td>
           <td class="small"><?= e($r['created_at']) ?></td>
           <td>
@@ -72,7 +76,11 @@ foreach ($rows as $r) {
     </table>
     </div>
     <div class="card-footer d-flex flex-wrap gap-2 align-items-center">
-      <span class="text-muted small me-auto"><?= count($rows) ?> volume (<?= $orphanCount ?> yatim)</span>
+      <span class="text-muted small me-auto">
+        <?= count($rows) ?> volume (<?= $orphanCount ?> yatim)
+        <span id="volume-usage-total" class="d-none"></span>
+        <span id="volume-usage-error" class="d-none text-danger"></span>
+      </span>
       <?php if ($canPurge ?? false): ?>
         <button type="submit" class="btn btn-danger btn-sm"
                 onclick="return confirm('Hapus volume yang dipilih? Data pada volume itu hilang permanen.');">Hapus volume terpilih</button>
@@ -86,6 +94,58 @@ foreach ($rows as $r) {
     </div>
   </div>
 </form>
+
+<script>
+// Ukuran terpakai volume dihitung Docker Engine (`GET /system/df`) yang harus
+// menelusuri filesystem tiap volume → dimuat asinkron agar halaman tidak menunggu.
+(function () {
+  'use strict';
+
+  var cells = document.querySelectorAll('[data-volume-size]');
+  var totalEl = document.getElementById('volume-usage-total');
+  var errorEl = document.getElementById('volume-usage-error');
+  if (!cells.length) return;
+
+  function fill(cell, text, title) {
+    cell.textContent = text;
+    cell.setAttribute('title', title);
+  }
+
+  fetch('/api/volumes/usage', { headers: { 'Accept': 'application/json' } })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d || d.code !== 0) {
+        throw new Error((d && d.msg) ? d.msg : 'Docker Engine tidak merespons.');
+      }
+      var usage = (d.data && d.data.usage) || {};
+      Array.prototype.forEach.call(cells, function (cell) {
+        var item = usage[cell.getAttribute('data-volume-size')];
+        if (!item) {
+          fill(cell, '—', 'Ukuran volume ini tidak dilaporkan Docker Engine.');
+          return;
+        }
+        cell.classList.remove('text-muted');
+        fill(cell, item.size_human,
+          item.size_human + ' terpakai · ' + item.size + ' byte · dipakai ' + item.ref_count + ' container');
+      });
+      if (totalEl) {
+        totalEl.textContent = '· total terpakai ' + (d.data.total_human || '0B');
+        totalEl.classList.remove('d-none');
+      }
+    })
+    .catch(function (err) {
+      Array.prototype.forEach.call(cells, function (cell) {
+        cell.classList.remove('text-muted');
+        fill(cell, '—', 'Ukuran tidak tersedia.');
+      });
+      if (errorEl) {
+        errorEl.textContent = '· ukuran volume tidak tersedia (' +
+          ((err && err.message) ? err.message : 'gagal memuat') + ')';
+        errorEl.classList.remove('d-none');
+      }
+    });
+})();
+</script>
 <?php endif; ?>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

@@ -6,6 +6,7 @@ namespace app\controller;
 use app\library\Auth\AppAccess;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
+use app\library\Docker\VolumeUsage;
 use app\library\Storage\AppStore;
 use support\Request;
 
@@ -22,17 +23,58 @@ class VolumeController
      */
     public function index(Request $request)
     {
+        [$rows, $engineError] = $this->collectRows();
+
+        return view('volume/index', [
+            'rows' => $rows,
+            'engineError' => $engineError,
+            'canPurge' => is_admin(),
+        ]);
+    }
+
+    /**
+     * Ukuran terpakai tiap volume (JSON) — dipanggil AJAX setelah halaman tampil.
+     *
+     * `GET /system/df` membuat Engine menelusuri filesystem tiap volume sehingga
+     * bisa lambat; halaman `/volumes` tidak boleh menunggunya. Hanya volume yang
+     * boleh dilihat user yang dikembalikan (aturan sama dengan `index()`).
+     */
+    public function usage(Request $request)
+    {
+        [$rows, $engineError] = $this->collectRows();
+        if ($engineError !== null) {
+            return json(['code' => 500, 'msg' => $engineError]);
+        }
+
+        try {
+            $diskUsage = $this->docker(30)->getDiskUsage(['volume']);
+        } catch (\Throwable $e) {
+            return json(['code' => 500, 'msg' => 'Tidak dapat menghitung ukuran volume: ' . $e->getMessage()]);
+        }
+
+        // hanya volume yang tampil di halaman ikut dihitung/dikirim
+        return json(['code' => 0, 'data' => VolumeUsage::summarize(
+            $diskUsage['Volumes'] ?? [],
+            array_column($rows, 'name')
+        )]);
+    }
+
+    /**
+     * Baris volume yang boleh dilihat user + pesan error bila Engine tak bisa
+     * diakses. Dipakai `index()` (render halaman) dan `usage()` (JSON ukuran).
+     *
+     * @return array{0:array<int,array>,1:?string}
+     */
+    private function collectRows(): array
+    {
         $projectNames = $this->activeProjectNames();
         $isAdmin = is_admin();
         $accessible = $this->accessibleProjectNames();
-        $engineError = null;
-        $volumes = [];
 
         try {
-            $volumes = (new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock')))
-                ->listVolumes(['label' => ['com.docker.compose.project']]);
+            $volumes = $this->docker()->listVolumes(['label' => ['com.docker.compose.project']]);
         } catch (\Throwable $e) {
-            $engineError = 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage();
+            return [[], 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()];
         }
 
         $rows = [];
@@ -65,11 +107,17 @@ class VolumeController
                 ?: strcmp((string) $a['name'], (string) $b['name']);
         });
 
-        return view('volume/index', [
-            'rows' => $rows,
-            'engineError' => $engineError,
-            'canPurge' => $isAdmin,
-        ]);
+        return [$rows, null];
+    }
+
+    /**
+     * Client Engine (socket dari config). Timeout default kecil untuk operasi
+     * baca cepat; `usage()` memakai timeout lebih longgar karena /system/df
+     * menghitung ukuran.
+     */
+    private function docker(int $timeout = 10): DockerClient
+    {
+        return new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'), $timeout);
     }
 
     /**
@@ -87,7 +135,7 @@ class VolumeController
         }
 
         $projectNames = $this->activeProjectNames();
-        $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+        $docker = $this->docker();
 
         try {
             $volumes = $docker->listVolumes(['label' => ['com.docker.compose.project']]);
