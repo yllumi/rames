@@ -6,6 +6,7 @@ namespace app\controller;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Auth\UserStore;
+use app\library\Deploy\ComposeSource;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\NetworkManager;
@@ -164,15 +165,42 @@ class AppController
             'activeSha' => $activeSha,
             'dbContainers' => $dbContainers,
             'access' => $this->accessContext($app),
+            'compose' => $this->composeContext($app),
         ]);
     }
 
     /**
+     * Konteks tab "Compose" (app mode compose saja): nama file utama, isinya,
+     * dan daftar file sumber (untuk editor & daftar file).
+     *
+     * @return array{main_file:string,content:string,files:array<int,string>}|null
+     */
+    private function composeContext(array $app): ?array
+    {
+        if (!ComposeSource::isCompose($app)) {
+            return null;
+        }
+        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
+
+        return [
+            'main_file' => ComposeSource::resolveMainFile($dir, $app),
+            'content' => ComposeSource::readMain($dir, $app),
+            'files' => ComposeSource::listSourceFiles($dir),
+        ];
+    }
+
+    /**
      * Halaman khusus riwayat versi app (checkpoint rollback).
+     * App mode compose tidak punya checkpoint Git — dialihkan ke detail app.
      */
     public function versions(Request $request, string $id)
     {
         $app = $this->findApp($id, 'view');
+
+        if (ComposeSource::isCompose($app)) {
+            flash_set('info', 'App ini dibuat dari file compose (tanpa repo Git) — riwayat versi & rollback tidak tersedia.');
+            return redirect('/apps/' . $id);
+        }
 
         return view('app/versions', [
             'app' => $app,
@@ -187,7 +215,9 @@ class AppController
 
     public function createForm(Request $request)
     {
-        return view('app/create');
+        return view('app/create', [
+            'mode' => ((string) $request->get('mode', 'git')) === 'compose' ? 'compose' : 'git',
+        ]);
     }
 
     public function createPreview(Request $request)
@@ -234,24 +264,20 @@ class AppController
             }
 
             $parsed = (new ComposeParser())->parse($dest . '/' . $composeFile);
-            $services = $parsed['services'];
-
-            // deteksi konflik & isi/saran host port
-            $range = config('deploy.port_range', ['start' => 30000, 'end' => 30999]);
-            $portManager = new PortManager((int) $range['start'], (int) $range['end']);
-            $usedPorts = $portManager->usedHostPorts($store->all());
-            $services = $portManager->resolve($services, $usedPorts);
+            $services = $this->resolveServicePorts($parsed['services']);
 
             // simpan data pending (belum commit) di session
             $primary = $this->defaultPrimary($services);
             $request->session()->set('pending_app', [
                 'name' => $name,
+                'source' => ComposeSource::SOURCE_GIT,
                 'repo_url' => $repoUrl,
                 'branch' => $branch,
                 'local_path' => 'apps/' . $name,
                 'compose_file' => $composeFile,
                 'services' => $services,
                 'primary_service' => $primary,
+                'primary_port' => $this->defaultPrimaryPort($services, $primary),
                 'auth_method' => $authMethod,
                 'ssh_key' => $authMethod === 'ssh' ? 'keys/' . $name : null,
             ]);
@@ -263,6 +289,7 @@ class AppController
             // lalu mencoba Analisis Repo lagi (kunci dipakai ulang).
             if ($authMethod === 'ssh' && $keyManager->exists($name)) {
                 return view('app/create', [
+                    'mode' => 'git',
                     'sshPubkey' => $keyManager->publicKey($name),
                     'auth_method' => $authMethod,
                     'preview_error' => $e->getMessage(),
@@ -277,6 +304,149 @@ class AppController
             flash_set('error', $e->getMessage());
             return redirect('/apps/create');
         }
+    }
+
+    /**
+     * Wizard create — mode "Compose": nama app + file `docker-compose.yml`
+     * (paste di textarea atau upload) + file pendukung opsional, tanpa repo Git.
+     *
+     * Ditujukan untuk app yang memakai image prebuilt (tanpa build context).
+     * File ditulis ke `apps/{name}` (seperti mode clone), compose di-parse untuk
+     * deteksi port, lalu memakai halaman konfirmasi yang sama.
+     */
+    public function composePreview(Request $request)
+    {
+        $name = strtolower(trim((string) $request->post('name', '')));
+        $composeContent = (string) $request->post('compose', '');
+        $dest = '';
+
+        try {
+            $this->validateCreateName($name);
+
+            $store = new AppStore();
+            if ($store->nameExists($name)) {
+                throw new RuntimeException("Nama app \"{$name}\" sudah dipakai.");
+            }
+
+            // area apps_path dikelola sistem — bersihkan lalu tulis ulang file
+            $dest = (string) config('deploy.apps_path') . '/' . $name;
+            if (is_dir($dest)) {
+                $this->cleanupDir($dest);
+            }
+            if (!@mkdir($dest, 0755, true) && !is_dir($dest)) {
+                throw new RuntimeException('Gagal membuat direktori app.');
+            }
+
+            ComposeSource::store(
+                $dest,
+                $this->uploadsFrom($request),
+                $composeContent,
+                (int) config('deploy.compose_upload_max_file_bytes', ComposeSource::MAX_FILE_BYTES),
+                (int) config('deploy.compose_upload_max_total_bytes', ComposeSource::MAX_TOTAL_BYTES)
+            );
+
+            $composeFile = ComposeSource::detectMainFile($dest);
+            if ($composeFile === '') {
+                throw new RuntimeException('File docker-compose.yml tidak ditemukan setelah upload.');
+            }
+
+            $parsed = (new ComposeParser())->parse($dest . '/' . $composeFile);
+            $services = $this->resolveServicePorts($parsed['services']);
+
+            $request->session()->set('pending_app', [
+                'name' => $name,
+                'source' => ComposeSource::SOURCE_COMPOSE,
+                'repo_url' => null,
+                'branch' => null,
+                'local_path' => 'apps/' . $name,
+                'compose_file' => $composeFile,
+                'services' => $services,
+                'primary_service' => $this->defaultPrimary($services),
+                'primary_port' => $this->defaultPrimaryPort($services, $this->defaultPrimary($services)),
+                'auth_method' => 'none',
+                'ssh_key' => null,
+            ]);
+
+            return redirect('/apps/create/confirm');
+        } catch (\Throwable $e) {
+            // Gagal sebelum konfirmasi → direktori app dibersihkan, form dirender
+            // ulang dengan isi yang sudah ditulis user (tidak hilang).
+            if ($dest !== '' && is_dir($dest)) {
+                $this->cleanupDir($dest);
+            }
+
+            return view('app/create', [
+                'mode' => 'compose',
+                'compose_error' => $e->getMessage(),
+                'form_name' => $name,
+                'form_compose' => $composeContent,
+            ]);
+        }
+    }
+
+    /**
+     * Resolusi konflik host port untuk daftar service hasil parse compose
+     * (dipakai kedua mode create — clone repo & compose).
+     *
+     * @param array<string,array> $services
+     * @return array<string,array>
+     */
+    private function resolveServicePorts(array $services): array
+    {
+        $range = config('deploy.port_range', ['start' => 30000, 'end' => 30999]);
+        $portManager = new PortManager((int) $range['start'], (int) $range['end']);
+        $usedPorts = $portManager->usedHostPorts((new AppStore())->all());
+
+        return $portManager->resolve($services, $usedPorts);
+    }
+
+    /**
+     * Normalisasi file unggahan dari request (Webman UploadFile / struktur
+     * $_FILES) menjadi daftar entri yang dipahami ComposeSource::store().
+     *
+     * @return array<int,array{name:string,tmp_name:string,size:int,error:int}>
+     */
+    private function uploadsFrom(Request $request): array
+    {
+        $files = $request->file('files');
+        if (!is_array($files) || $files === []) {
+            return [];
+        }
+
+        $result = [];
+        foreach (array_values($files) as $file) {
+            if ($file instanceof \Webman\Http\UploadFile) {
+                $name = trim((string) $file->getUploadName());
+                // Input file kosong dikirim browser dengan nama kosong → abaikan.
+                if ($name === '') {
+                    continue;
+                }
+                $path = (string) $file->getPathname();
+                $size = 0;
+                try {
+                    $size = (int) $file->getSize();
+                } catch (\Throwable $e) {
+                    $size = 0; // file gagal di-upload → error code yang menentukan
+                }
+                $result[] = [
+                    'name' => $name,
+                    'tmp_name' => $file->isValid() ? $path : '',
+                    'size' => $size,
+                    'error' => (int) ($file->getUploadErrorCode() ?? UPLOAD_ERR_NO_FILE),
+                ];
+                continue;
+            }
+            if (is_array($file)) {
+                foreach (ComposeSource::normalizeUploads($file) as $entry) {
+                    if (trim((string) ($entry['name'] ?? '')) === '') {
+                        continue;
+                    }
+                    $result[] = $entry;
+                }
+            }
+        }
+
+        return $result;
     }
 
     // ==================================================================
@@ -300,7 +470,7 @@ class AppController
         }
 
         $serviceInput = (array) $request->post('services', []);
-        $primaryService = (string) $request->post('primary_service', '');
+        $primarySelection = (string) $request->post('primary', '');
 
         try {
             // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy.
@@ -308,7 +478,14 @@ class AppController
             DeployerFactory::create()->ensureWritable();
 
             $services = $this->validateAndApplyPorts($pending['services'], $serviceInput);
-            $primaryService = $this->resolvePrimaryService($services, $primaryService);
+            $primary = $this->resolvePrimarySelection(
+                $services,
+                $primarySelection,
+                (string) ($pending['primary_service'] ?? ''),
+                (int) ($pending['primary_port'] ?? 0)
+            );
+            $primaryService = $primary['service'];
+            $primaryPort = $primary['port'];
 
             $composeFiles = [$pending['compose_file']];
             $this->writeOverride($pending, $services, $composeFiles);
@@ -318,10 +495,12 @@ class AppController
                 'owner_id' => (string) (current_user()['id'] ?? ''),
                 'members' => [],
                 'subdomain' => app_subdomain($pending['name']),
-                'repo_url' => $pending['repo_url'],
-                'branch' => $pending['branch'],
+                'source' => $pending['source'] ?? ComposeSource::SOURCE_GIT,
+                'repo_url' => $pending['repo_url'] ?? null,
+                'branch' => $pending['branch'] ?? null,
                 'local_path' => $pending['local_path'],
                 'primary_service' => $primaryService,
+                'primary_port' => $primaryPort,
                 'status' => 'deploying',
                 'stage' => 'queued',
                 'message' => 'Menunggu worker deploy ...',
@@ -458,6 +637,10 @@ class AppController
     public function rollback(Request $request, string $id)
     {
         $app = $this->findApp($id, 'deploy');
+        if (ComposeSource::isCompose($app)) {
+            flash_set('error', 'App ini dibuat dari file compose (tanpa repo Git) — rollback versi tidak tersedia. Gunakan tab Compose untuk mengubah compose lalu Deploy Ulang.');
+            return redirect('/apps/' . $id);
+        }
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
             return redirect('/apps/' . $id);
@@ -1073,6 +1256,158 @@ class AppController
     }
 
     /**
+     * Simpan perubahan compose app mode compose (POST /apps/{id}/compose) —
+     * tab "Compose" di detail app.
+     *
+     * Alur (validasi dulu, baru tulis — gagal = tidak ada state yang berubah):
+     *  1) Validasi isi compose (YAML valid, ada service, tanpa `build:`).
+     *  2) Rencanakan host port: port lama tiap service dipertahankan, konflik
+     *     dengan app lain digeser ke port bebas (PortManager).
+     *  3) Tulis file compose utama + file pendukung baru, hapus file tercentang.
+     *  4) Tulis ulang override port (2 lapis: reset + ports).
+     *  5) Persist compose_files/primary_service + spawn worker `apply`
+     *     (up -d tanpa build + tulis config Nginx; progres via polling).
+     */
+    public function saveCompose(Request $request, string $id)
+    {
+        $store = new AppStore();
+        $app = $this->findApp($id, 'compose');
+
+        if (ComposeSource::isGit($app)) {
+            flash_set('error', 'App ini dibuat dari repo Git — perbarui source lewat Rebuild (git pull).');
+            return redirect('/apps/' . $id);
+        }
+        if (($app['status'] ?? '') === 'deploying') {
+            flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
+        }
+
+        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
+        if (!is_dir($dir)) {
+            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+            return redirect('/apps/' . $id);
+        }
+
+        try {
+            $content = (string) $request->post('compose', '');
+            $mainFile = ComposeSource::resolveMainFile($dir, $app);
+
+            // 1) Validasi & rencana port DULU (belum ada file/state yang diubah).
+            ComposeSource::assertDeployable($content);
+            $range = config('deploy.port_range', ['start' => 30000, 'end' => 30999]);
+            $services = ComposeSource::planHostPorts(
+                ComposeSource::parseContent($content),
+                ComposeSource::existingHostPorts($app),
+                $this->usedHostPortsExcept($id),
+                (int) $range['start'],
+                (int) $range['end']
+            );
+            $primaryPortSelection = $this->resolvePrimarySelection(
+                $services,
+                '',
+                (string) ($app['primary_service'] ?? ''),
+                (int) ($app['primary_port'] ?? 0)
+            );
+            $primary = $primaryPortSelection['service'];
+            $primaryPort = $primaryPortSelection['port'];
+
+            // 2) Tulis file: compose utama (divalidasi ulang oleh store) +
+            //    file pendukung baru (upload), lalu hapus file tercentang.
+            $uploads = $this->uploadsFrom($request);
+            ComposeSource::store(
+                $dir,
+                $uploads,
+                $content,
+                (int) config('deploy.compose_upload_max_file_bytes', ComposeSource::MAX_FILE_BYTES),
+                (int) config('deploy.compose_upload_max_total_bytes', ComposeSource::MAX_TOTAL_BYTES),
+                $mainFile
+            );
+            $delete = array_values(array_filter(
+                array_map('strval', (array) $request->post('file_delete', [])),
+                static fn (string $f): bool => $f !== ''
+            ));
+            $removed = ComposeSource::removeFiles($dir, $delete, $mainFile);
+
+            // 3) Tulis ulang override port; override lain (network/env) tetap
+            //    di urutan belakang agar prioritas compose tidak berubah.
+            $composeFiles = [$mainFile];
+            $this->writeOverride(['name' => $app['name']], $services, $composeFiles);
+            $composeFiles = array_values(array_unique(array_merge($composeFiles, $this->generatedExtras($app))));
+
+            // 4) Persist + spawn worker apply (up -d tanpa build + Nginx).
+            $store->update($id, function (array &$s) use ($composeFiles, $primary, $primaryPort): void {
+                $s['compose_files'] = $composeFiles;
+                $s['primary_service'] = $primary;
+                $s['primary_port'] = $primaryPort;
+                $s['status'] = 'deploying';
+                $s['stage'] = 'queued';
+                $s['message'] = 'Menerapkan perubahan compose ...';
+                $s['error'] = null;
+            });
+
+            if (!$this->spawnWorker($id, 'apply')) {
+                $store->update($id, function (array &$s): void {
+                    $s['status'] = 'error';
+                    $s['stage'] = null;
+                    $s['message'] = 'Gagal menjalankan worker deploy.';
+                    $s['error'] = 'Gagal spawn worker deploy.';
+                });
+                flash_set('error', 'Compose tersimpan, tetapi gagal menjalankan deploy ulang.');
+                return redirect('/apps/' . $id);
+            }
+
+            $extra = $removed !== [] ? ' ' . count($removed) . ' file dihapus.' : '';
+            flash_set('success', 'Compose disimpan — container diciptakan ulang di latar belakang.' . $extra);
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Host port yang terpakai app LAIN (untuk mengedit compose app ini: port
+     * milik app sendiri bukan konflik).
+     *
+     * @return array<int,int>
+     */
+    private function usedHostPortsExcept(string $id): array
+    {
+        $others = array_values(array_filter(
+            (new AppStore())->all(),
+            static fn (array $a): bool => (string) ($a['id'] ?? '') !== $id
+        ));
+
+        $range = config('deploy.port_range', ['start' => 30000, 'end' => 30999]);
+        $portManager = new PortManager((int) $range['start'], (int) $range['end']);
+
+        return $portManager->usedHostPorts($others);
+    }
+
+    /**
+     * File override generated milik app (selain override port yang ditulis ulang
+     * di sini) — mis. override network & env. Urutannya dipertahankan agar
+     * override env tetap paling akhir (menang atas repo).
+     *
+     * @return array<int,string>
+     */
+    private function generatedExtras(array $app): array
+    {
+        $keep = [];
+        foreach ((array) ($app['compose_files'] ?? []) as $file) {
+            $file = (string) $file;
+            if (!str_starts_with($file, ComposeSource::GENERATED_PREFIX)) {
+                continue;
+            }
+            if (in_array($file, [ComposeSource::RESET_OVERRIDE_FILE, ComposeSource::PORTS_OVERRIDE_FILE], true)) {
+                continue; // ditulis ulang oleh writeOverride()
+            }
+            $keep[] = $file;
+        }
+        return $keep;
+    }
+
+    /**
      * Normalisasi & validasi input env var dari form.
      *
      * - Kunci wajib ^[A-Za-z_][A-Za-z0-9_]*$ (validasi ketat).
@@ -1204,12 +1539,7 @@ class AppController
 
     private function validateCreateInput(string $name, string $repoUrl, string $branch, string $authMethod = 'none'): void
     {
-        if (!preg_match('/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/', $name)) {
-            throw new RuntimeException('Nama app hanya boleh huruf kecil a-z, angka, dan strip (-).');
-        }
-        if (strlen($name) > 63) {
-            throw new RuntimeException('Nama app maksimal 63 karakter.');
-        }
+        $this->validateCreateName($name);
         if (!in_array($authMethod, ['none', 'ssh'], true)) {
             throw new RuntimeException('Metode akses repo tidak valid.');
         }
@@ -1222,6 +1552,19 @@ class AppController
         }
         if ($branch === '' || !preg_match('/^[a-zA-Z0-9._\/-]+$/', $branch)) {
             throw new RuntimeException('Branch tidak valid.');
+        }
+    }
+
+    /**
+     * Validasi nama app (slug) — dipakai kedua mode create.
+     */
+    private function validateCreateName(string $name): void
+    {
+        if (!preg_match('/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/', $name)) {
+            throw new RuntimeException('Nama app hanya boleh huruf kecil a-z, angka, dan strip (-).');
+        }
+        if (strlen($name) > 63) {
+            throw new RuntimeException('Nama app maksimal 63 karakter.');
         }
     }
 
@@ -1266,10 +1609,30 @@ class AppController
     }
 
     /**
-     * Validasi & terapkan host port hasil edit user (langkah konfirmasi).
+     * Port container default yang di-proxy untuk sebuah service: port pertama
+     * yang ditulis di `ports:` compose (0 bila service tidak punya port).
      *
      * @param array<string,array> $services
-     * @param array               $input  bentuk services[svcName][host_port]
+     */
+    private function defaultPrimaryPort(array $services, string $service): int
+    {
+        if ($service === '' || !isset($services[$service]['ports'])) {
+            return 0;
+        }
+        return (int) ($services[$service]['ports'][0]['container'] ?? 0);
+    }
+
+    /**
+     * Validasi & terapkan host port hasil edit user (langkah konfirmasi).
+     *
+     * Form mengirim satu input per port service:
+     * `services[<svc>][ports][<containerPort>][host_port]` — jadi service dengan
+     * lebih dari satu port (mis. web + gateway API) bisa punya host port sendiri
+     * masing-masing. Bentuk lama `services[<svc>][host_port]` (hanya port pertama)
+     * tetap diterima sebagai fallback.
+     *
+     * @param array<string,array> $services
+     * @param array               $input
      * @return array<string,array>
      */
     private function validateAndApplyPorts(array $services, array $input): array
@@ -1280,32 +1643,89 @@ class AppController
 
         $localUsed = [];
         foreach ($services as $svcName => $svc) {
-            // Service tanpa port exposed (mis. php-fpm yang hanya diakses via
-            // jaringan internal compose) tidak punya host port — lewati.
-            if (empty($svc['ports'])) {
-                continue;
-            }
+            foreach ((array) ($svc['ports'] ?? []) as $i => $entry) {
+                $containerPort = (int) ($entry['container'] ?? 0);
+                $posted = $input[$svcName]['ports'][$containerPort]['host_port']
+                    ?? $input[$svcName]['ports'][$i]['host_port']
+                    ?? ($i === 0 ? ($input[$svcName]['host_port'] ?? null) : null);
 
-            $posted = $input[$svcName]['host_port'] ?? null;
-            $hostPort = $posted !== null && $posted !== '' ? (int) $posted : (int) ($svc['host_port'] ?? 0);
+                $hostPort = $posted !== null && $posted !== '' ? (int) $posted : (int) ($entry['host'] ?? 0);
+                $label = 'service "' . $svcName . '"' . ($containerPort > 0 ? ', container port ' . $containerPort : '');
 
-            if ($hostPort <= 0 || !$portManager->validatePort($hostPort)) {
-                throw new RuntimeException("Port tidak valid untuk service \"{$svcName}\".");
-            }
-            if (in_array($hostPort, $usedPorts, true) || in_array($hostPort, $localUsed, true)) {
-                throw new RuntimeException("Port {$hostPort} (service \"{$svcName}\") sudah terpakai. Pilih port lain.");
-            }
+                if ($hostPort <= 0 || !$portManager->validatePort($hostPort)) {
+                    throw new RuntimeException("Port tidak valid untuk {$label}.");
+                }
+                if (in_array($hostPort, $usedPorts, true) || in_array($hostPort, $localUsed, true)) {
+                    throw new RuntimeException("Port {$hostPort} ({$label}) sudah terpakai. Pilih port lain.");
+                }
 
-            $localUsed[] = $hostPort;
-            $usedPorts[] = $hostPort;
+                $localUsed[] = $hostPort;
+                $usedPorts[] = $hostPort;
 
-            $services[$svcName]['host_port'] = $hostPort;
-            if (isset($services[$svcName]['ports'][0])) {
-                $services[$svcName]['ports'][0]['host'] = $hostPort;
+                $services[$svcName]['ports'][$i]['host'] = $hostPort;
+                if ($i === 0) {
+                    $services[$svcName]['host_port'] = $hostPort;
+                }
             }
         }
 
         return $services;
+    }
+
+    /**
+     * Resolusi service + port yang di-proxy Nginx dari input halaman konfirmasi.
+     *
+     * `primary` berbentuk `<service>:<containerPort>` (boleh hanya `<service>`
+     * untuk kompatibilitas). Bila tidak ada/tidak valid dipakai `$fallbackService`
+     * + `$preferredPort` (dari langkah analisis), else port pertama service tsb.
+     *
+     * @param array<string,array> $services
+     * @return array{service:string,port:int}
+     */
+    private function resolvePrimarySelection(array $services, string $selection, string $fallbackService = '', int $preferredPort = 0): array
+    {
+        $service = '';
+        $port = 0;
+        if ($selection !== '') {
+            if (str_contains($selection, ':')) {
+                [$svc, $p] = explode(':', $selection, 2);
+                $service = trim($svc);
+                $port = (int) $p;
+            } else {
+                $service = trim($selection);
+            }
+        }
+
+        if ($service === '') {
+            $service = $this->resolvePrimaryService($services, $fallbackService);
+        } elseif (!isset($services[$service])) {
+            throw new RuntimeException('Service "' . $service . '" tidak ditemukan pada compose app.');
+        }
+
+        // Port yang valid = port yang benar-benar punya host port di service itu.
+        $available = [];
+        foreach ((array) ($services[$service]['ports'] ?? []) as $entry) {
+            if (!empty($entry['host'])) {
+                $available[] = (int) $entry['container'];
+            }
+        }
+
+        if ($port <= 0 && $preferredPort > 0 && in_array($preferredPort, $available, true)) {
+            $port = $preferredPort;
+        }
+        if ($port > 0 && !in_array($port, $available, true)) {
+            throw new RuntimeException(
+                'Port ' . $port . ' tidak tersedia pada service "' . $service . '" — pilih salah satu port yang terdaftar.'
+            );
+        }
+        if ($port <= 0) {
+            $port = (int) ($available[0] ?? 0);
+        }
+        if ($port <= 0) {
+            throw new RuntimeException('Tidak ada service dengan port exposed. Primary port tidak bisa ditentukan.');
+        }
+
+        return ['service' => $service, 'port' => $port];
     }
 
     /**
@@ -1363,16 +1783,16 @@ class AppController
         }
 
         $resetYaml = Yaml::dump($reset, 4, 2);
-        if (file_put_contents($dir . '/docker-compose.override.yml', $resetYaml, LOCK_EX) === false) {
-            throw new RuntimeException('Gagal menulis docker-compose.override.yml.');
+        if (file_put_contents($dir . '/' . ComposeSource::RESET_OVERRIDE_FILE, $resetYaml, LOCK_EX) === false) {
+            throw new RuntimeException('Gagal menulis ' . ComposeSource::RESET_OVERRIDE_FILE . '.');
         }
-        $composeFiles[] = 'docker-compose.override.yml';
+        $composeFiles[] = ComposeSource::RESET_OVERRIDE_FILE;
 
         $portsYaml = Yaml::dump($ports, 4, 2);
-        if (file_put_contents($dir . '/docker-compose.override.ports.yml', $portsYaml, LOCK_EX) === false) {
-            throw new RuntimeException('Gagal menulis docker-compose.override.ports.yml.');
+        if (file_put_contents($dir . '/' . ComposeSource::PORTS_OVERRIDE_FILE, $portsYaml, LOCK_EX) === false) {
+            throw new RuntimeException('Gagal menulis ' . ComposeSource::PORTS_OVERRIDE_FILE . '.');
         }
-        $composeFiles[] = 'docker-compose.override.ports.yml';
+        $composeFiles[] = ComposeSource::PORTS_OVERRIDE_FILE;
     }
 
     /**

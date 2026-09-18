@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\Deploy;
 
+use app\library\Docker\AppPorts;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
 use app\library\Git\GitService;
@@ -40,7 +41,7 @@ class LocalDeployer implements DeployerInterface
         $this->network->sync($app, $dir, $files);
 
         $logger('build', 'Menjalankan docker compose up -d --build ...');
-        $this->compose->up($project, $dir, $files, true, $this->appEnvFile($app));
+        $this->upCompose($project, $app, $dir, $files, true, $logger);
 
         $logger('collect', 'Mengumpulkan info container ...');
         $app['containers'] = $this->getContainers($project);
@@ -50,12 +51,20 @@ class LocalDeployer implements DeployerInterface
 
         $app['status'] = 'running';
         $logger('done', 'Deploy selesai.');
-        $app = $this->recordHistory($app, (new GitService())->revParse($dir), 'deploy', 'success');
+        // App mode compose tidak punya commit Git — checkpoint diisi string kosong.
+        $sha = ComposeSource::isCompose($app) ? '' : (new GitService())->revParse($dir);
+        $app = $this->recordHistory($app, $sha, 'deploy', 'success');
         return $app;
     }
 
     public function rebuild(array $app, callable $logger): array
     {
+        // Mode compose (tanpa repo Git): tidak ada source untuk di-pull —
+        // cukup ciptakan ulang container dari file compose & image yang ada.
+        if (ComposeSource::isCompose($app)) {
+            return $this->applyCompose($app, $logger, 'rebuild');
+        }
+
         $this->nginx->ensureWritable();
 
         $project = $app['name'];
@@ -75,7 +84,7 @@ class LocalDeployer implements DeployerInterface
         $this->network->sync($app, $dir, $files);
 
         $logger('build', 'docker compose up -d --build ...');
-        $this->compose->up($project, $dir, $files, true, $this->appEnvFile($app));
+        $this->upCompose($project, $app, $dir, $files, true, $logger);
 
         $app['containers'] = $this->getContainers($project);
         $this->writeNginxConfig($app);
@@ -88,6 +97,10 @@ class LocalDeployer implements DeployerInterface
 
     public function rollback(array $app, string $ref, callable $logger): array
     {
+        if (ComposeSource::isCompose($app)) {
+            throw new RuntimeException('Rollback hanya tersedia untuk app yang dibuat dari repo Git.');
+        }
+
         $this->nginx->ensureWritable();
 
         $project = $app['name'];
@@ -112,7 +125,7 @@ class LocalDeployer implements DeployerInterface
             $this->network->sync($app, $dir, $files);
 
             $logger('build', 'docker compose up -d --build ...');
-            $this->compose->up($project, $dir, $files, true, $this->appEnvFile($app));
+            $this->upCompose($project, $app, $dir, $files, true, $logger);
 
             $app['containers'] = $this->getContainers($project);
             $this->writeNginxConfig($app);
@@ -125,7 +138,7 @@ class LocalDeployer implements DeployerInterface
             $logger('restore', "Rollback gagal, mencoba kembali ke {$prevRef} ...");
             try {
                 $git->checkout($dir, $prevRef);
-                $this->compose->up($project, $dir, $files, true, $this->appEnvFile($app));
+                $this->upCompose($project, $app, $dir, $files, true, $logger);
                 $app['containers'] = $this->getContainers($project);
                 $this->writeNginxConfig($app);
                 $app['status'] = 'running';
@@ -157,6 +170,46 @@ class LocalDeployer implements DeployerInterface
         $this->compose->start($app['name'], $dir, $this->resolveComposeFiles($app, $dir), $this->appEnvFile($app));
     }
 
+    public function apply(array $app, callable $logger): array
+    {
+        if (!ComposeSource::isCompose($app)) {
+            throw new RuntimeException('Aksi apply hanya untuk app yang dibuat dari file compose (mode Compose).');
+        }
+
+        return $this->applyCompose($app, $logger, 'apply');
+    }
+
+    /**
+     * Segarkan container app mode compose: `docker compose up -d` (tanpa build,
+     * tanpa git) + collect container + tulis ulang config Nginx.
+     */
+    private function applyCompose(array $app, callable $logger, string $action): array
+    {
+        $this->nginx->ensureWritable();
+
+        $project = $app['name'];
+        $dir = $this->appDir($app);
+        $files = $this->resolveComposeFiles($app, $dir);
+
+        // Fail-fast: file compose wajib ada (kalau tidak, `up -d` akan mengeluh
+        // dengan pesan docker yang tidak informatif untuk user).
+        ComposeSource::requireMainFile($dir, $app);
+
+        $this->env->sync($app, $dir, $files);
+        $this->network->sync($app, $dir, $files);
+
+        $logger('build', 'Menciptakan ulang container dari image yang ada (tanpa build) ...');
+        $this->upCompose($project, $app, $dir, $files, false, $logger);
+
+        $app['containers'] = $this->getContainers($project);
+        $this->writeNginxConfig($app);
+
+        $app['status'] = 'running';
+        $logger('done', $action === 'rebuild' ? 'Deploy ulang selesai.' : 'Perubahan compose diterapkan.');
+
+        return $this->recordHistory($app, '', $action, 'success');
+    }
+
     /**
      * Terapkan perubahan environment variable tanpa rebuild source:
      * tulis ulang managed env file + override, lalu `docker compose up -d`
@@ -173,7 +226,7 @@ class LocalDeployer implements DeployerInterface
         $this->network->sync($app, $dir, $files);
 
         $logger('build', 'Menciptakan ulang container dengan environment baru ...');
-        $this->compose->up($project, $dir, $files, false, $this->appEnvFile($app));
+        $this->upCompose($project, $app, $dir, $files, false, $logger);
 
         $app['containers'] = $this->getContainers($project);
         $app['status'] = 'running';
@@ -295,6 +348,40 @@ class LocalDeployer implements DeployerInterface
     }
 
     /**
+     * Siapkan source bind mount compose (lihat ComposeBinds) lalu jalankan
+     * `docker compose up`.
+     *
+     * Direktori bind yang belum ada (mis. `./data` atau `${PWD}/.hermes`) dibuat
+     * otomatis di direktori app — tanpa ini daemon gagal dengan pesan
+     * "failed to populate volume: ... no such file or directory".
+     *
+     * @param array<int,string> $files
+     */
+    private function upCompose(
+        string $project,
+        array $app,
+        string $dir,
+        array $files,
+        bool $build,
+        ?callable $logger = null
+    ): void {
+        $env = ['PWD' => $dir] + array_map('strval', is_array($app['env'] ?? null) ? $app['env'] : []);
+        $binds = ComposeBinds::ensure($dir, $files, $env);
+
+        foreach ($binds['created'] as $path) {
+            if ($logger !== null) {
+                $logger('volume', 'Membuat direktori bind mount: ' . $path);
+            }
+        }
+
+        try {
+            $this->compose->up($project, $dir, $files, $build, $this->appEnvFile($app));
+        } catch (\Throwable $e) {
+            throw new RuntimeException($e->getMessage() . ComposeBinds::missingHint($binds['missing']), 0, $e);
+        }
+    }
+
+    /**
      * Teardown manual project via Docker Engine API (tanpa compose file).
      * Dipakai sebagai fallback saat compose project tidak bisa dimuat, dan
      * sebagai sapuan pembersih sisa container orphan setelah down.
@@ -347,12 +434,15 @@ class LocalDeployer implements DeployerInterface
         $containers = [];
         foreach ($raw as $c) {
             $labels = $c['Labels'] ?? [];
-            $ports = [];
+            $rawPorts = [];
             foreach ($c['Ports'] ?? [] as $p) {
                 if (isset($p['PublicPort'], $p['PrivatePort'])) {
-                    $ports[] = ['host' => (int) $p['PublicPort'], 'container' => (int) $p['PrivatePort']];
+                    $rawPorts[] = ['host' => (int) $p['PublicPort'], 'container' => (int) $p['PrivatePort']];
                 }
             }
+            // Dedupe: Engine mengembalikan satu entri per IP (IPv4 + IPv6) untuk
+            // publish dual-stack dengan host/container port yang sama.
+            $ports = AppPorts::forContainer(['ports' => $rawPorts]);
             $names = $c['Names'] ?? [];
             $first = is_array($names) ? ($names[0] ?? '') : (string) $c['Id'];
             $containers[] = [
@@ -361,6 +451,10 @@ class LocalDeployer implements DeployerInterface
                 'image' => (string) ($c['Image'] ?? ''),
                 'internal_port' => $ports[0]['container'] ?? null,
                 'host_port' => $ports[0]['host'] ?? null,
+                // Semua port yang di-publish (service dengan >1 port, mis. web +
+                // gateway API) — dipakai untuk memilih port yang di-proxy Nginx
+                // (primary_port) dan ditampilkan di detail app.
+                'ports' => $ports,
                 'status' => (string) ($c['State'] ?? 'unknown'),
             ];
         }
@@ -473,16 +567,12 @@ class LocalDeployer implements DeployerInterface
         return is_file($path) ? $path : null;
     }
 
+    /**
+     * Host port yang dipakai config Nginx (`proxy_pass`) — lihat AppPorts
+     * (menghormati `primary_port` yang dipilih user, fallback port pertama).
+     */
     private function primaryHostPort(array $app): int
     {
-        $primary = $app['primary_service'] ?? null;
-        foreach ($app['containers'] ?? [] as $c) {
-            if ($primary === null || $c['service_name'] === $primary) {
-                if (($c['host_port'] ?? null) !== null) {
-                    return (int) $c['host_port'];
-                }
-            }
-        }
-        throw new RuntimeException('Tidak ada host port untuk primary service app "' . ($app['name'] ?? '') . '".');
+        return AppPorts::primaryHostPort($app);
     }
 }

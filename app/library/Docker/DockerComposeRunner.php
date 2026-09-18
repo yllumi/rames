@@ -116,7 +116,7 @@ class DockerComposeRunner
         $args[] = 'ps';
         $args[] = '--format';
         $args[] = 'json';
-        $result = $this->runner->run($args, $dir, 60);
+        $result = $this->runner->run($args, $dir, 60, $this->env($dir));
         if ($result['code'] !== 0) {
             throw new RuntimeException('docker compose ps gagal: ' . trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']));
         }
@@ -134,9 +134,24 @@ class DockerComposeRunner
         return $rows;
     }
 
+    /**
+     * Environment untuk command compose.
+     *
+     * `PWD` di-set eksplisit ke direktori app: docker compose memakai env `PWD`
+     * (fallback: cwd proses) untuk substitusi `${PWD}` di docker-compose.yml —
+     * banyak compose memakai `${PWD}/data` sebagai source bind mount, sehingga
+     * nilainya harus selalu direktori app (path yang sama dengan host).
+     *
+     * @return array<string,string>
+     */
+    private function env(string $dir): array
+    {
+        return ['PWD' => $dir];
+    }
+
     private function mustRun(array $args, string $dir, string $label, int $timeout): void
     {
-        $result = $this->runner->run($args, $dir, $timeout);
+        $result = $this->runner->run($args, $dir, $timeout, $this->env($dir));
         if ($result['code'] !== 0) {
             $msg = trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']);
             if ($result['timedOut']) {

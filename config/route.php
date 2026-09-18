@@ -48,6 +48,8 @@ Route::get('/apps', [AppController::class, 'index']);
 // Wizard create app
 Route::get('/apps/create', [AppController::class, 'createForm']);
 Route::post('/apps/create', [AppController::class, 'createPreview']);
+// Mode compose: paste/upload docker-compose.yml tanpa repo Git
+Route::post('/apps/create/compose', [AppController::class, 'composePreview']);
 Route::get('/apps/create/confirm', [AppController::class, 'confirmForm']);
 Route::post('/apps/create/confirm', [AppController::class, 'confirmCreate']);
 
@@ -72,6 +74,9 @@ Route::post('/apps/{id}/domain/remove', [AppController::class, 'removeDomain']);
 // Environment variables per app
 Route::post('/apps/{id}/env', [AppController::class, 'saveEnv']);
 Route::post('/apps/{id}/env/import', [AppController::class, 'importEnv']);
+
+// Compose (app mode compose: edit docker-compose.yml + file pendukung)
+Route::post('/apps/{id}/compose', [AppController::class, 'saveCompose']);
 
 // External network per app (shared network lintas-app)
 Route::post('/apps/{id}/network', [AppController::class, 'saveNetworks']);

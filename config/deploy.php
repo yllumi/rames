@@ -75,4 +75,10 @@ return [
 
     // Timeout (detik) untuk operasi docker compose / git yang panjang
     'deploy_timeout' => (int) (getenv('DEPLOY_TIMEOUT') ?: 600),
+
+    // Create app mode "compose" (paste/upload docker-compose.yml tanpa repo Git).
+    // Batas ukuran file unggahan — app mode ini hanya berisi compose + file
+    // pendukung kecil (bind mount config), bukan source aplikasi.
+    'compose_upload_max_file_bytes' => (int) (getenv('COMPOSE_UPLOAD_MAX_FILE_BYTES') ?: 1048576),   // 1 MB per file
+    'compose_upload_max_total_bytes' => (int) (getenv('COMPOSE_UPLOAD_MAX_TOTAL_BYTES') ?: 4194304), // 4 MB total
 ];

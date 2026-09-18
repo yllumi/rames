@@ -55,6 +55,21 @@ interface DeployerInterface
     public function start(array $app): void;
 
     /**
+     * Jalankan/segarkan container dari file compose yang sudah ada di direktori
+     * app TANPA menarik source dari Git dan TANPA build image (`up -d`).
+     *
+     * Khusus app mode compose (`source: "compose"` — dibuat dari file
+     * docker-compose.yml yang di-paste/di-upload). Dipakai saat:
+     *  - Rebuild app mode compose (image prebuilt diperbarui dari disk lokal);
+     *  - menyimpan perubahan dari tab editor Compose.
+     *
+     * @param array    $app
+     * @param callable $logger callable(string $stage, string $message): void
+     * @return array app yang diperbarui (containers + status + deploy_history)
+     */
+    public function apply(array $app, callable $logger): array;
+
+    /**
      * Terapkan perubahan environment variable app TANPA rebuild source:
      * tulis ulang managed env file + override env, lalu `docker compose up -d`
      * (tanpa --build) — hanya container yang environment-nya berubah yang

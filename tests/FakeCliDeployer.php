@@ -54,6 +54,11 @@ class FakeCliDeployer implements DeployerInterface
     {
     }
 
+    public function apply(array $app, callable $logger): array
+    {
+        return $this->finish($app, 'apply');
+    }
+
     public function applyEnv(array $app, callable $logger): array
     {
         return $this->finish($app, 'apply-env');

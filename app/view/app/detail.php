@@ -19,6 +19,12 @@ $canSsl = (bool) ($abilities['ssl'] ?? false);
 $canTerminal = (bool) ($abilities['terminal'] ?? false);
 $canDb = (bool) ($abilities['database'] ?? false);
 $canLogs = (bool) ($abilities['logs'] ?? false);
+$canCompose = (bool) ($abilities['compose'] ?? false);
+
+// App mode compose = dibuat dari file docker-compose.yml (tanpa repo Git),
+// sumbernya bisa diedit lewat tab Compose (tanpa rollback/checkpoint Git).
+$isCompose = \app\library\Deploy\ComposeSource::isCompose($app);
+$compose = $compose ?? null;
 
 // custom domain + status SSL-nya
 $customDomain = (string) ($app['custom_domain'] ?? '');
@@ -42,9 +48,21 @@ foreach ($containers as &$c) {
         $c['status'] = $lc['status'] ?? $c['status'];
         $c['host_port'] = $lc['host_port'] ?? $c['host_port'];
         $c['internal_port'] = $lc['internal_port'] ?? $c['internal_port'];
+        $c['ports'] = $lc['ports'] ?? ($c['ports'] ?? []);
     }
 }
 unset($c);
+
+// Daftar port app (semua port yang dipublikasikan) + port yang di-proxy Nginx
+// ke domain app — lihat AppPorts (satu implementasi dengan deployer).
+$portContext = [
+    'name' => $app['name'] ?? '',
+    'containers' => $containers,
+    'primary_service' => $app['primary_service'] ?? null,
+    'primary_port' => $app['primary_port'] ?? null,
+];
+$appPorts = \app\library\Docker\AppPorts::all($portContext);
+$proxiedPort = \app\library\Docker\AppPorts::proxiedContainerPort($portContext);
 
 // Container default untuk modal log (service primary, else container pertama)
 $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($app) : null;
@@ -101,7 +119,7 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
 
 <?php if (!$isBusy && $canOperate): ?>
 <div class="d-flex flex-wrap gap-2 mb-4" id="app-actions">
-  <form method="post" action="/apps/<?= e($app['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm">↻ Rebuild</button></form>
+  <form method="post" action="/apps/<?= e($app['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm"<?= $isCompose ? ' title="Ciptakan ulang container dari file compose & image lokal (tanpa build)"' : '' ?>>↻ <?= $isCompose ? 'Deploy Ulang' : 'Rebuild' ?></button></form>
 
   <?php if ($status === 'running'): ?>
     <form method="post" action="/apps/<?= e($app['id']) ?>/stop"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm">■ Stop</button></form>
@@ -116,6 +134,9 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
   <li class="nav-item" role="presentation"><button class="nav-link active" id="tab-info-btn" data-bs-toggle="tab" data-bs-target="#tab-info" type="button" role="tab" aria-controls="tab-info" aria-selected="true">Info</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-containers-btn" data-bs-toggle="tab" data-bs-target="#tab-containers" type="button" role="tab" aria-controls="tab-containers" aria-selected="false">Container</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-deploy-btn" data-bs-toggle="tab" data-bs-target="#tab-deploy" type="button" role="tab" aria-controls="tab-deploy" aria-selected="false">Deployment</button></li>
+  <?php if ($isCompose && $canCompose): ?>
+  <li class="nav-item" role="presentation"><button class="nav-link" id="tab-compose-btn" data-bs-toggle="tab" data-bs-target="#tab-compose" type="button" role="tab" aria-controls="tab-compose" aria-selected="false">Compose</button></li>
+  <?php endif; ?>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-env-btn" data-bs-toggle="tab" data-bs-target="#tab-env" type="button" role="tab" aria-controls="tab-env" aria-selected="false">Environment</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-network-btn" data-bs-toggle="tab" data-bs-target="#tab-network" type="button" role="tab" aria-controls="tab-network" aria-selected="false">Network</button></li>
   <?php if (!empty($dbContainers)): ?>
@@ -141,6 +162,15 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
         <dt class="k">Subdomain</dt>
         <dd class="v mb-0"><a href="http://<?= e($app['subdomain']) ?>" target="_blank" rel="noopener"><?= e($app['subdomain']) ?></a><?php if ($customDomain): ?> <span class="text-muted small">(redirect → <?= e($customDomain) ?>)</span><?php endif; ?></dd>
       </div>
+      <?php if ($isCompose): ?>
+      <div class="app-info-item">
+        <dt class="k">Sumber</dt>
+        <dd class="v mb-0">
+          Compose (paste/upload)
+          <span class="text-muted fw-normal small">· tanpa repo Git — ubah lewat tab Compose</span>
+        </dd>
+      </div>
+      <?php else: ?>
       <div class="app-info-item">
         <dt class="k">Repo</dt>
         <dd class="v mb-0"><?= e($app['repo_url']) ?></dd>
@@ -162,9 +192,28 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
           <?php endif; ?>
         </dd>
       </div>
+      <?php endif; ?>
       <div class="app-info-item">
         <dt class="k">Primary Service</dt>
         <dd class="v mb-0"><?= e($app['primary_service'] ?? '-') ?></dd>
+      </div>
+      <div class="app-info-item">
+        <dt class="k">Port</dt>
+        <dd class="v mb-0">
+          <?php if ($appPorts === []): ?>
+            <span class="text-muted fw-normal">-</span>
+          <?php else: ?>
+            <?php foreach ($appPorts as $p): ?>
+              <?php $isProxied = $proxiedPort > 0 && $p['container'] === $proxiedPort; ?>
+              <div class="fw-normal <?= $isProxied ? '' : 'text-muted' ?>">
+                <span class="mono"><?= e((string) $p['container']) ?></span>
+                <span class="text-muted">&rarr;</span> host <span class="mono"><?= e($p['host'] > 0 ? (string) $p['host'] : '-') ?></span>
+                <?php if ($p['service'] !== ''): ?><span class="text-muted small">(<?= e($p['service']) ?>)</span><?php endif; ?>
+                <?php if ($isProxied): ?><span class="small">&middot; di-proxy ke domain</span><?php endif; ?>
+              </div>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </dd>
       </div>
       <div class="app-info-item">
         <dt class="k">Lokasi</dt>
@@ -493,10 +542,18 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
         <td><?= e($c['container_name'] ?? '-') ?></td>
         <td class="small"><?= e($c['image'] ?? '-') ?></td>
         <td class="small">
-          <?php if (!empty($c['host_port'])): ?>
-            <?= e($c['host_port']) ?><span class="text-muted">:<?= e($c['internal_port'] ?? '?') ?></span>
-          <?php else: ?>
+          <?php $cPorts = \app\library\Docker\AppPorts::forContainer($c); ?>
+          <?php if ($cPorts === []): ?>
             <span class="text-muted">-</span>
+          <?php else: ?>
+            <?php foreach ($cPorts as $p): ?>
+              <div class="text-nowrap">
+                <span class="mono"><?= e((string) ($p['host'] ?? '')) ?></span><span class="text-muted">:<?= e((string) ($p['container'] ?? '?')) ?></span>
+                <?php if ($proxiedPort > 0 && (int) ($p['container'] ?? 0) === $proxiedPort): ?>
+                  <span class="badge text-bg-primary ms-1" title="Port ini menerima trafik domain app (di-proxy Nginx)">di-proxy</span>
+                <?php endif; ?>
+              </div>
+            <?php endforeach; ?>
           <?php endif; ?>
         </td>
         <td><span class="badge badge-<?= e($c['status'] ?? 'unknown') ?>"><?= e($c['status'] ?? 'unknown') ?></span></td>
@@ -538,12 +595,16 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
       <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <h2 class="h6 mb-0">Riwayat Deployment</h2>
     <div class="d-flex align-items-center gap-2">
-      <span class="text-muted small">Versi aktif: <code><?= $activeSha !== '' ? e(substr((string) $activeSha, 0, 7)) : '-' ?></code></span>
-      <a class="btn btn-outline-secondary btn-sm" href="/apps/<?= e($app['id']) ?>/versions">Semua versi &rarr;</a>
+      <?php if ($isCompose): ?>
+        <span class="text-muted small">Sumber: file compose <span class="mono"><?= e((string) ($compose['main_file'] ?? 'docker-compose.yml')) ?></span> · tanpa checkpoint Git</span>
+      <?php else: ?>
+        <span class="text-muted small">Versi aktif: <code><?= $activeSha !== '' ? e(substr((string) $activeSha, 0, 7)) : '-' ?></code></span>
+        <a class="btn btn-outline-secondary btn-sm" href="/apps/<?= e($app['id']) ?>/versions">Semua versi &rarr;</a>
+      <?php endif; ?>
     </div>
   </div>
   <?php if (empty($deployHistory)): ?>
-    <div class="card-body text-muted small">Belum ada riwayat deploy. Riwayat tercatat otomatis setiap deploy/rebuild/rollback sukses.</div>
+    <div class="card-body text-muted small">Belum ada riwayat deploy. Riwayat tercatat otomatis setiap deploy/rebuild<?= $isCompose ? '/deploy ulang' : '/rollback' ?> yang sukses.</div>
   <?php else: ?>
   <div class="table-responsive">
   <table class="table table-hover align-middle mb-0">
@@ -558,11 +619,11 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
         $hBadge = in_array($hStatus, ['success', 'restored'], true) ? 'running' : ($hStatus === 'error' ? 'error' : 'stopped');
         $hMsg = (string) ($h['message'] ?? '');
         $hMsgShort = strlen($hMsg) > 80 ? substr($hMsg, 0, 80) . '…' : $hMsg;
-        $isRollbackTarget = in_array($hStatus, ['success', 'restored'], true) && ($h['sha'] ?? '') !== $activeSha && !$isBusy
+        $isRollbackTarget = !$isCompose && in_array($hStatus, ['success', 'restored'], true) && ($h['sha'] ?? '') !== $activeSha && !$isBusy
             && $canOperate;
       ?>
       <tr>
-        <td><code><?= e($hShort) ?></code><?= ($h['sha'] ?? '') === $activeSha ? ' <span class="text-muted small">(aktif)</span>' : '' ?></td>
+        <td><code><?= $hShort !== '' ? e($hShort) : '&mdash;' ?></code><?= $hShort !== '' && ($h['sha'] ?? '') === $activeSha ? ' <span class="text-muted small">(aktif)</span>' : '' ?></td>
         <td class="small"><?= e((string) ($h['created_at'] ?? '-')) ?></td>
         <td class="small"><?= e((string) ($h['action'] ?? '-')) ?></td>
         <td>
@@ -589,13 +650,74 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
   </table>
   </div>
   <?php endif; ?>
-  <?php if (count($deployHistory) > 5): ?>
+  <?php if (!$isCompose && count($deployHistory) > 5): ?>
   <div class="card-footer text-end">
     <a class="btn btn-outline-secondary btn-sm" href="/apps/<?= e($app['id']) ?>/versions">Lihat semua <?= count($deployHistory) ?> versi &rarr;</a>
   </div>
   <?php endif; ?>
   </section>
   </div>
+
+  <?php if ($isCompose && $canCompose): ?>
+  <!-- ============ Tab: Compose (app mode compose — edit sumber tanpa Git) ============ -->
+  <div class="tab-pane fade" id="tab-compose" role="tabpanel" aria-labelledby="tab-compose-btn">
+    <section class="card mb-4">
+      <div class="card-header">
+        <h2 class="h6 mb-0">Compose <span class="mono"><?= e((string) ($compose['main_file'] ?? 'docker-compose.yml')) ?></span></h2>
+      </div>
+      <div class="card-body">
+        <form method="post" action="/apps/<?= e($app['id']) ?>/compose" enctype="multipart/form-data" id="compose-form">
+          <?= csrf_field() ?>
+
+          <div class="mb-3">
+            <textarea class="form-control mono" name="compose" rows="18" spellcheck="false" required><?= e((string) ($compose['content'] ?? '')) ?></textarea>
+            <div class="form-text">
+              Service wajib punya <code>image:</code> dan tidak boleh <code>build:</code> (mode ini tanpa build context).
+              Host port dikelola dashboard: port service yang sudah ada dipertahankan, konflik dengan app lain digeser otomatis.
+            </div>
+          </div>
+
+          <?php $composeFiles = array_values(array_filter(
+              (array) ($compose['files'] ?? []),
+              static fn (string $f): bool => $f !== (string) ($compose['main_file'] ?? '')
+          )); ?>
+          <?php if ($composeFiles !== []): ?>
+          <div class="mb-3">
+            <label class="form-label">File pendukung</label>
+            <ul class="list-unstyled mb-1">
+              <?php foreach ($composeFiles as $f): ?>
+              <li class="d-flex align-items-center gap-2 small">
+                <input class="form-check-input mt-0" type="checkbox" name="file_delete[]" value="<?= e($f) ?>" id="del-<?= e(md5($f)) ?>">
+                <label class="mono mb-0" for="del-<?= e(md5($f)) ?>"><?= e($f) ?></label>
+                <span class="text-muted">(centang untuk hapus)</span>
+              </li>
+              <?php endforeach; ?>
+            </ul>
+          </div>
+          <?php endif; ?>
+
+          <div class="mb-3">
+            <label class="form-label" for="compose-add-files">Tambah / ganti file pendukung</label>
+            <input type="file" class="form-control" id="compose-add-files" name="files[]" multiple>
+            <div class="form-text">
+              File dengan nama sama akan ditimpa. Maks 1 MB per file. Isi compose utama diubah lewat editor di atas
+              (file <span class="mono"><?= e((string) ($compose['main_file'] ?? 'docker-compose.yml')) ?></span> tidak diunggah ulang).
+            </div>
+          </div>
+
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <button type="submit" class="btn btn-primary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>Simpan &amp; Deploy Ulang</button>
+            <?php if ($isBusy): ?>
+              <span class="text-muted small">Dinonaktifkan sementara app sedang diproses.</span>
+            <?php else: ?>
+              <span class="text-muted small">Container diciptakan ulang di latar belakang (<span class="mono">up -d</span> tanpa build).</span>
+            <?php endif; ?>
+          </div>
+        </form>
+      </div>
+    </section>
+  </div>
+  <?php endif; ?>
 
   <!-- ============ Tab: Akses (kepemilikan & sharing) ============ -->
   <?php if ($canShare || !empty($access['members'])): ?>

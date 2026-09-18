@@ -49,6 +49,7 @@ final class AppAccess
         'deploy' => self::ROLE_OPERATOR,
         'stop' => self::ROLE_OPERATOR,
         'env' => self::ROLE_OPERATOR,
+        'compose' => self::ROLE_OPERATOR,
         'network' => self::ROLE_OPERATOR,
         'domain' => self::ROLE_OPERATOR,
         'ssl' => self::ROLE_OPERATOR,

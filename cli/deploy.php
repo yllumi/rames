@@ -5,15 +5,18 @@ declare(strict_types=1);
 /**
  * Background worker deploy app.
  *
- *   php cli/deploy.php <appId> [deploy|rebuild|rollback] [ref]
+ *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply] [ref]
  *
- * Dipanggil detached oleh AppController (proc_open) supaya request HTTP tidak
- * terblokir oleh operasi build yang lama. Pipeline:
+ * Dipanggil detached oleh AppController (pcntl_fork + pcntl_exec) supaya request
+ * HTTP tidak terblokir oleh operasi build yang lama. Pipeline:
  *   - muat app dari apps.json
  *   - update status tiap tahap (deploying / running / error)
- *   - jalankan deployer (deploy/rebuild/rollback)
+ *   - jalankan deployer (deploy/rebuild/rollback/apply)
  *   - simpan hasil (containers, deploy_history, status) kembali ke apps.json
  * Log per-app ditulis ke runtime/logs/deploy/{appId}.log.
+ *
+ * Mode `apply` dipakai app mode compose (tanpa repo Git): ciptakan ulang
+ * container dari file compose yang ada + image prebuilt (tanpa build).
  */
 
 use app\library\Deploy\DeployerFactory;
@@ -31,8 +34,8 @@ $appId = $argv[1] ?? '';
 $mode = $argv[2] ?? 'deploy';
 $ref = $argv[3] ?? '';
 
-if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback'], true) || ($mode === 'rollback' && $ref === '')) {
-    fwrite(STDERR, "Usage: php cli/deploy.php <appId> [deploy|rebuild|rollback [ref]]\n");
+if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback', 'apply'], true) || ($mode === 'rollback' && $ref === '')) {
+    fwrite(STDERR, "Usage: php cli/deploy.php <appId> [deploy|rebuild|rollback|apply [ref]]\n");
     exit(1);
 }
 
@@ -66,6 +69,7 @@ try {
     $app = match ($mode) {
         'rebuild'  => $deployer->rebuild($app, $logger),
         'rollback' => $deployer->rollback($app, $ref, $logger),
+        'apply'    => $deployer->apply($app, $logger),
         default    => $deployer->deploy($app, $logger),
     };
 
