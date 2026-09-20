@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\library\Db;
 
 use app\library\Docker\DockerExec;
+use app\library\Support\SigchldGuard;
 use RuntimeException;
 
 /**
@@ -76,18 +77,25 @@ class DbDump
             1 => ['file', $outFile, 'w'],
             2 => ['pipe', 'w'],
         ];
-        $proc = @proc_open($args, $descriptors, $pipes, null, null, ['bypass_shell' => true]);
-        if (!is_resource($proc)) {
-            throw new RuntimeException('Gagal menjalankan proses dump: ' . implode(' ', $args));
-        }
-        fclose($pipes[0]);
-        $stderr = (string) stream_get_contents($pipes[2]);
-        fclose($pipes[2]);
-        $code = (int) proc_close($proc);
+        // Spawn + tunggu dalam SATU blok: SIGCHLD=SIG_DFL wajib bertahan sampai
+        // proc_close() (lihat SigchldGuard) — bila worker meng-ignore SIGCHLD,
+        // proc_close() selalu mengembalikan -1 dan dump yang sukses dilaporkan gagal.
+        /** @var array{code:int, stderr:string} $result */
+        $result = SigchldGuard::withDefault(static function () use ($args, $descriptors): array {
+            $pipes = [];
+            $proc = @proc_open($args, $descriptors, $pipes, null, null, ['bypass_shell' => true]);
+            if (!is_resource($proc)) {
+                throw new RuntimeException('Gagal menjalankan proses dump: ' . implode(' ', $args));
+            }
+            fclose($pipes[0]);
+            $stderr = (string) stream_get_contents($pipes[2]);
+            fclose($pipes[2]);
+            return ['code' => (int) proc_close($proc), 'stderr' => $stderr];
+        });
 
-        if ($code !== 0) {
+        if ($result['code'] !== 0) {
             @unlink($outFile);
-            throw new RuntimeException('Export gagal (exit ' . $code . '): ' . trim($stderr));
+            throw new RuntimeException('Export gagal (exit ' . $result['code'] . '): ' . trim($result['stderr']));
         }
     }
 

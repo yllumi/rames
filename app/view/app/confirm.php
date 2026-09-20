@@ -18,6 +18,22 @@
 <form method="post" action="/apps/create/confirm" id="deploy-confirm-form">
   <?= csrf_field() ?>
 
+  <!-- Nama container (override container_name) — opsional -->
+  <div class="card mb-3">
+    <div class="card-body">
+      <label class="form-label" for="container-prefix">Prefix nama container <span class="text-muted small">(opsional)</span></label>
+      <input type="text" class="form-control form-control-sm mono" id="container-prefix" name="container_prefix"
+             maxlength="<?= e((string) \app\library\Deploy\ContainerNames::MAX_PREFIX_LENGTH) ?>"
+             placeholder="kosong = <?= e($pending['name'] . '_<service>_1') ?>" style="max-width:320px;">
+      <div class="form-text">
+        Bila diisi, setiap service memakai nama container <span class="mono">{prefix}-{service}</span>
+        (mis. <span class="mono"><?= e($pending['name'] . '-web') ?></span>) — bukan <span class="mono">&lt;app&gt;_&lt;service&gt;_1</span>.
+        Nama container <strong>unik se-host</strong>: dicek ke container lain saat deploy, dan tidak bisa dipakai
+        service yang memakai replica (<span class="mono">deploy.replicas</span>).
+      </div>
+    </div>
+  </div>
+
   <div class="card mb-3">
     <div class="table-responsive">
     <table class="table align-middle mb-0">

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\Docker;
 
+use app\library\Support\SigchldGuard;
 use RuntimeException;
 
 /**
@@ -153,16 +154,28 @@ class DockerExec
         // diteruskan harus tetap blocking agar `script`/docker exec berperilaku normal.
 
         $env = array_merge(getenv(), ['TERM' => 'xterm']);
-        $proc = @proc_open($args, [0 => $stdin, 1 => $stdout, 2 => $stdout], $pipes, null, $env, ['bypass_shell' => true]);
+        // Spawn + ambil PID dalam satu blok: `script` menunggu anaknya (docker exec)
+        // lewat waitpid, jadi proses anak wajib mewarisi SIGCHLD=SIG_DFL — bila worker
+        // sudah meng-ignore SIGCHLD (lihat SigchldGuard), waitpid itu gagal (ECHILD)
+        // dan sesi mati seketika. SIG_IGN dipasang kembali di akhir karena sesi ini
+        // sengaja tidak pernah di-proc_close.
+        /** @var array{proc:resource|null, pid:int} $spawned */
+        $spawned = SigchldGuard::withDefault(static function () use ($args, $stdin, $stdout, $env): array {
+            $pipes = [];
+            $proc = @proc_open($args, [0 => $stdin, 1 => $stdout, 2 => $stdout], $pipes, null, $env, ['bypass_shell' => true]);
+            if (!is_resource($proc)) {
+                return ['proc' => null, 'pid' => 0];
+            }
+            return ['proc' => $proc, 'pid' => (int) (proc_get_status($proc)['pid'] ?? 0)];
+        });
+        $proc = $spawned['proc'];
+        $pid = $spawned['pid'];
         if (!is_resource($proc)) {
             fclose($stdin);
             fclose($stdout);
             $this->removeDir($dir);
             throw new RuntimeException('Gagal menjalankan proses terminal: ' . implode(' ', $args));
         }
-
-        $status = proc_get_status($proc);
-        $pid = (int) ($status['pid'] ?? 0);
 
         // Tutup salinan parent agar deteksi exit akurat: hanya anak yang menjadi
         // writer/reader FIFO (bila parent ikut memegang, EOF tidak akan pernah terlihat).
@@ -195,7 +208,7 @@ class DockerExec
 
         // SIGCHLD di-ignore agar proc anak (yang tidak pernah kita proc_close) tidak
         // menjadi zombie — kernel otomatis reap (pola sama dengan worker deploy).
-        @pcntl_signal(SIGCHLD, SIG_IGN);
+        SigchldGuard::ignoreAndReap();
 
         return ['token' => $token, 'pid' => $pid, 'shell' => $shell, 'container' => $container];
     }

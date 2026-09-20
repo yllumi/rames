@@ -26,6 +26,31 @@ class ProcessRunner
      */
     public function run(array $command, ?string $cwd = null, int $timeout = 300, array $env = [], ?string $stdin = null): array
     {
+        // Worker Webman persistent bisa sudah mewarisi SIGCHLD=SIG_IGN dari spawn
+        // worker deploy / sesi terminal (lihat SigchldGuard). Tanpa dipulihkan,
+        // proses anak ikut meng-ignore SIGCHLD → git/docker compose kehilangan
+        // waitpid() atas anaknya sendiri ("No child process", "index-pack failed")
+        // dan proc_get_status() di sini kehilangan exit code (selalu -1).
+        $restoreSigchld = SigchldGuard::disableIgnore();
+        try {
+            return $this->execute($command, $cwd, $timeout, $env, $stdin);
+        } finally {
+            if ($restoreSigchld) {
+                SigchldGuard::ignoreAndReap();
+            }
+        }
+    }
+
+    /**
+     * Inti eksekusi — dipisah agar disposisi SIGCHLD dapat dipulihkan lewat
+     * finally pada semua jalur keluar (selesai normal maupun timeout).
+     *
+     * @param array<int,string>    $command list program + argumen (mentah, tanpa escaping)
+     * @param array<string,string> $env     environment tambahan
+     * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
+     */
+    private function execute(array $command, ?string $cwd, int $timeout, array $env, ?string $stdin): array
+    {
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],

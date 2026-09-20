@@ -39,6 +39,7 @@ class LocalDeployer implements DeployerInterface
         // (idempoten, aman bila kosong)
         $this->env->sync($app, $dir, $files);
         $this->network->sync($app, $dir, $files);
+        ContainerNames::sync($app, $dir, $files);
 
         $logger('build', 'Menjalankan docker compose up -d --build ...');
         $this->upCompose($project, $app, $dir, $files, true, $logger);
@@ -82,6 +83,7 @@ class LocalDeployer implements DeployerInterface
         // (idempoten, aman bila kosong)
         $this->env->sync($app, $dir, $files);
         $this->network->sync($app, $dir, $files);
+        ContainerNames::sync($app, $dir, $files);
 
         $logger('build', 'docker compose up -d --build ...');
         $this->upCompose($project, $app, $dir, $files, true, $logger);
@@ -123,6 +125,7 @@ class LocalDeployer implements DeployerInterface
             // (idempoten, aman bila kosong)
             $this->env->sync($app, $dir, $files);
             $this->network->sync($app, $dir, $files);
+            ContainerNames::sync($app, $dir, $files);
 
             $logger('build', 'docker compose up -d --build ...');
             $this->upCompose($project, $app, $dir, $files, true, $logger);
@@ -197,6 +200,7 @@ class LocalDeployer implements DeployerInterface
 
         $this->env->sync($app, $dir, $files);
         $this->network->sync($app, $dir, $files);
+        ContainerNames::sync($app, $dir, $files);
 
         $logger('build', 'Menciptakan ulang container dari image yang ada (tanpa build) ...');
         $this->upCompose($project, $app, $dir, $files, false, $logger);
@@ -211,10 +215,10 @@ class LocalDeployer implements DeployerInterface
     }
 
     /**
-     * Terapkan perubahan environment variable tanpa rebuild source:
-     * tulis ulang managed env file + override, lalu `docker compose up -d`
-     * (tanpa --build) — compose menciptakan ulang hanya container yang
-     * environment-nya berubah.
+     * Terapkan perubahan konfigurasi terkelola tanpa rebuild source:
+     * tulis ulang managed env file + override env, external network, dan nama
+     * container, lalu `docker compose up -d` (tanpa `--build`) — compose
+     * menciptakan ulang hanya container yang konfigurasinya berubah.
      */
     public function applyEnv(array $app, callable $logger): array
     {
@@ -224,6 +228,7 @@ class LocalDeployer implements DeployerInterface
 
         $this->env->sync($app, $dir, $files);
         $this->network->sync($app, $dir, $files);
+        ContainerNames::sync($app, $dir, $files);
 
         $logger('build', 'Menciptakan ulang container dengan environment baru ...');
         $this->upCompose($project, $app, $dir, $files, false, $logger);

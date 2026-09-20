@@ -587,6 +587,37 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
   </div>
   <?php endif; ?>
   </section>
+
+  <!-- Nama container (override container_name) -->
+  <?php if ($canCompose): ?>
+  <section class="card mb-4">
+    <div class="card-header">
+      <h2 class="h6 mb-0">Nama container</h2>
+    </div>
+    <form method="post" action="/apps/<?= e($app['id']) ?>/container-names">
+      <?= csrf_field() ?>
+      <div class="card-body">
+        <label class="form-label" for="container-prefix">Prefix nama container <span class="text-muted small">(opsional)</span></label>
+        <input type="text" class="form-control form-control-sm mono" id="container-prefix" name="container_prefix"
+               value="<?= e((string) ($app['container_prefix'] ?? '')) ?>"
+               maxlength="<?= e((string) \app\library\Deploy\ContainerNames::MAX_PREFIX_LENGTH) ?>"
+               placeholder="kosong = <?= e($app['name'] . '_<service>_1') ?>" style="max-width:320px;">
+        <div class="form-text">
+          Setiap service memakai nama container <span class="mono">{prefix}-{service}</span>. Kosongkan untuk kembali
+          ke nama default compose (<span class="mono">&lt;app&gt;_&lt;service&gt;_1</span>). Nama <strong>unik se-host</strong> —
+          dicek ke container lain sebelum disimpan. Menyimpan akan <strong>menciptakan ulang</strong> container
+          (isi filesystem container hilang, named volume tetap).
+        </div>
+      </div>
+      <div class="card-footer d-flex flex-wrap gap-2 align-items-center">
+        <button type="submit" class="btn btn-primary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>Simpan &amp; Terapkan</button>
+        <?php if ($isBusy): ?>
+          <span class="text-muted small">Dinonaktifkan sementara app sedang diproses.</span>
+        <?php endif; ?>
+      </div>
+    </form>
+  </section>
+  <?php endif; ?>
   </div>
 
   <!-- ============ Tab: Deployment ============ -->

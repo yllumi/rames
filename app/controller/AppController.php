@@ -7,6 +7,7 @@ use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Auth\UserStore;
 use app\library\Deploy\ComposeSource;
+use app\library\Deploy\ContainerNames;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\NetworkManager;
@@ -472,6 +473,19 @@ class AppController
         $serviceInput = (array) $request->post('services', []);
         $primarySelection = (string) $request->post('primary', '');
 
+        // Prefix nama container divalidasi lebih dulu supaya pesan errornya kembali
+        // ke halaman konfirmasi (pending_app masih tersimpan), bukan ke form create.
+        try {
+            $containerPrefix = $this->resolveContainerPrefix(
+                (string) $pending['name'],
+                (string) $pending['compose_file'],
+                (string) $request->post('container_prefix', '')
+            );
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+            return redirect('/apps/create/confirm');
+        }
+
         try {
             // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy.
             // Kalau tidak, tampilkan pesan jelas (bukan gagal di tengah build).
@@ -488,7 +502,7 @@ class AppController
             $primaryPort = $primary['port'];
 
             $composeFiles = [$pending['compose_file']];
-            $this->writeOverride($pending, $services, $composeFiles);
+            $this->writeOverride($pending, $services, $composeFiles, $containerPrefix);
 
             $app = (new AppStore())->create([
                 'name' => $pending['name'],
@@ -505,6 +519,7 @@ class AppController
                 'stage' => 'queued',
                 'message' => 'Menunggu worker deploy ...',
                 'compose_files' => $composeFiles,
+                'container_prefix' => $containerPrefix !== '' ? $containerPrefix : null,
                 'needs_ssl' => false,
                 'ssl_status' => null,
                 'auth_method' => $pending['auth_method'] ?? 'none',
@@ -1256,6 +1271,171 @@ class AppController
     }
 
     /**
+     * Simpan prefix nama container app (POST /apps/{id}/container-names) —
+     * form "Nama container" di tab Container (ability `compose`, operator+).
+     *
+     * Alur (validasi dulu, baru tulis — gagal = tidak ada state yang berubah):
+     *  1) Normalisasi & validasi prefix; tolak service ber-replica; fail-fast bila
+     *     nama final sudah dipakai container lain (nama container unik se-host,
+     *     tanpa prefix project).
+     *  2) Tulis/hapus `docker-compose.override.names.yml` + rapikan compose_files.
+     *  3) Recreate container (`up -d` tanpa build) agar nama baru dipakai.
+     */
+    public function saveContainerNames(Request $request, string $id)
+    {
+        $store = new AppStore();
+        $app = $this->findApp($id, 'compose');
+        if (($app['status'] ?? '') === 'deploying') {
+            flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
+        }
+
+        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
+        if (!is_dir($dir)) {
+            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+            return redirect('/apps/' . $id);
+        }
+
+        $composeFiles = (array) ($app['compose_files'] ?? ['docker-compose.yml']);
+
+        try {
+            $prefix = $this->resolveContainerPrefix(
+                (string) $app['name'],
+                ComposeSource::resolveMainFile($dir, $app),
+                (string) $request->post('container_prefix', '')
+            );
+
+            // 1) Tulis file dulu — gagal => state apps.json tidak berubah.
+            if ($prefix === '') {
+                ContainerNames::removeOverride($dir);
+            } else {
+                ContainerNames::writeOverride($dir, array_keys(ContainerNames::services($dir, $composeFiles)), $prefix);
+            }
+
+            // 2) Persist prefix + compose_files (urutan tetap: reset → ports → names → lain).
+            $store->update($id, function (array &$s) use ($prefix, $composeFiles): void {
+                $s['container_prefix'] = $prefix !== '' ? $prefix : null;
+                $files = array_values(array_filter(
+                    $composeFiles,
+                    static fn (string $f): bool => $f !== ContainerNames::OVERRIDE_FILE
+                ));
+                if ($prefix !== '') {
+                    $files[] = ContainerNames::OVERRIDE_FILE;
+                }
+                $s['compose_files'] = $this->orderComposeFiles($files);
+            });
+
+            // 3) Recreate container agar nama baru dipakai (tanpa build).
+            $app = $store->find($id) ?? $app;
+            try {
+                $applied = DeployerFactory::create()->applyEnv($app, static function (string $stage, string $message): void {
+                });
+                $store->update($id, function (array &$s) use ($applied): void {
+                    $s['containers'] = $applied['containers'] ?? [];
+                    $s['status'] = 'running';
+                    $s['message'] = 'Running';
+                    $s['error'] = null;
+                });
+                flash_set('success', $prefix === ''
+                    ? 'Nama container dikembalikan ke default compose & container diciptakan ulang.'
+                    : 'Nama container disimpan (prefix "' . $prefix . '") & container diciptakan ulang.');
+            } catch (\Throwable $e) {
+                flash_set('error', 'Nama container tersimpan, tetapi gagal diterapkan ke container: ' . $e->getMessage() . ' — coba Rebuild.');
+            }
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Validasi prefix nama container dari form:
+     *  - normalisasi + validasi format;
+     *  - service ber-replica > 1 ditolak (compose tidak mengizinkan container_name);
+     *  - nama final harus belum dipakai container lain di host — fail-fast, tanpa
+     *    ini `docker compose up` gagal di tengah deploy dengan "Conflict".
+     *
+     * @return string prefix final ('' = pakai nama default compose)
+     */
+    private function resolveContainerPrefix(string $appName, string $composeFile, string $rawPrefix): string
+    {
+        $prefix = ContainerNames::normalizePrefix($rawPrefix);
+        ContainerNames::assertValidPrefix($prefix);
+        if ($prefix === '') {
+            return '';
+        }
+
+        $dir = (string) config('deploy.apps_path') . '/' . $appName;
+        $services = ContainerNames::services($dir, [$composeFile]);
+        ContainerNames::assertNotReplicated($services);
+        ContainerNames::assertAvailable(
+            ContainerNames::mapFor(array_keys($services), $prefix),
+            $this->usedContainerNames($appName)
+        );
+
+        return $prefix;
+    }
+
+    /**
+     * Nama container yang sudah terpakai di host, di luar project app ini.
+     * Engine API jadi acuan utama (mencakup container app lain, container
+     * eksternal, dan container dashboard sendiri); apps.json dipakai sebagai
+     * cadangan bila Engine tidak dapat diakses.
+     *
+     * @return array<string,string> nama => deskripsi pemilik
+     */
+    private function usedContainerNames(string $ownProject): array
+    {
+        try {
+            $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+            return ContainerNames::usedFromEngine($docker->listContainers(), $ownProject);
+        } catch (\Throwable $e) {
+            return ContainerNames::usedFromApps((new AppStore())->all(), $ownProject);
+        }
+    }
+
+    /**
+     * Urutkan compose_files: base compose → override reset/ports/names →
+     * override lain (network, env). Override env wajib paling akhir agar tetap
+     * menang atas file repo.
+     *
+     * @param array<int,string> $files
+     * @return array<int,string>
+     */
+    private function orderComposeFiles(array $files): array
+    {
+        $priority = [
+            ComposeSource::RESET_OVERRIDE_FILE,
+            ComposeSource::PORTS_OVERRIDE_FILE,
+            ContainerNames::OVERRIDE_FILE,
+        ];
+
+        $base = [];
+        $rest = [];
+        foreach ($files as $file) {
+            $file = (string) $file;
+            if ($file === '') {
+                continue;
+            }
+            if (!str_starts_with($file, ComposeSource::GENERATED_PREFIX)) {
+                $base[] = $file;
+                continue;
+            }
+            if (!in_array($file, $priority, true)) {
+                $rest[] = $file;
+            }
+        }
+        foreach ($priority as $file) {
+            if (in_array($file, $files, true)) {
+                $base[] = $file;
+            }
+        }
+
+        return array_values(array_unique(array_merge($base, $rest)));
+    }
+
+    /**
      * Simpan perubahan compose app mode compose (POST /apps/{id}/compose) —
      * tab "Compose" di detail app.
      *
@@ -1331,7 +1511,12 @@ class AppController
             // 3) Tulis ulang override port; override lain (network/env) tetap
             //    di urutan belakang agar prioritas compose tidak berubah.
             $composeFiles = [$mainFile];
-            $this->writeOverride(['name' => $app['name']], $services, $composeFiles);
+            $this->writeOverride(
+                ['name' => $app['name']],
+                $services,
+                $composeFiles,
+                ContainerNames::normalizePrefix($app['container_prefix'] ?? '')
+            );
             $composeFiles = array_values(array_unique(array_merge($composeFiles, $this->generatedExtras($app))));
 
             // 4) Persist + spawn worker apply (up -d tanpa build + Nginx).
@@ -1399,7 +1584,7 @@ class AppController
             if (!str_starts_with($file, ComposeSource::GENERATED_PREFIX)) {
                 continue;
             }
-            if (in_array($file, [ComposeSource::RESET_OVERRIDE_FILE, ComposeSource::PORTS_OVERRIDE_FILE], true)) {
+            if (in_array($file, [ComposeSource::RESET_OVERRIDE_FILE, ComposeSource::PORTS_OVERRIDE_FILE, ContainerNames::OVERRIDE_FILE], true)) {
                 continue; // ditulis ulang oleh writeOverride()
             }
             $keep[] = $file;
@@ -1753,11 +1938,15 @@ class AppController
      *   1) docker-compose.override.yml       -> ports: !reset [] (hapus port bawaan)
      *   2) docker-compose.override.ports.yml -> ports: [host:container] (port final)
      *
+     * Lapis ketiga (opsional) = override nama container
+     * (docker-compose.override.names.yml) bila prefix nama diisi user.
+     *
      * @param array                  $pending
      * @param array<string,array>    $services
      * @param array<int,string>      $composeFiles (by reference — ditambah nama override)
+     * @param string|null            $containerPrefix '' = pakai nama default compose
      */
-    private function writeOverride(array $pending, array $services, array &$composeFiles): void
+    private function writeOverride(array $pending, array $services, array &$composeFiles, ?string $containerPrefix = null): void
     {
         $dir = (string) config('deploy.apps_path') . '/' . $pending['name'];
         $reset = ['services' => []];
@@ -1793,6 +1982,19 @@ class AppController
             throw new RuntimeException('Gagal menulis ' . ComposeSource::PORTS_OVERRIDE_FILE . '.');
         }
         $composeFiles[] = ComposeSource::PORTS_OVERRIDE_FILE;
+
+        // Lapis 3 (opsional): nama container (container_name) hasil override user.
+        // Daftar service diambil dari base compose yang ada di disk (bukan dari
+        // $services pemanggil) supaya jalur tab Compose pun ikut tervalidasi
+        // replicanya — container_name tidak kompatibel dengan deploy.replicas > 1.
+        if ($containerPrefix !== null && $containerPrefix !== '') {
+            $declared = ContainerNames::services($dir, $composeFiles);
+            ContainerNames::assertNotReplicated($declared);
+            ContainerNames::writeOverride($dir, array_keys($declared), $containerPrefix);
+            $composeFiles[] = ContainerNames::OVERRIDE_FILE;
+        } else {
+            ContainerNames::removeOverride($dir);
+        }
     }
 
     /**

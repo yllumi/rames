@@ -81,6 +81,9 @@ Route::post('/apps/{id}/compose', [AppController::class, 'saveCompose']);
 // External network per app (shared network lintas-app)
 Route::post('/apps/{id}/network', [AppController::class, 'saveNetworks']);
 
+// Nama container per app (override container_name via compose override)
+Route::post('/apps/{id}/container-names', [AppController::class, 'saveContainerNames']);
+
 // Kepemilikan & sharing app (owner + members)
 Route::post('/apps/{id}/members', [AppController::class, 'addMember']);
 Route::post('/apps/{id}/members/{userId}/remove', [AppController::class, 'removeMember']);
