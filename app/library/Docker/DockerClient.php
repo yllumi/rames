@@ -6,14 +6,16 @@ namespace app\library\Docker;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Handler\CurlHandler;
+use GuzzleHttp\Handler\CurlMultiHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Promise\Utils;
 use RuntimeException;
 
 /**
  * Client ringan ke Docker Engine API via unix socket (hand-rolled, tanpa SDK).
  *
- * Dipakai untuk operasi BACA: list/inspect container, ping engine.
- * Orkestrasi (up/down/build) tetap lewat CLI docker compose — lihat
+ * Dipakai untuk operasi BACA: list/inspect container, log, stats resource, ping
+ * engine. Orkestrasi (up/down/build) tetap lewat CLI docker compose — lihat
  * DockerComposeRunner.
  *
  * Koneksi memakai cURL handler + CURLOPT_UNIX_SOCKET_PATH (ext-curl wajib).
@@ -183,6 +185,80 @@ class DockerClient
             throw new RuntimeException('Gagal terhubung ke Docker Engine: ' . $e->getMessage(), 0, $e);
         }
         return $this->decode($resp, 'gagal inspect container');
+    }
+
+    /**
+     * Statistik (`/stats`) + inspect (`/json`) BANYAK container sekaligus,
+     * dijalankan paralel — sumber data monitoring resource (SPECS §8d).
+     *
+     * Alasan paralel: `/stats?stream=false` memblokir ±1 detik per container
+     * (daemon harus mengambil dua sampel CPU) sedangkan handler default
+     * (`CurlHandler`) serial. Untuk 10 container itu ±10 detik. Fan-out di bawah
+     * memakai `CurlMultiHandler` sehingga semua transfer berjalan bersamaan
+     * (total ≈ satu siklus sampling).
+     *
+     * Kegagalan satu container tidak menggagalkan yang lain: hasil per container
+     * memuat `error` sehingga satu container bermasalah (mis. sedang berhenti)
+     * tidak mengosongkan seluruh halaman monitoring.
+     *
+     * @param array<int,string> $ids ID container
+     * @return array<string,array{stats:?array,inspect:?array,error:?string}>
+     */
+    public function containersOverview(array $ids, int $timeout = 20): array
+    {
+        $ids = array_values(array_unique(array_filter(
+            array_map('strval', $ids),
+            static fn (string $id): bool => $id !== ''
+        )));
+        if ($ids === []) {
+            return [];
+        }
+
+        $results = [];
+        $promises = [];
+        $client = new Client([
+            'base_uri' => 'http://docker',
+            'handler' => new CurlMultiHandler(),
+            'curl' => [CURLOPT_UNIX_SOCKET_PATH => $this->socket],
+            'timeout' => $timeout,
+            'connect_timeout' => 5,
+            'http_errors' => false,
+        ]);
+
+        foreach ($ids as $id) {
+            $results[$id] = ['stats' => null, 'inspect' => null, 'error' => null];
+            $base = '/containers/' . rawurlencode($id);
+            // kunci promise: "<id>|<jenis>" agar hasilnya bisa dipetakan kembali
+            $promises[$id . '|stats'] = $client->getAsync($base . '/stats', ['query' => ['stream' => 0]]);
+            $promises[$id . '|inspect'] = $client->getAsync($base . '/json');
+        }
+
+        // settle() tidak pernah melempar — tiap hasil dibaca per container
+        foreach (Utils::settle($promises)->wait() as $key => $outcome) {
+            [$id, $kind] = array_pad(explode('|', (string) $key, 2), 2, '');
+            if (!isset($results[$id]) || !in_array($kind, ['stats', 'inspect'], true)) {
+                continue;
+            }
+
+            if (($outcome['state'] ?? '') !== 'fulfilled') {
+                $reason = $outcome['reason'] ?? null;
+                $results[$id]['error'] = $reason instanceof \Throwable
+                    ? $reason->getMessage()
+                    : 'gagal terhubung ke Docker Engine';
+                continue;
+            }
+
+            try {
+                $results[$id][$kind] = $this->decode(
+                    $outcome['value'],
+                    $kind === 'stats' ? 'gagal mengambil statistik container' : 'gagal inspect container'
+                );
+            } catch (\Throwable $e) {
+                $results[$id]['error'] = $e->getMessage();
+            }
+        }
+
+        return $results;
     }
 
     /**

@@ -29,7 +29,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [x] Renewal certbot otomatis (`host/certbot-renew.sh` + systemd timer) (§8a)
 - [x] Kepemilikan app per user + sharing ke user lain (role viewer/operator/owner) & role global admin/member (§6.1, §7.7)
 - [ ] Log viewer real-time per container (§8c)
-- [ ] Health check & monitoring resource per container (§8d)
+- [x] Monitoring resource container & total VM — halaman global `/monitor` (§8d)
 - [ ] Search / filter / pagination daftar app (§8e)
 - [ ] Rate limiting / proteksi brute-force login (§8f)
 - [ ] Backup otomatis data & config sebelum overwrite (§8g)
@@ -567,19 +567,33 @@ Field tambahan per app:
 - Endpoint `GET /api/apps/{id}/containers/{name}/logs?tail={n}&since={iso}` di `AppController` (dilindungi auth middleware).
 - View `app/detail.php`: panel log + polling `fetch`.
 
-## 8d. Health Check & Monitoring Resource per Container
+## 8d. Monitoring Resource Container & Total VM
 
-**Tujuan:** ringkasan kesehatan & pemakaian resource tiap container di halaman detail app (uptime, status, restart count, CPU, memory) — cukup untuk deteksi dini, bukan monitoring historis/alerting penuh.
+**Tujuan:** satu halaman global **`/monitor`** (nav topbar) yang menampilkan pemakaian resource tiap container dan **total VM** (CPU, memori, load, uptime host) — cukup untuk deteksi dini, bukan monitoring historis/alerting penuh.
 
-**Data (dari Docker Engine API, dibaca `DockerClient`):**
-- `inspect` — `State.Status`, `State.Running`, `State.StartedAt`, `RestartCount`, `State.Health` (bila healthcheck didefinisikan di compose).
-- `stats --no-stream` — `cpu_perc`, `mem_usage`, `mem_perc` (dipanggil sekali per refresh, bukan daemon streaming).
+**Data:**
+- **Host (total VM)** — dibaca dari pseudo-filesystem `/proc` host (`stat`, `meminfo`, `loadavg`, `uptime`, `cpuinfo`). Di dalam container dashboard, `/proc` **sudah** menampilkan nilai host (Docker tidak men-*namespace*-kan metrik ini) sehingga tidak perlu mount tambahan; path bisa di-override `HOST_PROC_PATH` bila host memakai lxcfs. Nilai yang tidak terbaca → ditampilkan **N/A**, bukan error.
+- **Per container** — dari Docker Engine API, dibaca `DockerClient`:
+  - `inspect` — `State.Status`, `State.Running`, `State.StartedAt`, `RestartCount`, `State.Health` (bila healthcheck didefinisikan di compose);
+  - `stats?stream=false` — CPU% (`cpu_delta/system_delta × online_cpus × 100`), memori (`usage` dikurangi page cache `inactive_file`/`total_inactive_file`, seperti `docker stats`), `pids`.
+  - Container yang benar-benar idle dilaporkan **0%**, sedangkan data yang tak ada (container berhenti, `precpu_stats` kosong) dilaporkan **N/A**.
+- **Disk** — hanya **volume** (`GET /system/df?type=volume`) dan ditampilkan sebagai satu angka total; daftar per volume sudah ada di `/volumes`. Karena Engine harus menelusuri filesystem, angka ini dimuat dari endpoint yang sama dengan `/volumes` (`GET /api/volumes/usage`) agar tidak menahan kartu lain.
 
 **Alur:**
-1. Halaman detail app → kartu **Status Container** menampilkan per container: status (`running`/`stopped`/`exited`/`restarting`), uptime (dari `StartedAt`), restart count, dan (bila tersedia) usage CPU/mem.
-2. Tombol **Refresh** untuk mengambil ulang data `stats` (tidak di-poll otomatis agar tidak membebani daemon).
-3. Status health (bila ada healthcheck) tampil sebagai badge `healthy`/`unhealthy`/`starting`.
-4. Data **tidak persisten** — hanya diambil saat halaman dibuka/refresh (tanpa field baru di `apps.json`).
+1. `/monitor` merender kerangka halaman (kartu + tabel), lalu `public/js/monitor.js` memanggil `GET /api/monitor/overview` **sekali** saat halaman dibuka (metrik host + seluruh container sekaligus, paralel).
+2. Kartu ringkas: CPU host (dengan jumlah vCPU), memori host (terpakai/total + tersedia), agregat container (jumlah, yang jalan, CPU total, memori), uptime host, dan total volume terpakai.
+3. Tabel per container: status (+ badge health bila ada), uptime, restart count, CPU%, memori (terpakai/limit + bar), dan jumlah PID.
+4. **Polling kartu host** — CPU, memori, load, dan uptime host diperbarui otomatis tiap `MONITOR_POLL_MS` (default **7000 ms**; `0` = tanpa polling) lewat `GET /api/monitor/host`. Endpoint ini **hanya** membaca `/proc` (±0,25 detik, **tidak** menyentuh Docker Engine), sehingga interval 5–10 detik tetap ringan — berbeda dengan `stats` container yang memblokir ±1 detik per container.
+5. **Polling hanya hidup selama halaman `/monitor` terbuka**: interval dijeda saat tab tidak terlihat (`visibilitychange`, disegarkan sekali saat kembali terlihat) dan dimatikan saat halaman ditinggalkan (`pagehide`) — tidak ada permintaan latar belakang. Tabel container **tidak** ikut dipoll; dimuat ulang lewat tombol **Refresh** (`overview`).
+6. Data **tidak persisten** (tanpa field baru di `apps.json`) dan tidak ada state/cache di server.
+
+**Hak akses (bertingkat, ditegakkan di sisi server):**
+- **Admin** — semua container di host, termasuk container di luar app dashboard (ditandai *eksternal*).
+- **User lain** — hanya container milik app yang boleh diakses (aturan sama dengan `/volumes`, `/database`, `/networks`); container eksternal tidak dikirim ke UI. Angka host tetap tampil sebagai ringkasan.
+
+**Implementasi:** `MonitorController` (mediator) → `Monitor\ResourceCollector` (aturan visibilitas + perakitan baris) → `System\HostUsage` (`/proc`) + `Docker\ContainerStats` (rumus) + `DockerClient::containersOverview()`.
+
+**Catatan performa:** `stats?stream=false` memblokir ±1 detik per container, sedangkan handler Guzzle default (`CurlHandler`) serial. `DockerClient::containersOverview()` memakai `CurlMultiHandler` sehingga seluruh container diambil **paralel** (terukur 19 container ±2,5 detik, bukan ±19 detik); kegagalan satu container tidak menggagalkan yang lain.
 
 ## 8e. Search / Filter / Pagination Daftar App
 
@@ -634,6 +648,9 @@ LOGIN_LOCKOUT_MINUTES=15    # durasi lockout setelah percobaan gagal
 SITES_PER_PAGE=20           # pagination daftar app (§8e)
 BACKUP_ENABLED=true         # backup otomatis data & config (§8g)
 BACKUP_RETENTION=20         # jumlah file backup yang dipertahankan per jenis
+HOST_PROC_PATH=/proc        # sumber metrik "total VM" (§8d; ubah bila host pakai lxcfs)
+MONITOR_STATS_TIMEOUT=20    # timeout satu siklus stats container (detik)
+MONITOR_POLL_MS=7000        # interval polling metrik host di /monitor (ms, 0 = mati)
 ```
 
 ## 10. Struktur Direktori (usulan)

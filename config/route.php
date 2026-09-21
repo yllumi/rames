@@ -17,6 +17,7 @@ use Webman\Route;
 use app\controller\AuthController;
 use app\controller\IndexController;
 use app\controller\LogController;
+use app\controller\MonitorController;
 use app\controller\NetworkController;
 use app\controller\NginxController;
 use app\controller\AppController;
@@ -110,6 +111,12 @@ Route::get('/networks/{id}', [NetworkController::class, 'detail']);
 Route::post('/networks/{id}/connect', [NetworkController::class, 'connect']);
 Route::post('/networks/{id}/disconnect', [NetworkController::class, 'disconnect']);
 Route::post('/networks/{id}/delete', [NetworkController::class, 'delete']);
+
+// Monitoring resource container & VM (halaman global; nav topbar)
+Route::get('/monitor', [MonitorController::class, 'index']);
+Route::get('/api/monitor/overview', [MonitorController::class, 'overview']);
+// Snapshot host saja — dipoll halaman /monitor selama terbuka (tanpa Engine)
+Route::get('/api/monitor/host', [MonitorController::class, 'host']);
 
 /*
 |--------------------------------------------------------------------------

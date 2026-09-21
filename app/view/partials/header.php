@@ -32,6 +32,9 @@
             <a class="nav-link <?= ($active ?? '') === 'networks' ? 'active' : '' ?>" href="/networks">Networks</a>
           </li>
           <li class="nav-item">
+            <a class="nav-link <?= ($active ?? '') === 'monitor' ? 'active' : '' ?>" href="/monitor">Monitor</a>
+          </li>
+          <li class="nav-item">
             <a class="nav-link <?= ($active ?? '') === 'database' ? 'active' : '' ?>" href="/database">Database</a>
           </li>
           <li class="nav-item">

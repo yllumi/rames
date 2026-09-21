@@ -59,6 +59,19 @@ return [
     'docker_socket' => getenv('DOCKER_SOCKET') ?: '/var/run/docker.sock',
     'docker_binary' => getenv('DOCKER_BINARY') ?: 'docker',
 
+    // Monitoring resource container & VM (SPECS §8d).
+    // Path pseudo-filesystem host untuk metrik VM. Di dalam container, `/proc`
+    // SUDAH menampilkan nilai host (Docker tidak men-namespace-kan stat/meminfo);
+    // arahkan ke mount host eksplisit bila host memakai lxcfs (nilai /proc jadi
+    // ter-scope container) sehingga "total VM" tetap benar.
+    'host_proc_path' => getenv('HOST_PROC_PATH') ?: '/proc',
+    // Timeout satu siklus pengambilan stats (semua container diambil paralel)
+    'monitor_stats_timeout' => (int) (getenv('MONITOR_STATS_TIMEOUT') ?: 20),
+    // Interval polling metrik host di halaman /monitor (milidetik, 0 = matikan).
+    // Hanya membaca /proc (file lokal) sehingga 5–10 detik tetap ringan; tabel
+    // container tetap dimuat ulang manual lewat tombol Refresh.
+    'monitor_poll_ms' => (int) (getenv('MONITOR_POLL_MS') ?: 7000),
+
     // Terminal container (docker exec interaktif & one-shot run command)
     'terminal_script_bin' => getenv('TERMINAL_SCRIPT_BIN') ?: 'script',   // PTY wrapper (util-linux)
     'terminal_run_timeout' => (int) (getenv('TERMINAL_RUN_TIMEOUT') ?: 120),   // detik, run command one-shot
