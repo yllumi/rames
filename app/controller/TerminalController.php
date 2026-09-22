@@ -10,8 +10,9 @@ use app\library\Docker\DockerExec;
 use app\library\Storage\AppStore;
 use RuntimeException;
 use support\Request;
+use Webman\Http\Response;
 use Workerman\Connection\TcpConnection;
-use Workerman\Protocols\Http\Response;
+use Workerman\Protocols\Http\Chunk;
 use Workerman\Protocols\Http\ServerSentEvents;
 use Workerman\Timer;
 
@@ -27,9 +28,55 @@ use Workerman\Timer;
  *  - input : POST (menulis ke FIFO stdin sesi).
  * Sesi hidup sebagai proses detached + state di file (runtime/terminal/{token}/),
  * sehingga SSE dan POST boleh dilayani worker HTTP yang berbeda.
+ *
+ * Siklus hidup: koneksi SSE boleh drop kapan saja (proxy memutus koneksi lama,
+ * browser reconnect otomatis, laptop sleep, dsb.) dan sesi TETAP hidup. Sesi
+ * berakhir lewat `POST .../close`, proses yang keluar, atau prune di `DockerExec`
+ * (TTL / idle). Ini penting: EventSource menyambung ulang otomatis, jadi bila drop
+ * koneksi = sesi ditutup, setiap reconnect (dan setiap input) akan menjawab 404.
  */
 class TerminalController
 {
+    /**
+     * Header respons SSE — satu sumber agar semua jalur stream konsisten.
+     *
+     * PENTING: respons HARUS dibuat sebagai `Webman\Http\Response`. `App::send()`
+     * melakukan `$response instanceof Webman\Http\Response` lalu memakai jalur
+     * streaming (tanpa `close()`) hanya bila `Transfer-Encoding: chunked`.
+     * `Workerman\Protocols\Http\Response` adalah INDUK dari kelas itu, sehingga
+     * objeknya GAGAL cek `instanceof` → koneksi ditutup seketika (header SSE
+     * terkirim, nol event) — baik saat request ber-`Connection: close`/HTTP/1.0
+     * (default `proxy_http_version 1.0` nginx) maupun akses langsung.
+     */
+    private const SSE_HEADERS = [
+        'Content-Type' => 'text/event-stream',
+        'Cache-Control' => 'no-cache',
+        'Connection' => 'keep-alive',
+        'Transfer-Encoding' => 'chunked',
+        'X-Accel-Buffering' => 'no',
+    ];
+
+    /** Interval polling output sesi (detik). */
+    private const SSE_TICK = 0.15;
+
+    /** Jeda reconnect EventSource (milidetik) — lebih cepat dari default browser (3 dtk). */
+    private const SSE_RETRY_MS = 1000;
+
+    /** Heartbeat + penanda aktivitas sesi (detik). */
+    private const SSE_HEARTBEAT_SECONDS = 15;
+
+    /**
+     * Umur maksimum SATU koneksi SSE (detik) sebelum siklus ditutup dan klien
+     * menyambung ulang. Proxy yang men-buffer respons (nginx `proxy_buffering`,
+     * Cloudflare) baru mengalirkan body saat respons SELESAI — siklus pendek
+     * memastikan output tetap sampai ke browser, sekaligus menghindari
+     * `proxy_read_timeout` (default nginx 60 detik).
+     */
+    private const SSE_CYCLE_SECONDS = 55;
+
+    /** Detik tanpa output sama sekali sebelum sesi dianggap macet. */
+    private const SSE_STALL_SECONDS = 10;
+
     // ==================================================================
     // Buka sesi interaktif
     // ==================================================================
@@ -66,11 +113,9 @@ class TerminalController
         $this->requireApp($id);
 
         $exec = new DockerExec();
-        $session = $exec->sessionInfo($token, $id);
-        if ($session === null) {
-            return json(['code' => 404, 'msg' => 'Sesi terminal tidak ditemukan atau sudah berakhir.']);
+        if ($exec->sessionInfo($token, $id) === null) {
+            return $this->sseGone($request, 'Sesi terminal tidak ditemukan atau sudah berakhir.');
         }
-        $createdAt = (int) ($session['created_at'] ?? time());
 
         $connection = $request->connection;
         if (!$connection instanceof TcpConnection) {
@@ -78,48 +123,90 @@ class TerminalController
         }
 
         // Kirim header SSE; body di-stream berikutnya lewat $connection->send().
-        $connection->send(new Response(200, [
-            'Content-Type' => 'text/event-stream',
-            'Cache-Control' => 'no-cache',
-            'Connection' => 'keep-alive',
-            'X-Accel-Buffering' => 'no',
-        ], ''));
+        // Dikembalikan sebagai response (bukan `false`) supaya Webman memakai jalur
+        // streaming chunked yang tidak menutup koneksi — lihat catatan di SSE_HEADERS.
+        $response = new Response(200, self::SSE_HEADERS, '');
 
         $timerId = null;
-        $cleanup = function () use (&$timerId, $exec, $token) {
+        // Koneksi drop BUKAN akhir sesi: proxy (nginx/Cloudflare) boleh memutus
+        // koneksi lama dan EventSource menyambung ulang otomatis. Sesi dibiarkan
+        // hidup (lihat DockerExec::pruneStale) — kalau tidak, reconnect pertama
+        // akan 404 dan terminal mati permanen.
+        $cleanup = function () use (&$timerId) {
             if ($timerId !== null) {
                 Timer::del($timerId);
                 $timerId = null;
             }
-            $exec->closeSession($token);
+        };
+        /** Kirim satu frame SSE sebagai potongan chunked. */
+        $sendEvent = static function (array $event) use ($connection): void {
+            $connection->send(new Chunk((string) new ServerSentEvents($event)));
+        };
+        /** Tutup aliran chunked dengan benar (potongan 0\r\n\r\n) lalu koneksi. */
+        $finish = static function () use ($connection, $cleanup, $sendEvent): void {
+            $sendEvent(['event' => 'close', 'data' => '']);
+            $connection->send(new Chunk(''));
+            $cleanup();
+            $connection->close();
         };
 
-        $timerId = Timer::add(0.15, function () use ($connection, $exec, $token, $cleanup, $createdAt) {
+        $attachedAt = time();
+        $lastHeartbeat = time();
+        $sentRetry = false;
+        $timerId = Timer::add(self::SSE_TICK, function () use ($connection, $exec, $token, $cleanup, $finish, $sendEvent, $attachedAt, &$lastHeartbeat, &$sentRetry) {
             if ($connection->getStatus() !== TcpConnection::STATUS_ESTABLISHED) {
                 $cleanup();
-                $connection->close();
                 return;
             }
             try {
+                if (!$sentRetry) {
+                    // Header SSE baru terkirim Webman SETELAH handler kembali, jadi
+                    // frame apa pun dari dalam handler akan mendahului header — kirim
+                    // di tick pertama (EventSource memakai nilai ini untuk reconnect).
+                    $sentRetry = true;
+                    $sendEvent(['retry' => self::SSE_RETRY_MS]);
+                }
+
+                $now = time();
                 $chunk = $exec->readOutput($token);
                 if ($chunk !== '') {
-                    // Kirim objek ServerSentEvents (bukan string) — Workerman meng-encode
-                    // string biasa menjadi HTTP response penuh yang akan merusak aliran SSE.
                     $exec->markOutput($token);
-                    $connection->send(new ServerSentEvents(['event' => 'output', 'data' => base64_encode($chunk)]));
+                    $sendEvent(['event' => 'output', 'data' => base64_encode($chunk)]);
                     return;
                 }
+
+                if ($now - $lastHeartbeat >= self::SSE_HEARTBEAT_SECONDS) {
+                    $lastHeartbeat = $now;
+                    // Sesi yang masih di-stream ditandai aktif → tidak dibuang prune
+                    // milik worker lain sebagai "sesi terlantar".
+                    $exec->touchActivity($token);
+                    // Komentar SSE (diabaikan EventSource): menjaga koneksi hidup dan
+                    // mendeteksi klien yang sudah hilang lewat error tulis socket.
+                    $sendEvent(['' => 'keepalive']);
+                }
+
                 if (!$exec->isRunning($token)) {
-                    $connection->send(new ServerSentEvents(['event' => 'close', 'data' => '']));
-                    $cleanup();
-                    $connection->close();
+                    $exec->closeSession($token);
+                    $finish();
                     return;
                 }
+
                 // Deteksi sesi macet: proses hidup tapi TIDAK pernah memproduksi output
                 // (mis. race saat spawn) — hentikan agar tidak menggantung selamanya.
-                if (!$exec->hasOutput($token) && (time() - $createdAt) > 10) {
-                    $connection->send(new ServerSentEvents(['event' => 'error', 'data' => 'Sesi terminal macet (tidak ada output). Sesi ditutup, silakan buka ulang.']));
-                    $connection->send(new ServerSentEvents(['event' => 'close', 'data' => '']));
+                // Diukur per-koneksi agar reconnect tidak langsung menuduh macet.
+                if (!$exec->hasOutput($token) && ($now - $attachedAt) > self::SSE_STALL_SECONDS) {
+                    $sendEvent(['event' => 'error', 'data' => 'Sesi terminal macet (tidak ada output). Sesi ditutup, silakan buka ulang.']);
+                    $exec->closeSession($token);
+                    $finish();
+                    return;
+                }
+
+                // Siklus koneksi berakhir: klien menyambung ulang (retry) dan melanjutkan
+                // sesi yang sama. Sesi TIDAK ditutup dan output yang tertahan di FIFO
+                // dikirim pada sambungan berikutnya.
+                if (($now - $attachedAt) >= self::SSE_CYCLE_SECONDS) {
+                    $sendEvent(['event' => 'cycle', 'data' => '']);
+                    $connection->send(new Chunk(''));
                     $cleanup();
                     $connection->close();
                 }
@@ -131,9 +218,7 @@ class TerminalController
 
         $connection->onClose = $cleanup;
 
-        // false → webman tidak mengirim body response tambahan; koneksi dijaga tetap
-        // terbuka oleh timer di atas.
-        return false;
+        return $response;
     }
 
     // ==================================================================
@@ -152,7 +237,9 @@ class TerminalController
         if (strlen($data) > 65536) {
             return json(['code' => 400, 'msg' => 'Input terlalu besar.']);
         }
-        $exec->writeInput($token, $data);
+        if ($data !== '' && !$exec->writeInput($token, $data)) {
+            return json(['code' => 410, 'msg' => 'Sesi terminal sudah berakhir.']);
+        }
         return json(['code' => 0]);
     }
 
@@ -222,6 +309,33 @@ class TerminalController
         AppAccess::require('terminal', $app, current_user());
 
         return $app;
+    }
+
+    /**
+     * Balas permintaan stream sebagai aliran SSE berisi satu event `gone`, lalu tutup.
+     *
+     * Endpoint ini hanya dipakai `EventSource`, yang otomatis menyambung ulang saat
+     * body respons bukan `text/event-stream` — respons 404 JSON justru memicu badai
+     * retry plus error "MIME type is not text/event-stream" di console browser, tanpa
+     * cara klien tahu bahwa sesinya sudah tidak ada. Dengan balasan SSE, klien bisa
+     * berhenti sendiri dan menampilkan pesan yang jelas.
+     */
+    private function sseGone(Request $request, string $message)
+    {
+        $connection = $request->connection;
+        if (!$connection instanceof TcpConnection) {
+            return json(['code' => 404, 'msg' => $message]);
+        }
+        // Pola sama dengan stream(): header chunked + frame SSE sebagai chunk + penutup.
+        $connection->send(new Response(200, self::SSE_HEADERS, ''));
+        $connection->send(new Chunk((string) new ServerSentEvents(['retry' => self::SSE_RETRY_MS])));
+        $connection->send(new Chunk((string) new ServerSentEvents(['event' => 'gone', 'data' => $message])));
+        $connection->send(new Chunk(''));
+        $connection->close();
+
+        // Koneksi sudah ditutup sendiri; `false` memastikan Webman tidak menambah
+        // respons kedua (percabangan close() di App::send() no-op saat status CLOSING).
+        return false;
     }
 
     private function audit(array $app, string $container, string $action): void

@@ -1310,7 +1310,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 <script src="/vendor/xterm/xterm.js"></script>
 <script src="/vendor/xterm/addons/fit/fit.js"></script>
-<script src="/js/app-terminal.js?v=4"></script>
+<script src="/js/app-terminal.js?v=5"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>
 

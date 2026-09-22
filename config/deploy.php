@@ -76,6 +76,9 @@ return [
     'terminal_script_bin' => getenv('TERMINAL_SCRIPT_BIN') ?: 'script',   // PTY wrapper (util-linux)
     'terminal_run_timeout' => (int) (getenv('TERMINAL_RUN_TIMEOUT') ?: 120),   // detik, run command one-shot
     'terminal_session_ttl' => (int) (getenv('TERMINAL_SESSION_TTL') ?: 3600),  // detik, umur maks sesi interaktif
+    // Sesi tanpa klien/aktivitas (mis. browser ditutup tanpa POST /close) dibuang
+    // setelah ini — sesi yang sedang di-stream SSE terus menandai aktivitas.
+    'terminal_idle_timeout' => (int) (getenv('TERMINAL_IDLE_TIMEOUT') ?: 900),  // detik, idle maks sesi interaktif
     'terminal_max_sessions' => (int) (getenv('TERMINAL_MAX_SESSIONS') ?: 20),  // batas sesi aktif serentak
 
     // Database manager (phpMyAdmin mini) — koneksi PDO ke MySQL/MariaDB container

@@ -21,14 +21,29 @@ use RuntimeException;
  *  - Container yang boleh di-exec divalidasi milik app di controller (tidak diterima mentah).
  *  - Token sesi acak (16 byte) — tak tertebak, bertindak sebagai capability.
  *  - Shell dibatasi whitelist.
+ *
+ * Siklus hidup sesi: sesi TIDAK terikat pada satu koneksi SSE. Koneksi SSE boleh
+ * drop (proxy memutus koneksi lama, browser reconnect otomatis, dsb.) dan sesi
+ * tetap hidup sampai: (a) `POST .../close` dari klien, (b) prosesnya berakhir,
+ * (c) `pruneStale()` membuangnya karena lewat TTL maksimum (`terminal_session_ttl`)
+ * atau lama tanpa aktivitas/klien (`terminal_idle_timeout`).
  */
 class DockerExec
 {
+    /**
+     * Jeda (detik) proteksi untuk direktori sesi yang baru dibuat: `open()`
+     * menulis metadata setelah proses di-spawn, sehingga worker lain yang
+     * menjalankan `pruneStale()` di jendela tersebut tidak boleh menganggapnya
+     * sampah.
+     */
+    private const PRUNE_GRACE_SECONDS = 30;
+
     private string $dockerBinary;
     private string $runtimeDir;
     private string $scriptBinary;
     private int $runTimeout;
     private int $sessionTtl;
+    private int $idleTimeout;
     private int $maxSessions;
 
     /** @var array<int,string> shell yang boleh dipakai sesi interaktif */
@@ -41,6 +56,7 @@ class DockerExec
         $this->scriptBinary = $scriptBinary ?? (string) config('deploy.terminal_script_bin', 'script');
         $this->runTimeout = (int) config('deploy.terminal_run_timeout', 120);
         $this->sessionTtl = (int) config('deploy.terminal_session_ttl', 3600);
+        $this->idleTimeout = (int) config('deploy.terminal_idle_timeout', 900);
         $this->maxSessions = (int) config('deploy.terminal_max_sessions', 20);
     }
 
@@ -194,7 +210,7 @@ class DockerExec
         } catch (\Throwable $e) {
             $creator = '?';
         }
-        file_put_contents($dir . '/session.json', json_encode([
+        $meta = json_encode([
             'token' => $token,
             'app_id' => $appId,
             'container' => $container,
@@ -203,8 +219,23 @@ class DockerExec
             'pid' => $pid,
             'created_at' => time(),
             'created_by' => $creator,
-        ], JSON_UNESCAPED_UNICODE), LOCK_EX);
-        file_put_contents($dir . '/pid', (string) $pid, LOCK_EX);
+        ], JSON_UNESCAPED_UNICODE);
+        // Metadata WAJIB tersimpan: tanpa session.json setiap request lanjutan
+        // (stream/input/close) akan menjawab 404 "sesi tidak ditemukan" — kegagalan
+        // tulis harus muncul sebagai error nyata, bukan sesi hantu.
+        if ($meta === false || @file_put_contents($dir . '/session.json', $meta, LOCK_EX) === false) {
+            $this->killProcessTree($pid);
+            $this->removeDir($dir);
+            throw new RuntimeException('Gagal menyimpan metadata sesi terminal (direktori tidak bisa ditulis?).');
+        }
+        if (@file_put_contents($dir . '/pid', (string) $pid, LOCK_EX) === false) {
+            $this->killProcessTree($pid);
+            $this->removeDir($dir);
+            throw new RuntimeException('Gagal menyimpan PID sesi terminal (direktori tidak bisa ditulis?).');
+        }
+        // Sesi baru langsung ditandai aktif agar prune di worker lain tidak
+        // menganggapnya terlantar sebelum penanda pertama dari stream/input tiba.
+        $this->touchActivity($token);
 
         // SIGCHLD di-ignore agar proc anak (yang tidak pernah kita proc_close) tidak
         // menjadi zombie — kernel otomatis reap (pola sama dengan worker deploy).
@@ -255,6 +286,9 @@ class DockerExec
             $written += $n;
         }
         fclose($fh);
+        if ($written > 0) {
+            $this->touchActivity($token);
+        }
         return $written > 0;
     }
 
@@ -285,6 +319,17 @@ class DockerExec
     public function markOutput(string $token): void
     {
         @touch($this->runtimeDir . '/' . $token . '/output.seen');
+        $this->touchActivity($token);
+    }
+
+    /**
+     * Tandai sesi masih ada yang mengurusinya (klien SSE terpasang / ada I/O).
+     * Dipakai `pruneStale()` untuk membuang sesi yang ditinggalkan tanpa
+     * mematikan sesi yang sedang dipakai.
+     */
+    public function touchActivity(string $token): void
+    {
+        @touch($this->runtimeDir . '/' . $token . '/activity');
     }
 
     /**
@@ -348,22 +393,55 @@ class DockerExec
     }
 
     /**
-     * Bersihkan sesi yang sudah mati atau melewati TTL (dipanggil saat membuka sesi baru).
+     * Bersihkan sesi yang sudah mati atau tidak lagi diurus klien (dipanggil lazily
+     * saat membuka sesi baru).
+     *
+     * Sesi dibuang bila salah satu terpenuhi:
+     *  - prosesnya tidak lagi hidup (shell keluar / gagal spawn),
+     *  - umur sesi melewati `terminal_session_ttl`,
+     *  - tidak ada aktivitas (stream terpasang / input / output) melebihi
+     *    `terminal_idle_timeout` — mis. browser ditutup tanpa `POST .../close`.
+     *
+     * Direktori yang baru dibuat SELALU dilindungi `PRUNE_GRACE_SECONDS`: `open()`
+     * menulis metadata setelah proses di-spawn, jadi ada jendela singkat di mana
+     * direktori sudah ada tapi `session.json`/`pid` belum. Tanpa proteksi itu,
+     * prune dari worker lain bisa menghapus sesi yang baru dibuka — dan semua
+     * request lanjutan (stream/input/close) menjawab 404.
+     *
+     * @return array<int,string> token sesi yang dibersihkan
      */
-    private function pruneStale(): void
+    public function pruneStale(): array
     {
         if (!is_dir($this->runtimeDir)) {
-            return;
+            return [];
         }
         $now = time();
+        $pruned = [];
         foreach (glob($this->runtimeDir . '/*', GLOB_ONLYDIR) ?: [] as $dir) {
             $token = basename($dir);
+            $mtime = @filemtime($dir);
+            $mtime = $mtime === false ? $now : $mtime;
+            if ($now - $mtime < self::PRUNE_GRACE_SECONDS) {
+                continue;
+            }
             $meta = $this->metaOf($token);
-            $age = $now - (int) ($meta['created_at'] ?? 0);
-            if (!$this->isRunning($token) || $age > $this->sessionTtl) {
+            $createdAt = (int) ($meta['created_at'] ?? 0);
+            if ($createdAt <= 0) {
+                // Metadata rusak/absen → pakai mtime direktori, JANGAN anggap
+                // "lahir tahun 1970" (dulu itu membuat sesi baru ikut terhapus).
+                $createdAt = $mtime;
+            }
+            $activity = @filemtime($dir . '/activity');
+            $activity = $activity === false ? $mtime : $activity;
+
+            $expired = ($now - $createdAt) > $this->sessionTtl;
+            $idle = ($now - $activity) > $this->idleTimeout;
+            if (!$this->isRunning($token) || $expired || $idle) {
                 $this->closeSession($token);
+                $pruned[] = $token;
             }
         }
+        return $pruned;
     }
 
     private function assertCapacity(): void
@@ -376,9 +454,15 @@ class DockerExec
 
     /**
      * Hentikan seluruh tree proses (anak dulu, lalu induk) — TERM lalu KILL.
+     *
+     * WAJIB dipanggil dengan PID > 0: `posix_kill(0, ...)` menandai SELURUH
+     * process group (termasuk worker Webman pemanggilnya).
      */
     private function killProcessTree(int $pid): void
     {
+        if ($pid <= 0) {
+            return;
+        }
         $children = $this->childrenOf($pid);
         foreach ($children as $child) {
             $this->killProcessTree($child);

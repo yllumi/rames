@@ -49,8 +49,12 @@
 
   var term = null;
   var fitAddon = null;
-  var termState = { appId: '', container: '', token: null, es: null, connected: false };
+  var termState = { appId: '', container: '', shell: '', token: null, es: null, connected: false };
   var focusTimer = null;
+  // Kegagalan sambungan stream berturut-turut, dan penanda bahwa penutupan koneksi
+  // berikutnya memang diminta server (akhir siklus SSE) — bukan gangguan jaringan.
+  var streamFailCount = 0;
+  var streamCycleExpected = false;
 
   // Batch input keyboard: ketikan diakumulasi lalu dikirim dalam SATU POST per
   // ~30ms — menghindari 1 HTTP request per keystroke (yang masing-masing sukses
@@ -124,8 +128,15 @@
     post('/api/apps/' + encodeURIComponent(termState.appId) + '/terminal/' + encodeURIComponent(termState.token) + '/input', { data: cmd });
   }
 
+  function streamLabel() {
+    return (termState.shell || 'sh') + ' @ ' + termState.container;
+  }
+
   function connectStream(appId, token) {
     closeStream();
+    streamFailCount = 0;
+    streamCycleExpected = false;
+
     var es = new EventSource('/api/apps/' + encodeURIComponent(appId) + '/terminal/' + encodeURIComponent(token) + '/stream');
     termState.es = es;
 
@@ -135,22 +146,56 @@
       term.write(decodeB64(ev.data));
     });
 
-    es.addEventListener('error', function (ev) {
-      if (!term) return;
-      term.write('\r\n\x1b[31m' + (ev.data || 'Terjadi kesalahan pada terminal.') + '\x1b[0m\r\n');
+    // Server menutup koneksi setiap beberapa puluh detik (siklus) supaya proxy yang
+    // men-buffer respons ikut mengalirkan output; EventSource menyambung ulang ke
+    // sesi yang SAMA. Ini normal, jangan tampilkan sebagai error.
+    es.addEventListener('cycle', function () { streamCycleExpected = true; });
+
+    // Sesi sudah tidak ada di server (ditutup di tempat lain / kadaluarsa) — berhenti,
+    // karena menyambung ulang hanya akan ditolak.
+    es.addEventListener('gone', function (ev) {
+      termState.connected = false;
+      termState.token = null;
+      showStatus('text-warning', 'Sesi berakhir');
+      if (term) term.write('\r\n\x1b[33m' + (ev.data || 'Sesi terminal berakhir.') + '\x1b[0m\r\n');
+      closeStream();
     });
 
     es.addEventListener('close', function () {
       termState.connected = false;
+      termState.token = null;
       showStatus('text-warning', 'Sesi selesai');
       if (term) term.write('\r\n\x1b[33m[session selesai]\x1b[0m\r\n');
       closeStream();
     });
 
-    es.onopen = function () { termState.connected = true; };
-    es.onerror = function () {
-      // EventSource reconnect otomatis; sesi tetap hidup sampai server menutup stream.
+    // Event 'error' dipakai untuk DUA hal: event bernama `error` dari server (punya
+    // ev.data) dan kegagalan koneksi (Event.error tanpa data). Yang terakhir ini
+    // normal terjadi saat proxy memutus koneksi lama / siklus berakhir, jadi hanya
+    // dilaporkan setelah beberapa percobaan berturut-turut gagal.
+    es.addEventListener('error', function (ev) {
+      if (typeof ev.data === 'string' && ev.data !== '') {
+        if (term) term.write('\r\n\x1b[31m' + ev.data + '\x1b[0m\r\n');
+        return;
+      }
       termState.connected = false;
+      if (streamCycleExpected) { streamCycleExpected = false; return; }
+      if (es.readyState === EventSource.CLOSED) return;
+      streamFailCount++;
+      if (streamFailCount >= 5) {
+        showStatus('text-danger', 'Koneksi terputus');
+        if (term) term.write('\r\n\x1b[31mKoneksi ke server terminal terputus. Tutup lalu buka ulang terminal.\x1b[0m\r\n');
+        closeStream();
+        return;
+      }
+      showStatus('text-warning', 'Menyambung ulang ...');
+    });
+
+    es.onopen = function () {
+      termState.connected = true;
+      streamFailCount = 0;
+      streamCycleExpected = false;
+      showStatus('text-success', 'Terhubung — ' + streamLabel());
     };
   }
 
@@ -182,6 +227,7 @@
 
     termState.appId = p.appId;
     termState.container = p.container;
+    termState.shell = p.shell || 'sh';
     termState.token = null;
     termState.connected = false;
 
@@ -207,7 +253,8 @@
         return;
       }
       termState.token = d.data.token;
-      showStatus('text-success', 'Terhubung — ' + (d.data.shell || p.shell) + ' @ ' + p.container);
+      termState.shell = d.data.shell || p.shell || 'sh';
+      showStatus('text-success', 'Terhubung — ' + d.data.shell + ' @ ' + p.container);
       connectStream(p.appId, d.data.token);
       if (term) term.focus();
       setTimeout(sendResize, 300);
