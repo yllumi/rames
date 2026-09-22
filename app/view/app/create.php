@@ -1,10 +1,13 @@
 <?php $pageTitle = 'Create App'; $active = 'apps'; ?>
 <?php
-// Dua mode create app:
-//   git     — clone repo yang berisi docker-compose.yml (default)
-//   compose — paste/upload docker-compose.yml + file pendukung (tanpa repo Git),
-//             untuk app dengan image prebuilt (tanpa build context).
-$mode = ($mode ?? 'git') === 'compose' ? 'compose' : 'git';
+// Tiga mode create app:
+//   git      — clone repo yang berisi docker-compose.yml (default)
+//   compose  — paste/upload docker-compose.yml + file pendukung (tanpa repo Git),
+//              untuk app dengan image prebuilt (tanpa build context).
+//   template — galeri template app siap-pakai (compose prebuilt yang sudah
+//              disiapkan di folder `templates/<slug>/`, SPECS.md §7.2b).
+$mode = in_array(($mode ?? 'git'), ['compose', 'template'], true) ? (string) $mode : 'git';
+$templates = $templates ?? [];
 
 // State tambahan: saat clone repo private gagal, form dirender ulang bersama
 // public key deploy key supaya user bisa menambahkannya ke repo lalu coba lagi.
@@ -24,7 +27,7 @@ $composeError = $compose_error ?? null;
 <div class="page-head mb-4">
   <div>
     <h1 class="h3 mb-1">Create App</h1>
-    <p class="text-muted mb-0">Pilih sumber app: clone repo Git, atau paste/upload <code>docker-compose.yml</code>.</p>
+    <p class="text-muted mb-0">Pilih sumber app: clone repo Git, paste/upload <code>docker-compose.yml</code>, atau pakai template siap-pakai.</p>
   </div>
 </div>
 
@@ -34,6 +37,9 @@ $composeError = $compose_error ?? null;
   </li>
   <li class="nav-item" role="presentation">
     <a class="nav-link <?= $mode === 'compose' ? 'active' : '' ?>" href="/apps/create?mode=compose">Compose (paste / upload)</a>
+  </li>
+  <li class="nav-item" role="presentation">
+    <a class="nav-link <?= $mode === 'template' ? 'active' : '' ?>" href="/apps/create?mode=template">Template</a>
   </li>
 </ul>
 
@@ -92,6 +98,83 @@ $composeError = $compose_error ?? null;
     </form>
   </div>
 </div>
+
+<?php elseif ($mode === 'template'): ?>
+<div class="mb-3">
+  <p class="text-muted small mb-0">
+    Template adalah app <strong>docker-ready</strong> yang sudah disiapkan (image prebuilt, port, dan
+    variabel environment-nya). Pilih satu kartu → isi nama app &amp; variabel → <strong>Deploy</strong>.
+    Host port otomatis dicari yang bebas, nama container otomatis berprefix nama app, dan app tetap
+    muncul di daftar seperti app biasa (bisa Stop/Rebuild/Delete, atur domain, terminal, dll).
+  </p>
+</div>
+
+<?php if ($templates === []): ?>
+<div class="card form-card">
+  <div class="card-body p-4">
+    <div class="alert alert-secondary mb-0" role="alert">
+      Belum ada template di folder <code>templates/</code>. Tambahkan satu direktori per template berisi
+      <code>template.yml</code> (metadata), <code>docker-compose.yml</code> (image prebuilt, tanpa <code>build:</code>),
+      dan folder <code>files/</code> bila ada file pendukung yang di-bind mount.
+    </div>
+  </div>
+</div>
+<?php else: ?>
+<div class="row g-3">
+  <?php foreach ($templates as $t): ?>
+  <div class="col-12 col-md-6 col-xl-4">
+    <div class="card h-100 form-card">
+      <div class="card-body d-flex flex-column">
+        <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+          <h2 class="h6 mb-0">
+            <?php if (!empty($t['icon'])): ?><span class="me-1"><?= e($t['icon']) ?></span><?php endif; ?>
+            <?= e($t['title']) ?>
+          </h2>
+          <span class="badge text-bg-secondary"><?= e($t['category']) ?></span>
+        </div>
+
+        <?php if (($t['description'] ?? '') !== ''): ?>
+        <p class="text-muted small"><?= e($t['description']) ?></p>
+        <?php endif; ?>
+
+        <?php if (!$t['valid']): ?>
+        <div class="alert alert-warning small mb-2" role="alert">
+          <strong>Template rusak:</strong> <?= e((string) $t['error']) ?>
+        </div>
+        <?php endif; ?>
+
+        <ul class="list-unstyled small text-muted mb-2">
+          <?php if (($t['image'] ?? '') !== ''): ?>
+          <li>Image: <span class="mono"><?= e($t['image']) ?></span></li>
+          <?php endif; ?>
+          <?php if (($t['ports'] ?? []) !== []): ?>
+          <li>Port: <span class="mono"><?= e(implode(', ', array_map('strval', $t['ports']))) ?></span></li>
+          <?php endif; ?>
+          <?php if (($t['primary']['service'] ?? '') !== ''): ?>
+          <li>Domain → <span class="mono"><?= e($t['primary']['service'] . ':' . $t['primary']['port']) ?></span></li>
+          <?php endif; ?>
+          <li><?= count($t['env']) ?> variabel environment</li>
+          <?php if (($t['files'] ?? []) !== []): ?>
+          <li><?= count($t['files']) ?> file pendukung</li>
+          <?php endif; ?>
+        </ul>
+
+        <div class="mt-auto d-flex gap-2 align-items-center">
+          <?php if ($t['valid']): ?>
+          <a class="btn btn-primary btn-sm" href="/apps/create/template/<?= e($t['slug']) ?>">Pilih &amp; Deploy</a>
+          <?php else: ?>
+          <button type="button" class="btn btn-secondary btn-sm" disabled>Perbaiki template dulu</button>
+          <?php endif; ?>
+          <?php if (($t['docs_url'] ?? '') !== ''): ?>
+          <a class="btn btn-outline-secondary btn-sm" href="<?= e($t['docs_url']) ?>" target="_blank" rel="noopener">Dokumentasi</a>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+  </div>
+  <?php endforeach; ?>
+</div>
+<?php endif; ?>
 
 <?php else: ?>
 <div class="card form-card">

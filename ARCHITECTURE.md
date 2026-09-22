@@ -88,7 +88,7 @@ Controller hanya **mediator**: tidak memuat logika bisnis, tidak menyimpan state
 | Controller | Tanggung jawab |
 |---|---|
 | `AuthController` | Login/logout, session, regenerasi session id (anti fixation), migrasi kepemilikan app lama (best-effort) |
-| `AppController` | Wizard create app, halaman detail & halaman versi (`/apps/{id}/versions`), aksi (rebuild/rollback/stop/start/delete dengan mode preserve/purge volume — tombol Delete di tab khusus "Hapus App"), set/hapus custom domain, kelola environment variable app (simpan + auto-recreate, import `.env.example`), kelola external network (shared network lintas-app via compose override), kelola **nama container** (prefix `container_name`, §5.12), kelola **kepemilikan & sharing** (tab Akses: tambah/ubah/cabut member, transfer owner), endpoint polling status. Daftar app difilter ke app yang boleh diakses user |
+| `AppController` | Wizard create app (**tiga mode**: clone repo Git, paste/upload compose, dan **template** galeri siap-pakai §5.1c), halaman detail & halaman versi (`/apps/{id}/versions`), aksi (rebuild/rollback/stop/start/delete dengan mode preserve/purge volume — tombol Delete di tab khusus "Hapus App"), set/hapus custom domain, kelola environment variable app (simpan + auto-recreate, import `.env.example`), kelola external network (shared network lintas-app via compose override), kelola **nama container** (prefix `container_name`, §5.12), kelola **kepemilikan & sharing** (tab Akses: tambah/ubah/cabut member, transfer owner), endpoint polling status. Daftar app difilter ke app yang boleh diakses user |
 | `TerminalController` | Terminal container (`docker exec`): buka sesi interaktif (open), stream output (SSE), kirim input, tutup sesi, dan one-shot run command; container divalidasi milik app **dan** user berhak (ability `terminal`); audit log ke `runtime/logs/terminal/` |
 | `LogController` | Log container app (`docker logs`) untuk popup modal di detail app: `GET /api/apps/{id}/logs?container=&tail=`; ability `logs` (Viewer ke atas); nama container selalu divalidasi milik app (`AppContainers::resolve`) sebelum menyentuh Engine |
 | `NginxController` | Halaman `/nginx` (global): status reload Nginx host terakhir + tombol Reload (khusus admin) — Nginx bersifat global (berlaku untuk semua app), di luar detail app |
@@ -151,6 +151,7 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `ContainerNames` | Override **nama container** (`container_name`) per app (§5.12): skema `{prefix}-{service}`, validasi prefix, tolak service ber-replica, deteksi bentrok nama se-host (`usedFromEngine`/`usedFromApps`), serta `sync()`/`writeOverride()`/`removeOverride()` untuk `docker-compose.override.names.yml`; murni statik |
 | `LocalDeployer` | Implementasi lokal: up → collect container → tulis config Nginx (termasuk custom domain & redirect subdomain); `rollback()` = fetch+checkout ref lama + rebuild, auto-restore ke versi aktif bila gagal, catat `deploy_history`; `applyEnv()` = tulis env + external networks + `up -d` (recreate); deploy/rebuild/rollback ikut `sync()` env + external networks |
 | `EnvManager` | Kelola environment variable app: tulis managed env file (`database/env/{name}.env`, dipakai compose via `--env-file`) + override env (`docker-compose.override.env.yml`, inject `environment:` literal ke semua service); parse `.env.example` untuk import; `sync()` idempoten |
+| **Template** | `TemplateCatalog` | Katalog **template app siap-pakai** (§5.1c) dari folder repo `templates/<slug>/` (`template.yml` + `docker-compose.yml` + `files/`): `all()`/`find()`/`require()` (template rusak dikembalikan dengan `valid=false` + pesan error agar galeri menampilkannya, bukan menghilangkannya), validasi (image prebuilt tanpa `build:`, tolak `container_name` & replica > 1 & `name:` level atas — nama container/project dikelola dashboard per app; wajib ada `ports:`; tiap `${VAR}` tanpa default wajib dideklarasikan di `env[]`), `materialize()` (tulis compose + file pendukung ke direktori app lewat `ComposeSource::store()`), serta `resolveEnv()`/`generatedKeys()` (nilai input → default → auto-generate rahasia → tolak bila wajib). Instance-based seperti `EnvManager` (path bisa di-override → mudah diuji) |
 | `NetworkManager` | Kelola external network app: tulis `docker-compose.override.networks.yml` (deklarasi `external: true` + `networks: [default, <ext>]` ke semua service; merge compose `networks` union); `sync()` idempoten; dipanggil controller & `LocalDeployer` agar file konsisten dengan `apps.json` |
 | | `DeployerFactory` | Satu-satunya titik pembuatan `DeployerInterface` |
 
@@ -169,7 +170,8 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 ### 4.5 Storage
 
 - `database/auth.json` — array user (id, username, password_hash, **role** `admin|member`, created_at). Berkas lama tanpa `role` dibaca sebagai user pertama = admin (tanpa menulis ulang berkas).
-- `database/apps.json` — array app (struktur lengkap di SPECS §7.1): id, name, **source** (`git` default bila absen | `compose`), **owner_id**, **members** (map userId → {role, added_at, added_by}, SPECS §7.7), subdomain, repo_url, branch, local_path, primary_service, **container_prefix** (prefix nama container, SPECS §7.6a), status, compose_files, auth_method, ssh_key, containers, timestamp, env (map KEY=value, SPECS §7.6).
+- `database/apps.json` — array app (struktur lengkap di SPECS §7.1): id, name, **source** (`git` default bila absen | `compose`), **template** (`{slug,title}` untuk app hasil template §5.1c, null untuk lain), **owner_id**, **members** (map userId → {role, added_at, added_by}, SPECS §7.7), subdomain, repo_url, branch, local_path, primary_service, **container_prefix** (prefix nama container, SPECS §7.6a), status, compose_files, auth_method, ssh_key, containers, timestamp, env (map KEY=value, SPECS §7.6).
+- `templates/<slug>/` — definisi template create app (§5.1c): `template.yml` (metadata + deklarasi env), `docker-compose.yml` (image prebuilt), `files/` (file pendukung). Ikut versi repo (bukan data runtime) → dikelola admin/dev lewat git.
 - `database/keys/` — pasangan kunci SSH (deploy key per app, chmod 0600) + `known_hosts`; private key tidak pernah keluar server.
 - `database/env/{name}.env` — managed env file per app (chmod 0600); dibaca docker compose via `--env-file`.
 - Semua mutasi lewat `JsonStore->update()` dengan `flock` → aman dari race condition.
@@ -224,6 +226,32 @@ Cara kedua membuat app (SPECS §7.2a), untuk aplikasi yang memakai image **prebu
 4. Perubahan sumber berikutnya lewat tab **Compose** di detail app (ability `compose`, Operator ke atas) — lihat §5.2.
 
 > **Bind mount**: `LocalDeployer::upCompose()` memanggil `ComposeBinds::ensure()` sebelum `up` — direktori source bind yang belum ada (mis. `device: ${PWD}/.hermes` atau `- ./data:/data`) dibuat otomatis di direktori app; bila `up` tetap gagal, pesan error diberi daftar source yang belum siap. `DockerComposeRunner` menyetel env `PWD` ke direktori app agar substitusi `${PWD}` deterministik.
+
+### 5.1c Create App — Mode "Template" (galeri siap-pakai)
+
+Cara ketiga membuat app: memilih **template** yang sudah disiapkan di folder repo `templates/<slug>/` — app docker-ready (image prebuilt) plus deklarasi variabel environment-nya. Tujuannya satu klik, tanpa menempel compose dan tanpa menebak env.
+
+```mermaid
+flowchart TD
+    A[Tab Template: galeri kartu<br/>TemplateCatalog::all] --> B[Pilih kartu -> form<br/>nama app + field env template]
+    B --> C[POST /apps/create/template/slug]
+    C --> D[TemplateCatalog::resolveEnv:<br/>input -> default -> generate rahasia]
+    D --> E[TemplateCatalog::materialize:<br/>compose + files/ -> apps/name]
+    E --> F[PortManager::resolve:<br/>port template dijaga, konflik digeser]
+    F --> G[writeOverride port + nama container<br/>prefix = nama app]
+    G --> H[EnvManager::write + writeOverride<br/>+ persist env ke apps.json]
+    H --> I[AppStore.create source=compose<br/>template=slug + spawn worker deploy]
+    I --> J[Halaman detail: polling progres<br/>deploying -> running]
+```
+
+- **Definisi template** (folder repo, bukan UI): `template.yml` (title/description/category/icon/docs_url, `env[]` = `{key,label,help,default,secret,generate,required}`, `primary` = `{service,port}`, `files[]`), `docker-compose.yml` (semua service `image:`, tanpa `build:`), `files/` (file pendukung yang di-bind mount).
+- **Aturan yang ditegakkan `TemplateCatalog`** (lihat §4.3): tanpa `build:`/`container_name`/`name:`/replica > 1, wajib punya `ports:`, dan tiap `${VAR}` tanpa default wajib dideklarasikan di `env[]` — mencegah app jalan dengan variabel kosong (docker compose hanya memberi warning, bukan error).
+- **Satu app = satu salinan materialized**: `materialize()` memakai jalur `ComposeSource::store()` (validasi nama file & compose identik dengan mode paste/upload) sehingga app hasil template adalah **app mode compose biasa** — sumbernya bisa diedit lewat tab Compose lalu Deploy Ulang. Template tidak di-*re-sync* setelah create (tanpa rollback, §5.7).
+- **Nama container & port**: template dilarang menulis `container_name` (nama dikelola dashboard: `{nama_app}-{service}`, §5.12) dan host port diresolusi otomatis (`PortManager::resolve()` — port bawaan template dipertahankan bila bebas, konflik digeser dari rentang `PORT_RANGE_START`–`PORT_RANGE_END`), sehingga template yang sama bisa dipakai berkali-kali tanpa saling bentrok.
+- **Env**: nilai dari form → `default` template → auto-generate (rahasia acak hex) → tolak bila `required`; hasilnya ditulis ke `database/env/{name}.env` + `docker-compose.override.env.yml` **dan** dipersist ke `apps.json.env` (kalau tidak, `EnvManager::sync()` di `LocalDeployer` akan menghapus file env saat deploy).
+- **Jalur create bersama**: `AppController::createAndDeploy()` menulis file (override port/nama + env) **sebelum** entri `apps.json` dibuat, lalu spawn worker — dipakai baik oleh halaman konfirmasi (mode git/compose) maupun deploy template, sehingga kegagalan tidak meninggalkan app setengah jadi.
+- **Hak akses**: membuat app (termasuk dari template) terbuka untuk semua user yang sudah login — sama seperti dua mode create lain; app otomatis dimiliki pembuatnya (§5.10). Mengubah/menambah template bukan operasi UI: hanya lewat file di repo (admin/dev).
+- **Template rusak tampil apa adanya**: `all()` mengembalikan `valid=false` + pesan error (badge di galeri, tombol deploy dinonaktifkan) supaya admin tahu template mana yang perlu diperbaiki.
 
 ### 5.2 Rebuild / Deploy Ulang
 
@@ -363,6 +391,7 @@ Halaman global **`/monitor`** (nav topbar — bukan di detail app) menampilkan p
 - Operasi global (network, reload Nginx, purge volume) hanya admin.
 - **Monitoring** (`/monitor`): daftar container disaring di sisi server — non-admin hanya menerima container app yang boleh diakses, container eksternal (dan angka host yang rinci) hanya untuk admin; endpoint read-only (GET) sehingga tidak butuh CSRF dan tidak mengubah apa pun.
 - Input divalidasi ketat (slug `[a-z0-9-]`, URL http/https, branch, port int 1–65535).
+- **Template** (§5.1c): definisi template hanya dari folder repo `templates/` (bukan input user/unggahan), nama file pendukung divalidasi relatif & aman, file override generated ditolak, dan nilai rahasia dari template (auto-generate) hanya tersimpan di `database/env/{name}.env` (chmod 0600, gitignored) — tidak pernah masuk repo atau `apps.json` versi kode. Env hasil deploy tetap dipersist di `apps.json.env` seperti env yang diisi user lewat tab Environment.
 - Eksekusi command tanpa shell (lihat §6).
 - Deploy key SSH per app: private key di `database/keys/` (chmod 0600, gitignored), hanya public key yang ditampilkan; `GIT_SSH_COMMAND` memakai `IdentitiesOnly=yes`, `StrictHostKeyChecking=accept-new`, dan `UserKnownHostsFile` milik sistem.
 - SSL: sertifikat Let's Encrypt hanya diaktifkan untuk domain publik (`SslIssuer::isPublicDomain`); `/etc/letsencrypt` di-mount baca-tulis ke container; `CLOUDFLARE_CREDS` (API token) via file dengan izin ketat, bukan hard-coded.
@@ -381,4 +410,5 @@ Halaman global **`/monitor`** (nav topbar — bukan di detail app) menampilkan p
 - Log viewer per container sudah ada (modal di detail app, §5.11) — masih **polling** (3 detik); streaming SSE seperti terminal belum ada.
 - Monitoring resource sudah ada di halaman global `/monitor` (§5.13) — kartu host dipoll tiap `MONITOR_POLL_MS` (default 7 detik) **hanya selama halaman terbuka**, sedangkan container masih **snapshot** (dipicu tombol Refresh); belum ada historis/grafik/alerting, angka disk hanya volume (image & build cache belum), I/O network/block belum ditampilkan, dan detail app **tidak** memuat panel monitoring (endpoint per app bisa ditambahkan dengan `ResourceCollector::collect([$app], false)` bila nanti diperlukan).
 - Migrasi JSON → SQLite/RDBMS bila skala bertambah.
+- **Template**: galeri hanya untuk create app baru — belum ada *upgrade* app yang sudah ada ke versi template terbaru, belum ada katalog dari sumber eksternal (registry/marketplace) atau template berbasis repo Git (template saat ini khusus compose prebuilt, §5.1c), dan template tidak bisa dikelola dari UI (masih file di repo, §4.5).
 - Rootless Podman sebagai pengganti `docker.sock` untuk isolasi lebih baik.

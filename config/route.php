@@ -51,6 +51,9 @@ Route::get('/apps/create', [AppController::class, 'createForm']);
 Route::post('/apps/create', [AppController::class, 'createPreview']);
 // Mode compose: paste/upload docker-compose.yml tanpa repo Git
 Route::post('/apps/create/compose', [AppController::class, 'composePreview']);
+// Mode template: deploy app dari template siap-pakai (compose prebuilt)
+Route::get('/apps/create/template/{slug}', [AppController::class, 'templateForm']);
+Route::post('/apps/create/template/{slug}', [AppController::class, 'templateDeploy']);
 Route::get('/apps/create/confirm', [AppController::class, 'confirmForm']);
 Route::post('/apps/create/confirm', [AppController::class, 'confirmCreate']);
 

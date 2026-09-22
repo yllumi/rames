@@ -1,0 +1,17 @@
+# Template Uptime Kuma — image prebuilt, tanpa `build:`/`container_name`/`name:`.
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    restart: unless-stopped
+
+    ports:
+      - "3001:3001"
+
+    environment:
+      TZ: ${TZ}
+
+    volumes:
+      - uptime-kuma-data:/app/data
+
+volumes:
+  uptime-kuma-data:

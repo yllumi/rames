@@ -1,0 +1,23 @@
+# Template n8n — semua service memakai image prebuilt (tanpa `build:`),
+# TANPA `container_name` (dashboard menulis prefix nama container = nama app),
+# dan TANPA `name:` (nama project compose ditentukan dashboard dari nama app).
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+
+    ports:
+      - "5678:5678"
+
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE}
+
+    volumes:
+      # Named volume (bukan bind mount) → tidak ada direktori host yang perlu
+      # disiapkan & datanya dipakai ulang bila app dibuat ulang dengan nama sama.
+      - n8n-data:/home/node/.n8n
+
+volumes:
+  n8n-data:

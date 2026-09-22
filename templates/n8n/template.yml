@@ -1,0 +1,25 @@
+title: n8n
+description: Otomasi workflow self-hosted (n8n) dengan antarmuka web dan database internal.
+category: Otomasi
+icon: "🔀"
+docs_url: https://docs.n8n.io/hosting/installation/docker/
+
+# Variabel yang ditanyakan saat create. Kosong = pakai `default`; bila tidak ada
+# default dan `generate: secret`, nilai acak dibuat otomatis.
+env:
+  - key: N8N_ENCRYPTION_KEY
+    label: Encryption key
+    help: Kunci enkripsi kredensial tersimpan n8n. Gunakan nilai yang sama bila memakai volume lama.
+    generate: secret
+  - key: GENERIC_TIMEZONE
+    label: Timezone
+    default: Asia/Jakarta
+  - key: N8N_SECURE_COOKIE
+    label: Secure cookie
+    help: Isi "false" bila app diakses lewat HTTP tanpa SSL.
+    default: "false"
+
+# Port container yang di-proxy ke domain app (semua port lain tetap di-publish).
+primary:
+  service: n8n
+  port: 5678

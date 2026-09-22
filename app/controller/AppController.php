@@ -20,6 +20,7 @@ use app\library\Git\SshKeyManager;
 use app\library\Nginx\NginxReloader;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
+use app\library\Template\TemplateCatalog;
 use RuntimeException;
 use support\Request;
 use Symfony\Component\Yaml\Tag\TaggedValue;
@@ -216,8 +217,20 @@ class AppController
 
     public function createForm(Request $request)
     {
+        $mode = (string) $request->get('mode', 'git');
+
+        // Mode template: galeri template app siap-pakai (compose prebuilt,
+        // SPECS.md §7.2b). Definisi template dibaca dari folder repo
+        // `templates/<slug>/` (dikelola admin lewat git, bukan lewat UI).
+        if ($mode === 'template') {
+            return view('app/create', [
+                'mode' => 'template',
+                'templates' => (new TemplateCatalog())->all(),
+            ]);
+        }
+
         return view('app/create', [
-            'mode' => ((string) $request->get('mode', 'git')) === 'compose' ? 'compose' : 'git',
+            'mode' => $mode === 'compose' ? 'compose' : 'git',
         ]);
     }
 
@@ -385,6 +398,185 @@ class AppController
         }
     }
 
+    // ==================================================================
+    // Wizard create — mode Template (galeri app siap-pakai)
+    // ==================================================================
+
+    /**
+     * Form deploy template (langkah tunggal): nama app + field env yang
+     * dideklarasikan template. Port/primary/prefix container tidak ditanyakan —
+     * port diresolusi otomatis (konflik digeser ke port bebas), primary
+     * diambil dari deklarasi template, prefix nama container = nama app
+     * (SPECS.md §7.2b).
+     */
+    public function templateForm(Request $request, string $slug)
+    {
+        $catalog = new TemplateCatalog();
+        $template = $catalog->find($slug);
+        if ($template === null) {
+            flash_set('error', 'Template "' . $slug . '" tidak ditemukan.');
+            return redirect('/apps/create?mode=template');
+        }
+        if (!$template['valid']) {
+            flash_set('error', 'Template "' . $slug . '" tidak valid: ' . $template['error']);
+            return redirect('/apps/create?mode=template');
+        }
+
+        return view('app/template', [
+            'template' => $template,
+            'form_name' => (string) $request->get('name', $template['slug']),
+            'form_env' => [],
+            'form_error' => null,
+        ]);
+    }
+
+    /**
+     * Deploy app dari template (POST): satu klik, langsung spawn worker deploy.
+     *
+     * Urutan: validasi template/nama/env → materialisasi file template ke
+     * `apps/{name}` → parse compose & resolusi host port → tulis override
+     * port/nama + env → simpan entri app → worker deploy. Kegagalan sebelum
+     * entri app dibuat membersihkan direktori app (tidak ada state setengah jadi).
+     */
+    public function templateDeploy(Request $request, string $slug)
+    {
+        $catalog = new TemplateCatalog();
+        $template = $catalog->find($slug);
+        $name = strtolower(trim((string) $request->post('name', '')));
+        $envInput = (array) $request->post('env', []);
+        $env = [];
+        $generated = [];
+
+        // Fase 1 — validasi yang tidak menyentuh disk (template, nama, nilai env).
+        try {
+            if ($template === null) {
+                throw new RuntimeException('Template "' . $slug . '" tidak ditemukan.');
+            }
+            if (!$template['valid']) {
+                throw new RuntimeException('Template "' . $slug . '" tidak valid: ' . $template['error']);
+            }
+            $this->validateCreateName($name);
+            if ((new AppStore())->nameExists($name)) {
+                throw new RuntimeException("Nama app \"{$name}\" sudah dipakai.");
+            }
+            $env = $catalog->resolveEnv($template, $envInput);
+            $generated = $catalog->generatedKeys($template, $envInput);
+        } catch (\Throwable $e) {
+            // Template tidak ada/rusak → tidak ada form yang bisa dirender ulang.
+            if ($template === null || !$template['valid']) {
+                flash_set('error', $e->getMessage());
+                return redirect('/apps/create?mode=template');
+            }
+            return view('app/template', [
+                'template' => $template,
+                'form_name' => $name,
+                'form_env' => $envInput,
+                'form_error' => $e->getMessage(),
+            ]);
+        }
+
+        // Fase 2 — materialisasi + pembuatan app.
+        $dest = '';
+        $app = null;
+        $spawned = false;
+        try {
+            $dest = (string) config('deploy.apps_path') . '/' . $name;
+            if (is_dir($dest)) {
+                $this->cleanupDir($dest); // area apps_path dikelola sistem
+            }
+            if (!@mkdir($dest, 0755, true) && !is_dir($dest)) {
+                throw new RuntimeException('Gagal membuat direktori app.');
+            }
+            $catalog->materialize(
+                $template,
+                $dest,
+                (int) config('deploy.compose_upload_max_file_bytes', ComposeSource::MAX_FILE_BYTES),
+                (int) config('deploy.compose_upload_max_total_bytes', ComposeSource::MAX_TOTAL_BYTES)
+            );
+
+            $composeFile = ComposeSource::detectMainFile($dest);
+            if ($composeFile === '') {
+                throw new RuntimeException('File docker-compose.yml tidak ditemukan setelah template disalin.');
+            }
+
+            $parsed = (new ComposeParser())->parse($dest . '/' . $composeFile);
+            $services = $this->resolveServicePorts($parsed['services']);
+            $primary = $this->resolvePrimarySelection(
+                $services,
+                $template['primary']['service'] . ':' . $template['primary']['port'],
+                (string) $template['primary']['service'],
+                (int) $template['primary']['port']
+            );
+
+            // Template dilarang menulis container_name → prefix = nama app.
+            $containerPrefix = $this->resolveContainerPrefix($name, $composeFile, $name);
+
+            $pending = [
+                'name' => $name,
+                'source' => ComposeSource::SOURCE_COMPOSE,
+                'repo_url' => null,
+                'branch' => null,
+                'local_path' => 'apps/' . $name,
+                'compose_file' => $composeFile,
+                'services' => $services,
+                'primary_service' => $primary['service'],
+                'primary_port' => $primary['port'],
+                'auth_method' => 'none',
+                'ssh_key' => null,
+            ];
+
+            $result = $this->createAndDeploy(
+                $pending,
+                $services,
+                $primary['service'],
+                $primary['port'],
+                $containerPrefix,
+                $env,
+                ['slug' => $template['slug'], 'title' => $template['title']]
+            );
+            $app = $result['app'];
+            $spawned = $result['spawned'];
+        } catch (\Throwable $e) {
+            // Belum ada entri app (createAndDeploy menulis file dulu, baru
+            // apps.json) → direktori app aman dibersihkan.
+            if ($app === null && $dest !== '' && is_dir($dest)) {
+                $this->cleanupDir($dest);
+            }
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $e->getMessage()]);
+            }
+            flash_set('error', $e->getMessage());
+
+            return view('app/template', [
+                'template' => $template,
+                'form_name' => $name,
+                'form_env' => $envInput,
+                'form_error' => $e->getMessage(),
+            ]);
+        }
+
+        $note = $generated !== []
+            ? ' Nilai ' . implode(', ', $generated) . ' dibuat otomatis — lihat tab Environment untuk menyalin/mengubahnya.'
+            : '';
+
+        if ($request->expectsJson()) {
+            return json([
+                'code' => $spawned ? 0 : 1,
+                'id' => $app['id'],
+                'name' => $app['name'],
+                'error' => $spawned ? null : 'Gagal menjalankan worker deploy.',
+            ]);
+        }
+
+        if (!$spawned) {
+            flash_set('error', 'App "' . $app['name'] . '" dibuat, tetapi worker deploy gagal dijalankan. Coba Deploy Ulang dari halaman detail.');
+            return redirect('/apps/' . $app['id']);
+        }
+
+        flash_set('success', 'App "' . $app['name'] . '" dari template ' . $template['title'] . ' sedang di-deploy.' . $note);
+        return redirect('/apps/' . $app['id']);
+    }
+
     /**
      * Resolusi konflik host port untuk daftar service hasil parse compose
      * (dipakai kedua mode create — clone repo & compose).
@@ -487,10 +679,6 @@ class AppController
         }
 
         try {
-            // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy.
-            // Kalau tidak, tampilkan pesan jelas (bukan gagal di tengah build).
-            DeployerFactory::create()->ensureWritable();
-
             $services = $this->validateAndApplyPorts($pending['services'], $serviceInput);
             $primary = $this->resolvePrimarySelection(
                 $services,
@@ -498,46 +686,12 @@ class AppController
                 (string) ($pending['primary_service'] ?? ''),
                 (int) ($pending['primary_port'] ?? 0)
             );
-            $primaryService = $primary['service'];
-            $primaryPort = $primary['port'];
 
-            $composeFiles = [$pending['compose_file']];
-            $this->writeOverride($pending, $services, $composeFiles, $containerPrefix);
-
-            $app = (new AppStore())->create([
-                'name' => $pending['name'],
-                'owner_id' => (string) (current_user()['id'] ?? ''),
-                'members' => [],
-                'subdomain' => app_subdomain($pending['name']),
-                'source' => $pending['source'] ?? ComposeSource::SOURCE_GIT,
-                'repo_url' => $pending['repo_url'] ?? null,
-                'branch' => $pending['branch'] ?? null,
-                'local_path' => $pending['local_path'],
-                'primary_service' => $primaryService,
-                'primary_port' => $primaryPort,
-                'status' => 'deploying',
-                'stage' => 'queued',
-                'message' => 'Menunggu worker deploy ...',
-                'compose_files' => $composeFiles,
-                'container_prefix' => $containerPrefix !== '' ? $containerPrefix : null,
-                'needs_ssl' => false,
-                'ssl_status' => null,
-                'auth_method' => $pending['auth_method'] ?? 'none',
-                'ssh_key' => $pending['ssh_key'] ?? null,
-                'containers' => [],
-            ]);
+            $result = $this->createAndDeploy($pending, $services, $primary['service'], $primary['port'], $containerPrefix);
+            $app = $result['app'];
+            $spawned = $result['spawned'];
 
             $request->session()->delete('pending_app');
-
-            $spawned = $this->spawnWorker($app['id'], 'deploy');
-            if (!$spawned) {
-                (new AppStore())->update($app['id'], function (array &$s): void {
-                    $s['status'] = 'error';
-                    $s['stage'] = null;
-                    $s['message'] = 'Gagal menjalankan worker deploy. Cek log & coba Rebuild.';
-                    $s['error'] = 'Gagal spawn worker deploy.';
-                });
-            }
 
             // Panggilan AJAX (fetch) mengembalikan JSON; form biasa tetap redirect.
             if ($request->expectsJson()) {
@@ -558,6 +712,88 @@ class AppController
             flash_set('error', $e->getMessage());
             return redirect('/apps/create/confirm');
         }
+    }
+
+    /**
+     * Buat app + spawn worker deploy — jalur bersama halaman konfirmasi (mode
+     * git/compose) dan deploy template.
+     *
+     * Semua penulisan file (override port/nama container melalui
+     * `writeOverride()`, managed env file + override env melalui `EnvManager`)
+     * selesai SEBELUM entri `apps.json` dibuat, sehingga kegagalan tidak
+     * meninggalkan app setengah jadi — pemanggil cukup membersihkan direktori
+     * app. Env sengaja juga dipersist ke `apps.json` agar `EnvManager::sync()`
+     * di `LocalDeployer` tidak menghapus file env saat deploy berjalan.
+     *
+     * @param array<string,array>       $services  hasil ComposeParser + resolusi host port
+     * @param array<string,string>      $env       map KEY => value (kosong = tanpa env)
+     * @param array<string,string>|null $template  metadata asal template (bila dibuat dari template)
+     * @return array{app:array,spawned:bool}
+     */
+    private function createAndDeploy(
+        array $pending,
+        array $services,
+        string $primaryService,
+        int $primaryPort,
+        string $containerPrefix,
+        array $env = [],
+        ?array $template = null
+    ): array {
+        // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy.
+        // Kalau tidak, tampilkan pesan jelas (bukan gagal di tengah build).
+        DeployerFactory::create()->ensureWritable();
+
+        $composeFiles = [$pending['compose_file']];
+        $this->writeOverride($pending, $services, $composeFiles, $containerPrefix);
+
+        if ($env !== []) {
+            $composeFiles[] = EnvManager::OVERRIDE_FILE;
+            $composeFiles = $this->orderComposeFiles($composeFiles);
+
+            $dir = (string) config('deploy.apps_path') . '/' . $pending['name'];
+            $envManager = new EnvManager();
+            $envManager->write((string) $pending['name'], $env);
+            $envManager->writeOverride($dir, $composeFiles, $env);
+        } else {
+            $composeFiles = $this->orderComposeFiles($composeFiles);
+        }
+
+        $app = (new AppStore())->create([
+            'name' => $pending['name'],
+            'owner_id' => (string) (current_user()['id'] ?? ''),
+            'members' => [],
+            'subdomain' => app_subdomain($pending['name']),
+            'source' => $pending['source'] ?? ComposeSource::SOURCE_GIT,
+            'repo_url' => $pending['repo_url'] ?? null,
+            'branch' => $pending['branch'] ?? null,
+            'local_path' => $pending['local_path'],
+            'primary_service' => $primaryService,
+            'primary_port' => $primaryPort,
+            'status' => 'deploying',
+            'stage' => 'queued',
+            'message' => 'Menunggu worker deploy ...',
+            'compose_files' => $composeFiles,
+            'container_prefix' => $containerPrefix !== '' ? $containerPrefix : null,
+            'env' => $env,
+            'template' => $template,
+            'needs_ssl' => false,
+            'ssl_status' => null,
+            'auth_method' => $pending['auth_method'] ?? 'none',
+            'ssh_key' => $pending['ssh_key'] ?? null,
+            'containers' => [],
+        ]);
+
+        $spawned = $this->spawnWorker($app['id'], 'deploy');
+        if (!$spawned) {
+            (new AppStore())->update($app['id'], function (array &$s): void {
+                $s['status'] = 'error';
+                $s['stage'] = null;
+                $s['message'] = 'Gagal menjalankan worker deploy. Cek log & coba Rebuild.';
+                $s['error'] = 'Gagal spawn worker deploy.';
+            });
+        }
+
+        return ['app' => $app, 'spawned' => $spawned];
     }
 
     // ==================================================================

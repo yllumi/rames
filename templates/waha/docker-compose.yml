@@ -1,0 +1,78 @@
+# Template WAHA (WhatsApp HTTP API) — image prebuilt, tanpa `build:`/
+# `container_name`/`name:` (semua itu dikelola dashboard: nama project compose =
+# nama app, nama container = {nama app}-{service}).
+#
+# Engine & tag image:
+#   gows-<versi>   = engine GOWS (whatsmeow, tanpa browser) — paling ringan & direkomendasikan
+#   noweb-<versi>  = engine NOWEB (tanpa browser)
+#   latest-<versi> = engine WEBJS (butuh Chrome, image ±1 GB)
+# Ganti engine = ubah dua baris (`image:` dan WHATSAPP_DEFAULT_ENGINE) di tab
+# Compose halaman detail app, lalu klik "Deploy Ulang".
+services:
+  waha:
+    image: devlikeapro/waha:gows-2026.9.1
+    restart: unless-stopped
+
+    # init:true supaya proses WAHA bukan PID 1 (SIGTERM rapi + reap zombie).
+    init: true
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      TZ: ${TZ}
+      WHATSAPP_DEFAULT_ENGINE: GOWS
+      # Namespace storage bersama antar-engine (disarankan untuk instalasi baru).
+      WAHA_NAMESPACE: all
+
+      # Keamanan API + dashboard. Kunci dashboard di-set admin/admin (default
+      # image) → di sini selalu diganti dari nilai yang di-generate/isi user.
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      WAHA_DASHBOARD_ENABLED: "true"
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD}
+      # Health check (dipakai healthcheck di bawah) tidak butuh API key.
+      WAHA_API_KEY_EXCLUDE_PATH: health,ping
+
+      # Media: default image menghapus file setelah 180 detik → simpan permanen
+      # di volume supaya file yang dirujuk webhook/API tidak hilang.
+      WHATSAPP_FILES_FOLDER: /app/.media
+      WHATSAPP_FILES_LIFETIME: "0"
+
+      # Ambang health check dinaikkan: volume sesi/media besar tidak boleh
+      # membuat container tampak "unhealthy" (default WAHA 100 MB).
+      WHATSAPP_HEALTH_SESSIONS_FILES_THRESHOLD_MB: "1024"
+      WHATSAPP_HEALTH_MEDIA_FILES_THRESHOLD_MB: "1024"
+
+      # Bila app sudah punya domain/SSL dan `media.url` pada webhook perlu
+      # mengarah ke URL publik, tambahkan lewat tab Environment:
+      #   WAHA_PUBLIC_URL=https://<subdomain app>
+      # (sengaja tidak dijadikan field form: nilai kosong berisiko membuat
+      #  media.url tidak valid.)
+
+    volumes:
+      # Sesi WhatsApp (kredensial + data sesi). Tanpa volume ini setiap restart
+      # harus scan QR ulang. Volume di-scope per app (nama project compose =
+      # nama app), jadi template ini aman dipakai untuk banyak app sekaligus.
+      - waha-sessions:/app/.sessions
+      - waha-media:/app/.media
+
+    # TCP health check memakai node (pasti ada di image ini) — server sehat =
+    # /health menjawab 2xx. Boleh dihapus bila tidak diperlukan.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+    # Log WAHA cukup cerewet; batasi supaya disk host tidak penuh.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  waha-sessions:
+  waha-media:

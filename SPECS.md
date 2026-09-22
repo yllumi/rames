@@ -206,15 +206,18 @@ Field penting:
 - `container_prefix` — prefix **nama container** (`container_name`): bila diisi, setiap service memakai nama `{prefix}-{service}` (mis. `myapp-web`) alih-alih nama default compose `{nama_app}_{service}_{n}`. Absen/null = nama default (perilaku app lama). Ditulis ke `docker-compose.override.names.yml` (`ContainerNames`, §7.6a)
 - `auth_method` — metode akses repo: `none` (publik, anonim) atau `ssh` (deploy key per app)
 - `ssh_key` — path relatif private key terhadap `database_path` (mis. `keys/myapp`), dipakai saat `git pull` Rebuild; hanya path yang disimpan, private key di file terpisah (`database/keys/`)
+- `template` — `{slug, title}` bila app dibuat dari template (§7.2b), `null` untuk app lain. Hanya penanda asal-usul (untuk audit/tampilan); template **tidak** di-*re-sync* setelah create — perubahan sumber dilakukan lewat tab Compose/Deploy Ulang seperti app compose lain
+- `env` — map `KEY => value` environment variable app (§7.6); untuk app dari template diisi saat create (nilai form, default template, atau hasil auto-generate)
 
 ### 7.2 Alur "Create App"
 
-Ada **dua mode sumber**, dipilih lewat tab di halaman `/apps/create`:
+Ada **tiga mode sumber**, dipilih lewat tab di halaman `/apps/create`:
 
 | Mode | Sumber | Cocok untuk |
 |---|---|---|
 | **Clone repo Git** (default) | `git clone` repo yang berisi `docker-compose.yml` | app yang di-build dari source (`build:`/Dockerfile) |
 | **Compose (paste / upload)** (§7.2a) | file `docker-compose.yml` yang di-paste/di-upload + file pendukung | app dengan image **prebuilt** (tanpa build context) |
+| **Template** (§7.2b) | template siap-pakai di folder `templates/<slug>/` (compose prebuilt + deklarasi env) | app docker-ready yang sering dipakai (galeri satu klik) |
 
 **Langkah mode Clone repo Git:**
 
@@ -263,6 +266,47 @@ Mode create kedua: app dibuat **tanpa repo Git**, hanya dari file `docker-compos
 - Worker menerima mode `apply` — dipakai setelah compose diedit lewat tab **Compose** di detail app (§7.3).
 - **Rollback & halaman Versi tidak tersedia** untuk app mode ini (tidak ada checkpoint commit Git, §7.5); `deploy_history` tetap dicatat sebagai log deployment dengan `sha` kosong.
 - **Tab Compose** (ability `compose` = Operator ke atas) — editor isi `docker-compose.yml` + unggah/ganti/hapus file pendukung. Simpan = validasi (`build:` ditolak) → **regenerate override port** (host port lama dipertahankan per service; konflik dengan app lain digeser otomatis) → spawn worker `apply` (progres via polling status, §7.2 langkah 10).
+
+### 7.2b Mode "Template" (galeri app siap-pakai)
+
+Mode create ketiga: app dibuat dari **template** yang sudah disiapkan di folder `templates/<slug>/` (ikut versi repo dashboard, dikelola admin/dev lewat git — bukan lewat UI). Tujuannya: satu klik untuk app docker-ready yang berulang (mis. gateway WhatsApp, workflow automation, monitoring), tanpa menempel compose dan tanpa menebak variabel environment-nya.
+
+**Struktur satu template**
+
+```
+templates/<slug>/
+  template.yml          # metadata + deklarasi env (lihat tabel di bawah)
+  docker-compose.yml    # isi compose app (image prebuilt, tanpa `build:`)
+  files/                # opsional: file pendukung yang di-bind mount (mis. nginx.conf)
+```
+
+| Field `template.yml` | Wajib | Fungsi |
+|---|---|---|
+| `title`, `description`, `category`, `icon`, `docs_url` | tidak | tampilan kartu di galeri (default: slug / "Lainnya") |
+| `env[]` → `{key, label, help, default, secret, generate, required}` | tidak | field di form deploy + aturan nilai (lihat di bawah) |
+| `primary` → `{service, port}` | tidak | service + **port container** yang di-proxy ke domain app; default = service pertama yang punya `ports:` |
+| `files[]` → nama relatif | tidak | file dari `files/` yang disalin ke direktori app |
+
+**Aturan template (ditegakkan `TemplateCatalog`, ditolak dengan pesan jelas sebelum deploy)**
+- Service **wajib** punya `image:` dan **tidak boleh** `build:` — template memakai jalur mode compose (§7.2a), jadi tidak ada build context.
+- **DILARANG** `container_name` dan `deploy.replicas`/`scale` > 1: nama container dikelola dashboard (prefix otomatis = nama app, §7.6a) supaya satu template bisa dipakai banyak app.
+- **DILARANG** `name:` di level atas: nama project compose ditentukan dashboard dari nama app (dipakai untuk reuse volume saat app dibuat ulang, §7.4).
+- Compose wajib mempublikasikan minimal satu port (tanpa port tidak ada target `proxy_pass` Nginx).
+- Setiap `${VAR}`/`$VAR` di compose **tanpa nilai default** wajib dideklarasikan di `env[]` (variabel yang diisi sistem seperti `${PWD}` dikecualikan); tanpa aturan ini compose tetap jalan dengan variabel kosong (docker compose hanya memberi warning) sehingga app bisa diam-diam salah konfigurasi.
+- File pendukung wajib relatif & aman (segmen `[A-Za-z0-9._-]+`, tanpa `..`) dan tidak boleh memakai nama file override yang dikelola dashboard (`docker-compose.override*`).
+- Template yang rusak **tetap tampil** di galeri dengan badge error + tombol deploy dinonaktifkan (bukan dihilangkan diam-diam).
+
+**Nilai environment** (`TemplateCatalog::resolveEnv()`), urutannya: nilai dari form → `default` template → **auto-generate** (`generate: secret`, nilai acak hex 48 karakter) → tolak bila `required`. Nilai yang dikosongkan tanpa default/generate tidak ditulis. Hasilnya disimpan ke `apps.json.env` **dan** ditulis `EnvManager` ke `database/env/{name}.env` + `docker-compose.override.env.yml` sehingga langsung ter-inject ke seluruh service.
+
+**Alur deploy (satu langkah, tanpa halaman konfirmasi port)**
+1. Tab **Template** di `/apps/create` menampilkan galeri kartu (image, port, target domain, jumlah variabel/file).
+2. Pilih kartu → form `/apps/create/template/{slug}`: nama app (slug) + field env (field `secret` memakai input password; diberi keterangan "kosongkan untuk dibuat otomatis").
+3. `POST /apps/create/template/{slug}` → validasi template + nama + nilai env (`TemplateCatalog::resolveEnv()`), lalu **materialisasi** file template ke `apps/{name}` (`ComposeSource::store()` — validasi identik dengan mode paste/upload).
+4. Parse compose → **host port diresolusi otomatis** (`PortManager::resolve()`: host port template dipertahankan bila bebas, konflik digeser dari `PORT_RANGE_START`–`PORT_RANGE_END`); `primary_service`/`primary_port` diambil dari `primary` template; **prefix nama container = nama app** (dicek bentrok se-host, §5.12/§7.6a).
+5. Tulis override port + nama container, tulis env (managed + override), lalu simpan entri app (`source: compose`, `template: {slug, title}`) dan spawn worker `deploy`.
+6. UI memakai AJAX + polling yang sama dengan create biasa: langsung diarahkan ke halaman detail app yang menampilkan progres build (`deploying` → `build` → `collect` → `nginx` → `running`).
+
+Kegagalan sebelum entri app dibuat membersihkan direktori `apps/{name}` (tidak ada state setengah jadi). Hasil akhirnya adalah **app mode compose biasa**: bisa Stop/Start/Rebuild (Deploy Ulang), atur domain & SSL, kelola env/network/nama container, terminal, log, dan database — dengan catatan **tanpa rollback** karena tidak ada repo Git (§7.5).
 
 ### 7.3 Halaman Detail App
 
@@ -651,6 +695,7 @@ BACKUP_RETENTION=20         # jumlah file backup yang dipertahankan per jenis
 HOST_PROC_PATH=/proc        # sumber metrik "total VM" (§8d; ubah bila host pakai lxcfs)
 MONITOR_STATS_TIMEOUT=20    # timeout satu siklus stats container (detik)
 MONITOR_POLL_MS=7000        # interval polling metrik host di /monitor (ms, 0 = mati)
+TEMPLATES_PATH={proyek}/templates   # folder galeri template create app (§7.2b)
 ```
 
 ## 10. Struktur Direktori (usulan)

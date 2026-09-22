@@ -163,10 +163,14 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
         <dd class="v mb-0"><a href="http://<?= e($app['subdomain']) ?>" target="_blank" rel="noopener"><?= e($app['subdomain']) ?></a><?php if ($customDomain): ?> <span class="text-muted small">(redirect → <?= e($customDomain) ?>)</span><?php endif; ?></dd>
       </div>
       <?php if ($isCompose): ?>
+      <?php $tplTitle = is_array($app['template'] ?? null) ? (string) ($app['template']['title'] ?? $app['template']['slug'] ?? '') : ''; ?>
       <div class="app-info-item">
         <dt class="k">Sumber</dt>
         <dd class="v mb-0">
           Compose (paste/upload)
+          <?php if ($tplTitle !== ''): ?>
+          <span class="badge text-bg-secondary ms-1" title="App dibuat dari template siap-pakai">template: <?= e($tplTitle) ?></span>
+          <?php endif; ?>
           <span class="text-muted fw-normal small">· tanpa repo Git — ubah lewat tab Compose</span>
         </dd>
       </div>

@@ -1,0 +1,14 @@
+title: Uptime Kuma
+description: Monitoring uptime (HTTP/TCP/ping) dengan dashboard web dan notifikasi.
+category: Monitoring
+icon: "📈"
+docs_url: https://github.com/louislam/uptime-kuma/wiki
+
+env:
+  - key: TZ
+    label: Timezone
+    default: Asia/Jakarta
+
+primary:
+  service: uptime-kuma
+  port: 3001

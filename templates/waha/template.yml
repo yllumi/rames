@@ -1,0 +1,32 @@
+title: WAHA (WhatsApp HTTP API)
+description: >-
+  WhatsApp HTTP API + dashboard (devlikeapro/waha). Kirim/terima pesan via REST API,
+  QR/sesi tersimpan di volume sehingga tidak perlu scan ulang setelah restart.
+  Dashboard ada di /dashboard, Swagger di /. QR juga tercetak di log container
+  (tombol Log di halaman detail app).
+category: Messaging
+icon: "💬"
+docs_url: https://waha.devlike.pro/docs/overview/quick-start/
+
+# Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke
+# service (tanpa disimpan di repo). Kosong = pakai `default`; `generate: secret`
+# berarti nilai acak dibuat otomatis bila dikosongkan.
+env:
+  - key: WAHA_API_KEY
+    label: API key (header X-Api-Key)
+    help: Kunci untuk semua request API (dikirim sebagai header X-Api-Key) dan untuk login dashboard.
+    generate: secret
+  - key: WAHA_DASHBOARD_USERNAME
+    label: Username dashboard
+    default: admin
+  - key: WAHA_DASHBOARD_PASSWORD
+    label: Password dashboard
+    generate: secret
+  - key: TZ
+    label: Timezone
+    default: Asia/Jakarta
+
+# Port container yang melayani domain app.
+primary:
+  service: waha
+  port: 3000

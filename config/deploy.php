@@ -97,4 +97,10 @@ return [
     // pendukung kecil (bind mount config), bukan source aplikasi.
     'compose_upload_max_file_bytes' => (int) (getenv('COMPOSE_UPLOAD_MAX_FILE_BYTES') ?: 1048576),   // 1 MB per file
     'compose_upload_max_total_bytes' => (int) (getenv('COMPOSE_UPLOAD_MAX_TOTAL_BYTES') ?: 4194304), // 4 MB total
+
+    // Galeri template app siap-pakai (SPECS.md §7.2b). Satu template = satu
+    // direktori di bawah path ini: `template.yml` (metadata + deklarasi env),
+    // `docker-compose.yml` (image prebuilt, tanpa `build:`), `files/` (file
+    // pendukung opsional yang di-bind mount). Dikelola lewat repo (bukan UI).
+    'templates_path' => getenv('TEMPLATES_PATH') ?: (base_path() . '/templates'),
 ];
