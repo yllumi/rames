@@ -160,55 +160,90 @@
     });
   }
 
+  // Konfirmasi memakai modal Bootstrap (bukan window.confirm), mengikuti pola
+  // modal hapus app di halaman detail. Bila Bootstrap tidak termuat, aksi TIDAK
+  // dijalankan dan panel memberi pesan (tidak ada lagi dialog window.confirm).
+  var updateModalEl = document.getElementById('update-confirm-modal');
+  var rollbackModalEl = document.getElementById('rollback-confirm-modal');
+  var NO_MODAL = 'Modal konfirmasi tidak dapat ditampilkan (aset Bootstrap belum termuat) — muat ulang halaman lalu coba lagi.';
+
+  function showModal(el) {
+    if (el && window.bootstrap && window.bootstrap.Modal) {
+      window.bootstrap.Modal.getOrCreateInstance(el).show();
+      return true;
+    }
+    return false;
+  }
+
+  function hideModal(el) {
+    if (el && window.bootstrap && window.bootstrap.Modal) {
+      window.bootstrap.Modal.getOrCreateInstance(el).hide();
+    }
+  }
+
+  function runUpdate() {
+    if (startBtn) startBtn.disabled = true;
+    clearNotify();
+    notify('Menjalankan update…', 'info');
+    post('/api/update/start').then(function (res) {
+      if (res.code !== 0) {
+        if (startBtn) startBtn.disabled = false;
+        notify(res.msg || 'Gagal memulai update.', 'danger');
+        return;
+      }
+      runBox.classList.remove('d-none');
+      sawRunning = true;
+      notify(res.msg || 'Update dimulai.', 'info');
+      poll();
+    });
+  }
+
+  function runRollback() {
+    if (rollbackBtn) rollbackBtn.disabled = true;
+    clearNotify();
+    notify('Menjalankan rollback…', 'warning');
+    post('/api/update/rollback').then(function (res) {
+      if (res.code !== 0) {
+        if (rollbackBtn) rollbackBtn.disabled = false;
+        notify(res.msg || 'Gagal memulai rollback.', 'danger');
+        return;
+      }
+      runBox.classList.remove('d-none');
+      sawRunning = true;
+      notify(res.msg || 'Rollback dimulai.', 'warning');
+      poll();
+    });
+  }
+
   var startBtn = document.getElementById('update-start-btn');
   if (startBtn) {
     startBtn.addEventListener('click', function () {
-      if (!window.confirm(
-        'Jalankan update dashboard sekarang?\n\n' +
-        'Dashboard akan di-pull ulang, image dibangun ulang, lalu container di-recreate — ' +
-        'akses dashboard terputus beberapa saat dan sesi terminal/app yang sedang berjalan ikut terhenti.\n\n' +
-        'Bila versi baru tidak sehat, dashboard otomatis dikembalikan ke versi sekarang.'
-      )) return;
+      if (showModal(updateModalEl)) return; // lanjut lewat tombol di modal
+      notify(NO_MODAL, 'danger');
+    });
+  }
 
-      startBtn.disabled = true;
-      clearNotify();
-      notify('Menjalankan update…', 'info');
-      post('/api/update/start').then(function (res) {
-        if (res.code !== 0) {
-          startBtn.disabled = false;
-          notify(res.msg || 'Gagal memulai update.', 'danger');
-          return;
-        }
-        runBox.classList.remove('d-none');
-        sawRunning = true;
-        notify(res.msg || 'Update dimulai.', 'info');
-        poll();
-      });
+  var updateConfirmBtn = document.getElementById('update-confirm-btn');
+  if (updateConfirmBtn) {
+    updateConfirmBtn.addEventListener('click', function () {
+      hideModal(updateModalEl);
+      runUpdate();
     });
   }
 
   var rollbackBtn = document.getElementById('update-rollback-btn');
   if (rollbackBtn) {
     rollbackBtn.addEventListener('click', function () {
-      if (!window.confirm(
-        'Kembalikan dashboard ke versi sebelumnya?\n\n' +
-        'Kode akan di-reset ke commit sebelum update terakhir, lalu container di-recreate.'
-      )) return;
+      if (showModal(rollbackModalEl)) return;
+      notify(NO_MODAL, 'danger');
+    });
+  }
 
-      rollbackBtn.disabled = true;
-      clearNotify();
-      notify('Menjalankan rollback…', 'warning');
-      post('/api/update/rollback').then(function (res) {
-        if (res.code !== 0) {
-          rollbackBtn.disabled = false;
-          notify(res.msg || 'Gagal memulai rollback.', 'danger');
-          return;
-        }
-        runBox.classList.remove('d-none');
-        sawRunning = true;
-        notify(res.msg || 'Rollback dimulai.', 'warning');
-        poll();
-      });
+  var rollbackConfirmBtn = document.getElementById('rollback-confirm-btn');
+  if (rollbackConfirmBtn) {
+    rollbackConfirmBtn.addEventListener('click', function () {
+      hideModal(rollbackModalEl);
+      runRollback();
     });
   }
 

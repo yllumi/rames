@@ -191,7 +191,75 @@ $canUpdate = is_admin() && !empty($pf['ok']) && !empty($check['update_available'
   </div>
 </div>
 <div id="update-flash"></div>
-<script src="/js/update.js?v=1"></script>
+
+<?php if (is_admin() && empty($update['failed'])): ?>
+<!-- Konfirmasi update/rollback memakai modal (bukan window.confirm), mengikuti
+     pola modal hapus app di halaman detail. Tombolnya JS (bukan submit form)
+     karena aksi dijalankan lewat AJAX + polling — form POST akan menggantung
+     saat container dashboard di-recreate. -->
+<div class="modal fade" id="update-confirm-modal" tabindex="-1" aria-labelledby="update-confirm-label" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="update-confirm-label">Update dashboard</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-3">
+          Dashboard akan di-<span class="mono">pull</span> ulang, image dibangun ulang, lalu container
+          <strong>di-recreate</strong> — akses dashboard terputus beberapa saat dan sesi terminal/app
+          yang sedang berjalan ikut terhenti.
+        </p>
+        <ul class="small text-muted mb-3">
+          <li>Versi sekarang: <span class="mono"><?= e($shortSha($check['local_sha'] ?? null)) ?></span><?= ($update['branch'] ?? '') !== '' ? ' (' . e((string) $update['branch']) . ')' : '' ?></li>
+          <?php if (!empty($check['remote_sha'])): ?>
+          <li>Versi tujuan: <span class="mono"><?= e($shortSha($check['remote_sha'])) ?></span></li>
+          <?php endif; ?>
+        </ul>
+        <div class="alert alert-warning py-2 small mb-0">
+          Bila versi baru tidak sehat dalam <?= (int) ($pf['context']['health_timeout'] ?? 0) > 0 ? (int) $pf['context']['health_timeout'] . ' detik' : 'batas waktu' ?>,
+          kode dikembalikan otomatis ke <span class="mono"><?= e($shortSha($check['local_sha'] ?? null)) ?></span>.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Batal</button>
+        <button type="button" class="btn btn-primary btn-sm" id="update-confirm-btn">Ya, update sekarang</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="rollback-confirm-modal" tabindex="-1" aria-labelledby="rollback-confirm-label" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="rollback-confirm-label">Rollback dashboard</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-3">
+          Kode dikembalikan ke commit <strong>sebelum update terakhir</strong>, lalu container
+          <strong>di-recreate</strong> — akses dashboard terputus beberapa saat.
+        </p>
+        <ul class="small text-muted mb-3">
+          <li>Versi sekarang: <span class="mono"><?= e($shortSha($check['local_sha'] ?? null)) ?></span></li>
+          <li>Kembali ke: <span class="mono"><?= e($shortSha($rollbackSha)) ?></span></li>
+        </ul>
+        <div class="alert alert-secondary py-2 small mb-0">
+          Perubahan yang sudah dilakukan setelah versi itu (kalau ada) tidak ikut kembali —
+          rollback hanya mengembalikan kode pada commit tersebut.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Batal</button>
+        <button type="button" class="btn btn-outline-danger btn-sm" id="rollback-confirm-btn">Ya, rollback</button>
+      </div>
+    </div>
+  </div>
+</div>
+<?php endif; ?>
+
+<script src="/js/update.js?v=2"></script>
 <?php endif; ?>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>
