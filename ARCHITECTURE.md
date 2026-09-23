@@ -378,7 +378,7 @@ Halaman global **`/monitor`** (nav topbar — bukan di detail app) menampilkan p
 
 ### 5.14 Self-Update Dashboard (update rames dari UI)
 
-Menggantikan alur "SSH → `git pull`". Panel ada di halaman **`/nginx`** (+ badge `update` di nav topbar untuk admin, dibaca dari `check.json` tanpa jaringan).
+Menggantikan alur "SSH → `git pull`". Panel ada di halaman **`/nginx`** (menu nav **Config**) (+ badge `update` di nav topbar untuk admin, dibaca dari `check.json` tanpa jaringan).
 
 ```mermaid
 flowchart TD
