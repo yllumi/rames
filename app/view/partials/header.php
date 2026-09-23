@@ -38,7 +38,8 @@
             <a class="nav-link <?= ($active ?? '') === 'database' ? 'active' : '' ?>" href="/database">Database</a>
           </li>
           <li class="nav-item">
-            <a class="nav-link <?= ($active ?? '') === 'nginx' ? 'active' : '' ?>" href="/nginx">Nginx</a>
+            <?php $__update = update_badge(); ?>
+            <a class="nav-link <?= ($active ?? '') === 'nginx' ? 'active' : '' ?>" href="/nginx">Nginx<?php if ($__update['available']): ?><span class="badge text-bg-warning ms-1" title="Ada pembaruan dashboard — buka halaman Nginx">update</span><?php endif; ?></a>
           </li>
           <?php if (is_admin()): ?>
           <li class="nav-item">

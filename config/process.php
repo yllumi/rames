@@ -58,5 +58,15 @@ return [
                 'enable_memory_monitor' => DIRECTORY_SEPARATOR === '/',
             ]
         ]
-    ]
+    ],
+    // Cek pembaruan dashboard berkala untuk badge di nav topbar (SPECS.md §7.8).
+    // Sengaja TIDAK memakai `git fetch` (itu menulis .git sebagai root di dalam
+    // container → file milik root di repo milik user host) melainkan
+    // `git ls-remote` yang tidak menyentuh repo lokal. Interval 0 = proses tidak
+    // dijalankan (cek manual lewat tombol di halaman /nginx tetap bisa).
+    'update-check' => [
+        'handler' => app\process\UpdateCheckProcess::class,
+        'reloadable' => true,
+        'count' => 1,
+    ],
 ];

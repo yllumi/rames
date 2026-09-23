@@ -142,3 +142,42 @@ if (!function_exists('app_role_label')) {
         return AppAccess::label($role ?? '');
     }
 }
+
+if (!function_exists('update_badge')) {
+    /**
+     * Ringkasan status pembaruan dashboard untuk badge nav topbar (SPECS.md §7.8).
+     *
+     * Membaca HANYA berkas cache yang ditulis proses `update-check` / tombol
+     * "Cek pembaruan" — tanpa jaringan sama sekali, supaya setiap render halaman
+     * tetap murah. Sengaja tidak memakai cache statik (worker Webman persistent →
+     * nilai statik akan basi lintas-request).
+     *
+     * @return array{show:bool,available:bool,error:?string,checked_at:?string}
+     */
+    function update_badge(): array
+    {
+        $hidden = ['show' => false, 'available' => false, 'error' => null, 'checked_at' => null];
+
+        // Hanya admin yang bisa menindaklanjuti, jadi hanya admin yang diberi badge.
+        if (!is_admin() || !(bool) config('deploy.update_enabled', true)) {
+            return $hidden;
+        }
+
+        $file = (string) config('deploy.update_check_file', base_path() . '/runtime/update/check.json');
+        if (!is_file($file)) {
+            return ['show' => true, 'available' => false, 'error' => null, 'checked_at' => null];
+        }
+        $raw = @file_get_contents($file);
+        $data = $raw === false ? null : json_decode($raw, true);
+        if (!is_array($data)) {
+            return ['show' => true, 'available' => false, 'error' => null, 'checked_at' => null];
+        }
+
+        return [
+            'show' => true,
+            'available' => (bool) ($data['update_available'] ?? false),
+            'error' => isset($data['error']) && $data['error'] !== null ? (string) $data['error'] : null,
+            'checked_at' => isset($data['checked_at']) ? (string) $data['checked_at'] : null,
+        ];
+    }
+}

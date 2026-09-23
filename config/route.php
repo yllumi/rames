@@ -22,8 +22,10 @@ use app\controller\NetworkController;
 use app\controller\NginxController;
 use app\controller\AppController;
 use app\controller\DatabaseController;
+use app\controller\HealthController;
 use app\controller\SslController;
 use app\controller\TerminalController;
+use app\controller\UpdateController;
 use app\controller\UserController;
 use app\controller\VolumeController;
 
@@ -37,6 +39,10 @@ use app\controller\VolumeController;
 Route::get('/login', [AuthController::class, 'loginForm']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::get('/logout', [AuthController::class, 'logout']);
+
+// Kesehatan dashboard (publik, lihat AuthMiddleware::PUBLIC_PATHS): dipakai helper
+// self-update untuk memverifikasi versi baru melayani request, + monitoring eksternal.
+Route::get('/healthz', [HealthController::class, 'index']);
 
 /*
 |--------------------------------------------------------------------------
@@ -96,6 +102,13 @@ Route::post('/apps/{id}/owner', [AppController::class, 'transferOwner']);
 // Halaman & reload Nginx host (global — berlaku untuk semua app)
 Route::get('/nginx', [NginxController::class, 'index']);
 Route::post('/nginx/reload', [NginxController::class, 'reload']);
+
+// Self-update dashboard (panel di halaman /nginx) — cek, jalankan, rollback, status.
+// Mutasi hanya admin; status boleh dibaca semua user yang sudah login.
+Route::post('/api/update/check', [UpdateController::class, 'check']);
+Route::post('/api/update/start', [UpdateController::class, 'start']);
+Route::post('/api/update/rollback', [UpdateController::class, 'rollback']);
+Route::get('/api/update/status', [UpdateController::class, 'status']);
 
 // SSL otomatis (Let's Encrypt)
 Route::get('/ssl', [SslController::class, 'index']);

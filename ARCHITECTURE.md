@@ -99,6 +99,8 @@ Controller hanya **mediator**: tidak memuat logika bisnis, tidak menyimpan state
 | `UserController` | Kelola user — **khusus admin**: tambah/hapus user, ubah role (admin/member), ganti password. Menghapus user **mengalihkan app miliknya** ke admin yang menghapus |
 | `SslController` | Halaman `/ssl`: daftar domain (subdomain/custom) + status SSL + tombol Aktifkan SSL / Retry; spawn worker `cli/ssl.php` |
 | `IndexController` | Halaman utama dashboard (`view('index/hello')`) |
+| `HealthController` | `GET /healthz` (**publik**, §5.14): status + SHA/branch dari `.git` (tanpa proses git) — dipakai helper self-update untuk memutuskan sehat/rollback, dan bisa dipakai monitoring eksternal |
+| `UpdateController` | Endpoint self-update dashboard (§5.14): `GET /api/update/status` (semua user login), `POST /api/update/check`, `POST /api/update/start`, `POST /api/update/rollback` (admin). Panel-nya di halaman `/nginx` |
 
 ### 4.2 Middleware — `app/middleware/`
 
@@ -154,6 +156,10 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | **Template** | `TemplateCatalog` | Katalog **template app siap-pakai** (§5.1c) dari folder repo `templates/<slug>/` (`template.yml` + `docker-compose.yml` + `files/`): `all()`/`find()`/`require()` (template rusak dikembalikan dengan `valid=false` + pesan error agar galeri menampilkannya, bukan menghilangkannya), validasi (image prebuilt tanpa `build:`, tolak `container_name` & replica > 1 & `name:` level atas — nama container/project dikelola dashboard per app; wajib ada `ports:`; tiap `${VAR}` tanpa default wajib dideklarasikan di `env[]`), `materialize()` (tulis compose + file pendukung ke direktori app lewat `ComposeSource::store()`), serta `resolveEnv()`/`generatedKeys()` (nilai input → default → auto-generate rahasia → tolak bila wajib). Instance-based seperti `EnvManager` (path bisa di-override → mudah diuji) |
 | `NetworkManager` | Kelola external network app: tulis `docker-compose.override.networks.yml` (deklarasi `external: true` + `networks: [default, <ext>]` ke semua service; merge compose `networks` union); `sync()` idempoten; dipanggil controller & `LocalDeployer` agar file konsisten dengan `apps.json` |
 | | `DeployerFactory` | Satu-satunya titik pembuatan `DeployerInterface` |
+| **Update** | `RepoInfo` | Pembacaan keadaan repo Git dashboard: `sha()`/`branch()`/`remoteUrl()` dibaca **langsung dari `.git`** (tanpa proses → murah untuk `/healthz`), sedangkan `headCommit()`/`trackedChanges()`/`untrackedFiles()` memakai git CLI dengan `-c safe.directory=<root>` (dashboard root ≠ pemilik berkas). `remoteHead()` = `git ls-remote` yang **tidak menyentuh repo lokal**; `compareUrl()` menyusun tautan compare GitHub/GitLab. Seluruh parser dipisah statik agar teruji |
+| | `UpdateState` | Dua berkas status dengan **satu penulis masing-masing** (§5.14): `runtime/update/check.json` (ditulis dashboard) & `runtime/logs/update/run.json` + `<id>.log` (ditulis helper). Menyediakan pembacaan ternormalisasi, `isRunning()`, `finalize()` untuk run yang ditinggalkan helper, daftar/ekor log (nama divalidasi & dikurung di `run_dir`), serta serah-terima kepemilikan direktori ke uid pemilik repo agar helper bisa menulis |
+| | `UpdateChecker` | Cek pembaruan = bandingkan SHA HEAD lokal dengan `git ls-remote origin refs/heads/<branch>` (tanpa `fetch` → tidak menulis objek/ref sebagai root); menulis `check.json` yang dibaca badge nav & panel. Kegagalan (jaringan/remote/detached HEAD) dikembalikan sebagai pesan, bukan exception |
+| | `UpdateService` | Orkestrasi: `selfContext()` (inspect container dashboard sendiri via Engine → image, project, service, network, `dns`) untuk membangun perintah `docker run` helper (`buildHelperCommand()`, array tanpa shell, uid pemilik repo + `--group-add` gid socket), `preflight()` (fail-fast: repo bersih, branch, helper ada, tidak ada run berjalan), `start()` (tulis plan + status awal lalu spawn helper detached), `panel()` (ringkasan UI + deteksi run macet) |
 
 ### 4.4 Background Worker — `cli/deploy.php`
 
@@ -166,6 +172,7 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 - Setelah selesai, persisten `containers` dan `deploy_history` kembali ke `apps.json`.
 - Log per app: `runtime/logs/deploy/{appId}.log`.
 - Worker SSL: `cli/ssl.php` — jalankan `certbot certonly`, update `ssl_status`/`ssl_expires_at`, tulis ulang config Nginx dengan SSL (log `runtime/logs/ssl/{appId}.log`).
+- **Self-update dashboard** (§5.14) — bukan worker PHP, melainkan **helper container** yang di-spawn `UpdateService` (`docker run -d`, detached, di luar compose project) dan menjalankan `cli/self-update.sh` di dalam repo: `git fetch`/`merge --ff-only` → `composer install` (bila perlu) → `docker compose up -d --build --force-recreate` → tunggu `/healthz` → rollback otomatis (`git reset --hard` + rebuild) bila versi baru tidak sehat. Status ditulis oleh `cli/update-report.php` (PHP mandiri tanpa autoload, ikut disalin ke `/tmp` agar stabil saat kode berubah oleh `git pull`).
 
 ### 4.5 Storage
 
@@ -174,6 +181,8 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 - `templates/<slug>/` — definisi template create app (§5.1c): `template.yml` (metadata + deklarasi env), `docker-compose.yml` (image prebuilt), `files/` (file pendukung). Ikut versi repo (bukan data runtime) → dikelola admin/dev lewat git.
 - `database/keys/` — pasangan kunci SSH (deploy key per app, chmod 0600) + `known_hosts`; private key tidak pernah keluar server.
 - `database/env/{name}.env` — managed env file per app (chmod 0600); dibaca docker compose via `--env-file`.
+- `runtime/update/check.json` — cache hasil cek pembaruan dashboard (§5.14), ditulis proses `update-check`/tombol **Cek Pembaruan**; dibaca badge nav tiap render halaman (tanpa jaringan).
+- `runtime/logs/update/` — `run.json` (status update terakhir/sedang berjalan) + `<id>.log` (keluaran mentah git/composer/compose/curl), ditulis helper self-update.
 - Semua mutasi lewat `JsonStore->update()` dengan `flock` → aman dari race condition.
 - Direktori `apps/`, `database/*.json`, `database/keys/`, `database/env/`, `nginx-status/` di-gitignore (data runtime).
 
@@ -367,6 +376,41 @@ Halaman global **`/monitor`** (nav topbar — bukan di detail app) menampilkan p
 6. **Nilai jujur**: container idle dilaporkan `0%` (dua sampel valid walau delta nol), sedangkan data yang memang tak ada (container berhenti, `precpu_stats` kosong, `/proc` tak terbaca) dilaporkan **N/A** — bukan 0 yang menyesatkan.
 7. **Tanpa mount tambahan**: `/proc` di dalam container dashboard sudah menampilkan nilai host (Docker tidak men-*namespace*-kan `stat`/`meminfo`/`loadavg`); `HOST_PROC_PATH` disediakan bila host memakai lxcfs.
 
+### 5.14 Self-Update Dashboard (update rames dari UI)
+
+Menggantikan alur "SSH → `git pull`". Panel ada di halaman **`/nginx`** (+ badge `update` di nav topbar untuk admin, dibaca dari `check.json` tanpa jaringan).
+
+```mermaid
+flowchart TD
+    A[Panel /nginx: Cek Pembaruan + tombol Update] --> B[UpdateController::start]
+    B --> C[UpdateService::preflight]
+    C -- gagal --> C1[Pesan jelas: repo kotor / bukan git / helper tidak ada / update berjalan]
+    C -- lolos --> D[Tap tulis plan.json + run.json<br/>runtime/logs/update]
+    D --> E[spawn helper: docker run -d<br/>uid pemilik repo + --group-add gid socket<br/>--network & --dns sama dengan dashboard]
+    E --> F[cli/self-update.sh:<br/>git fetch + merge --ff-only origin/branch]
+    F --> G[composer install bila vendor/ atau composer.* berubah]
+    G --> H[docker compose up -d --build --force-recreate]
+    H --> I{GET /healthz sehat?}
+    I -- ya --> J[run.json: success]
+    I -- tidak --> K[git reset --hard SHA lama + rebuild + recreate]
+    K --> L{sehat?}
+    L -- ya --> M[run.json: rolled_back]
+    L -- tidak --> N[run.json: error]
+    D -. polling 2 dtk .-> O[GET /api/update/status + ekor log]
+    J --> O
+    M --> O
+    N --> O
+```
+
+**Poin kunci**
+- **Helper container, bukan worker PHP** (sama seperti `NginxReloader`): `docker compose up` akan me-recreate container dashboard — proses di dalamnya akan mematikan dirinya sendiri di tengah pekerjaan (container lama di-stop lebih dulu, jadi kegagalan di jendela itu meninggalkan dashboard mati). Helper hidup di luar lifecycle itu.
+- **Helper berjalan sebagai pemilik repo** (`--user <uid>:<gid>` + `--group-add <gid socket Docker>`): `git pull` sebagai root meninggalkan berkas milik root di repo milik user host (merusak `git pull` dari SSH berikutnya) dan git menolak repo ber-owner lain saat dijalankan root (`detected dubious ownership`). UID/GID diambil dari `fileowner()`/`filegroup()` direktori repo, gid socket dari socket Docker.
+- **DNS & network diwarisi dari container dashboard** (dibaca dari `inspect` diri sendiri): daemon Docker tidak mewarisi `dns:` compose dan pada sebagian host `/etc/resolv.conf` host rusak → tanpa `--dns` helper tidak bisa resolve remote Git. Network yang sama juga membuat nama container dashboard resolve → target `/healthz` tanpa bergantung `APP_PORT`.
+- **`--force-recreate`**: bila perubahan hanya kode PHP (image identik karena kode di bind-mount), compose TIDAK men-ciptakan ulang container — proses lama tetap memakai kelas di memori dan kode baru tidak aktif.
+- **Cek pembaruan tanpa `fetch`**: `git ls-remote` tidak menulis ke `.git` (lihat §6); jumlah commit tertinggal tidak dihitung, UI menautkan halaman compare remote.
+- **Kepemilikan berkas status diserahkan ke helper**: `runtime/logs/update/` di-`chown` ke uid pemilik repo saat dashboard (root) membuatnya; satu penulis per berkas (`check.json` = dashboard, `run.json` = helper) → tidak ada perebutan.
+- **Guard**: repo kotor → update ditolak (daftar berkas ditampilkan); `check` boleh semua user login, `update`/`rollback` admin; rollback hanya setelah update **berhasil**; run yang ditinggalkan helper ditutup `error` saat panel dibaca (UI tidak macet).
+
 ---
 
 ## 6. Keputusan Teknis Penting
@@ -379,6 +423,8 @@ Halaman global **`/monitor`** (nav topbar — bukan di detail app) menampilkan p
 - **Mount path sama dengan host (`${PWD}:${PWD}`)**: syarat agar relative bind mount milik app terselesaikan ke path host oleh daemon.
 - **Disposisi sinyal adalah state proses, bukan state request**: `SIGCHLD=SIG_IGN` yang dipasang untuk auto-reap anak detached bocor ke proses anak berikutnya (diwariskan melewati `exec`) — di worker persistent ini merusak `git`/`docker compose`. Setiap spawn yang membaca exit code wajib memakai `SigchldGuard` (§4.4).
 - **`container_name` bersifat global**: nama container custom tidak mendapat prefix project Docker (beda dari nama default compose), sehingga wajib divalidasi unik se-host **sebelum** menulis override — kalau tidak, `compose up` gagal di tengah deploy (`Conflict. The container name ... is already in use`, §5.12).
+- **Proses tidak boleh me-recreate container yang menjalankannya** (§5.14): update dashboard dijalankan helper container terpisah; kalau dijalankan dari proses di dalam container target, container lama di-stop lebih dulu dan kegagalan di jendela itu meninggalkan dashboard mati.
+- **`git ls-remote`, bukan `git fetch`, untuk cek pembaruan**: fetch menulis objek/ref ke `.git` sebagai root (dashboard = root, repo = milik user host) dan meninggalkan berkas milik root yang membuat `git pull` dari SSH gagal; selain itu repo "kotor" karena status berubah — padahal update justru butuh repo bersih.
 
 ---
 
@@ -393,6 +439,7 @@ Halaman global **`/monitor`** (nav topbar — bukan di detail app) menampilkan p
 - Input divalidasi ketat (slug `[a-z0-9-]`, URL http/https, branch, port int 1–65535).
 - **Template** (§5.1c): definisi template hanya dari folder repo `templates/` (bukan input user/unggahan), nama file pendukung divalidasi relatif & aman, file override generated ditolak, dan nilai rahasia dari template (auto-generate) hanya tersimpan di `database/env/{name}.env` (chmod 0600, gitignored) — tidak pernah masuk repo atau `apps.json` versi kode. Env hasil deploy tetap dipersist di `apps.json.env` seperti env yang diisi user lewat tab Environment.
 - Eksekusi command tanpa shell (lihat §6).
+- **Self-update** (§5.14): hanya **admin** yang bisa menjalankan update/rollback (cek pembaruan boleh semua user login); update ditolak selama repo punya perubahan belum di-commit (agar pekerjaan lokal tidak tertimpa); helper berjalan sebagai pemilik repo (bukan root) dengan akses socket Docker via `--group-add`; nilai dari plan (SHA/branch/path) divalidasi & diteruskan sebagai argv terpisah (tanpa shell). `GET /healthz` **publik** tetapi hanya mengembalikan `{ok, service, sha, branch, time}` — SHA repo dashboard (repositori publik pada instalasi default) tanpa data instalasi.
 - Deploy key SSH per app: private key di `database/keys/` (chmod 0600, gitignored), hanya public key yang ditampilkan; `GIT_SSH_COMMAND` memakai `IdentitiesOnly=yes`, `StrictHostKeyChecking=accept-new`, dan `UserKnownHostsFile` milik sistem.
 - SSL: sertifikat Let's Encrypt hanya diaktifkan untuk domain publik (`SslIssuer::isPublicDomain`); `/etc/letsencrypt` di-mount baca-tulis ke container; `CLOUDFLARE_CREDS` (API token) via file dengan izin ketat, bukan hard-coded.
 - `docker.sock` di-mount adalah risiko yang disengaja; semua akses dashboard di balik autentikasi.
@@ -403,6 +450,7 @@ Halaman global **`/monitor`** (nav topbar — bukan di detail app) menampilkan p
 ## 8. Batasan & Future Work
 
 - **Watcher reload Nginx belum ada** (SPECS §8.3) — otomatisasi via `inotifywait` dijadwalkan. Pengganti sementara: dashboard me-reload nginx host lewat Docker socket (`NginxReloader`) — tombol "Reload Nginx" + auto-reload setelah set/hapus custom domain, deploy/rebuild, dan SSL (best-effort, non-fatal).
+- **Self-update** (§5.14) baru sebatas tombol manual: belum ada penjadwalan (cron/timer yang benar-benar menjalankan update), notifikasi hasil, changelog terstruktur (hanya tautan compare remote), dan tidak ada migrasi data (state dashboard = JSON). Bila dashboard tetap tidak sehat setelah rollback otomatis, pemulihan manual lewat SSH tetap perlu.
 - **SSL otomatis** (SPECS §8a) sudah diimplementasikan: halaman `/ssl` + worker `cli/ssl.php` menjalankan certbot di container (HTTP-01 webroot / DNS-01 Cloudflare). Otomasi renewal `certbot renew` di host tetap prasyarat manual.
 - **Deteksi konflik port** hanya terhadap app terkelola sendiri (SPECS §7.2), bukan container eksternal di host.
 - Ekstraksi `DeployerInterface` → agent HTTP terpisah (multi-server).

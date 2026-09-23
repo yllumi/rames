@@ -1,0 +1,57 @@
+# Template Wabaileys (WhatsApp Multi-Session API) — image prebuilt, tanpa `build:`/
+# `container_name`/`name:` (semua itu dikelola dashboard: nama project compose = nama
+# app, nama container = {nama app}-{service}).
+#
+# Tag `latest` akan di-pull ulang saat "Deploy Ulang" di halaman detail app. Untuk
+# deploy yang reproducible, pin ke digest image (ganti baris `image:`):
+#   docker manifest inspect yllumi/wabaileys:latest   # ambil digest sha256
+#   image: yllumi/wabaileys@sha256:<digest>
+services:
+  wabaileys:
+    image: yllumi/wabaileys:latest
+    restart: unless-stopped
+
+    # init:true supaya proses Bun bukan PID 1 (SIGTERM rapi + reap zombie).
+    init: true
+    # Beri waktu socket Baileys menutup koneksi sebelum SIGKILL.
+    stop_grace_period: 20s
+
+    ports:
+      # host:container. Host port diresolusi dashboard (port ini dipertahankan bila
+      # bebas, digeser otomatis bila bentrok dengan app lain). Port container 8990
+      # statis — di-hardcode di kode app, bukan dari environment.
+      - "8990:8990"
+
+    environment:
+      TZ: ${TZ}
+      # Dashboard web + endpoint manajemen (HTTP Basic Auth).
+      HTTP_AUTH_USERNAME: ${HTTP_AUTH_USERNAME}
+      HTTP_AUTH_PASSWORD: ${HTTP_AUTH_PASSWORD}
+      # Kunci API untuk endpoint kirim pesan (header X-Api-Key) + batas session.
+      APP_KEY: ${APP_KEY}
+      MAX_SESSIONS: ${MAX_SESSIONS}
+
+    volumes:
+      # Kredensial Baileys per session, sessions_registry.json, dan app key hasil
+      # rotasi. Named volume (bukan bind mount) → ownership diatur Docker
+      # (uid 1000 = user `bun`) sehingga tidak ada direktori host yang perlu dibuat,
+      # dan datanya dipakai ulang bila app dibuat ulang dengan nama yang sama.
+      - wabaileys-data:/app/data
+
+    # GET /health bersifat publik (tanpa kredensial) — aman dipakai sebagai healthcheck.
+    healthcheck:
+      test: ["CMD-SHELL", 'curl -fsS http://127.0.0.1:8990/health || exit 1']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+    # Log Baileys sangat cerewet; batasi supaya disk host tidak penuh.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  wabaileys-data:

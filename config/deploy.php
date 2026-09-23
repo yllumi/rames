@@ -103,4 +103,20 @@ return [
     // `docker-compose.yml` (image prebuilt, tanpa `build:`), `files/` (file
     // pendukung opsional yang di-bind mount). Dikelola lewat repo (bukan UI).
     'templates_path' => getenv('TEMPLATES_PATH') ?: (base_path() . '/templates'),
+
+    // ---------------------------------------------------------------------
+    // Self-update dashboard (SPECS.md §7.8 / ARCHITECTURE.md §5.14)
+    // ---------------------------------------------------------------------
+    // Update dijalankan oleh HELPER CONTAINER detached di luar lifecycle
+    // container dashboard — proses yang menjalankan update akan mematikan
+    // dirinya sendiri saat `docker compose up -d` me-recreate dashboard.
+    'update_enabled' => (getenv('UPDATE_ENABLED') ?: 'true') !== 'false',      // false = sembunyikan seluruh fitur
+    'update_path' => getenv('UPDATE_PATH') ?: base_path(),                     // direktori repo dashboard (host path)
+    'update_branch' => getenv('UPDATE_BRANCH') ?: '',                          // kosong = branch aktif repo
+    'update_check_interval' => (int) (getenv('UPDATE_CHECK_INTERVAL') ?: 1800), // detik, cek berkala (0 = mati)
+    'update_health_timeout' => (int) (getenv('UPDATE_HEALTH_TIMEOUT') ?: 180),  // detik, tunggu versi BARU sehat
+    'update_rollback_timeout' => (int) (getenv('UPDATE_ROLLBACK_TIMEOUT') ?: 180), // detik, tunggu versi LAMA pulih
+    'update_image' => getenv('UPDATE_IMAGE') ?: '',                            // kosong = image container dashboard
+    'update_check_file' => getenv('UPDATE_CHECK_FILE') ?: (base_path() . '/runtime/update/check.json'),
+    'update_run_dir' => getenv('UPDATE_RUN_DIR') ?: (base_path() . '/runtime/logs/update'),
 ];

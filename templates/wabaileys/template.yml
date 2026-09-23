@@ -1,0 +1,44 @@
+title: Wabaileys (WhatsApp Multi-Session API)
+description: >-
+  WhatsApp API multi-session berbasis Baileys (image yllumi/wabaileys): kirim/terima
+  pesan lewat REST API dan kelola banyak akun dari dashboard web (buat/hapus session,
+  scan QR, status koneksi, health). Kredensial WhatsApp tersimpan di volume sehingga
+  tidak perlu scan QR ulang setelah restart.
+category: Messaging
+icon: "📱"
+docs_url: https://hub.docker.com/r/yllumi/wabaileys
+
+# Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke
+# service (tanpa disimpan di repo). Kosong = pakai `default`; `generate: secret`
+# berarti nilai acak dibuat otomatis bila dikosongkan.
+env:
+  - key: HTTP_AUTH_USERNAME
+    label: Username dashboard
+    help: HTTP Basic Auth untuk dashboard web dan endpoint manajemen (sessions, generate-appkey).
+    default: admin
+  - key: HTTP_AUTH_PASSWORD
+    label: Password dashboard
+    help: >-
+      HTTP Basic Auth untuk dashboard web dan endpoint manajemen. Jangan dikosongkan —
+      image memakai default admin/admin bila nilai ini kosong.
+    generate: secret
+  - key: APP_KEY
+    label: App key (header X-Api-Key)
+    help: >-
+      Kunci untuk endpoint kirim pesan (POST /{session}/send). Nilai dari environment
+      selalu menang setelah restart, sedangkan endpoint /generate-appkey hanya mengubah
+      kunci selama app berjalan — kosongkan/ubah di tab Environment bila ingin rotasi
+      tersimpan permanen di volume.
+    generate: secret
+  - key: MAX_SESSIONS
+    label: Maksimum session
+    help: Sesuaikan dengan RAM (1 GB ± 10-15 session, 2 GB ± 30-40, 4 GB ± 80-100).
+    default: "15"
+  - key: TZ
+    label: Timezone
+    default: Asia/Jakarta
+
+# Port container yang melayani domain app (port 8990 statis, di-hardcode di kode app).
+primary:
+  service: wabaileys
+  port: 8990

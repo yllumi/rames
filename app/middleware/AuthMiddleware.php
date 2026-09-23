@@ -19,7 +19,13 @@ use Webman\Http\Request;
  */
 class AuthMiddleware implements MiddlewareInterface
 {
-    private const PUBLIC_PATHS = ['/', '/login'];
+    /**
+     * `/healthz` publik (tanpa session) karena dipakai (a) helper self-update untuk
+     * memverifikasi versi baru benar-benar melayani request sebelum rollback
+     * otomatis diputuskan, dan (b) monitoring eksternal (mis. Uptime Kuma).
+     * Responsnya hanya berisi status + SHA commit — tanpa data sensitif.
+     */
+    private const PUBLIC_PATHS = ['/', '/login', '/healthz'];
 
     private const STATIC_EXTENSIONS = [
         'css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp',
