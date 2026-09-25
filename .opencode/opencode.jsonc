@@ -1,0 +1,6 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Skill Rames tinggal di .github/skills/ agar tetap dipakai bersama VS Code Copilot.
+  // Daftarkan path-nya supaya agent OpenCode (rames-master) bisa memuat `grill-with-docs`.
+  "skills": [".github/skills"]
+}
