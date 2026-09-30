@@ -20,6 +20,7 @@
 - **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri.
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
+- **Batas resource per service** — admin menetapkan batas maksimum CPU & memori tiap service app (hard limit per service, ditulis ke override compose); user lain melihat nilainya read-only.
 - **Keamanan dasar** — CSRF token, eksekusi command bebas injection (`array` + `bypass_shell`), validasi input ketat, JSON dengan file locking (`flock`).
 
 ## Tech Stack

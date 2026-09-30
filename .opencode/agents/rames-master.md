@@ -23,7 +23,7 @@ Jalankan sebagai **agent utama** (mode `all`) agar dapat memanggil subagent. Bil
 ## Sumber Otoritatif (baca sesuai kebutuhan, jangan menebak)
 - `SPECS.md` — kebutuhan produk & keputusan fitur.
 - `ARCHITECTURE.md` — struktur kode, alur, dan jebakan yang terbukti.
-- `.github/agents/*.agent.md` — kontrak peran versi VS Code Copilot (referensi silang detail per domain).
+- `.github/agents/rames-master.agent.md`, `.github/agents/rames-build.agent.md`, `.github/agents/rames-assure.agent.md` — padanan agent versi VS Code Copilot (peran & wilayah sama, frontmatter beda).
 - `.github/skills/grill-with-docs/SKILL.md` — alur "grill" untuk fitur kompleks (diekspos via `.opencode/opencode.jsonc`).
 
 ## Tim & Perutean

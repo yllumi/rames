@@ -1,8 +1,8 @@
 # Agent Rames untuk OpenCode V2
 
-Folder `.opencode/agents/` berisi tim agent OpenCode untuk project **Rames** (deploy dashboard, Webman PHP 8.1+). Ini adalah **adaptasi** dari 7 custom agent VS Code Copilot di `.github/agents/` (yang tetap dipertahankan; lihat `.github/agents/README.md`).
+Folder `.opencode/agents/` berisi tim agent OpenCode untuk project **Rames** (deploy dashboard, Webman PHP 8.1+). Polanya **1 orkestrator + 2 tim** (dari semula 1 orkestrator + 6 spesialis berdomain tunggal). Tujuannya memangkas jumlah subagent tanpa kehilangan batas tanggung jawab, dengan domain digabung menjadi peran-peran di dalam tim.
 
-Pola baru: **1 orkestrator + 2 tim** (dari semula 1 orkestrator + 6 spesialis berdomain tunggal). Tujuannya memangkas jumlah subagent tanpa kehilangan batas tanggung jawab, dengan domain digabung menjadi peran-peran di dalam tim.
+Pola ini **juga dipakai di sisi VS Code Copilot**: `.github/agents/` kini berisi padanan 1:1 — `rames-master.agent.md`, `rames-build.agent.md`, `rames-assure.agent.md` — dan 7 agent spesialis lama sudah dihapus. Lihat `.github/agents/README.md` (memuat tabel terjemahan field OpenCode ⇄ Copilot).
 
 ## Daftar Agent
 
@@ -42,17 +42,17 @@ Urutan yang disarankan untuk fitur lintas lapisan:
   - *"pakai rames-assure dengan Peran: Verifier untuk menguji perubahan ini"*.
 - **Satu pemanggilan = satu peran.** Untuk pekerjaan lintas domain, pecah menjadi beberapa panggilan berurutan.
 
-## Pemetaan dari Agent Lama
+## Pemetaan Domain ⇄ Tim (kedua sisi)
 
-| Agent lama (`.github/agents/`) | Sekarang |
-|---|---|
-| Rames PM (Orkestrator) | `rames-master` |
-| Rames Backend PHP | `rames-build` · Peran: Backend PHP |
-| Rames Deploy & Docker | `rames-build` · Peran: Deploy & Docker |
-| Rames Auth & Security | `rames-build` · Peran: Auth & Security |
-| Rames Frontend UI | `rames-build` · Peran: Frontend UI |
-| Rames Verifier | `rames-assure` · Peran: Verifier |
-| Rames Docs Architect | `rames-assure` · Peran: Docs Architect |
+| Domain (pola lama) | OpenCode (`.opencode/agents/`) | Copilot (`.github/agents/`) |
+|---|---|---|
+| Orkestrasi | `rames-master.md` | `rames-master.agent.md` — Rames Master (Orkestrator) |
+| Backend PHP | `rames-build.md` · Peran: Backend PHP | `rames-build.agent.md` · Peran: Backend PHP |
+| Deploy & Docker | `rames-build.md` · Peran: Deploy & Docker | `rames-build.agent.md` · Peran: Deploy & Docker |
+| Auth & Security | `rames-build.md` · Peran: Auth & Security | `rames-build.agent.md` · Peran: Auth & Security |
+| Frontend UI | `rames-build.md` · Peran: Frontend UI | `rames-build.agent.md` · Peran: Frontend UI |
+| Verifikasi | `rames-assure.md` · Peran: Verifier | `rames-assure.agent.md` · Peran: Verifier |
+| Dokumentasi | `rames-assure.md` · Peran: Docs Architect | `rames-assure.agent.md` · Peran: Docs Architect |
 
 Pemisahan **Build vs Assurance** sengaja dipilih agar aturan lama **"verifikasi tidak boleh dilakukan oleh penulis perubahan"** tetap terjaga: `rames-build` menulis kode produksi, `rames-assure` memverifikasi dan tidak pernah mengedit kode produksi.
 
@@ -70,4 +70,5 @@ Pemisahan **Build vs Assurance** sengaja dipilih agar aturan lama **"verifikasi 
 2. Frontmatter V2 hanya memakai field native: `description`, `mode`, `color`, `permissions`, `model`, `steps`, `hidden`. **Jangan** pakai field V1 (`tools`, `permission`, `disable`, `maxSteps`).
 3. Aturan `permissions` bersifat *last match wins*; taruh aturan luas dulu, pengecualian spesifik setelahnya.
 4. Jangan biarkan dua peran punya wilayah tumpang tindih; perbarui tabel & diagram di README ini bila berubah.
-5. Konsistensi dokumentasi & frontmatter ditinjau oleh `rames-assure` · Peran: Docs Architect.
+5. **Sinkron dua sisi**: perubahan peran/wilayah harus tercermin di `.opencode/agents/` **dan** `.github/agents/` (padanan 1:1). Jangan memakai field OpenCode (`mode`, `permissions`, …) di file `.agent.md`, dan sebaliknya.
+6. Konsistensi dokumentasi & frontmatter ditinjau oleh `rames-assure` · Peran: Docs Architect.

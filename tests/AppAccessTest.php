@@ -90,6 +90,49 @@ class AppAccessTest extends TestCase
         $this->assertFalse(AppAccess::can('sharing', $app, self::OPERATOR));
     }
 
+    public function testLimitsIsAdminOnly(): void
+    {
+        $app = $this->app();
+
+        // Batas CPU/memori per service = kewenangan admin global saja.
+        $this->assertTrue(AppAccess::can('limits', $app, self::ADMIN));
+        $this->assertFalse(AppAccess::can('limits', $app, self::OWNER));
+        $this->assertFalse(AppAccess::can('limits', $app, self::OPERATOR));
+        $this->assertFalse(AppAccess::can('limits', $app, self::VIEWER));
+        $this->assertFalse(AppAccess::can('limits', $app, self::STRANGER));
+
+        // abilitiesFor() konsisten: `limits` tidak bocor ke role non-admin.
+        $this->assertTrue(AppAccess::abilitiesFor(AppAccess::ROLE_ADMIN)['limits']);
+        foreach ([AppAccess::ROLE_OWNER, AppAccess::ROLE_OPERATOR, AppAccess::ROLE_VIEWER, null] as $role) {
+            $this->assertArrayHasKey('limits', AppAccess::abilitiesFor($role));
+            $this->assertFalse(
+                AppAccess::abilitiesFor($role)['limits'],
+                'limits seharusnya tidak dimiliki role ' . ($role ?? 'null')
+            );
+        }
+    }
+
+    public function testRequireLimitsThrows404ForNonAdmin(): void
+    {
+        $app = $this->app();
+
+        foreach ([self::OWNER, self::OPERATOR, self::VIEWER] as $user) {
+            try {
+                AppAccess::require('limits', $app, $user);
+                $this->fail('AppAccessDenied seharusnya dilempar untuk ' . $user['username']);
+            } catch (AppAccessDenied $e) {
+                // 404 (bukan 403) — satu pintu AppAccess.
+                $this->assertSame(404, $e->getCode());
+                $this->assertSame('limits', $e->ability);
+                $this->assertSame('app1', $e->appId);
+            }
+        }
+
+        // Admin lolos tanpa exception.
+        AppAccess::require('limits', $app, self::ADMIN);
+        $this->assertTrue(true);
+    }
+
     public function testOwnerAndAdminHaveFullAccess(): void
     {
         $app = $this->app();

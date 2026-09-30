@@ -403,6 +403,94 @@ class ComposeSourceTest extends TestCase
         $this->assertSame(['web' => 30010], ComposeSource::existingHostPorts($app));
     }
 
+    // ==================================================================
+    // Penyaringan override generated yang hilang dari disk
+    // ==================================================================
+
+    public function testFilterMissingGeneratedKeepsListWhenAllFilesExist(): void
+    {
+        $files = [
+            'docker-compose.yml',
+            'docker-compose.override.yml',
+            'docker-compose.override.ports.yml',
+            'docker-compose.override.names.yml',
+            'docker-compose.override.networks.yml',
+            'docker-compose.override.env.yml',
+        ];
+        foreach ($files as $file) {
+            file_put_contents($this->tmp . '/' . $file, "services: {}\n");
+        }
+
+        // Tidak ada yang hilang → daftar & urutan wajib utuh.
+        $this->assertSame($files, ComposeSource::filterMissingGenerated($this->tmp, $files));
+    }
+
+    public function testFilterMissingGeneratedDropsOnlyMissingGeneratedEntries(): void
+    {
+        $files = [
+            'docker-compose.yml',
+            'docker-compose.override.yml',
+            'docker-compose.override.ports.yml',
+            'docker-compose.override.limits.yml',   // hilang
+            'docker-compose.override.env.yml',
+        ];
+        foreach (['docker-compose.yml', 'docker-compose.override.yml', 'docker-compose.override.ports.yml', 'docker-compose.override.env.yml'] as $file) {
+            file_put_contents($this->tmp . '/' . $file, "services: {}\n");
+        }
+
+        $this->assertSame(
+            [
+                'docker-compose.yml',
+                'docker-compose.override.yml',
+                'docker-compose.override.ports.yml',
+                'docker-compose.override.env.yml',
+            ],
+            ComposeSource::filterMissingGenerated($this->tmp, $files)
+        );
+    }
+
+    public function testFilterMissingGeneratedKeepsMissingBaseFile(): void
+    {
+        // Base hilang di disk → WAJIB tetap ada di hasil agar compose memberi
+        // error yang jelas (fail-fast); override generated yang hilang tetap dibuang.
+        $files = ['docker-compose.yml', 'docker-compose.override.env.yml'];
+
+        $this->assertSame(['docker-compose.yml'], ComposeSource::filterMissingGenerated($this->tmp, $files));
+    }
+
+    public function testFilterMissingGeneratedFallsBackToBaseWhenAllGeneratedMissing(): void
+    {
+        $files = [
+            'docker-compose.override.ports.yml',
+            'docker-compose.override.names.yml',
+            'docker-compose.override.limits.yml',
+        ];
+
+        // Semua generated hilang → jangan pernah kembalikan array kosong.
+        $this->assertSame([ComposeSource::MAIN_FILES[0]], ComposeSource::filterMissingGenerated($this->tmp, $files));
+    }
+
+    public function testFilterMissingGeneratedHandlesEmptyAndBlankInput(): void
+    {
+        // Daftar kosong & entri nama kosong diabaikan (bukan error) → fallback base,
+        // supaya `docker compose -f` tetap menerima argumen yang bermakna.
+        $this->assertSame([ComposeSource::MAIN_FILES[0]], ComposeSource::filterMissingGenerated($this->tmp, []));
+        $this->assertSame([ComposeSource::MAIN_FILES[0]], ComposeSource::filterMissingGenerated($this->tmp, ['']));
+        $this->assertSame([ComposeSource::MAIN_FILES[0]], ComposeSource::filterMissingGenerated($this->tmp, ['', '   ']));
+    }
+
+    public function testFilterMissingGeneratedIsPureAndDoesNotThrowForMissingFiles(): void
+    {
+        $missingDir = $this->tmp . '/tidak-ada';
+        $files = ['docker-compose.yml', 'docker-compose.override.env.yml'];
+
+        // Direktori tidak ada → tidak melempar, base tetap dipertahankan.
+        $this->assertSame(
+            ['docker-compose.yml'],
+            ComposeSource::filterMissingGenerated($missingDir, $files)
+        );
+    }
+
     /**
      * Buat entri unggahan palsu (file temporer berisi $content).
      *

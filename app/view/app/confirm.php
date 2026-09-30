@@ -96,6 +96,79 @@
     </div>
   </div>
 
+  <?php
+  // Batas CPU/memori opsional saat create — hanya admin (kontrak
+  // AppController::limitsContext()). Prefill dari compose repo, editable.
+  $limitsCtx = is_array($resourceLimits ?? null) ? $resourceLimits : [];
+  $limitsServices = [];
+  foreach ((array) ($limitsCtx['services'] ?? []) as $limitsService) {
+      $limitsService = trim((string) $limitsService);
+      if ($limitsService !== '' && !in_array($limitsService, $limitsServices, true)) {
+          $limitsServices[] = $limitsService;
+      }
+  }
+  if ($limitsServices === []) {
+      foreach (array_keys((array) ($pending['services'] ?? [])) as $limitsService) {
+          $limitsService = trim((string) $limitsService);
+          if ($limitsService !== '' && !in_array($limitsService, $limitsServices, true)) {
+              $limitsServices[] = $limitsService;
+          }
+      }
+  }
+  $limitsRepo = is_array($limitsCtx['repo'] ?? null) ? $limitsCtx['repo'] : [];
+  $limitsMinMemory = \app\library\Deploy\ResourceLimits::MIN_MEMORY_MB;
+  ?>
+  <?php if (is_admin() && $limitsServices !== []): ?>
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h6 mb-1">Batas Sumber Daya (opsional)</h2>
+      <p class="text-muted small mb-3">
+        Kosongkan = ikut pengaturan compose repo / tanpa batas. Hanya admin dapat mengubah.
+      </p>
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th style="width:30%;">Service</th>
+              <th>CPU (core)</th>
+              <th>Memori (MB)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php foreach ($limitsServices as $limitsService): ?>
+            <?php
+              $limitRepo = is_array($limitsRepo[$limitsService] ?? null) ? $limitsRepo[$limitsService] : [];
+              $cpuRepo = $limitRepo['cpus'] ?? null;
+              $memRepo = $limitRepo['memory_mb'] ?? null;
+              $limitsId = (string) preg_replace('/[^a-zA-Z0-9_-]/', '-', $limitsService);
+            ?>
+            <tr>
+              <td><span class="mono"><?= e($limitsService) ?></span></td>
+              <td>
+                <input type="number" step="0.1" min="0" class="form-control form-control-sm" style="max-width:160px;"
+                       id="limit-cpus-<?= e($limitsId) ?>"
+                       name="limits[<?= e($limitsService) ?>][cpus]"
+                       value="<?= $cpuRepo !== null ? e((string) $cpuRepo) : '' ?>"
+                       placeholder="<?= $cpuRepo !== null ? e((string) $cpuRepo) : 'tanpa batas' ?>">
+                <?php if ($cpuRepo !== null): ?><div class="form-text">nilai dari compose repo</div><?php endif; ?>
+              </td>
+              <td>
+                <input type="number" step="1" min="<?= e((string) $limitsMinMemory) ?>" class="form-control form-control-sm" style="max-width:160px;"
+                       id="limit-memory-<?= e($limitsId) ?>"
+                       name="limits[<?= e($limitsService) ?>][memory_mb]"
+                       value="<?= $memRepo !== null ? e((string) $memRepo) : '' ?>"
+                       placeholder="<?= $memRepo !== null ? e((string) $memRepo) : 'tanpa batas' ?>">
+                <?php if ($memRepo !== null): ?><div class="form-text">nilai dari compose repo</div><?php endif; ?>
+              </td>
+            </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <?php endif; ?>
+
   <p class="text-muted small">
     Port yang berkonflik sudah otomatis diganti dari rentang <code><?= e(config('deploy.port_range.start')) ?>–<?= e(config('deploy.port_range.end')) ?></code>. Sesuaikan bila perlu.
     Pilih <strong>satu</strong> port yang menerima trafik domain app (subdomain / custom domain) — port lain

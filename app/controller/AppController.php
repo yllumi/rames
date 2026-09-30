@@ -11,6 +11,7 @@ use app\library\Deploy\ContainerNames;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\NetworkManager;
+use app\library\Deploy\ResourceLimits;
 use app\library\Db\DbContainerDetector;
 use app\library\Docker\ComposeParser;
 use app\library\Docker\DockerClient;
@@ -157,6 +158,16 @@ class AppController
             // engine tidak tersedia — tab Database tidak muncul
         }
 
+        // Batas CPU/memori per service (tab Container). Tanpa panggilan Engine
+        // tambahan; bila base compose tidak terbaca → data minimal + pesan error.
+        $limitsDir = (string) config('deploy.apps_path') . '/' . $app['name'];
+        $savedLimits = [];
+        try {
+            $savedLimits = ResourceLimits::of($app);
+        } catch (\Throwable $e) {
+            // data limits di apps.json tidak valid → form tampil tanpa nilai tersimpan
+        }
+
         return view('app/detail', [
             'app' => $app,
             'live' => $live,
@@ -168,6 +179,12 @@ class AppController
             'dbContainers' => $dbContainers,
             'access' => $this->accessContext($app),
             'compose' => $this->composeContext($app),
+            'resourceLimits' => $this->limitsContext(
+                $limitsDir,
+                (array) ($app['compose_files'] ?? ['docker-compose.yml']),
+                app_can('limits', $app),
+                $savedLimits
+            ),
         ]);
     }
 
@@ -427,6 +444,13 @@ class AppController
             'form_name' => (string) $request->get('name', $template['slug']),
             'form_env' => [],
             'form_error' => null,
+            'resourceLimits' => $this->limitsContext(
+                (string) $template['dir'],
+                [TemplateCatalog::COMPOSE_FILE],
+                is_admin(),
+                [],
+                array_map('strval', array_keys((array) ($template['services'] ?? [])))
+            ),
         ]);
     }
 
@@ -446,6 +470,7 @@ class AppController
         $envInput = (array) $request->post('env', []);
         $env = [];
         $generated = [];
+        $limits = [];
 
         // Fase 1 — validasi yang tidak menyentuh disk (template, nama, nilai env).
         try {
@@ -461,17 +486,42 @@ class AppController
             }
             $env = $catalog->resolveEnv($template, $envInput);
             $generated = $catalog->generatedKeys($template, $envInput);
+
+            // Batas CPU/memori: hanya admin global (ability `limits`).
+            $limits = is_admin()
+                ? $this->resolveLimits(
+                    (array) $request->post('limits', []),
+                    array_map('strval', array_keys((array) ($template['services'] ?? [])))
+                )
+                : [];
         } catch (\Throwable $e) {
             // Template tidak ada/rusak → tidak ada form yang bisa dirender ulang.
             if ($template === null || !$template['valid']) {
                 flash_set('error', $e->getMessage());
                 return redirect('/apps/create?mode=template');
             }
+
+            // Kartu "Batas Sumber Daya" wajib ikut dirender ulang — kontrak sama
+            // dengan templateForm(). View mem-prefill kolom dari `repo`, jadi
+            // nilai yang dikirim user ditempatkan di sana juga agar tidak hilang.
+            $postedLimits = $this->prefillLimits((array) $request->post('limits', []));
+            $limitsContext = $this->limitsContext(
+                (string) $template['dir'],
+                [TemplateCatalog::COMPOSE_FILE],
+                is_admin(),
+                $postedLimits,
+                array_map('strval', array_keys((array) ($template['services'] ?? [])))
+            );
+            foreach ($postedLimits as $service => $limit) {
+                $limitsContext['repo'][$service] = $limit;
+            }
+
             return view('app/template', [
                 'template' => $template,
                 'form_name' => $name,
                 'form_env' => $envInput,
                 'form_error' => $e->getMessage(),
+                'resourceLimits' => $limitsContext,
             ]);
         }
 
@@ -532,7 +582,8 @@ class AppController
                 $primary['port'],
                 $containerPrefix,
                 $env,
-                ['slug' => $template['slug'], 'title' => $template['title']]
+                ['slug' => $template['slug'], 'title' => $template['title']],
+                $limits
             );
             $app = $result['app'];
             $spawned = $result['spawned'];
@@ -652,7 +703,20 @@ class AppController
         if (!$pending) {
             return redirect('/apps/create');
         }
-        return view('app/confirm', ['pending' => $pending]);
+
+        // Base compose sudah ada di disk (hasil clone/upload langkah analisis).
+        $dir = (string) config('deploy.apps_path') . '/' . $pending['name'];
+
+        return view('app/confirm', [
+            'pending' => $pending,
+            'resourceLimits' => $this->limitsContext(
+                $dir,
+                [(string) $pending['compose_file']],
+                is_admin(),
+                [],
+                array_map('strval', array_keys((array) ($pending['services'] ?? [])))
+            ),
+        ]);
     }
 
     public function confirmCreate(Request $request)
@@ -687,7 +751,25 @@ class AppController
                 (int) ($pending['primary_port'] ?? 0)
             );
 
-            $result = $this->createAndDeploy($pending, $services, $primary['service'], $primary['port'], $containerPrefix);
+            // Batas CPU/memori: hanya admin global (ability `limits`). Non-admin
+            // tidak error — form memang tidak mengirim field ini.
+            $limits = is_admin()
+                ? $this->resolveLimits(
+                    (array) $request->post('limits', []),
+                    array_map('strval', array_keys((array) ($pending['services'] ?? [])))
+                )
+                : [];
+
+            $result = $this->createAndDeploy(
+                $pending,
+                $services,
+                $primary['service'],
+                $primary['port'],
+                $containerPrefix,
+                [],
+                null,
+                $limits
+            );
             $app = $result['app'];
             $spawned = $result['spawned'];
 
@@ -728,6 +810,7 @@ class AppController
      * @param array<string,array>       $services  hasil ComposeParser + resolusi host port
      * @param array<string,string>      $env       map KEY => value (kosong = tanpa env)
      * @param array<string,string>|null $template  metadata asal template (bila dibuat dari template)
+     * @param array<string,array{cpus:?float,memory_mb:?int}> $limits batas CPU/memori per service (kosong = tidak diatur)
      * @return array{app:array,spawned:bool}
      */
     private function createAndDeploy(
@@ -737,7 +820,8 @@ class AppController
         int $primaryPort,
         string $containerPrefix,
         array $env = [],
-        ?array $template = null
+        ?array $template = null,
+        array $limits = []
     ): array {
         // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy.
         // Kalau tidak, tampilkan pesan jelas (bukan gagal di tengah build).
@@ -746,11 +830,18 @@ class AppController
         $composeFiles = [$pending['compose_file']];
         $this->writeOverride($pending, $services, $composeFiles, $containerPrefix);
 
+        $dir = (string) config('deploy.apps_path') . '/' . $pending['name'];
+
+        // Batas CPU/memori (admin saja) — file override ditulis SEBELUM entri
+        // apps.json dibuat; kegagalan ⇒ pemanggil membersihkan direktori app.
+        if (ResourceLimits::writeOverride($dir, [$pending['compose_file']], $limits)) {
+            $composeFiles[] = ResourceLimits::OVERRIDE_FILE;
+        }
+
         if ($env !== []) {
             $composeFiles[] = EnvManager::OVERRIDE_FILE;
             $composeFiles = $this->orderComposeFiles($composeFiles);
 
-            $dir = (string) config('deploy.apps_path') . '/' . $pending['name'];
             $envManager = new EnvManager();
             $envManager->write((string) $pending['name'], $env);
             $envManager->writeOverride($dir, $composeFiles, $env);
@@ -775,6 +866,7 @@ class AppController
             'compose_files' => $composeFiles,
             'container_prefix' => $containerPrefix !== '' ? $containerPrefix : null,
             'env' => $env,
+            'limits' => $limits !== [] ? $limits : null,
             'template' => $template,
             'needs_ssl' => false,
             'ssl_status' => null,
@@ -887,6 +979,7 @@ class AppController
      */
     public function rollback(Request $request, string $id)
     {
+        $store = new AppStore();
         $app = $this->findApp($id, 'deploy');
         if (ComposeSource::isCompose($app)) {
             flash_set('error', 'App ini dibuat dari file compose (tanpa repo Git) — rollback versi tidak tersedia. Gunakan tab Compose untuk mengubah compose lalu Deploy Ulang.');
@@ -1586,6 +1679,65 @@ class AppController
     }
 
     /**
+     * Simpan batas maksimum CPU/memori per service (POST /apps/{id}/limits) —
+     * form "Batas resource" di tab Container. Ability `limits` = **admin saja**
+     * (penolakan → 404, satu pintu lewat AppAccess).
+     *
+     * Alur (validasi dulu, baru tulis — gagal = tidak ada state yang berubah):
+     *  1) Whitelist service terhadap base compose; validasi nilai (normalize).
+     *  2) Tulis/hapus `docker-compose.override.limits.yml` + rapikan compose_files.
+     *  3) Recreate container (`up -d` tanpa build) agar batas baru dipakai.
+     *
+     * Field kosong = tidak diatur dashboard → key tidak ditulis, nilai CPU/memori
+     * milik base compose repo tetap berlaku (bukan `!reset`).
+     */
+    public function saveLimits(Request $request, string $id)
+    {
+        $store = new AppStore();
+        $app = $this->findApp($id, 'limits');
+        if (($app['status'] ?? '') === 'deploying') {
+            flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
+        }
+
+        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
+        if (!is_dir($dir)) {
+            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+            return redirect('/apps/' . $id);
+        }
+
+        try {
+            // 1) Validasi → tulis/hapus file override → persist state (di library).
+            $result = ResourceLimits::persist($store, $app, $dir, (array) $request->post('limits', []));
+            $limits = $result['limits'];
+
+            // 2) Recreate container agar batas baru dipakai (tanpa build).
+            $app = $result['app'];
+            try {
+                $applied = DeployerFactory::create()->applyEnv($app, static function (string $stage, string $message): void {
+                });
+                $store->update($id, function (array &$s) use ($applied): void {
+                    $s['containers'] = $applied['containers'] ?? [];
+                    $s['status'] = 'running';
+                    $s['message'] = 'Running';
+                    $s['error'] = null;
+                });
+                flash_set('success', $limits === []
+                    ? 'Batas CPU/memori dihapus (nilai base compose berlaku) & container diciptakan ulang.'
+                    : 'Batas CPU/memori disimpan & container diciptakan ulang.');
+            } catch (\Throwable $e) {
+                flash_set('error', $limits === []
+                    ? 'Batas CPU/memori dihapus, tetapi gagal diterapkan ke container: ' . $e->getMessage() . ' — coba Rebuild.'
+                    : 'Batas CPU/memori tersimpan, tetapi gagal diterapkan ke container: ' . $e->getMessage() . ' — coba Rebuild.');
+            }
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
      * Validasi prefix nama container dari form:
      *  - normalisasi + validasi format;
      *  - service ber-replica > 1 ditolak (compose tidak mengizinkan container_name);
@@ -1632,7 +1784,115 @@ class AppController
     }
 
     /**
-     * Urutkan compose_files: base compose → override reset/ports/names →
+     * Konteks data batas CPU/memori (`resourceLimits`) untuk view.
+     *
+     * Kontrak data (dipakai view — jangan diubah tanpa memberi tahu Frontend UI):
+     * `canManage`, `services`, `saved`, `repo`, `hasSaved`, `error`.
+     *
+     * Bila base compose tidak terbaca (mis. file belum dimaterialisasi), `error`
+     * diisi & daftar service jatuh ke `$servicesFallback` — halaman tetap bisa
+     * dirender, bukan error.
+     *
+     * @param array<int,string>                                    $composeFiles
+     * @param array<string,array{cpus:?float,memory_mb:?int}>      $saved
+     * @param array<int,string>                                    $servicesFallback
+     * @return array{canManage:bool,services:array<int,string>,saved:array<string,array{cpus:?float,memory_mb:?int}>,repo:array<string,array{cpus:?float,memory_mb:?int}>,hasSaved:bool,error:?string}
+     */
+    private function limitsContext(
+        string $dir,
+        array $composeFiles,
+        bool $canManage,
+        array $saved,
+        array $servicesFallback = []
+    ): array {
+        $services = [];
+        $repo = [];
+        $error = null;
+
+        try {
+            $services = ResourceLimits::services($dir, $composeFiles);
+        } catch (\Throwable $e) {
+            $error = $e->getMessage();
+            $services = array_values(array_filter(
+                array_map('strval', $servicesFallback),
+                static fn (string $s): bool => $s !== ''
+            ));
+        }
+
+        if ($services !== []) {
+            try {
+                $detected = ResourceLimits::detect($dir, $composeFiles);
+                foreach ($services as $service) {
+                    $repo[$service] = [
+                        'cpus' => $detected[$service]['cpus'] ?? null,
+                        'memory_mb' => $detected[$service]['memory_mb'] ?? null,
+                    ];
+                }
+            } catch (\Throwable $e) {
+                // Daftar service tetap valid; hanya prefill dari base yang hilang.
+                $error ??= $e->getMessage();
+            }
+        }
+
+        return [
+            'canManage' => $canManage,
+            'services' => $services,
+            'saved' => $saved,
+            'repo' => $repo,
+            'hasSaved' => $saved !== [],
+            'error' => $error,
+        ];
+    }
+
+    /**
+     * Validasi input batas CPU/memori dari form: tolak service yang tidak dikenal,
+     * normalkan nilai, lalu buang entri yang tidak mengatur apa pun.
+     *
+     * @param array<string,mixed> $posted
+     * @param array<int,string>   $services nama service yang dikenal
+     * @return array<string,array{cpus:?float,memory_mb:?int}>
+     */
+    private function resolveLimits(array $posted, array $services): array
+    {
+        return ResourceLimits::fromInput($posted, $services);
+    }
+
+    /**
+     * Nilai batas CPU/memori dari input user untuk **prefill render ulang** —
+     * best effort & tidak melempar (berbeda dari `resolveLimits()` yang
+     * memvalidasi). Hanya nilai yang bisa tampil di input number yang
+     * dipertahankan; sisanya dibuang supaya render ulang tidak gagal.
+     *
+     * @param array<string,mixed> $posted
+     * @return array<string,array{cpus:?float,memory_mb:?int}>
+     */
+    private function prefillLimits(array $posted): array
+    {
+        $result = [];
+        foreach ($posted as $service => $fields) {
+            $service = trim((string) $service);
+            if ($service === '' || !is_array($fields)) {
+                continue;
+            }
+
+            $rawCpus = $fields['cpus'] ?? null;
+            $rawMemory = $fields['memory_mb'] ?? null;
+
+            $cpus = is_numeric($rawCpus) && !is_bool($rawCpus) ? (float) $rawCpus : null;
+            $memory = is_int($rawMemory) || (is_string($rawMemory) && ctype_digit(trim($rawMemory)))
+                ? (int) $rawMemory
+                : null;
+
+            if ($cpus === null && $memory === null) {
+                continue;
+            }
+            $result[$service] = ['cpus' => $cpus, 'memory_mb' => $memory];
+        }
+        return $result;
+    }
+
+    /**
+     * Urutkan compose_files: base compose → override reset/ports/names/limits →
      * override lain (network, env). Override env wajib paling akhir agar tetap
      * menang atas file repo.
      *
@@ -1641,34 +1901,7 @@ class AppController
      */
     private function orderComposeFiles(array $files): array
     {
-        $priority = [
-            ComposeSource::RESET_OVERRIDE_FILE,
-            ComposeSource::PORTS_OVERRIDE_FILE,
-            ContainerNames::OVERRIDE_FILE,
-        ];
-
-        $base = [];
-        $rest = [];
-        foreach ($files as $file) {
-            $file = (string) $file;
-            if ($file === '') {
-                continue;
-            }
-            if (!str_starts_with($file, ComposeSource::GENERATED_PREFIX)) {
-                $base[] = $file;
-                continue;
-            }
-            if (!in_array($file, $priority, true)) {
-                $rest[] = $file;
-            }
-        }
-        foreach ($priority as $file) {
-            if (in_array($file, $files, true)) {
-                $base[] = $file;
-            }
-        }
-
-        return array_values(array_unique(array_merge($base, $rest)));
+        return ComposeSource::orderFiles($files);
     }
 
     /**

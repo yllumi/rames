@@ -110,6 +110,106 @@ final class ComposeSource
     }
 
     /**
+     * Saring daftar compose_files: buang entri **override generated** (nama file
+     * berawalan GENERATED_PREFIX, mis. `docker-compose.override.limits.yml`) yang
+     * sudah tidak ada di disk, sambil mempertahankan urutan relatif entri tersisa.
+     *
+     * Sebab: entri generated di apps.json bisa tertinggal saat file-nya sudah
+     * dihapus di disk (mis. `AppStore::update()` gagal tepat setelah `unlink()`).
+     * Tanpa penyaringan, `docker compose -f <file-hilang> ...` gagal dengan
+     * "no such file or directory" dan seluruh deploy/stop/start app itu rusak.
+     *
+     * File NON-generated (base seperti `docker-compose.yml`) TIDAK pernah dibuang —
+     * base yang hilang wajib tetap muncul agar compose memberi error yang jelas
+     * (prinsip fail-fast), bukan error samar akibat entri lain yang dibuang.
+     *
+     * Murni: hanya memanggil `is_file()`, tanpa efek samping, dan tidak melempar
+     * exception untuk file yang hilang.
+     *
+     * @param array<int,string> $files
+     * @return array<int,string> daftar tersaring; tidak pernah kosong (minimal base)
+     */
+    public static function filterMissingGenerated(string $dir, array $files): array
+    {
+        $kept = [];
+        $firstBase = '';
+        foreach ($files as $file) {
+            $file = (string) $file;
+            // Entri kosong/blank (mis. sisa input yang tidak diisi) diabaikan —
+            // bukan error, dan tidak ikut dihitung sebagai nama file.
+            if (trim($file) === '') {
+                continue;
+            }
+            $generated = str_starts_with(self::basename($file), self::GENERATED_PREFIX);
+            if ($generated && !is_file($dir . '/' . $file)) {
+                continue;   // override generated hilang → buang entri
+            }
+            if (!$generated && $firstBase === '') {
+                $firstBase = $file;
+            }
+            $kept[] = $file;
+        }
+
+        if ($kept !== []) {
+            return $kept;
+        }
+
+        // Kasus ekstrem: seluruh daftar generated (dan hilang) atau daftar kosong.
+        // Jaminan keras — jangan pernah kembalikan daftar kosong: pakai base pertama
+        // dari daftar asli, fallback nama base default bila tidak ada base sama sekali.
+        return [$firstBase !== '' ? $firstBase : self::MAIN_FILES[0]];
+    }
+
+    /**
+     * Urutkan daftar compose_files ke urutan kanonik:
+     * base/non-generated (urut asli) → override generated berprioritas
+     * (`docker-compose.override.yml` → `.override.ports.yml` →
+     * `.override.names.yml` → `.override.limits.yml`) → sisa override generated
+     * mengikuti urutan asli (mis. network, lalu env paling akhir).
+     *
+     * Override env wajib paling akhir agar tetap menang atas file repo.
+     * Duplikat & nama kosong dibuang. Dipakai jalur create app dan tiap simpan
+     * override (port/nama/limits/env).
+     *
+     * Murni statik (tanpa I/O) — aman untuk worker Webman persistent.
+     *
+     * @param array<int,string> $files
+     * @return array<int,string>
+     */
+    public static function orderFiles(array $files): array
+    {
+        $priority = [
+            self::RESET_OVERRIDE_FILE,
+            self::PORTS_OVERRIDE_FILE,
+            ContainerNames::OVERRIDE_FILE,
+            ResourceLimits::OVERRIDE_FILE,
+        ];
+
+        $base = [];
+        $rest = [];
+        foreach ($files as $file) {
+            $file = (string) $file;
+            if ($file === '') {
+                continue;
+            }
+            if (!str_starts_with($file, self::GENERATED_PREFIX)) {
+                $base[] = $file;
+                continue;
+            }
+            if (!in_array($file, $priority, true)) {
+                $rest[] = $file;
+            }
+        }
+        foreach ($priority as $file) {
+            if (in_array($file, $files, true)) {
+                $base[] = $file;
+            }
+        }
+
+        return array_values(array_unique(array_merge($base, $rest)));
+    }
+
+    /**
      * Apakah nama file termasuk file compose yang dikenali.
      */
     public static function isMainFileName(string $name): bool

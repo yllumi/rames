@@ -40,6 +40,7 @@ class LocalDeployer implements DeployerInterface
         $this->env->sync($app, $dir, $files);
         $this->network->sync($app, $dir, $files);
         ContainerNames::sync($app, $dir, $files);
+        ResourceLimits::sync($app, $dir, $files);
 
         $logger('build', 'Menjalankan docker compose up -d --build ...');
         $this->upCompose($project, $app, $dir, $files, true, $logger);
@@ -84,6 +85,7 @@ class LocalDeployer implements DeployerInterface
         $this->env->sync($app, $dir, $files);
         $this->network->sync($app, $dir, $files);
         ContainerNames::sync($app, $dir, $files);
+        ResourceLimits::sync($app, $dir, $files);
 
         $logger('build', 'docker compose up -d --build ...');
         $this->upCompose($project, $app, $dir, $files, true, $logger);
@@ -126,6 +128,7 @@ class LocalDeployer implements DeployerInterface
             $this->env->sync($app, $dir, $files);
             $this->network->sync($app, $dir, $files);
             ContainerNames::sync($app, $dir, $files);
+            ResourceLimits::sync($app, $dir, $files);
 
             $logger('build', 'docker compose up -d --build ...');
             $this->upCompose($project, $app, $dir, $files, true, $logger);
@@ -201,6 +204,7 @@ class LocalDeployer implements DeployerInterface
         $this->env->sync($app, $dir, $files);
         $this->network->sync($app, $dir, $files);
         ContainerNames::sync($app, $dir, $files);
+        ResourceLimits::sync($app, $dir, $files);
 
         $logger('build', 'Menciptakan ulang container dari image yang ada (tanpa build) ...');
         $this->upCompose($project, $app, $dir, $files, false, $logger);
@@ -229,6 +233,7 @@ class LocalDeployer implements DeployerInterface
         $this->env->sync($app, $dir, $files);
         $this->network->sync($app, $dir, $files);
         ContainerNames::sync($app, $dir, $files);
+        ResourceLimits::sync($app, $dir, $files);
 
         $logger('build', 'Menciptakan ulang container dengan environment baru ...');
         $this->upCompose($project, $app, $dir, $files, false, $logger);
@@ -277,10 +282,25 @@ class LocalDeployer implements DeployerInterface
     }
 
     /**
-     * Daftar compose_files app dengan perbaikan override stale bila direktori
-     * app ada. Lihat repairStaleOverrides().
+     * Daftar compose_files app yang siap dipakai `docker compose -f <file> ...`.
      *
-     * @return array<int,string>
+     * Dua perbaikan diterapkan berurutan:
+     *  1. repairStaleOverrides() — menyaring ISI override generated (override
+     *     yang masih mereferensikan service yang sudah tidak ada di base).
+     *  2. ComposeSource::filterMissingGenerated() — membuang ENTRI daftar yang
+     *     berupa override generated namun file-nya sudah tidak ada di disk.
+     *     Sebab: entri generated bisa tertinggal di apps.json saat file-nya sudah
+     *     dihapus (mis. AppStore::update() gagal tepat setelah unlink()); bila
+     *     diteruskan apa adanya, `docker compose -f <file-hilang>` gagal dengan
+     *     "no such file or directory" dan seluruh deploy/stop/start app rusak.
+     *     File NON-generated (base) tidak pernah dibuang → base yang hilang tetap
+     *     muncul agar compose memberi error yang jelas (fail-fast).
+     *
+     * Karena semua jalur compose lewat method ini — `deploy`, `rebuild`,
+     * `rollback`, `apply`, `applyEnv`, `stop`, `start` — seluruhnya otomatis
+     * terlindungi dari override generated yang hilang.
+     *
+     * @return array<int,string> tidak pernah kosong
      */
     private function resolveComposeFiles(array $app, string $dir): array
     {
@@ -288,7 +308,7 @@ class LocalDeployer implements DeployerInterface
         if (is_dir($dir)) {
             $this->repairStaleOverrides($dir, $files);
         }
-        return $files;
+        return ComposeSource::filterMissingGenerated($dir, $files);
     }
 
     /**

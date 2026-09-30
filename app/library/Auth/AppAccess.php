@@ -21,6 +21,13 @@ namespace app\library\Auth;
  *   viewer   — read-only
  *   null     — tidak punya akses (controller merespons 404)
  *
+ * Ability khusus **admin global**: `limits` — mengatur batas maksimum CPU &
+ * memori (MB) per service sebuah app, disimpan ke override compose. Hanya admin
+ * yang boleh mengubah batas resource host ini; owner/operator/viewer tidak
+ * memilikinya. Penolakan tetap lewat satu pintu:
+ * `AppAccess::require('limits', $app, $user)` → `AppAccessDenied` → respons
+ * **404** (bukan 403, agar keberadaan app milik user lain tidak bocor).
+ *
  * Kelas ini stateless (tanpa properti) — aman untuk Webman persistent worker.
  * User yang diperiksa adalah array dari session (`current_user()`), yang sudah
  * memuat field `role` hasil resolusi UserStore.
@@ -58,6 +65,10 @@ final class AppAccess
         // eksklusif owner
         'delete' => self::ROLE_OWNER,
         'sharing' => self::ROLE_OWNER,
+        // eksklusif admin global — `limits` = batas maksimum CPU/memori per
+        // service app (ditulis ke override compose). Owner/operator/viewer
+        // tidak boleh mengubah batas resource host.
+        'limits' => self::ROLE_ADMIN,
     ];
 
     /** Peringkat role — dibandingkan untuk menentukan "minimal role". */
