@@ -167,6 +167,33 @@ class AppPortsTest extends TestCase
         $this->assertSame([['service' => 'web', 'container' => 9119, 'host' => 30001]], AppPorts::all($app));
     }
 
+    public function testHasHostPortTrueWhenPortPublished(): void
+    {
+        $this->assertTrue(AppPorts::hasHostPort($this->multiPortApp()));
+    }
+
+    public function testHasHostPortFalseWithoutAnyPort(): void
+    {
+        // App tanpa port terpublish — mis. server database tanpa `ports:`, atau
+        // container yang belum/tidak jalan sehingga Engine tidak melaporkan port.
+        $this->assertFalse(AppPorts::hasHostPort(['name' => 'dbsaya', 'containers' => []]));
+        $this->assertFalse(AppPorts::hasHostPort([
+            'name' => 'dbsaya',
+            'containers' => [['service_name' => 'mariadb', 'ports' => [], 'internal_port' => null, 'host_port' => null]],
+        ]));
+    }
+
+    public function testHasHostPortFalseWhenPortHasNoHostBinding(): void
+    {
+        $app = [
+            'name' => 'dbsaya',
+            'containers' => [['service_name' => 'db', 'ports' => [['host' => 0, 'container' => 3306]]]],
+        ];
+
+        $this->assertFalse(AppPorts::hasHostPort($app));
+        $this->assertSame([['service' => 'db', 'container' => 3306, 'host' => 0]], AppPorts::all($app));
+    }
+
     public function testProxiedContainerPortUsesSelectedPort(): void
     {
         $this->assertSame(9119, AppPorts::proxiedContainerPort($this->multiPortApp()));

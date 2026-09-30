@@ -5,6 +5,7 @@ namespace app\controller;
 
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
+use app\library\Docker\AppPorts;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use support\Request;
@@ -30,6 +31,12 @@ class SslController
 
         $rows = [];
         foreach ($apps as $app) {
+            // App tanpa port terpublish tidak di-proxy Nginx (vhost/subdomain
+            // dilewati saat deploy) → tidak ada domain yang bisa di-SSL.
+            if (!AppPorts::hasHostPort($app)) {
+                continue;
+            }
+
             $subdomain = app_subdomain($app['name']);
             $customDomain = (string) ($app['custom_domain'] ?? '');
 
@@ -81,6 +88,13 @@ class SslController
             throw new AppAccessDenied('ssl', $id);
         }
         AppAccess::require('ssl', $app, current_user());
+
+        // Tanpa port terpublish tidak ada vhost Nginx → tidak ada yang bisa
+        // di-SSL (subdomain app memang tidak dilayani, SPECS §7.2).
+        if (!AppPorts::hasHostPort($app)) {
+            flash_set('error', 'App ini tidak mem-publish port host — tidak ada domain yang bisa di-SSL. Tambahkan `ports:` pada compose app (tab Compose) lalu Deploy Ulang.');
+            return redirect('/ssl');
+        }
 
         $subdomain = app_subdomain($app['name']);
         $customDomain = (string) ($app['custom_domain'] ?? '');

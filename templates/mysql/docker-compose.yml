@@ -1,0 +1,51 @@
+# Template MySQL — image prebuilt; tanpa `build:`/`container_name`/`name:`
+# (nama project compose = nama app & nama container dikelola dashboard).
+#
+# WAJIB diperhatikan bila menambah variabel di sini:
+#  - JANGAN menambahkan MYSQL_USER/MYSQL_PASSWORD. Halaman /database memilih
+#    kredensial otomatis dan mengutamakan user aplikasi di atas root
+#    (DbCredentialResolver), sehingga menambahkannya membuat panel /database
+#    kehilangan hak admin (CREATE DATABASE/USER, GRANT, dump/restore).
+#    Buat user aplikasi dari tab Pengguna di /database.
+#  - Service ini sengaja TIDAK mem-publish port ke host: app tidak dibuatkan
+#    vhost/subdomain (tidak ada target `proxy_pass`) dan port 3306 tidak
+#    diteruskan ke host. Akses & pengelolaan lewat halaman /database —
+#    dashboard menyambung sendiri ke network app. Tambahkan blok
+#    `ports: ["3306:3306"]` bila DB perlu dijangkau dari host / app lain;
+#    host port yang bentrok digeser otomatis oleh dashboard.
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+
+    # init:true supaya proses MySQL bukan PID 1 (SIGTERM rapi saat stop/restart).
+    init: true
+
+    environment:
+      TZ: ${TZ}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+
+    volumes:
+      # Data + system tables MySQL. Volume di-scope per app (nama project compose
+      # = nama app), jadi template ini aman dipakai untuk banyak app sekaligus.
+      - mysql-data:/var/lib/mysql
+
+    # mysqladmin TIDAK perlu kredensial: `ping` mengembalikan 0 selama server
+    # hidup, termasuk saat akses ditolak (perilaku resmi mysqladmin).
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    # Log MySQL relatif tenang; batasi supaya disk host tidak penuh.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mysql-data:

@@ -19,6 +19,8 @@ use Symfony\Component\Yaml\Yaml;
  *
  * Kelas ini adalah satu-satunya tempat aturan template ditegakkan:
  *  - compose template wajib memakai `image:` (tanpa `build:` — aturan mode compose),
+ *  - `ports:` OPSIONAL: template tanpa port (mis. server database yang tidak
+ *    diekspos ke host) menghasilkan app tanpa vhost/subdomain (SPECS §7.2),
  *  - DILARANG menulis `container_name` / replica > 1: nama container dikelola
  *    dashboard (prefix otomatis = nama app, SPECS §7.6a) supaya template bisa
  *    dipakai lebih dari satu app,
@@ -179,7 +181,6 @@ final class TemplateCatalog
             $data = $this->parseYaml($compose, self::COMPOSE_FILE);
             $services = is_array($data['services'] ?? null) ? $data['services'] : [];
             $this->assertNoManagedKeys($services, $data);
-            $this->assertHasPorts($services);
 
             $template['services'] = ComposeSource::parseContent($compose);
             $template['primary'] = $this->resolvePrimaryFrom($template['services'], $manifest['primary'] ?? null);
@@ -288,27 +289,13 @@ final class TemplateCatalog
     }
 
     /**
-     * Template wajib mempublikasikan minimal satu port: tanpa port, app tidak
-     * punya target `proxy_pass` Nginx (domestik ke app tak akan pernah jalan).
-     *
-     * @param array<string,mixed> $services
-     */
-    private function assertHasPorts(array $services): void
-    {
-        foreach ($services as $name => $config) {
-            if (is_array($config) && !empty($config['ports'])) {
-                return;
-            }
-        }
-
-        throw new RuntimeException('Compose template tidak mempublikasikan port (`ports:`) pada service mana pun.');
-    }
-
-    /**
      * Service + port container yang di-proxy ke domain.
      *
      * `primary: {service, port}` dari manifest divalidasi ketat; bila tidak
      * diisi dipakai default = service pertama yang punya port, port pertama.
+     * Template tanpa port sama sekali (mis. server database tanpa `ports:`)
+     * mengembalikan `['service' => '', 'port' => 0]` → app tanpa vhost/subdomain
+     * (SPECS §7.2).
      *
      * @param array<string,array> $services hasil ComposeParser
      * @return array{service:string,port:int}
@@ -346,7 +333,10 @@ final class TemplateCatalog
             }
         }
 
-        throw new RuntimeException('Tidak ada service dengan port exposed — primary tidak bisa ditentukan.');
+        // Tanpa satu pun port: bukan template rusak — app dibuat tanpa
+        // vhost/subdomain (mis. server database yang hanya dikelola lewat
+        // /database).
+        return ['service' => '', 'port' => 0];
     }
 
     /**

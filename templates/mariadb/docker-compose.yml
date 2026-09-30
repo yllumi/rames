@@ -1,0 +1,56 @@
+# Template MariaDB — image prebuilt; tanpa `build:`/`container_name`/`name:`
+# (nama project compose = nama app & nama container dikelola dashboard).
+#
+# WAJIB diperhatikan bila menambah variabel di sini:
+#  - JANGAN menambahkan MARIADB_USER/MARIADB_PASSWORD (alias MYSQL_USER/MYSQL_PASSWORD).
+#    Halaman /database memilih kredensial otomatis dan mengutamakan user aplikasi di
+#    atas root (DbCredentialResolver), sehingga menambahkannya membuat panel /database
+#    kehilangan hak admin (CREATE DATABASE/USER, GRANT, dump/restore).
+#    Buat user aplikasi dari tab Pengguna di /database.
+#  - Service ini sengaja TIDAK mem-publish port ke host: app tidak dibuatkan
+#    vhost/subdomain (tidak ada target `proxy_pass`) dan port 3306 tidak
+#    diteruskan ke host. Akses & pengelolaan lewat halaman /database —
+#    dashboard menyambung sendiri ke network app. Tambahkan blok
+#    `ports: ["3306:3306"]` bila DB perlu dijangkau dari host / app lain;
+#    host port yang bentrok digeser otomatis oleh dashboard.
+services:
+  mariadb:
+    image: mariadb:11.4
+    restart: unless-stopped
+
+    # init:true supaya proses MariaDB bukan PID 1 (SIGTERM rapi saat stop/restart).
+    init: true
+
+    environment:
+      TZ: ${TZ}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${MARIADB_DATABASE}
+      # Upgrade system tables otomatis bila tag image dinaikkan nanti (mis. 11.4 →
+      # 11.8) sementara volume masih berisi data versi lama; sekaligus membuat user
+      # internal yang dipakai healthcheck. Aman/no-op bila versi masih sama.
+      MARIADB_AUTO_UPGRADE: "1"
+
+    volumes:
+      # Data + system tables MariaDB. Volume di-scope per app (nama project compose
+      # = nama app), jadi template ini aman dipakai untuk banyak app sekaligus.
+      - mariadb-data:/var/lib/mysql
+
+    # healthcheck.sh adalah skrip resmi image MariaDB (image ini TIDAK menyediakan
+    # `mysqladmin`, hanya `mariadb-admin`). Uji `--connect` memperlakukan "access
+    # denied" sebagai sukses, jadi tidak perlu menulis password di sini.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    # Log MariaDB relatif tenang; batasi supaya disk host tidak penuh.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mariadb-data:

@@ -1,0 +1,36 @@
+title: MariaDB
+description: >-
+  Server MariaDB 11.4 (LTS) siap pakai: database awal + password root dibuat otomatis dan
+  data tersimpan di volume sehingga aman saat container dibuat ulang. Tanpa port yang
+  dibuka ke host (app tanpa vhost/subdomain) — kelola database, user, serta import/export
+  dump dari halaman /database dashboard.
+category: Database
+icon: "🦭"
+docs_url: https://hub.docker.com/_/mariadb
+
+# Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke
+# service (tanpa disimpan di repo). Kosong = pakai `default`; `generate: secret`
+# berarti nilai acak dibuat otomatis bila dikosongkan.
+env:
+  - key: MARIADB_ROOT_PASSWORD
+    label: Password root
+    help: >-
+      Password user root. Dipakai halaman /database untuk mengelola server (buat
+      database/user, GRANT, import & export dump). Kosongkan untuk dibuat otomatis —
+      nilainya bisa dilihat di tab Environment app ini.
+    generate: secret
+  - key: MARIADB_DATABASE
+    label: Database awal
+    help: Database yang dibuat otomatis saat container pertama kali dijalankan.
+    default: app
+  - key: TZ
+    label: Timezone
+    help: >-
+      Zona waktu server. MariaDB memakai `time_zone = SYSTEM`, jadi nilai ini menentukan
+      hasil NOW()/CURRENT_TIMESTAMP.
+    default: Asia/Jakarta
+
+# Template ini TIDAK mem-publish port ke host: app tidak dibuatkan vhost/subdomain
+# dan port 3306 tidak diteruskan ke host — server dikelola lewat halaman /database
+# (dashboard menyambung sendiri ke network app). Tambahkan blok `ports:` pada
+# docker-compose.yml lalu Deploy Ulang bila DB perlu dijangkau dari host / app lain.

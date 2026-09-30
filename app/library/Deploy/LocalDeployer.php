@@ -13,6 +13,10 @@ use Symfony\Component\Yaml\Yaml;
 
 /**
  * Implementasi deployer lokal: eksekusi docker compose di mesin yang sama.
+ *
+ * App tanpa host port terpublish (mis. server database yang tidak di-publish ke
+ * host) tidak di-proxy ke domain: prasyarat tulis Nginx dan penulisan vhost
+ * dilewati, deploy tetap sukses (SPECS §7.2).
  */
 class LocalDeployer implements DeployerInterface
 {
@@ -28,12 +32,13 @@ class LocalDeployer implements DeployerInterface
 
     public function deploy(array $app, callable $logger): array
     {
-        // fail-fast: cek prasyarat tulis Nginx SEBELUM build yang lama
-        $this->nginx->ensureWritable();
-
         $project = $app['name'];
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
+
+        // fail-fast: cek prasyarat tulis Nginx SEBELUM build yang lama — hanya
+        // untuk app yang port-nya akan di-proxy ke domain (lihat method).
+        $this->ensureNginxPrecondition($app, $dir, $files);
 
         // Sinkronkan managed env file + override env + external networks
         // (idempoten, aman bila kosong)
@@ -48,8 +53,7 @@ class LocalDeployer implements DeployerInterface
         $logger('collect', 'Mengumpulkan info container ...');
         $app['containers'] = $this->getContainers($project);
 
-        $logger('nginx', 'Menulis config Nginx ...');
-        $this->writeNginxConfig($app);
+        $this->writeNginxConfigStep($app, $logger);
 
         $app['status'] = 'running';
         $logger('done', 'Deploy selesai.');
@@ -67,11 +71,11 @@ class LocalDeployer implements DeployerInterface
             return $this->applyCompose($app, $logger, 'rebuild');
         }
 
-        $this->nginx->ensureWritable();
-
         $project = $app['name'];
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
+        $this->ensureNginxPrecondition($app, $dir, $files);
+
         $branch = $app['branch'] ?? 'main';
         $git = new GitService();
 
@@ -91,7 +95,7 @@ class LocalDeployer implements DeployerInterface
         $this->upCompose($project, $app, $dir, $files, true, $logger);
 
         $app['containers'] = $this->getContainers($project);
-        $this->writeNginxConfig($app);
+        $this->writeNginxConfigStep($app, $logger);
 
         $app['status'] = 'running';
         $logger('done', 'Rebuild selesai.');
@@ -105,11 +109,11 @@ class LocalDeployer implements DeployerInterface
             throw new RuntimeException('Rollback hanya tersedia untuk app yang dibuat dari repo Git.');
         }
 
-        $this->nginx->ensureWritable();
-
         $project = $app['name'];
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
+        $this->ensureNginxPrecondition($app, $dir, $files);
+
         $git = new GitService();
 
         // Versi aktif saat ini — dijadikan target restore bila rollback gagal.
@@ -134,7 +138,7 @@ class LocalDeployer implements DeployerInterface
             $this->upCompose($project, $app, $dir, $files, true, $logger);
 
             $app['containers'] = $this->getContainers($project);
-            $this->writeNginxConfig($app);
+            $this->writeNginxConfigStep($app, $logger);
 
             $app['status'] = 'running';
             $logger('done', 'Rollback selesai.');
@@ -146,7 +150,7 @@ class LocalDeployer implements DeployerInterface
                 $git->checkout($dir, $prevRef);
                 $this->upCompose($project, $app, $dir, $files, true, $logger);
                 $app['containers'] = $this->getContainers($project);
-                $this->writeNginxConfig($app);
+                $this->writeNginxConfigStep($app, $logger);
                 $app['status'] = 'running';
                 $logger('restore', 'Restore ke versi sebelumnya berhasil.');
                 return $this->recordHistory($app, $prevRef, 'rollback', 'restored', 'Rollback gagal (' . $e->getMessage() . '); dikembalikan ke versi sebelumnya.');
@@ -191,11 +195,10 @@ class LocalDeployer implements DeployerInterface
      */
     private function applyCompose(array $app, callable $logger, string $action): array
     {
-        $this->nginx->ensureWritable();
-
         $project = $app['name'];
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
+        $this->ensureNginxPrecondition($app, $dir, $files);
 
         // Fail-fast: file compose wajib ada (kalau tidak, `up -d` akan mengeluh
         // dengan pesan docker yang tidak informatif untuk user).
@@ -210,7 +213,7 @@ class LocalDeployer implements DeployerInterface
         $this->upCompose($project, $app, $dir, $files, false, $logger);
 
         $app['containers'] = $this->getContainers($project);
-        $this->writeNginxConfig($app);
+        $this->writeNginxConfigStep($app, $logger);
 
         $app['status'] = 'running';
         $logger('done', $action === 'rebuild' ? 'Deploy ulang selesai.' : 'Perubahan compose diterapkan.');
@@ -514,7 +517,49 @@ class LocalDeployer implements DeployerInterface
 
     public function writeNginxConfig(array $app): void
     {
+        // App tanpa host port terpublish (mis. service database yang sengaja
+        // tidak di-publish ke host) tidak punya target `proxy_pass`: tidak
+        // dibuatkan vhost/subdomain. Config lama dibuang supaya tidak
+        // menyisakan vhost yang menunjuk port mati — deploy TIDAK gagal karena
+        // kondisi ini (SPECS §7.2).
+        if (!AppPorts::hasHostPort($app)) {
+            $this->removeNginxConfig($app);
+            return;
+        }
+
         $this->nginx->write($app['name'], $this->renderNginxConfig($app));
+    }
+
+    /**
+     * Langkah pipeline "nginx": tulis config hanya bila app punya host port.
+     * Pesan log dibuat jujur supaya user tahu subdomain memang dilewati.
+     */
+    private function writeNginxConfigStep(array $app, callable $logger): void
+    {
+        if (AppPorts::hasHostPort($app)) {
+            $logger('nginx', 'Menulis config Nginx ...');
+        } else {
+            $logger('nginx', 'Tidak ada host port terpublish — app tidak di-proxy ke domain (vhost/subdomain dilewati).');
+        }
+
+        $this->writeNginxConfig($app);
+    }
+
+    /**
+     * Prasyarat tulis direktori Nginx (fail-fast) — hanya bila app ini memang
+     * akan punya port yang di-proxy: dari container yang sudah ada
+     * (`AppPorts::hasHostPort`) atau dari deklarasi `ports:` compose (deploy
+     * pertama, sebelum container ada). App tanpa port tidak menyentuh direktori
+     * Nginx sama sekali, sehingga direktori Nginx yang tidak tersedia / tidak
+     * writable tidak menggagalkan deploy-nya.
+     *
+     * @param array<int,string> $files
+     */
+    private function ensureNginxPrecondition(array $app, string $dir, array $files): void
+    {
+        if (AppPorts::hasHostPort($app) || ComposeSource::declaresPorts($dir, $files)) {
+            $this->nginx->ensureWritable();
+        }
     }
 
     public function removeNginxConfig(array $app): void

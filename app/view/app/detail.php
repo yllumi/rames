@@ -63,6 +63,8 @@ $portContext = [
 ];
 $appPorts = \app\library\Docker\AppPorts::all($portContext);
 $proxiedPort = \app\library\Docker\AppPorts::proxiedContainerPort($portContext);
+// App tanpa host port terpublish tidak di-proxy ke domain (tanpa vhost/subdomain)
+$hasHostPort = \app\library\Docker\AppPorts::hasHostPort($portContext);
 
 // Container default untuk modal log (service primary, else container pertama)
 $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($app) : null;
@@ -161,7 +163,14 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
     <dl class="app-info mb-0">
       <div class="app-info-item">
         <dt class="k">Subdomain</dt>
-        <dd class="v mb-0"><a href="http://<?= e($app['subdomain']) ?>" target="_blank" rel="noopener"><?= e($app['subdomain']) ?></a><?php if ($customDomain): ?> <span class="text-muted small">(redirect → <?= e($customDomain) ?>)</span><?php endif; ?></dd>
+        <dd class="v mb-0">
+          <?php if ($hasHostPort): ?>
+          <a href="http://<?= e($app['subdomain']) ?>" target="_blank" rel="noopener"><?= e($app['subdomain']) ?></a><?php if ($customDomain): ?> <span class="text-muted small">(redirect → <?= e($customDomain) ?>)</span><?php endif; ?>
+          <?php else: ?>
+          <span class="text-muted">tidak dipakai</span>
+          <span class="text-muted small"> &middot; app tidak mem-publish port — Nginx tidak di-proxy ke app ini</span>
+          <?php endif; ?>
+        </dd>
       </div>
       <?php if ($isCompose): ?>
       <?php $tplTitle = is_array($app['template'] ?? null) ? (string) ($app['template']['title'] ?? $app['template']['slug'] ?? '') : ''; ?>
@@ -306,6 +315,11 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
         </form>
         <?php endif; ?>
       </div>
+    <?php elseif (!$hasHostPort): ?>
+      <p class="text-muted small mb-0">
+        App ini tidak mem-publish port host, sehingga tidak ada yang bisa di-proxy ke domain — subdomain &amp; SSL tidak berlaku.
+        Tambahkan <span class="mono">ports:</span> pada compose app (tab Compose) lalu <strong>Deploy Ulang</strong> bila app perlu diakses lewat domain.
+      </p>
     <?php elseif (!$canDomain): ?>
       <p class="text-muted small mb-0">Belum ada custom domain. Anda tidak punya hak mengubahnya.</p>
     <?php else: ?>

@@ -7,6 +7,7 @@ use app\library\Docker\ComposeParser;
 use app\library\Docker\PortManager;
 use RuntimeException;
 use Symfony\Component\Yaml\Exception\ParseException;
+use Symfony\Component\Yaml\Tag\TaggedValue;
 use Symfony\Component\Yaml\Yaml;
 
 /**
@@ -316,6 +317,52 @@ final class ComposeSource
         }
 
         return (new PortManager($rangeStart, $rangeEnd))->resolve($services, $usedPorts);
+    }
+
+    /**
+     * Apakah daftar file compose mem-publikasikan `ports:` pada minimal satu
+     * service (kandidat target `proxy_pass` Nginx)?
+     *
+     * Dipakai deployer sebagai prasyarat "app ini butuh direktori Nginx"
+     * SEBELUM container diciptakan — satu-satunya sumber informasi pada deploy
+     * pertama, karena `apps.json` belum memuat container. App yang tidak
+     * mendeklarasikan port tidak menyentuh direktori Nginx sama sekali, jadi
+     * direktori Nginx yang tidak tersedia tidak boleh menggagalkan deploy-nya
+     * (SPECS §7.2).
+     *
+     * Toleran: file yang tidak ada / tidak bisa di-parse dilewati.
+     *
+     * @param array<int,string> $files
+     */
+    public static function declaresPorts(string $dir, array $files): bool
+    {
+        foreach ($files as $file) {
+            $path = $dir . '/' . $file;
+            if (!is_file($path)) {
+                continue;
+            }
+            try {
+                $data = Yaml::parseFile($path, Yaml::PARSE_CUSTOM_TAGS);
+            } catch (\Throwable $e) {
+                continue;
+            }
+            foreach ((array) ($data['services'] ?? []) as $service) {
+                if (!is_array($service)) {
+                    continue;
+                }
+                $ports = $service['ports'] ?? null;
+                if (is_array($ports) && $ports !== []) {
+                    return true;
+                }
+                // Tag YAML: `ports: !reset []` (dibuat dashboard untuk menghapus
+                // port bawaan) BUKAN publish; tag lain (`!override`) bisa berisi port.
+                if ($ports instanceof TaggedValue && $ports->getTag() !== 'reset') {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -491,6 +491,56 @@ class ComposeSourceTest extends TestCase
         );
     }
 
+    // ==================================================================
+    // declaresPorts()
+    // ==================================================================
+
+    public function testDeclaresPortsTrueForPublishedPort(): void
+    {
+        file_put_contents($this->tmp . '/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"8080:80\"\n");
+
+        $this->assertTrue(ComposeSource::declaresPorts($this->tmp, ['docker-compose.yml']));
+    }
+
+    public function testDeclaresPortsFalseWithoutAnyPort(): void
+    {
+        // Server database tanpa `ports:` → app tidak butuh direktori Nginx.
+        file_put_contents($this->tmp . '/docker-compose.yml', "services:\n  db:\n    image: mariadb:11.4\n");
+
+        $this->assertFalse(ComposeSource::declaresPorts($this->tmp, ['docker-compose.yml']));
+    }
+
+    public function testDeclaresPortsIgnoresResetTagAndChecksOverrideFiles(): void
+    {
+        file_put_contents($this->tmp . '/docker-compose.yml', "services:\n  db:\n    image: mariadb:11.4\n");
+        file_put_contents(
+            $this->tmp . '/docker-compose.override.ports.yml',
+            "services:\n  db:\n    ports: !reset []\n"
+        );
+
+        // `ports: !reset []` (file generated) = menghapus port bawaan, bukan publish.
+        $this->assertFalse(ComposeSource::declaresPorts(
+            $this->tmp,
+            ['docker-compose.yml', 'docker-compose.override.ports.yml']
+        ));
+
+        // Override berisi port betulan → dihitung (dicek juga di file override).
+        file_put_contents(
+            $this->tmp . '/docker-compose.override.ports.yml',
+            "services:\n  db:\n    ports:\n      - \"13306:3306\"\n"
+        );
+        $this->assertTrue(ComposeSource::declaresPorts(
+            $this->tmp,
+            ['docker-compose.yml', 'docker-compose.override.ports.yml']
+        ));
+    }
+
+    public function testDeclaresPortsIsTolerantForMissingFiles(): void
+    {
+        $this->assertFalse(ComposeSource::declaresPorts($this->tmp . '/tidak-ada', ['docker-compose.yml']));
+        $this->assertFalse(ComposeSource::declaresPorts($this->tmp . '/tidak-ada', ['']));
+    }
+
     /**
      * Buat entri unggahan palsu (file temporer berisi $content).
      *

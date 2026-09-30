@@ -169,11 +169,30 @@
   </div>
   <?php endif; ?>
 
+  <?php
+  // App tanpa port terpublish tidak dibuatkan vhost/subdomain (SPECS §7.2) —
+  // jelaskan supaya user tidak mengira port-nya hilang.
+  $pendingHasPorts = false;
+  foreach ((array) ($pending['services'] ?? []) as $pendingSvc) {
+      if (!empty($pendingSvc['ports'])) {
+          $pendingHasPorts = true;
+          break;
+      }
+  }
+  ?>
+  <?php if ($pendingHasPorts): ?>
   <p class="text-muted small">
     Port yang berkonflik sudah otomatis diganti dari rentang <code><?= e(config('deploy.port_range.start')) ?>–<?= e(config('deploy.port_range.end')) ?></code>. Sesuaikan bila perlu.
     Pilih <strong>satu</strong> port yang menerima trafik domain app (subdomain / custom domain) — port lain
     tetap dipublikasikan ke host port-nya masing-masing dan bisa diakses langsung via <span class="mono">http://&lt;host&gt;:&lt;port&gt;</span>.
   </p>
+  <?php else: ?>
+  <p class="text-muted small">
+    Tidak ada service yang mem-publikasikan port (<span class="mono">ports:</span>), jadi app ini dibuat
+    <strong>tanpa vhost &amp; subdomain</strong> — Nginx tidak di-proxy ke app dan port tidak diteruskan ke host.
+    Tambahkan <span class="mono">ports:</span> pada compose lalu Deploy Ulang bila app perlu diakses lewat domain atau dari host.
+  </p>
+  <?php endif; ?>
 
   <div class="d-flex gap-2">
     <button type="submit" class="btn btn-primary" id="deploy-btn">

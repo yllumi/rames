@@ -13,6 +13,7 @@ use app\library\Deploy\EnvManager;
 use app\library\Deploy\NetworkManager;
 use app\library\Deploy\ResourceLimits;
 use app\library\Db\DbContainerDetector;
+use app\library\Docker\AppPorts;
 use app\library\Docker\ComposeParser;
 use app\library\Docker\DockerClient;
 use app\library\Docker\PortManager;
@@ -551,11 +552,15 @@ class AppController
 
             $parsed = (new ComposeParser())->parse($dest . '/' . $composeFile);
             $services = $this->resolveServicePorts($parsed['services']);
+            // Template tanpa `ports:` (mis. server database) tidak punya primary:
+            // app dibuat tanpa vhost/subdomain (SPECS §7.2b).
+            $tplPrimaryService = (string) ($template['primary']['service'] ?? '');
+            $tplPrimaryPort = (int) ($template['primary']['port'] ?? 0);
             $primary = $this->resolvePrimarySelection(
                 $services,
-                $template['primary']['service'] . ':' . $template['primary']['port'],
-                (string) $template['primary']['service'],
-                (int) $template['primary']['port']
+                $tplPrimaryService !== '' ? $tplPrimaryService . ':' . $tplPrimaryPort : '',
+                $tplPrimaryService,
+                $tplPrimaryPort
             );
 
             // Template dilarang menulis container_name → prefix = nama app.
@@ -642,6 +647,24 @@ class AppController
         $usedPorts = $portManager->usedHostPorts((new AppStore())->all());
 
         return $portManager->resolve($services, $usedPorts);
+    }
+
+    /**
+     * Apakah minimal satu service mem-publikasikan port (kandidat `proxy_pass`)?
+     * App yang tidak punya port sama sekali dibuat tanpa vhost/subdomain, jadi
+     * direktori Nginx tidak perlu bisa ditulis (SPECS §7.2).
+     *
+     * @param array<string,array> $services
+     */
+    private function hasDeclaredPorts(array $services): bool
+    {
+        foreach ($services as $svc) {
+            if (is_array($svc) && !empty($svc['ports'])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -823,9 +846,12 @@ class AppController
         ?array $template = null,
         array $limits = []
     ): array {
-        // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy.
-        // Kalau tidak, tampilkan pesan jelas (bukan gagal di tengah build).
-        DeployerFactory::create()->ensureWritable();
+        // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy —
+        // hanya bila ada port yang akan di-proxy ke domain. App tanpa `ports:`
+        // tidak membuat vhost, jadi direktori Nginx tidak relevan (SPECS §7.2).
+        if ($this->hasDeclaredPorts($services)) {
+            DeployerFactory::create()->ensureWritable();
+        }
 
         $composeFiles = [$pending['compose_file']];
         $this->writeOverride($pending, $services, $composeFiles, $containerPrefix);
@@ -1224,6 +1250,11 @@ class AppController
         $oldCustom = (string) ($app['custom_domain'] ?? '');
 
         try {
+            // App tanpa port terpublish tidak punya target `proxy_pass` — domain
+            // tak akan pernah dilayani Nginx (vhost dilewati saat deploy).
+            if (!AppPorts::hasHostPort($app)) {
+                throw new RuntimeException('App ini tidak mem-publish port host, jadi tidak ada yang bisa di-proxy ke domain. Tambahkan `ports:` pada compose app (tab Compose) lalu Deploy Ulang.');
+            }
             if (!SslIssuer::isPublicDomain($domain)) {
                 throw new RuntimeException('Custom domain harus FQDN publik yang valid (mis. example.org).');
             }
@@ -2333,6 +2364,10 @@ class AppController
      * untuk kompatibilitas). Bila tidak ada/tidak valid dipakai `$fallbackService`
      * + `$preferredPort` (dari langkah analisis), else port pertama service tsb.
      *
+     * App yang tidak mem-publikasikan port sama sekali (mis. server database tanpa
+     * `ports:`) mengembalikan `['service' => '', 'port' => 0]` — app dibuat tanpa
+     * vhost/subdomain, bukan ditolak (SPECS §7.2).
+     *
      * @param array<string,array> $services
      * @return array{service:string,port:int}
      */
@@ -2376,13 +2411,18 @@ class AppController
             $port = (int) ($available[0] ?? 0);
         }
         if ($port <= 0) {
-            throw new RuntimeException('Tidak ada service dengan port exposed. Primary port tidak bisa ditentukan.');
+            // Tidak ada port yang dipublikasikan ke host → app tanpa domain
+            // (vhost & subdomain dilewati saat deploy, SPECS §7.2).
+            return ['service' => '', 'port' => 0];
         }
 
         return ['service' => $service, 'port' => $port];
     }
 
     /**
+     * Service primary (service yang sudah punya host port) atau '' bila app tidak
+     * mem-publikasikan port sama sekali.
+     *
      * @param array<string,array> $services
      */
     private function resolvePrimaryService(array $services, string $primary): string
@@ -2394,7 +2434,8 @@ class AppController
         if ($candidates !== []) {
             return (string) array_values($candidates)[0];
         }
-        throw new RuntimeException('Tidak ada service dengan port exposed. Primary service tidak bisa ditentukan.');
+
+        return '';
     }
 
     /**

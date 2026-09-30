@@ -69,7 +69,13 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope)
             <span class="badge text-bg-light border ms-1" title="Anda punya akses <?= e(app_role_label($__role)) ?> ke app ini">Dibagikan · <?= e(app_role_label($__role)) ?></span>
           <?php endif; ?>
         </td>
-        <td><a class="mono text-decoration-none text-nowrap" href="http://<?= e($app['subdomain']) ?>" target="_blank" rel="noopener"><?= e($app['subdomain']) ?> ↗</a></td>
+        <td>
+          <?php if (\app\library\Docker\AppPorts::hasHostPort($app)): ?>
+            <a class="mono text-decoration-none text-nowrap" href="http://<?= e($app['subdomain']) ?>" target="_blank" rel="noopener"><?= e($app['subdomain']) ?> ↗</a>
+          <?php else: ?>
+            <span class="text-muted small" title="App tidak mem-publish port host — tidak ada vhost/subdomain">tanpa domain</span>
+          <?php endif; ?>
+        </td>
         <td>
           <?php $__cd = (string) ($app['custom_domain'] ?? ''); ?>
           <?php if ($__cd !== ''): ?>

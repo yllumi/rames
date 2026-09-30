@@ -174,13 +174,23 @@ services:
 YAML, '/replica/');
     }
 
-    public function testRejectsTemplateWithoutPorts(): void
+    public function testAllowsTemplateWithoutPorts(): void
     {
-        $this->assertInvalid('demo', $this->manifest(), <<<'YAML'
+        // Template tanpa `ports:` = app tanpa vhost/subdomain (mis. server
+        // database yang hanya dikelola lewat /database) — bukan template rusak:
+        // primary sengaja dikosongkan, SPECS §7.2b.
+        $this->writeTemplate('demo', $this->manifest(), <<<'YAML'
 services:
-  web:
-    image: nginx:alpine
-YAML, '/port/');
+  db:
+    image: mariadb:11.4
+YAML);
+
+        $template = (new TemplateCatalog($this->tmp))->require('demo');
+
+        $this->assertTrue($template['valid']);
+        $this->assertSame([], $template['ports']);
+        $this->assertSame('', $template['primary']['service']);
+        $this->assertSame(0, $template['primary']['port']);
     }
 
     public function testRejectsMissingComposeFile(): void
@@ -476,8 +486,17 @@ YAML, ['nginx.conf' => "server {\n  listen 80;\n}\n"]);
                 $template['valid'],
                 'Template "' . $template['slug'] . '" tidak valid: ' . (string) $template['error']
             );
+
+            // Primary wajib konsisten dengan port template: template tanpa port
+            // (mis. server database) sengaja tanpa primary.
+            if ($template['ports'] === []) {
+                $this->assertSame('', $template['primary']['service'], 'Template "' . $template['slug'] . '" tanpa port harus tanpa primary.');
+                $this->assertSame(0, $template['primary']['port']);
+                continue;
+            }
+
             $this->assertNotSame('', $template['primary']['service']);
-            $this->assertGreaterThan(0, $template['primary']['port']);
+            $this->assertContains($template['primary']['port'], $template['ports']);
         }
     }
 

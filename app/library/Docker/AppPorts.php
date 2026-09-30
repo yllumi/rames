@@ -20,6 +20,10 @@ use RuntimeException;
  *   containers[].host_port / internal_port     (port pertama — data app lama)
  *   primary_service, primary_port
  *
+ * App yang tidak mem-publish port sama sekali (mis. server database yang dikelola
+ * lewat `/database`, SPECS §7.2) tidak punya target `proxy_pass`: `hasHostPort()`
+ * false dan dashboard tidak membuat vhost/subdomain untuk app itu.
+ *
  * Stateless (murni statik, tanpa I/O) — aman untuk worker Webman persistent.
  */
 final class AppPorts
@@ -48,6 +52,27 @@ final class AppPorts
         }
 
         return $result;
+    }
+
+    /**
+     * Apakah app punya **host port** terpublish (target `proxy_pass` Nginx)?
+     *
+     * False = app tidak di-proxy ke domain (tidak ada vhost/subdomain): mis.
+     * service database yang sengaja tidak menulis `ports:`, atau container yang
+     * belum/tidak jalan sehingga Engine tidak melaporkan port apa pun. Deploy
+     * TIDAK gagal karena kondisi ini (SPECS §7.2).
+     *
+     * @param array $app
+     */
+    public static function hasHostPort(array $app): bool
+    {
+        foreach (self::all($app) as $port) {
+            if ($port['host'] > 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
