@@ -80,6 +80,13 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # Teruskan WebSocket (Upgrade) ke app: HTTP/1.1 + header Upgrade/Connection.
+        # Untuk request HTTP biasa \$http_upgrade kosong, sehingga nginx tidak
+        # mengirim header Upgrade & request tetap berjalan normal.
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 }
 NGINX;
@@ -119,6 +126,13 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # Teruskan WebSocket (Upgrade) ke app: HTTP/1.1 + header Upgrade/Connection.
+        # Untuk request HTTP biasa \$http_upgrade kosong, sehingga nginx tidak
+        # mengirim header Upgrade & request tetap berjalan normal.
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 }
 NGINX;

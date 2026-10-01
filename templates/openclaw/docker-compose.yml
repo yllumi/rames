@@ -1,0 +1,68 @@
+# Template OpenClaw — gateway asisten AI self-hosted (image prebuilt resmi).
+#
+# Aturan template Rames yang dipatuhi di sini:
+#  - Hanya SATU service (`openclaw-gateway`). Service `openclaw-cli` dari compose
+#    resmi sengaja TIDAK disertakan: ia memakai `network_mode: service:...` yang
+#    bentrok dengan override `networks:` yang ditulis dashboard Rames.
+#  - Image prebuilt (tanpa `build:`), tanpa `container_name`, tanpa `name:` level
+#    atas, dan tanpa replica/`scale` > 1 — nama project & nama container dikelola
+#    dashboard (prefix otomatis = nama app).
+#  - Named volume (bukan bind mount) → tidak ada direktori host yang perlu
+#    disiapkan dan datanya dipakai ulang bila app dibuat ulang dengan nama sama.
+#  - Hanya port 18789 yang di-publish (jangan publish 18790/3978).
+services:
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:latest
+    restart: unless-stopped
+
+    # init:true supaya gateway bukan PID 1 (SIGTERM rapi saat stop/restart).
+    init: true
+
+    ports:
+      - "18789:18789"
+
+    # `--bind lan` (bukan loopback) supaya gateway mengikat ke antarmuka LAN
+    # container, sehingga port yang di-publish bisa dijangkau Nginx host.
+    command: ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"]
+
+    environment:
+      TZ: ${TZ}
+      # Path yang dipin resmi agar state/konfigurasi konsisten.
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+      OPENCLAW_GATEWAY_PORT: "18789"
+      TERM: xterm-256color
+      # Token autentikasi Control UI (dibuat otomatis bila form dikosongkan).
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      # Opsional: API key provider model. Pakai `:-` supaya compose tidak
+      # mengeluh bila user memilih onboarding lewat Terminal app.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+    # Hardening seperti compose resmi OpenClaw.
+    cap_drop:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - "no-new-privileges:true"
+
+    # Agar provider model lokal yang berjalan di host bisa dijangkau.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      # State + config + workspace (wajib persisten).
+      - openclaw-state:/home/node/.openclaw
+      # Kunci profil autentikasi provider (wajib persisten).
+      - openclaw-auth-profile:/home/node/.config/openclaw
+
+    # Image resmi sudah membawa HEALTHCHECK bawaan (`/healthz`), jadi tidak
+    # diduplikasi di sini. Endpoint tanpa auth lain: `/startupz`, `/readyz`.
+
+volumes:
+  openclaw-state:
+  openclaw-auth-profile:

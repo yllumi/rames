@@ -1,0 +1,48 @@
+title: OpenClaw
+description: >-
+  OpenClaw — gateway asisten AI self-hosted dengan Control UI berbasis web.
+  Control UI diakses lewat domain/subdomain app ini (dashboard Rames sudah
+  meneruskan WebSocket sehingga antarmuka real-time berfungsi). State,
+  konfigurasi, workspace, dan kunci profil autentikasi disimpan di volume Docker
+  persisten sehingga bertahan saat container dibuat ulang. App ini membutuhkan
+  kunci API provider model (OpenAI/Anthropic) atau onboarding interaktif lewat
+  tab Terminal app. PERINGATAN KEAMANAN: jangan membuka Control UI ke publik
+  tanpa token akses, dan tinjau ulang hardening serta eksposur OpenClaw. Sebagian
+  pengaturan belum otomatis (mis. gateway.controlUi.allowedOrigins untuk origin
+  publik dan penambahan channel) dan harus dikonfigurasi lewat tab Terminal app.
+category: AI/Asisten
+icon: "🦞"
+docs_url: https://docs.openclaw.ai/install/docker
+
+# Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke
+# service (tanpa disimpan di repo). Kosong = pakai `default`; `generate: secret`
+# berarti nilai acak dibuat otomatis bila dikosongkan.
+env:
+  - key: OPENCLAW_GATEWAY_TOKEN
+    label: Token akses Gateway
+    help: >-
+      Token untuk masuk ke Control UI Gateway. Nilai ini dipakai saat membuka
+      antarmuka OpenClaw (lihat tab Environment app) dan dibuat otomatis bila
+      dikosongkan.
+    generate: secret
+  - key: TZ
+    label: Timezone
+    default: Asia/Jakarta
+  - key: OPENAI_API_KEY
+    label: OpenAI API key
+    help: >-
+      Isi salah satu API key provider model (OpenAI). Bila dikosongkan, jalankan
+      onboarding lewat tab Terminal app.
+    secret: true
+    required: false
+  - key: ANTHROPIC_API_KEY
+    label: Anthropic API key
+    help: >-
+      Isi salah satu API key provider model (Anthropic). Bila dikosongkan,
+      jalankan onboarding lewat tab Terminal app.
+    secret: true
+    required: false
+
+primary:
+  service: openclaw-gateway
+  port: 18789
