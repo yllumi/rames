@@ -121,11 +121,35 @@ $composeError = $compose_error ?? null;
   </div>
 </div>
 <?php else: ?>
-<div class="list-group">
+<?php
+// Peta logo diturunkan sekali per render dari isi direktori nyata (bukan daftar
+// ekstensi hardcode) supaya template baru ber-logo .svg/.png/.webp langsung
+// terdeteksi. Hanya ekstensi whitelist (case-insensitive) yang diterima.
+$logoMap = [];
+foreach (glob(dirname(__DIR__, 3) . '/public/images/templates/*') ?: [] as $logoFile) {
+    $logoSlug = pathinfo($logoFile, PATHINFO_FILENAME);
+    $logoExt = pathinfo($logoFile, PATHINFO_EXTENSION);
+    if (in_array(strtolower($logoExt), ['svg', 'png', 'webp'], true)
+        && preg_match('/\A[a-z0-9-]+\z/D', $logoSlug) === 1
+        && is_file($logoFile)
+        && !isset($logoMap[$logoSlug])) {
+        $logoMap[$logoSlug] = $logoExt;
+    }
+}
+?>
+<div class="template-grid">
   <?php $templateIndex = 0; foreach ($templates as $t): $modalId = 'template-detail-' . $templateIndex++; ?>
-  <button type="button" class="list-group-item list-group-item-action d-flex align-items-center gap-3 py-3 text-start" data-bs-toggle="modal" data-bs-target="#<?= e($modalId) ?>" aria-haspopup="dialog" aria-controls="<?= e($modalId) ?>" aria-label="Detail template <?= e($t['title']) ?>">
-    <span class="fs-5" aria-hidden="true"><?= ($t['icon'] ?? '') !== '' ? e($t['icon']) : '◈' ?></span>
-    <span class="fw-semibold text-truncate"><?= e($t['title']) ?></span>
+  <?php $slug = is_string($t['slug'] ?? null) ? $t['slug'] : ''; $logoExtension = preg_match('/\A[a-z0-9-]+\z/D', $slug) === 1 ? ($logoMap[$slug] ?? '') : ''; $hasLogo = $logoExtension !== ''; ?>
+  <button type="button" class="template-tile" data-bs-toggle="modal" data-bs-target="#<?= e($modalId) ?>" aria-haspopup="dialog" aria-controls="<?= e($modalId) ?>" aria-label="Detail template <?= e($t['title']) ?>">
+    <span class="template-tile-media">
+      <?php if ($hasLogo): ?>
+      <img class="template-tile-logo" src="/images/templates/<?= e($slug) ?>.<?= e($logoExtension) ?>" alt="<?= e($t['title']) ?>" loading="lazy">
+      <?php else: ?>
+      <span class="template-tile-fallback" aria-hidden="true"><?= ($t['icon'] ?? '') !== '' ? e($t['icon']) : '◈' ?></span>
+      <?php endif; ?>
+    </span>
+    <span class="template-tile-name"><?= e($t['title']) ?></span>
+    <span class="template-tile-category"><?= e($t['category']) ?></span>
   </button>
   <?php endforeach; ?>
 </div>
