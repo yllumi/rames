@@ -9,6 +9,7 @@
 #   4. Dashboard: docker compose up -d --build + user admin pertama
 #   5. Watcher nginx reload (systemd) — SPECS §8.3 (fitur 2)
 #   6. Renewal certbot otomatis (systemd timer) — SPECS §8a (fitur 3)
+#   7. Backup volume harian ke S3 via restic (systemd timer) — PLAN_VOLUME_BACKUP.md
 #
 # Pemakaian:
 #   sudo ./host/install.sh [--no-deps] [--non-interactive]
@@ -351,6 +352,37 @@ EOF
     ok "Timer renewal certbot diinstal (certbot-renew.timer, 2×/hari)."
 }
 
+# ---------------------------------------------------------------- backup volume (fitur 7)
+install_volume_backup_timer() {
+    local script_src="$SCRIPT_DIR/backup.sh"
+    local unit_src="$SCRIPT_DIR/systemd/volume-backup.service"
+    local timer_src="$SCRIPT_DIR/systemd/volume-backup.timer"
+    local script_dst="/usr/local/bin/rames-volume-backup.sh"
+    local unit_dst="/etc/systemd/system/volume-backup.service"
+    local timer_dst="/etc/systemd/system/volume-backup.timer"
+    local env_dst="/etc/rames/volume-backup.env"
+
+    [ -f "$script_src" ] && [ -f "$unit_src" ] && [ -f "$timer_src" ] \
+        || { warn "File backup tidak lengkap di host/ — lewati instalasi timer backup volume."; return; }
+
+    install -m 0755 "$script_src" "$script_dst"
+    install -m 0644 "$unit_src" "$unit_dst"
+    install -m 0644 "$timer_src" "$timer_dst"
+
+    mkdir -p /etc/rames
+    cat > "$env_dst" <<EOF
+VOLUME_BACKUP_HOST_CONTAINER=$CONTAINER_NAME
+DOCKER=docker
+VOLUME_BACKUP_TIMEOUT=3900
+EOF
+    chmod 0640 "$env_dst"
+
+    systemctl daemon-reload
+    systemctl enable --now volume-backup.timer >/dev/null 2>&1 || true
+    ok "Timer backup volume diinstal (volume-backup.timer, harian 02:30)."
+    warn "Isi kredensial S3 di .env (RESTIC_REPOSITORY, AWS_*) & passphrase restic di database/restic/password (chmod 0600) sebelum backup pertama."
+}
+
 # ---------------------------------------------------------------- summary
 print_summary() {
     local domain port
@@ -368,11 +400,14 @@ print_summary() {
     echo "  Service aktif:"
     echo "    - dashboard-nginx-watcher.service (reload otomatis Nginx)"
     echo "    - certbot-renew.timer (renewal SSL 2×/hari)"
+    echo "    - volume-backup.timer (backup volume ke S3, harian 02:30)"
     echo
     echo "  Langkah berikutnya:"
     echo "    - Buka dashboard, login, lalu Create App dari repo Git berisi docker-compose.yml"
     echo "    - Pastikan DNS *.${domain} mengarah ke IP server ini"
-    echo "    - Periksa service: systemctl status dashboard-nginx-watcher certbot-renew.timer"
+    echo "    - Isi kredensial S3 di .env (RESTIC_REPOSITORY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION)"
+    echo "      dan passphrase restic di database/restic/password (chmod 0600) agar backup volume berjalan"
+    echo "    - Periksa service: systemctl status dashboard-nginx-watcher certbot-renew.timer volume-backup.timer"
 }
 
 # ---------------------------------------------------------------- main
@@ -397,6 +432,7 @@ main() {
     create_admin
     install_watcher
     install_certbot_timer
+    install_volume_backup_timer
     print_summary
 }
 

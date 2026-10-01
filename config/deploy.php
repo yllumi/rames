@@ -105,6 +105,35 @@ return [
     'templates_path' => getenv('TEMPLATES_PATH') ?: (base_path() . '/templates'),
 
     // ---------------------------------------------------------------------
+    // Backup volume ke S3 via restic (PLAN_VOLUME_BACKUP.md / SPECS.md §8h)
+    // ---------------------------------------------------------------------
+    // Namespace env: VOLUME_BACKUP_*/RESTIC_*/AWS_* — JANGAN pakai BACKUP_*
+    // (§8g: backup database/*.json + config Nginx, terpisah — jangan digabung).
+    // Kredensial S3 via .env → environment: compose; passphrase restic di FILE
+    // `database/restic/password` (chmod 0600, gitignored) lewat --password-file.
+    // TIDAK ADA secret hard-coded di sini.
+    'volume_backup_enabled' => (getenv('VOLUME_BACKUP_ENABLED') ?: 'true') !== 'false', // false = matikan fitur
+    // Strategi B (snapshot filesystem): `stop` = volume non-DB dibackup harian via
+    // stop→snapshot→start; `skip` = hanya manual.
+    'volume_backup_snapshot_policy' => getenv('VOLUME_BACKUP_SNAPSHOT_POLICY') ?: 'stop',
+    // Guard: tolak snapshot bila ada container running yang me-mount volume.
+    'volume_backup_require_stopped' => (getenv('VOLUME_BACKUP_REQUIRE_STOPPED') ?: 'true') !== 'false',
+    'volume_backup_stop_timeout' => (int) (getenv('VOLUME_BACKUP_STOP_TIMEOUT') ?: 120),   // detik, tunggu container berhenti
+    'volume_backup_dump_timeout' => (int) (getenv('VOLUME_BACKUP_DUMP_TIMEOUT') ?: 600),   // detik, timeout mysqldump/pg_dump
+    // Strategi A: dump logis untuk container DB (dijalankan selagi container hidup).
+    'volume_backup_db_dump_enabled' => (getenv('VOLUME_BACKUP_DB_DUMP_ENABLED') ?: 'true') !== 'false',
+    'volume_backup_timeout' => (int) (getenv('VOLUME_BACKUP_TIMEOUT') ?: 3600),            // detik, timeout satu run restic
+    'volume_backup_image' => getenv('VOLUME_BACKUP_IMAGE') ?: '',                          // kosong = image container dashboard
+    'volume_backup_keep_daily' => (int) (getenv('VOLUME_BACKUP_KEEP_DAILY') ?: 7),         // restic forget --keep-daily
+    'volume_backup_keep_weekly' => (int) (getenv('VOLUME_BACKUP_KEEP_WEEKLY') ?: 4),       // restic forget --keep-weekly
+    'volume_backup_keep_monthly' => (int) (getenv('VOLUME_BACKUP_KEEP_MONTHLY') ?: 3),     // restic forget --keep-monthly
+    'restic_repository' => getenv('RESTIC_REPOSITORY') ?: '',                              // mis. s3:https://s3.amazonaws.com/<bucket>/rames
+    'restic_password_file' => getenv('RESTIC_PASSWORD_FILE') ?: (base_path() . '/database/restic/password'),
+    'aws_access_key_id' => getenv('AWS_ACCESS_KEY_ID') ?: '',
+    'aws_secret_access_key' => getenv('AWS_SECRET_ACCESS_KEY') ?: '',
+    'aws_default_region' => getenv('AWS_DEFAULT_REGION') ?: '',
+
+    // ---------------------------------------------------------------------
     // Self-update dashboard (SPECS.md §7.8 / ARCHITECTURE.md §5.14)
     // ---------------------------------------------------------------------
     // Update dijalankan oleh HELPER CONTAINER detached di luar lifecycle

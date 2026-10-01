@@ -133,6 +133,80 @@ class AppAccessTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testBackupIsAllowedForOperatorOwnerAndAdminOnly(): void
+    {
+        $app = $this->app();
+
+        // backup volume = operator ke atas (termasuk admin global).
+        $this->assertTrue(AppAccess::can('backup', $app, self::OPERATOR));
+        $this->assertTrue(AppAccess::can('backup', $app, self::OWNER));
+        $this->assertTrue(AppAccess::can('backup', $app, self::ADMIN));
+
+        // Ditolak untuk viewer dan user tanpa akses.
+        $this->assertFalse(AppAccess::can('backup', $app, self::VIEWER));
+        $this->assertFalse(AppAccess::can('backup', $app, self::STRANGER));
+        $this->assertFalse(AppAccess::can('backup', $app, null));
+
+        // abilitiesFor() konsisten: `backup` dimiliki operator ke atas.
+        $this->assertTrue(AppAccess::abilitiesFor(AppAccess::ROLE_OPERATOR)['backup']);
+        $this->assertTrue(AppAccess::abilitiesFor(AppAccess::ROLE_OWNER)['backup']);
+        $this->assertTrue(AppAccess::abilitiesFor(AppAccess::ROLE_ADMIN)['backup']);
+        $this->assertFalse(AppAccess::abilitiesFor(AppAccess::ROLE_VIEWER)['backup']);
+        $this->assertFalse(AppAccess::abilitiesFor(null)['backup']);
+    }
+
+    public function testRestoreIsOwnerAndAdminOnly(): void
+    {
+        $app = $this->app();
+
+        // restore volume = destruktif → eksklusif owner (dan admin global).
+        $this->assertTrue(AppAccess::can('restore', $app, self::OWNER));
+        $this->assertTrue(AppAccess::can('restore', $app, self::ADMIN));
+
+        // Ditolak untuk operator dan viewer (juga user tanpa akses).
+        $this->assertFalse(AppAccess::can('restore', $app, self::OPERATOR));
+        $this->assertFalse(AppAccess::can('restore', $app, self::VIEWER));
+        $this->assertFalse(AppAccess::can('restore', $app, self::STRANGER));
+        $this->assertFalse(AppAccess::can('restore', $app, null));
+
+        // abilitiesFor() konsisten: `restore` tidak bocor ke operator/viewer.
+        $this->assertTrue(AppAccess::abilitiesFor(AppAccess::ROLE_OWNER)['restore']);
+        $this->assertTrue(AppAccess::abilitiesFor(AppAccess::ROLE_ADMIN)['restore']);
+        $this->assertFalse(AppAccess::abilitiesFor(AppAccess::ROLE_OPERATOR)['restore']);
+        $this->assertFalse(AppAccess::abilitiesFor(AppAccess::ROLE_VIEWER)['restore']);
+        $this->assertFalse(AppAccess::abilitiesFor(null)['restore']);
+    }
+
+    public function testRequireBackupAndRestoreThrow404WhenDenied(): void
+    {
+        $app = $this->app();
+
+        // `backup` ditolak untuk viewer → 404 (bukan 403).
+        try {
+            AppAccess::require('backup', $app, self::VIEWER);
+            $this->fail('AppAccessDenied seharusnya dilempar untuk backup/viewer.');
+        } catch (AppAccessDenied $e) {
+            $this->assertSame(404, $e->getCode());
+            $this->assertSame('backup', $e->ability);
+            $this->assertSame('app1', $e->appId);
+        }
+
+        // `restore` ditolak untuk operator → 404 (bukan 403).
+        try {
+            AppAccess::require('restore', $app, self::OPERATOR);
+            $this->fail('AppAccessDenied seharusnya dilempar untuk restore/operator.');
+        } catch (AppAccessDenied $e) {
+            $this->assertSame(404, $e->getCode());
+            $this->assertSame('restore', $e->ability);
+            $this->assertSame('app1', $e->appId);
+        }
+
+        // Jalur yang diizinkan lolos tanpa exception.
+        AppAccess::require('backup', $app, self::OPERATOR);
+        AppAccess::require('restore', $app, self::OWNER);
+        $this->assertTrue(true);
+    }
+
     public function testOwnerAndAdminHaveFullAccess(): void
     {
         $app = $this->app();

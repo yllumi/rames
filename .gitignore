@@ -16,6 +16,8 @@
 /database/*.tmp
 /database/keys/
 /database/env/
+# passphrase restic (backup volume ke S3) — rahasia, jangan pernah di-commit
+/database/restic/
 
 # SSL Let's Encrypt: webroot challenge & kredensial DNS provider
 /webroot/

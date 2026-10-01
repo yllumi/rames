@@ -1,0 +1,17 @@
+# Rames — Timer backup volume harian (jendela jam sepi + jeda acak)
+# Diinstal ke /etc/systemd/system/volume-backup.timer oleh host/install.sh.
+[Unit]
+Description=Rames — Timer backup volume harian (restic → S3)
+
+[Timer]
+# Jendela dini hari (jam sepi). Volume non-DB dibackup harian via
+# stop → snapshot → start (VOLUME_BACKUP_SNAPSHOT_POLICY=stop), serial per app,
+# sehingga downtime singkat dan terprediksi.
+OnCalendar=*-*-* 02:30:00
+# Jeda acak agar run tidak menumpuk tepat di detik yang sama dengan beban lain.
+RandomizedDelaySec=10m
+# Jalankan susulan bila jadwal terlewat (mis. host mati saat jadwal).
+Persistent=true
+
+[Install]
+WantedBy=timers.target

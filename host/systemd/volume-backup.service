@@ -1,0 +1,15 @@
+# Rames — Backup volume harian ke S3 via restic (dipicu timer; PLAN_VOLUME_BACKUP.md)
+# Diinstal ke /etc/systemd/system/volume-backup.service oleh host/install.sh.
+[Unit]
+Description=Rames — Backup volume ke S3 via restic
+Documentation=file:/opt/rames/PLAN_VOLUME_BACKUP.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# EnvironmentFile opsional (kredensial S3 TIDAK di sini — sudah diteruskan ke
+# container lewat `environment:` compose). Hanya untuk override nama container,
+# binary docker, atau timeout.
+EnvironmentFile=-/etc/rames/volume-backup.env
+ExecStart=/usr/local/bin/rames-volume-backup.sh

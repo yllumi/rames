@@ -15,6 +15,7 @@
 use Webman\Route;
 
 use app\controller\AuthController;
+use app\controller\BackupController;
 use app\controller\IndexController;
 use app\controller\LogController;
 use app\controller\MonitorController;
@@ -122,6 +123,13 @@ Route::get('/volumes', [VolumeController::class, 'index']);
 Route::post('/volumes/purge', [VolumeController::class, 'purge']);
 // Ukuran terpakai tiap volume (AJAX — GET /system/df bisa lambat)
 Route::get('/api/volumes/usage', [VolumeController::class, 'usage']);
+
+// Backup volume harian ke S3 via restic (PLAN_VOLUME_BACKUP.md §4.1)
+Route::get('/backups', [BackupController::class, 'index']);
+Route::get('/api/backups/status', [BackupController::class, 'status']);
+Route::get('/api/backups/snapshots', [BackupController::class, 'snapshots']);
+Route::post('/backups/run', [BackupController::class, 'run']);
+Route::post('/backups/restore', [BackupController::class, 'restore']);
 
 // Network Docker (lihat, buat, hubungkan/putuskan container, hapus)
 Route::get('/networks', [NetworkController::class, 'index']);

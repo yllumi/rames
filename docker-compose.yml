@@ -40,6 +40,26 @@ services:
       DB_MAX_ROWS: "${DB_MAX_ROWS:-500}"
       DB_EXPORT_TIMEOUT: "${DB_EXPORT_TIMEOUT:-600}"
       DB_IMPORT_TIMEOUT: "${DB_IMPORT_TIMEOUT:-600}"
+      # Backup volume harian ke S3 via restic (PLAN_VOLUME_BACKUP.md).
+      # Namespace env VOLUME_BACKUP_*/RESTIC_*/AWS_* — JANGAN pakai BACKUP_*
+      # (itu milik backup database/*.json + config Nginx, SPECS §8g — terpisah).
+      # Kredensial S3 hanya placeholder; nilai nyata diisi via .env (gitignored).
+      VOLUME_BACKUP_ENABLED: "${VOLUME_BACKUP_ENABLED:-true}"
+      VOLUME_BACKUP_SNAPSHOT_POLICY: "${VOLUME_BACKUP_SNAPSHOT_POLICY:-stop}"
+      VOLUME_BACKUP_REQUIRE_STOPPED: "${VOLUME_BACKUP_REQUIRE_STOPPED:-true}"
+      VOLUME_BACKUP_STOP_TIMEOUT: "${VOLUME_BACKUP_STOP_TIMEOUT:-120}"
+      VOLUME_BACKUP_DUMP_TIMEOUT: "${VOLUME_BACKUP_DUMP_TIMEOUT:-600}"
+      VOLUME_BACKUP_DB_DUMP_ENABLED: "${VOLUME_BACKUP_DB_DUMP_ENABLED:-true}"
+      VOLUME_BACKUP_TIMEOUT: "${VOLUME_BACKUP_TIMEOUT:-3600}"
+      VOLUME_BACKUP_IMAGE: "${VOLUME_BACKUP_IMAGE:-}"
+      VOLUME_BACKUP_KEEP_DAILY: "${VOLUME_BACKUP_KEEP_DAILY:-7}"
+      VOLUME_BACKUP_KEEP_WEEKLY: "${VOLUME_BACKUP_KEEP_WEEKLY:-4}"
+      VOLUME_BACKUP_KEEP_MONTHLY: "${VOLUME_BACKUP_KEEP_MONTHLY:-3}"
+      RESTIC_REPOSITORY: "${RESTIC_REPOSITORY:-}"
+      RESTIC_PASSWORD_FILE: "${RESTIC_PASSWORD_FILE:-}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-}"
     volumes:
       # Penting: kode di-mount di path yang SAMA dengan host (${PWD}). Karena
       # docker compose dijalankan DI DALAM container namun daemon-nya di host,

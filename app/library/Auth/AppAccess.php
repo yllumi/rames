@@ -28,6 +28,16 @@ namespace app\library\Auth;
  * `AppAccess::require('limits', $app, $user)` → `AppAccessDenied` → respons
  * **404** (bukan 403, agar keberadaan app milik user lain tidak bocor).
  *
+ * Ability backup volume (backup harian ke S3 via restic):
+ *   backup  — `ROLE_OPERATOR`: menjalankan backup volume milik app
+ *             (owner & operator boleh; viewer tidak).
+ *   restore — `ROLE_OWNER`: memulihkan volume dari snapshot — destruktif,
+ *             jadi eksklusif owner (operator/viewer tidak).
+ * Keduanya lewat pintu yang sama (`AppAccess::require()`), dan penolakan tetap
+ * **404** (bukan 403). Volume **yatim** (project tak ada di `apps.json`) tidak
+ * punya baris app sehingga hanya admin global yang boleh melihat/memulihkannya
+ * — controller wajib memetakan volume → app lebih dulu, baru memanggil kelas ini.
+ *
  * Kelas ini stateless (tanpa properti) — aman untuk Webman persistent worker.
  * User yang diperiksa adalah array dari session (`current_user()`), yang sudah
  * memuat field `role` hasil resolusi UserStore.
@@ -62,6 +72,10 @@ final class AppAccess
         'ssl' => self::ROLE_OPERATOR,
         'terminal' => self::ROLE_OPERATOR,
         'database' => self::ROLE_OPERATOR,
+        // backup volume ke S3 via restic — `backup` = operator, `restore` = owner
+        // (restore menimpa isi volume → destruktif, eksklusif owner).
+        'backup' => self::ROLE_OPERATOR,
+        'restore' => self::ROLE_OWNER,
         // eksklusif owner
         'delete' => self::ROLE_OWNER,
         'sharing' => self::ROLE_OWNER,

@@ -33,6 +33,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [ ] Search / filter / pagination daftar app (§8e)
 - [ ] Rate limiting / proteksi brute-force login (§8f)
 - [ ] Backup otomatis data & config sebelum overwrite (§8g)
+- [x] Backup volume harian ke object storage (S3) via restic — dump logis (DB) & snapshot (non-DB) (§8h)
 
 ## 3. Non-Goals (Phase 1)
 
@@ -790,10 +791,100 @@ Field tambahan per app:
 1. **Sebelum setiap write** `apps.json` / `auth.json` (di `AppStore`/`AuthStore`), salin file lama ke `database/backups/{file}.{timestamp}.bak` (mis. `apps.json.2026-08-18T10-00-00.bak`).
 2. **Rotasi:** pertahankan `BACKUP_RETENTION` (default 20) file backup terbaru per jenis; sisanya dihapus.
 3. **Config Nginx:** sebelum menulis/menghapus `.conf` app (`writeNginxConfig`), backup file lama ke `nginx-status/backups/` dengan pola nama sama.
-4. **Backup penuh (opsional):** script `cli/backup.php` menghasilkan arsip `database/backups/full-{timestamp}.tar.gz` berisi `database/*.json` + `nginx-status/last-reload.json` — dijalankan manual/`cron` (installer `host/install.sh` menambahkan timer opsional).
+4. **Backup penuh (arsip tar):** *belum diimplementasikan* — dulu direncanakan lewat `cli/backup.php`, tetapi nama berkas itu kini dipakai worker **backup volume** (§8h). Backup data/config saat ini mengandalkan salinan `.bak` per-file (butir 1–3).
 5. Restore manual: salin ulang `.bak` terpilih ke file utama (dokumentasikan di README/ARCHITECTURE).
 
 **Config (.env):** `BACKUP_ENABLED=true`, `BACKUP_RETENTION=20`, `BACKUP_PATH={proyek}/database/backups`.
+
+## 8h. Backup Volume Harian ke S3 (restic)
+
+**Tujuan:** mem-backup **volume Docker milik app** ke object storage eksternal (S3) secara **harian** dengan **restic** (inkremental + dedup + enkripsi + retensi native `forget`). Terpisah dari §8g (yang hanya menyalin `database/*.json` + config Nginx) — **jangan digabung**. Fitur mencakup **restore** dari UI, bukan sekadar prosedur manual.
+
+### 8h.1 Dua strategi konsistensi (keputusan D1)
+
+`BackupStrategyResolver` memilih **satu** strategi per volume:
+
+**Strategi A — logical dump (container DB, tanpa downtime)**
+- Berlaku bila volume dipakai **container DB terdeteksi** (`DbContainerDetector`: MySQL/MariaDB/Percona) **dan** container itu hidup.
+- Dijalankan **selagi container hidup** via `docker exec` (`mysqldump`/`mariadb-dump` — memakai ulang `DbDump`; kredensial lewat `MYSQL_PWD`, **bukan** argv).
+- Hasil dump disalurkan ke staging `runtime/backup/staging/{project}/{timestamp}/{database|all-databases}.sql`, lalu di-backup restic.
+- **Restore = import dump** ke container DB hidup — **bukan** menimpa volume.
+- Bila container DB justru **mati**, atau `VOLUME_BACKUP_DB_DUMP_ENABLED=false` → fallback ke Strategi B (snapshot aman).
+
+**Strategi B — filesystem snapshot (volume non-DB)**
+- Untuk volume non-DB.
+- **Harian** dengan urutan **stop → snapshot → start** (policy default `stop`), diproses **serial per app**: `docker compose stop` (`-p {project}`, **tanpa** `-v`) **sekali** untuk seluruh container app, snapshot **semua** volume non-DB app itu, lalu `docker compose start`. Container **selalu** di-start ulang lewat blok `finally` (termasuk bila snapshot/upload gagal) agar app tidak tertinggal mati.
+- Snapshot **DITOLAK** (`VolumeStateGuard::assertStopped()`) bila masih ada container `running` yang me-mount volume — **tidak ada jalur paksa dari UI**.
+- Restore = isi volume ditimpa dari snapshot (`restic restore --delete --include /data`), container **wajib** berhenti.
+- Policy `skip` mematikan snapshot otomatis (hanya backup manual dari UI).
+
+### 8h.2 Cakupan
+
+- **Named volume** berlabel `com.docker.compose.project` saja (`VolumeTargetMap`). Bind mount host & anonymous volume **di luar cakupan**.
+- **Volume yatim** (project sudah tidak ada di `apps.json`) tetap di-backup sampai retensi habis, tetapi **hanya admin** yang melihat/memulihkannya (`BackupAccess`).
+
+### 8h.3 Alur run
+
+```mermaid
+flowchart TD
+    T[volume-backup.timer 02:30] --> SH[host/backup.sh]
+    SH --> CLI["cli/backup.php run"]
+    U[Tombol Backup sekarang] --> CLI2["cli/backup.php run (volume) manual"]
+    CLI --> L[BackupRunLock: run.lock]
+    CLI2 --> L
+    L --> SVC[VolumeBackupService]
+    SVC --> MAP[VolumeTargetMap: volume + project + orphaned]
+    MAP --> A["Strategi A — dump (DB hidup)"]
+    MAP --> B["Strategi B — stop → snapshot → start"]
+    A --> R["ResticRunner (helper container) → S3"]
+    B --> R
+    R --> F["restic forget --keep-daily/weekly/monthly"]
+    F --> REP[BackupReport: status.json + runs/*.json]
+```
+
+1. Ambil `run.lock` (`flock`, cegah run harian vs manual tumpang tindih).
+2. Enumerasi volume ber-label → `VolumeTargetMap::build()` (pemetaan `project → app`, tandai `orphaned`).
+3. Iterasi **serial per app** (group project): pilih strategi → (A) dump lalu `restic backup` direktori staging; atau (B) stop → `assertStopped` → snapshot tiap volume → start (`finally`).
+4. Retensi: `restic forget --prune --keep-daily/--keep-weekly/--keep-monthly` **per volume** (tag `volume:<nama>`).
+5. Tulis laporan `runtime/backup/status.json` + `runtime/backup/runs/*.json` (`BackupReport`, `JsonStore`), log per project `runtime/logs/backup/{project}.log`. Staging dibersihkan di `finally`.
+
+Kegagalan satu volume **tidak** menghentikan volume lain; status run `ok` / `partial` / `failed`.
+
+### 8h.4 Restore (sadar-strategi)
+
+- Snapshot menandai strategi lewat tag `strategy:`; bila absen, fallback deteksi container DB (`BackupStrategyResolver::isDb()`).
+- **Dump** → `restic restore` ke direktori sementara (helper, target `/restore`) → `DbDump::import()` ke container DB **hidup**.
+- **Snapshot** → container app **wajib berhenti** → `restic restore --target / --delete --include /data` pada volume yang di-mount `rw` → start ulang di `finally`. **Tanpa** `docker volume rm` (isi ditimpa di tempat).
+- Fail-fast: validasi nama volume, id snapshot, keberadaan snapshot di repo, dan kepemilikan volume **sebelum** efek samping apa pun.
+
+### 8h.5 Otorisasi
+
+- Ability `backup` = **operator**, `restore` = **owner** (destruktif). Satu pintu `AppAccess` lewat `BackupAccess`.
+- Penolakan akses = **404** (bukan 403); daftar volume disaring `BackupAccess::visible()`.
+
+### 8h.6 Penjadwalan & helper container
+
+- **Timer host** `volume-backup.timer` (`OnCalendar=*-*-* 02:30:00`, `RandomizedDelaySec=10m`, `Persistent=true`) → `host/backup.sh` → `docker exec <container> php cli/backup.php run`. Nama container dari `VOLUME_BACKUP_HOST_CONTAINER` (host, `/etc/rames/volume-backup.env`, default `rames-webman`).
+- restic **tidak** dijalankan di container dashboard (tidak melihat filesystem volume app), melainkan di **helper container**: `docker run --rm -v <volume>:/data:ro … <image> restic …`. Image helper default = **image container dashboard** (memuat restic), override `VOLUME_BACKUP_IMAGE`.
+- Backend API: `GET /backups`, `GET /api/backups/status`, `GET /api/backups/snapshots`, `POST /backups/run`, `POST /backups/restore` (ability dijaga `BackupAccess`). Worker `run`/`restore` di-spawn **detached** (`pcntl_fork` + `pcntl_exec`).
+
+### 8h.7 Prasyarat deploy (WAJIB)
+
+Image dashboard harus memuat binary `restic` (`Dockerfile`: paket `restic` dari Alpine). Pada instalasi yang container-nya dibuat **sebelum** fitur ini, **wajib rebuild image** (`docker compose up -d --build`) sebelum fitur dipakai, dan **wajib** menyiapkan `RESTIC_REPOSITORY`, kredensial `AWS_*`, serta file passphrase `database/restic/password` (chmod 0600). Bukti restic tersedia: `docker exec <container> restic version`.
+
+### 8h.8 Aturan kredensial (DILARANG)
+
+- **DILARANG** menyematkan kredensial di dalam nilai `RESTIC_REPOSITORY` — nilai repo masuk **argv** helper (`ps` dapat membacanya). Kredensial `AWS_*` hanya lewat **env-file sementara 0600** (`--env-file`), passphrase restic hanya lewat **`--password-file`** (file di-mount `:ro`).
+- **DILARANG** menaruh kredensial di `apps.json`, log, atau respons JSON (backup volume **bukan** backup data dashboard §8g).
+- **DILARANG** menyediakan jalur "paksa" snapshot saat container hidup.
+
+### 8h.9 Risiko & trade-off
+
+- **Downtime singkat harian** pada volume non-DB (jendela `stop → snapshot → start`) — mitigasi: jadwal jam sepi (`02:30`), serial per app, `VOLUME_BACKUP_STOP_TIMEOUT`, dan start ulang dijamin `finally`.
+- Snapshot volume DB **hidup** tidak konsisten → dijaga dengan Strategi A (dump logis).
+- Biaya/ukuran S3 → retensi `forget --keep-*` + lifecycle policy S3.
+
+**Config (.env):** lihat §9 (`VOLUME_BACKUP_*`, `RESTIC_*`, `AWS_*`).
 
 ## 9. Environment Variables (`.env`)
 
@@ -822,7 +913,28 @@ UPDATE_HEALTH_TIMEOUT=180   # batas tunggu versi baru sehat sebelum rollback (de
 UPDATE_ROLLBACK_TIMEOUT=180 # batas tunggu versi lama pulih setelah rollback (detik)
 UPDATE_PATH={proyek}        # direktori repo dashboard (path host)
 UPDATE_IMAGE=               # image untuk helper (kosong = image container dashboard)
+
+# Backup volume harian ke S3 via restic (§8h). Namespace VOLUME_BACKUP_*/RESTIC_*/AWS_*
+# TERPISAH dari BACKUP_* (§8g) — jangan digabung.
+VOLUME_BACKUP_ENABLED=true           # false = matikan seluruh fitur backup volume
+VOLUME_BACKUP_DB_DUMP_ENABLED=true   # Strategi A: dump logis container DB (container hidup)
+VOLUME_BACKUP_SNAPSHOT_POLICY=stop   # stop (default: stop→snapshot→start harian) | skip (manual saja)
+VOLUME_BACKUP_REQUIRE_STOPPED=true   # tolak snapshot bila ada container running memakai volume
+VOLUME_BACKUP_STOP_TIMEOUT=120       # detik, tunggu container berhenti sebelum snapshot
+VOLUME_BACKUP_DUMP_TIMEOUT=600       # detik, timeout dump logis (batas keras ada di timer host)
+VOLUME_BACKUP_TIMEOUT=3600           # detik, timeout satu run restic di helper container
+VOLUME_BACKUP_IMAGE=                 # image helper (kosong = image container dashboard)
+VOLUME_BACKUP_KEEP_DAILY=7           # restic forget --keep-daily
+VOLUME_BACKUP_KEEP_WEEKLY=4          # restic forget --keep-weekly
+VOLUME_BACKUP_KEEP_MONTHLY=3         # restic forget --keep-monthly
+RESTIC_REPOSITORY=                   # mis. s3:https://s3.amazonaws.com/<bucket>/rames (TANPA kredensial)
+RESTIC_PASSWORD_FILE={proyek}/database/restic/password   # passphrase restic, chmod 0600, gitignored
+AWS_ACCESS_KEY_ID=                   # kredensial S3 (diteruskan ke helper via --env-file)
+AWS_SECRET_ACCESS_KEY=
+AWS_DEFAULT_REGION=
 ```
+
+> `VOLUME_BACKUP_HOST_CONTAINER` (default `rames-webman`) adalah env **host** yang dibaca `host/backup.sh`, disimpan di `/etc/rames/volume-backup.env` — bukan `.env` container.
 
 ## 10. Struktur Direktori (usulan)
 
@@ -833,12 +945,19 @@ UPDATE_IMAGE=               # image untuk helper (kosong = image container dashb
 │   ├── auth.json
 │   ├── apps.json
 │   ├── backups/              # backup otomatis data & config (§8g)
+│   ├── restic/
+│   │   └── password          # passphrase restic (chmod 0600, gitignored) — §8h
 │   └── keys/                 # deploy key SSH per app (private 0600) + known_hosts
 ├── host/                     # skrip & unit systemd untuk infra host (installer/watcher/renewal)
 │   ├── install.sh
 │   ├── nginx-reload-watcher.sh
 │   ├── certbot-renew.sh
-│   └── systemd/              # dashboard-nginx-watcher.{service,sudoers}, certbot-renew.{service,timer}
+│   ├── backup.sh             # jembatan timer host → cli/backup.php run (§8h)
+│   └── systemd/              # dashboard-nginx-watcher.{service,sudoers}, certbot-renew.{service,timer},
+│                             #   volume-backup.{service,timer} (§8h)
+├── runtime/
+│   └── backup/               # state backup volume (§8h, gitignored): status.json, runs/, run.lock,
+│                             #   staging/ (dump logis), restore/ (kerja restore), tmp/ (env kredensial)
 ├── apps/                    # hasil clone repo tiap app (gitignored)
 │   └── {name}/
 │       ├── docker-compose.yml           # asli dari repo user
@@ -852,6 +971,9 @@ UPDATE_IMAGE=               # image untuk helper (kosong = image container dashb
 /etc/nginx/sites-enabled/{name}.conf     # symlink, dibuat watcher atau dashboard
 /etc/systemd/system/dashboard-nginx-watcher.service   # watcher inotify + reload
 /etc/systemd/system/certbot-renew.{service,timer}     # renewal certbot otomatis (2×/hari)
+/etc/systemd/system/volume-backup.{service,timer}     # backup volume harian (02:30) (§8h)
+/usr/local/bin/rames-volume-backup.sh                 # salinan host/backup.sh (dipasang install.sh)
+/etc/rames/volume-backup.env                          # env host: nama container/timeout (§8h)
 ```
 
 ## 11. Security Considerations (Phase 1)
@@ -863,6 +985,7 @@ UPDATE_IMAGE=               # image untuk helper (kosong = image container dashb
 - File JSON (`apps.json`, `auth.json`) ditulis dengan file locking (`flock`) untuk menghindari race condition saat ada dua request bersamaan
 - Dashboard container yang mount `docker.sock` adalah titik sensitif — akses ke dashboard **harus** selalu di balik autentikasi, tidak boleh ada endpoint yang expose eksekusi shell tanpa lolos middleware auth
 - **Backup otomatis** `apps.json`/`auth.json` + config Nginx sebelum overwrite (§8g) — file `.bak` ber-timestamp dengan rotasi `BACKUP_RETENTION`, agar ada jejak jika perlu rollback manual
+- **Backup volume (§8h):** ability `backup` = operator, `restore` = owner (destruktif) — satu pintu `AppAccess` (`BackupAccess`), penolakan **404**, volume yatim hanya admin. Kredensial S3 hanya lewat **env-file sementara 0600** (`--env-file`) dan passphrase restic lewat **`--password-file`** (file di-mount `:ro`) — **tidak pernah** di argv/`ps`, log, atau JSON. Nama volume & id snapshot divalidasi regex sebelum masuk argv helper; semua spawn berbentuk array + `bypass_shell` + `SigchldGuard`. Snapshot filesystem **hanya** sah saat container berhenti (`VolumeStateGuard`), tanpa jalur paksa dari UI
 - Direktori Nginx host yang di-mount ke dashboard container dibatasi sesempit mungkin (hanya `sites-available/`, bukan seluruh `/etc/nginx`), agar dashboard tidak bisa menimpa `nginx.conf` utama atau config app lain di luar mekanisme yang disediakan
 - Watcher service di host dijalankan dengan user yang punya izin reload Nginx (lewat `sudoers` khusus untuk `nginx -s reload` saja) — bukan root penuh, dan tidak menerima input dari dashboard secara langsung (dashboard cuma menulis file, bukan mengirim perintah)
 - Deploy key SSH per repo disimpan privat (chmod 0600, gitignored); hanya public key yang ditampilkan ke user. `git` memakai `GIT_SSH_COMMAND` dengan `IdentitiesOnly=yes` & `StrictHostKeyChecking=accept-new` (host key tersimpan di file `known_hosts` sistem)

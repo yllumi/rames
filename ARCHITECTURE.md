@@ -161,6 +161,18 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `UpdateState` | Dua berkas status dengan **satu penulis masing-masing** (§5.14): `runtime/update/check.json` (ditulis dashboard) & `runtime/logs/update/run.json` + `<id>.log` (ditulis helper). Menyediakan pembacaan ternormalisasi, `isRunning()`, `finalize()` untuk run yang ditinggalkan helper, daftar/ekor log (nama divalidasi & dikurung di `run_dir`), serta serah-terima kepemilikan direktori ke uid pemilik repo agar helper bisa menulis |
 | | `UpdateChecker` | Cek pembaruan = bandingkan SHA HEAD lokal dengan `git ls-remote origin refs/heads/<branch>` (tanpa `fetch` → tidak menulis objek/ref sebagai root); menulis `check.json` yang dibaca badge nav & panel. Kegagalan (jaringan/remote/detached HEAD) dikembalikan sebagai pesan, bukan exception |
 | | `UpdateService` | Orkestrasi: `selfContext()` (inspect container dashboard sendiri via Engine → image, project, service, network, `dns`) untuk membangun perintah `docker run` helper (`buildHelperCommand()`, array tanpa shell, uid pemilik repo + `--group-add` gid socket), `preflight()` (fail-fast: repo bersih, branch, helper ada, tidak ada run berjalan), `start()` (tulis plan + status awal lalu spawn helper detached), `panel()` (ringkasan UI + deteksi run macet) |
+| **Backup** | `VolumeBackupService` | Orkestrasi **satu run** backup volume → S3 via restic (§5.15): ambil `BackupRunLock`, enumerasi target (`VolumeTargetMap`), proses **serial per app** (dump untuk container DB hidup, snapshot untuk volume non-DB via stop→snapshot→start dengan start ulang di `finally`), retensi `forget --keep-*` per volume, tulis `BackupReport`; staging dibersihkan di `finally`. Tanpa state lintas-request |
+| | `VolumeRestoreService` | Restore sadar-strategi (§5.15): **dump** → `restic restore` ke direktori sementara lalu `DbDump::import()` ke container DB hidup; **snapshot** → `stopProject` → `restic restore --target / --delete --include /data` pada volume `rw` → `startProject` (`finally`). Fail-fast (nama volume, id snapshot, snapshot ada, kepemilikan) sebelum efek samping; **tanpa** `docker volume rm` |
+| | `ResticRunner` | Pembungkus restic di **helper container** (`docker run --rm … <image> restic …`): argv dibangun **array** lewat method statik murni (`build*Argv()`, teruji `tests/ResticArgvTest.php`), passphrase via `--password-file` (`/restic-password:ro`), kredensial S3 via `--env-file`, validasi regex nama volume/id snapshot, timeout `VOLUME_BACKUP_TIMEOUT`; operasi `backup`/`snapshots`/`restore`/`forget`/`check` |
+| | `BackupStrategyResolver` | Statik murni: pilih `dump` (container DB terdeteksi **dan** hidup) vs `snapshot` (sisanya; `VOLUME_BACKUP_DB_DUMP_ENABLED=false` ⇒ selalu snapshot) |
+| | `VolumeStateGuard` | Penjaga keadaan: `containersForVolume()` (Engine filter `volume=<n>` + `DbContainerDetector`), `assertStopped()` (tolak snapshot bila ada container `running`), `stopProject()`/`startProject()` (`docker compose stop\|start`, **tanpa** `-v`); validasi nama volume/project |
+| | `VolumeTargetMap` | Statik murni: pemetaan volume ber-label `com.docker.compose.project` → `{name, project, app_id, app_name, orphaned}` + `filterAccessible()` |
+| | `BackupAccess` | Satu pintu otorisasi backup: mendelegasikan ke `AppAccess` (tidak menyalin role); volume yatim hanya admin global; `visible()` menyaring daftar |
+| | `CredentialEnvFile` | Env-file kredensial S3 **per-run** (chmod 0600 **sebelum** tulis, dihapus di `finally`, `sweepStale()` sisa run crash) — satu sumber kebenaran backup & restore |
+| | `HelperImageResolver` | Penentu image helper: override `VOLUME_BACKUP_IMAGE` → image container dashboard (inspect diri sendiri) → fail-fast; keputusan murni `choose()` |
+| | `DumpRunner` | Dump logis container DB (memakai `DbDump`/`DbCredentialResolver`/`DbConnectionResolver`) ke `runtime/backup/staging/{project}/{timestamp}/`; kredensial lewat `MYSQL_PWD` |
+| | `BackupRunLock` | `flock(LOCK_EX\|LOCK_NB)` pada `runtime/backup/run.lock` — cegah run harian vs manual tumpang tindih; `withLock()` |
+| | `BackupReport` | Baca/tulis `runtime/backup/status.json` + `runs/*.json` via `JsonStore`; daftar-putih kunci + redaksi pola kredensial |
 
 ### 4.4 Background Worker — `cli/deploy.php`
 
@@ -185,6 +197,8 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 - `apps/{name}/docker-compose.override.limits.yml` — override **batas CPU/memori** generated (`ResourceLimits`, SPECS §7.6b/§5.12a); ditulis/dihapus mengikuti field `limits` di `apps.json`.
 - `runtime/update/check.json` — cache hasil cek pembaruan dashboard (§5.14), ditulis proses `update-check`/tombol **Cek Pembaruan**; dibaca badge nav tiap render halaman (tanpa jaringan).
 - `runtime/logs/update/` — `run.json` (status update terakhir/sedang berjalan) + `<id>.log` (keluaran mentah git/composer/compose/curl), ditulis helper self-update.
+- `runtime/backup/` — state backup volume (§5.15, gitignored): `status.json` (run terakhir, dibaca UI), `runs/*.json` (riwayat, retensi), `run.lock` (`flock`), `staging/` (dump logis sementara), `restore/` (kerja restore), `tmp/` (env-file kredensial per-run 0600).
+- `database/restic/password` — passphrase restic (chmod 0600, gitignored), dirujuk `RESTIC_PASSWORD_FILE` (§5.15).
 - Semua mutasi lewat `JsonStore->update()` dengan `flock` → aman dari race condition.
 - Direktori `apps/`, `database/*.json`, `database/keys/`, `database/env/`, `nginx-status/` di-gitignore (data runtime).
 
@@ -440,6 +454,54 @@ flowchart TD
 - **Kepemilikan berkas status diserahkan ke helper**: `runtime/logs/update/` di-`chown` ke uid pemilik repo saat dashboard (root) membuatnya; satu penulis per berkas (`check.json` = dashboard, `run.json` = helper) → tidak ada perebutan.
 - **Guard**: repo kotor → update ditolak (daftar berkas ditampilkan); `check` boleh semua user login, `update`/`rollback` admin; rollback hanya setelah update **berhasil**; run yang ditinggalkan helper ditutup `error` saat panel dibaca (UI tidak macet).
 
+### 5.15 Backup Volume Harian ke S3 (restic)
+
+Halaman **`/backups`** (nav **Backup**) mem-backup volume Docker milik app ke object storage (S3) via **restic** — **terpisah** dari backup data dashboard §8g. Meniru pola `NginxReloader`/`UpdateService`: restic **tidak** dijalankan di container dashboard (tidak melihat filesystem volume app), melainkan di **helper container**. Spesifikasi: `SPECS.md` §8h.
+
+Kontrak: `GET /backups` (halaman), `GET /api/backups/status`, `GET /api/backups/snapshots?volume=…`, `POST /backups/run`, `POST /backups/restore`. Ability `backup` = operator, `restore` = owner; penolakan **404** (satu pintu `BackupAccess` → `AppAccess`).
+
+```mermaid
+flowchart TD
+    T["volume-backup.timer 02:30 → host/backup.sh"] --> CLI["cli/backup.php run"]
+    U[Tombol Backup sekarang] --> CLI2["cli/backup.php run (volume) manual"]
+    R2[Tombol Restore] --> CLI3["cli/backup.php restore (appId) (volume) (snapshot)"]
+    CLI --> SVC[VolumeBackupService]
+    CLI2 --> SVC
+    SVC --> TGT["VolumeTargetMap<br/>volume ber-label compose → project/app/orphaned"]
+    TGT --> RES[BackupStrategyResolver]
+    RES -- "DB hidup" --> DUMP["DumpRunner (docker exec mysqldump)<br/>→ runtime/backup/staging/…"]
+    RES -- "non-DB" --> SNAP["stopProject → assertStopped → restic backup volume :ro → startProject (finally)"]
+    DUMP --> REST["ResticRunner → helper container<br/>docker run --rm -v … (image) restic … --env-file … --password-file …"]
+    SNAP --> REST
+    REST --> S3[("S3 bucket — restic repo (terenkripsi)")]
+    REST --> FORGET["forget --prune --keep-daily/weekly/monthly"]
+    FORGET --> REP["BackupReport: status.json + runs/*.json"]
+    CLI3 --> RSVC[VolumeRestoreService]
+    RSVC -- dump --> IMP["restic restore → DbDump::import (container hidup)"]
+    RSVC -- snapshot --> RS["stopProject → restic restore --target / --delete --include /data → startProject (finally)"]
+```
+
+**Poin kunci**
+1. **Cakupan = named volume ber-label `com.docker.compose.project` saja** (`VolumeTargetMap`). Bind mount host & anonymous volume di luar cakupan. Volume **yatim** (project tak ada di `apps.json`) tetap di-backup sampai retensi habis, tetapi hanya admin yang melihat/memulihkannya.
+2. **Dua strategi konsistensi (D1)** dipilih `BackupStrategyResolver` (statik murni): `dump` bila container DB terdeteksi (`DbContainerDetector`) **dan** hidup; `snapshot` untuk sisanya (fallback aman bila DB mati, atau `VOLUME_BACKUP_DB_DUMP_ENABLED=false`).
+3. **Serial per app**: `VolumeBackupService::processProject()` mengelompokkan volume per project; fase 1 dump (tanpa downtime), lalu fase 2 snapshot dengan `stop → snapshot → start` **sekali per app** (`docker compose stop\|start` tanpa `-v`, dibatasi `VOLUME_BACKUP_STOP_TIMEOUT`).
+4. **Start ulang dijamin `finally`**: penanda `stoppedForBackup` di-set **sebelum** stop sehingga bila stop gagal di tengah, `startProject()` tetap dipanggil; app tidak pernah ditinggalkan mati. Kegagalan satu volume tidak menular (dicatat per baris).
+5. **Staging & lock**: dump logis ke `runtime/backup/staging/{project}/{timestamp}/` (dibersihkan `DumpRunner::cleanup()` di `finally`); `BackupRunLock` mencegah run harian vs manual tumpang tindih.
+6. **UI**: `view/backup/index.php` (kerangka) + `public/js/backup.js` (polling `GET /api/backups/status` tiap `data-interval`, dijeda saat `document.hidden`, dibersihkan `pagehide`/`beforeunload`); tombol **Backup sekarang** (per volume) & **Restore** (konfirmasi ketik nama volume); modal daftar snapshot read-only. Tombol = lapisan kedua, server tetap menolak.
+7. **Worker detached**: controller spawn `cli/backup.php` via `pcntl_fork` + `pcntl_exec` (bukan `proc_open` yang memblokir request sampai selesai).
+
+> **WAJIB — image dashboard harus memuat `restic`.** Seluruh run restic terjadi di **helper container** yang memakai image dashboard (`Dockerfile` memasang paket `restic` Alpine). Instalasi yang container-nya dibuat sebelum fitur ini **wajib rebuild image** (`docker compose up -d --build`) sebelum dipakai; bukti `docker exec <container> restic version`. Override image helper lewat `VOLUME_BACKUP_IMAGE` (`HelperImageResolver`: override → inspect image dashboard sendiri → fail-fast, **tidak** menebak nama image).
+
+> **WAJIB — snapshot filesystem hanya saat container berhenti.** restic mem-backup volume yang di-bind `:ro`; `VolumeStateGuard::assertStopped()` menolak snapshot bila ada container `running` yang me-mount volume (Engine filter `volume=<n>`), dan `VOLUME_BACKUP_REQUIRE_STOPPED=true` (default) menjaga restore snapshot. **Tidak ada jalur paksa dari UI** — run harian selalu `stop → snapshot → start`.
+
+> **GOTCHA — helper container nge-bind volume, jadi binary restic harus ada di IMAGE HELPER (bukan sekadar di dashboard).** Gejala: `exec: "restic": executable file not found` / `restic: not found` saat run. Sebab: restic dipanggil **di dalam** helper (`docker run … <image> restic …`), sedangkan `ResticRunner` hanya menyusun argv — tidak memasang binary. Penangkal: pastikan image helper (dashboard, atau `VOLUME_BACKUP_IMAGE`) benar-benar memuat restic; `HelperImageResolver` fail-fast bila image tak bisa ditentukan, tetapi **tidak** memverifikasi isi image.
+
+> **GOTCHA — kredensial S3 tidak boleh masuk argv; passphrase restic harus file.** `docker run -e AWS_SECRET_ACCESS_KEY=…` bocor ke `ps`. `CredentialEnvFile` menulis env-file **0600 per-run** (chmod **sebelum** menulis isi) dan `ResticRunner` meneruskannya via `--env-file`; passphrase lewat `--password-file` dengan file di-mount `/restic-password:ro`. Sisa env-file dari run yang crash dibersihkan `sweepStale()`; semuanya dihapus dari `finally` (backup & restore). **DILARANG** menyematkan kredensial di `RESTIC_REPOSITORY` (nilai repo masuk argv → terlihat `ps`).
+
+> **GOTCHA — namespace env `VOLUME_BACKUP_*`/`RESTIC_*`/`AWS_*` terpisah dari `BACKUP_*` (§8g).** `BACKUP_ENABLED`/`BACKUP_RETENTION` mengatur salinan `.bak` data dashboard; memakai nama itu untuk fitur volume akan membingungkan & berpotensi bentrok. Konfigurasi backup volume **hanya** dibaca dari `config('deploy.volume_backup_*')`/`restic_*`/`aws_*` (`config/deploy.php`).
+
+> **GOTCHA — restore snapshot menimpa (termasuk menghapus berkas basi) tanpa `docker volume rm`.** `restic restore --target / --delete --include /data` menulis ulang isi volume di tempat; `--delete` **wajib** disertai `--include /data` (restic menolak `--delete` tanpa filter) agar penghapusan terbatas pada isi volume, bukan filesystem helper. Container app di-stop sebelum restore dan di-start ulang `finally`. Berkas yang tidak ada di snapshot **hilang** — karena itu ability `restore` = owner + konfirmasi ganda (ketik nama volume).
+
 ---
 
 ## 6. Keputusan Teknis Penting
@@ -457,6 +519,8 @@ flowchart TD
 - **Urutan `compose_files` & entri yatim punya satu penjaga**: urutan kanonik dimiliki **satu** kelas (`ComposeSource::orderFiles()` — base → reset → ports → names → limits → sisa generated pada urutan asli, env paling akhir; `AppController::orderComposeFiles()` hanya mendelegasi), dan sebelum `docker compose -f …` dijalankan, `LocalDeployer::resolveComposeFiles()` membuang entri override generated yang file-nya sudah tidak ada (`ComposeSource::filterMissingGenerated()`) — tanpa itu satu entri yatim membuat seluruh perintah compose gagal `no such file or directory` (§5.12a GOTCHA).
 - **Proses tidak boleh me-recreate container yang menjalankannya** (§5.14): update dashboard dijalankan helper container terpisah; kalau dijalankan dari proses di dalam container target, container lama di-stop lebih dulu dan kegagalan di jendela itu meninggalkan dashboard mati.
 - **`git ls-remote`, bukan `git fetch`, untuk cek pembaruan**: fetch menulis objek/ref ke `.git` sebagai root (dashboard = root, repo = milik user host) dan meninggalkan berkas milik root yang membuat `git pull` dari SSH gagal; selain itu repo "kotor" karena status berubah — padahal update justru butuh repo bersih.
+- **restic di helper container, bukan di dashboard** (§5.15): dashboard tidak melihat filesystem named volume app, jadi backup/restore memakai `docker run --rm` yang nge-bind volume target (`:ro` untuk backup, `rw` untuk restore). Konsekuensinya binary restic harus ada di **image helper** (`Dockerfile`), dan kredensial diteruskan lewat `--env-file`/`--password-file` (file, bukan argv) agar tidak bocor ke `ps`.
+- **Backup volume memakai namespace env terpisah dari backup data**: `VOLUME_BACKUP_*`/`RESTIC_*`/`AWS_*` (§5.15) vs `BACKUP_*` (§8g) — jangan digabung atau saling membajak nama.
 
 ---
 
@@ -469,6 +533,7 @@ flowchart TD
 - Operasi global (network, reload Nginx, purge volume) hanya admin.
 - **Batas resource** (§5.12a): ability `limits` = **admin saja** (satu pintu `AppAccess`); owner/operator/viewer hanya melihat nilai read-only. Nama service dari POST tidak dipercaya (whitelist dari base compose), nilai divalidasi ketat, dan base compose yang tidak konsisten antar keluarga field ditolak **sebelum** menulis file. `--compatibility` dilarang untuk fitur ini.
 - **Monitoring** (`/monitor`): daftar container disaring di sisi server — non-admin hanya menerima container app yang boleh diakses, container eksternal (dan angka host yang rinci) hanya untuk admin; endpoint read-only (GET) sehingga tidak butuh CSRF dan tidak mengubah apa pun.
+- **Backup volume** (§5.15): ability `backup` = operator, `restore` = owner (destruktif); satu pintu `BackupAccess`→`AppAccess`, penolakan **404**, volume yatim hanya admin. Kredensial S3 hanya lewat env-file 0600 (`--env-file`) & passphrase restic lewat `--password-file` (`:ro`) — tidak pernah di argv/`ps`, log, atau JSON; nama volume & id snapshot divalidasi regex sebelum masuk argv helper; semua spawn array + `bypass_shell` + `SigchldGuard`. Snapshot filesystem **hanya** sah saat container berhenti (`VolumeStateGuard`), tanpa jalur paksa dari UI.
 - Input divalidasi ketat (slug `[a-z0-9-]`, URL http/https, branch, port int 1–65535).
 - **Template** (§5.1c): definisi template hanya dari folder repo `templates/` (bukan input user/unggahan), nama file pendukung divalidasi relatif & aman, file override generated ditolak, dan nilai rahasia dari template (auto-generate) hanya tersimpan di `database/env/{name}.env` (chmod 0600, gitignored) — tidak pernah masuk repo atau `apps.json` versi kode. Env hasil deploy tetap dipersist di `apps.json.env` seperti env yang diisi user lewat tab Environment.
 - Eksekusi command tanpa shell (lihat §6).

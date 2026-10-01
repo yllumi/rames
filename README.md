@@ -20,6 +20,7 @@
 - **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri.
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
+- **Backup volume harian ke S3 (restic)** — volume Docker milik app di-backup harian ke object storage (S3) via **restic** (inkremental + dedup + enkripsi + retensi): container database didump logis (tanpa downtime), volume lain di-snapshot (stop → snapshot → start). Restore dari UI di halaman `/backups` (SPECS §8h).
 - **Batas resource per service** — admin menetapkan batas maksimum CPU & memori tiap service app (hard limit per service, ditulis ke override compose); user lain melihat nilainya read-only.
 - **Keamanan dasar** — CSRF token, eksekusi command bebas injection (`array` + `bypass_shell`), validasi input ketat, JSON dengan file locking (`flock`).
 
@@ -118,6 +119,34 @@ Dashboard menulis config Nginx lalu me-reload nginx host secara **otomatis** set
 
 > Reload memakai helper container `--pid host --privileged` via Docker socket (butuh daemon Docker yang mengizinkan `--privileged`). Bila mekanisme ini tidak tersedia, pasang watcher host (SPECS §8.3) atau reload manual: `sudo systemctl reload nginx`.
 
+### Backup Volume ke S3 (restic)
+
+Halaman **`/backups`** mem-backup volume Docker milik app ke S3 **harian** via restic (timer host `volume-backup.timer`, 02:30). **Prasyarat & langkah:**
+
+1. **Rebuild image dashboard** — fitur ini butuh binary `restic` di dalam image; pada instalasi lama **wajib** rebuild dulu:
+   ```bash
+   docker compose up -d --build
+   docker exec rames-webman restic version   # bukti restic tersedia
+   ```
+2. **Isi kredensial** di `.env`: `RESTIC_REPOSITORY` (mis. `s3:https://s3.amazonaws.com/<bucket>/rames`), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`.
+3. **Siapkan passphrase restic** (file, bukan env): tulis passphrase ke `database/restic/password` lalu `chmod 0600 database/restic/password`.
+4. **Pasang timer host** (bila belum): `sudo ./host/install.sh` memasang `volume-backup.{service,timer}`; jalankan backup pertama dari halaman `/backups` (tombol **Backup sekarang**).
+
+> Fitur ini **terpisah** dari backup data dashboard (`.bak` `apps.json`/`auth.json`, SPECS §8g) — jangan mencampur konfigurasinya (`VOLUME_BACKUP_*` vs `BACKUP_*`).
+
+**Restore manual darurat (SSH).** Bila UI tidak bisa dipakai, worker CLI yang sama dapat dijalankan langsung di container dashboard. Restore **destruktif** (isi volume ditimpa; container app dihentikan sementara lalu dinyalakan kembali):
+
+```bash
+# Lihat snapshot dari UI (/backups → modal snapshot) atau riwayat: runtime/backup/runs/*.json
+# Backup satu volume secara manual:
+docker exec rames-webman php cli/backup.php run <nama-volume> manual
+
+# Restore satu volume dari snapshot (appId `-` untuk volume yatim):
+docker exec rames-webman php cli/backup.php restore <appId|-> <nama-volume> <snapshot-id>
+```
+
+Worker memvalidasi ulang kepemilikan volume terhadap `apps.json` sebelum restore (volume milik app lain ditolak). Log: `runtime/logs/backup/{project}.log` + `runtime/backup/status.json`.
+
 ### Pengujian Lokal (subdomain)
 
 `/etc/hosts` **tidak mendukung wildcard**. Untuk membuka `{app}.{APP_DOMAIN}` di browser:
@@ -150,6 +179,16 @@ Dashboard menulis config Nginx lalu me-reload nginx host secara **otomatis** set
 | `SSL_WEBROOT` | `{proyek}/webroot` | Webroot HTTP-01 challenge |
 | `LETSENCRYPT_PATH` | `/etc/letsencrypt` | Direktori sertifikat (di-mount dari host) |
 | `CLOUDFLARE_CREDS` | — | File kredensial DNS Cloudflare (saat `SSL_CHALLENGE=dns-cloudflare`) |
+| `VOLUME_BACKUP_ENABLED` | `true` | Aktifkan backup volume harian ke S3 (SPECS §8h) |
+| `VOLUME_BACKUP_DB_DUMP_ENABLED` | `true` | Strategi A: dump logis untuk container DB (container tetap hidup) |
+| `VOLUME_BACKUP_SNAPSHOT_POLICY` | `stop` | `stop` = volume non-DB di-backup harian via stop→snapshot→start; `skip` = manual saja |
+| `VOLUME_BACKUP_REQUIRE_STOPPED` | `true` | Tolak snapshot bila masih ada container berjalan yang memakai volume |
+| `VOLUME_BACKUP_STOP_TIMEOUT` / `VOLUME_BACKUP_DUMP_TIMEOUT` / `VOLUME_BACKUP_TIMEOUT` | `120` / `600` / `3600` | Timeout (detik): tunggu container berhenti / dump / satu run restic |
+| `VOLUME_BACKUP_IMAGE` | (kosong) | Image helper restic (kosong = image container dashboard) |
+| `VOLUME_BACKUP_KEEP_DAILY` / `_WEEKLY` / `_MONTHLY` | `7` / `4` / `3` | Retensi `restic forget --keep-*` |
+| `RESTIC_REPOSITORY` | — | Repo restic, mis. `s3:https://s3.amazonaws.com/<bucket>/rames` — **tanpa** kredensial di dalamnya |
+| `RESTIC_PASSWORD_FILE` | `{proyek}/database/restic/password` | File passphrase restic (chmod `0600`, gitignored) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION` | — | Kredensial S3 (diteruskan ke helper restic via `--env-file`, bukan argv) |
 
 ## Struktur Direktori (Ringkas)
 
