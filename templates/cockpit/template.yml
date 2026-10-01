@@ -1,0 +1,9 @@
+title: Cockpit CMS Core
+description: CMS headless ringan dengan instalasi awal melalui /install dan penyimpanan SQLite bawaan.
+category: CMS
+icon: "✍️"
+docs_url: https://getcockpit.com/documentation/
+
+primary:
+  service: cockpit
+  port: 80

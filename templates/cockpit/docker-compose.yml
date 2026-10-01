@@ -1,0 +1,11 @@
+services:
+  cockpit:
+    image: cockpithq/cockpit:core-latest
+    restart: unless-stopped
+    ports:
+      - "80"
+    volumes:
+      - cockpit-storage:/var/www/html/storage
+
+volumes:
+  cockpit-storage:
