@@ -255,19 +255,23 @@ Cara kedua membuat app (SPECS §7.2a), untuk aplikasi yang memakai image **prebu
 
 ### 5.1c Create App — Mode "Template" (galeri siap-pakai)
 
-Cara ketiga membuat app: memilih **template** yang sudah disiapkan di folder repo `templates/<slug>/` — app docker-ready (image prebuilt) plus deklarasi variabel environment-nya. Tujuannya satu klik, tanpa menempel compose dan tanpa menebak env.
+Cara ketiga membuat app: memilih **template** yang sudah disiapkan di folder repo `templates/<slug>/` — app docker-ready (image prebuilt) plus deklarasi variabel environment-nya. Di `/apps/create`, urutan link mode adalah **Template**, **Clone repo Git**, **Compose (paste / upload)**; mode aktif ditandai pada navigasi dan default tetap **Clone repo Git**. Tujuannya satu klik, tanpa menempel compose dan tanpa menebak env.
 
 ```mermaid
 flowchart TD
-    A[Tab Template: galeri kartu<br/>TemplateCatalog::all] --> B[Pilih kartu -> form<br/>nama app + field env template]
-    B --> C[POST /apps/create/template/slug]
-    C --> D[TemplateCatalog::resolveEnv:<br/>input -> default -> generate rahasia]
-    D --> E[TemplateCatalog::materialize:<br/>compose + files/ -> apps/name]
-    E --> F[PortManager::resolve:<br/>port template dijaga, konflik digeser]
-    F --> G[writeOverride port + nama container<br/>prefix = nama app (+ limits admin)]
-    G --> H[EnvManager::write + writeOverride<br/>+ persist env ke apps.json]
-    H --> I[AppStore.create source=compose<br/>template=slug + spawn worker deploy]
-    I --> J[Halaman detail: polling progres<br/>deploying -> running]
+    A[Link mode: Template -> Clone repo Git -> Compose<br/>default Clone repo Git] --> B[TemplateCatalog::all<br/>daftar compact: ikon + nama]
+    B --> C[Klik item -> modal detail<br/>deskripsi, category, image, port, domain, env/files]
+    C --> D{Valid?}
+    D -->|Tidak| E[Status/error di modal<br/>Deploy disabled]
+    D -->|Ya| F[Deploy -> form existing<br/>/apps/create/template/slug]
+    F --> G[POST /apps/create/template/slug]
+    G --> H[TemplateCatalog::resolveEnv:<br/>input -> default -> generate rahasia]
+    H --> I[TemplateCatalog::materialize:<br/>compose + files/ -> apps/name]
+    I --> J[PortManager::resolve:<br/>port template dijaga, konflik digeser]
+    J --> K[writeOverride port + nama container<br/>prefix = nama app (+ limits admin)]
+    K --> L[EnvManager::write + writeOverride<br/>+ persist env ke apps.json]
+    L --> M[AppStore.create source=compose<br/>template=slug + spawn worker deploy]
+    M --> N[Halaman detail: polling progres<br/>deploying -> running]
 ```
 
 - **Definisi template** (folder repo, bukan UI): `template.yml` (title/description/category/icon/docs_url, `env[]` = `{key,label,help,default,secret,generate,required}`, `primary` = `{service,port}`, `files[]`), `docker-compose.yml` (semua service `image:`, tanpa `build:`), `files/` (file pendukung yang di-bind mount).
@@ -275,6 +279,7 @@ flowchart TD
 - **Satu app = satu salinan materialized**: `materialize()` memakai jalur `ComposeSource::store()` (validasi nama file & compose identik dengan mode paste/upload) sehingga app hasil template adalah **app mode compose biasa** — sumbernya bisa diedit lewat tab Compose lalu Deploy Ulang. Template tidak di-*re-sync* setelah create (tanpa rollback, §5.7).
 - **Nama container & port**: template dilarang menulis `container_name` (nama dikelola dashboard: `{nama_app}-{service}`, §5.12) dan host port diresolusi otomatis (`PortManager::resolve()` — port bawaan template dipertahankan bila bebas, konflik digeser dari rentang `PORT_RANGE_START`–`PORT_RANGE_END`), sehingga template yang sama bisa dipakai berkali-kali tanpa saling bentrok.
 - **Env**: nilai dari form → `default` template → auto-generate (rahasia acak hex) → tolak bila `required`; hasilnya ditulis ke `database/env/{name}.env` + `docker-compose.override.env.yml` **dan** dipersist ke `apps.json.env` (kalau tidak, `EnvManager::sync()` di `LocalDeployer` akan menghapus file env saat deploy).
+- **Daftar dan detail UI**: daftar template hanya menampilkan ikon dan nama; klik item membuka modal berisi deskripsi, category, image, port, target domain, jumlah env/file, validitas/error, dan dokumentasi. URL dokumentasi hanya ditautkan untuk skema `http`/`https`; Deploy aktif hanya untuk template valid. Tombol valid membuka form dan route create template yang sudah ada; form serta empty state tidak berubah.
 - **Jalur create bersama**: `AppController::createAndDeploy()` menulis file (override port/nama + limits untuk admin + env) **sebelum** entri `apps.json` dibuat, lalu spawn worker — dipakai baik oleh halaman konfirmasi (mode git/compose) maupun deploy template, sehingga kegagalan tidak meninggalkan app setengah jadi.
 - **Hak akses**: membuat app (termasuk dari template) terbuka untuk semua user yang sudah login — sama seperti dua mode create lain; app otomatis dimiliki pembuatnya (§5.10). Mengubah/menambah template bukan operasi UI: hanya lewat file di repo (admin/dev).
 - **Template service database** (`templates/mysql`, `templates/mariadb`): app **tanpa port host** (tanpa vhost/subdomain, port 3306 tidak diteruskan ke host) — dikelola lewat `/database` (mini phpMyAdmin, dashboard menyambung sendiri ke network app) atau dengan menambahkan `ports:` lewat tab Compose bila DB perlu dijangkau dari host / app lain. Dua hal WAJIB saat menambah/mengubah template ini:
@@ -282,7 +287,8 @@ flowchart TD
   2. Host port di compose template ditulis ulang dashboard (§5.1c) — deklarasi `127.0.0.1:` pada `ports:` **hilang** (override port selalu menulis `host:container`), jadi jangan mengandalkannya untuk membatasi akses; gunakan firewall.
   Verifikasi empiris: `mysql:8.4` menyediakan `mysqladmin` (healthcheck `mysqladmin ping -h 127.0.0.1`, tanpa kredensial), sedangkan `mariadb:11.4` **tidak** menyediakannya — healthcheck-nya memakai `healthcheck.sh --connect --innodb_initialized` bawaan image. Keduanya memberi `root@'%'` (default `*_ROOT_HOST` = `%`) sehingga dashboard/klien luar bisa terhubung sebagai root.
 - **Template `outline`** (`templates/outline`): Outline memakai image prebuilt dengan PostgreSQL 18 dan Redis; port container `3000` dipublish untuk reverse proxy Nginx Rames, dengan host port dikelola seperti template lain. `URL` publik harus cocok dengan domain/subdomain app yang diatur di Rames, termasuk custom domain yang telah dikonfigurasi. Login memakai OIDC dengan automatic discovery dan wajib menerima issuer URL, client ID, serta client secret dari provider eksternal; tidak ada login lokal username/password. Template meng-auto-generate `SECRET_KEY`, `UTILS_SECRET`, dan password PostgreSQL yang kosong. Named volumes mempertahankan data PostgreSQL dan local file storage Outline. SMTP tidak wajib untuk basic OIDC login. Referensi: `docs_url` template mengarah ke [Outline Docker](https://docs.getoutline.com/s/hosting/doc/docker-7pfeLP5a8t), sedangkan kontrak OIDC dijelaskan di [Outline OIDC](https://docs.getoutline.com/s/hosting/doc/oidc-8CPBm6uC0I). Callback URI spesifik tidak ditetapkan di dokumentasi ini.
-- **Template rusak tampil apa adanya**: `all()` mengembalikan `valid=false` + pesan error (badge di galeri, tombol deploy dinonaktifkan) supaya admin tahu template mana yang perlu diperbaiki.
+- **Template `nocodb`** (`templates/nocodb`): satu service `nocodb/nocodb:latest`, port container `8080` untuk reverse proxy Rames, metadata internal SQLite dengan named volume `nocodb-data` di `/usr/app/data`, dan `NC_AUTH_JWT_SECRET` auto-generated. Template ini tidak menyertakan database target atau meminta kredensial target saat create. Setelah deploy, pengguna menambahkan MySQL/MariaDB existing sebagai external data source dari UI NocoDB; SQLite metadata internal bukan datasource target dan koneksi tidak otomatis. Target wajib routable dari container NocoDB. Untuk DB app Compose Rames lain, attach kedua app ke shared external network lewat konfigurasi network Rames. Gunakan user DB dengan privilege minimum dan jangan expose port DB publik tanpa alasan. Referensi koneksi: [NocoDB Connect to Data Source](https://nocodb.com/docs/product/integrations/data-sources/connect-to-data-source).
+- **Template rusak tampil apa adanya**: `all()` mengembalikan `valid=false` + pesan error yang ditampilkan pada modal detail, dengan tombol Deploy dinonaktifkan, supaya admin tahu template mana yang perlu diperbaiki.
 
 ### 5.2 Rebuild / Deploy Ulang
 

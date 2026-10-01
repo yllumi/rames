@@ -1,0 +1,23 @@
+title: NocoDB
+description: >-
+  Workspace NocoDB mandiri dengan metadata internal SQLite yang persisten. Tidak
+  menyertakan atau membuat database target. Setelah deploy, tambahkan MySQL atau
+  MariaDB dari UI NocoDB. Untuk database di app Compose Rames lain, kedua app
+  harus terhubung melalui shared external network; selain itu gunakan hostname
+  dan port yang dapat dijangkau dari container NocoDB. Gunakan user database
+  dengan privilege minimum dan jangan mengekspos port database ke publik tanpa
+  alasan.
+category: Database
+icon: "🗂️"
+docs_url: https://nocodb.com/docs/product/integrations/data-sources/connect-to-data-source
+
+env:
+  - key: NC_AUTH_JWT_SECRET
+    label: Secret autentikasi NocoDB
+    help: Dibuat otomatis untuk menandatangani token autentikasi NocoDB.
+    secret: true
+    generate: secret
+
+primary:
+  service: nocodb
+  port: 8080

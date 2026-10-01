@@ -31,17 +31,19 @@ $composeError = $compose_error ?? null;
   </div>
 </div>
 
-<ul class="nav nav-pills tab-scroll mb-3" role="tablist">
-  <li class="nav-item" role="presentation">
-    <a class="nav-link <?= $mode === 'git' ? 'active' : '' ?>" href="/apps/create">Clone repo Git</a>
+<nav aria-label="Mode create app">
+<ul class="nav nav-pills tab-scroll mb-3">
+  <li class="nav-item">
+    <a class="nav-link <?= $mode === 'template' ? 'active' : '' ?>" href="/apps/create?mode=template" <?= $mode === 'template' ? 'aria-current="page"' : '' ?>>Template</a>
   </li>
-  <li class="nav-item" role="presentation">
-    <a class="nav-link <?= $mode === 'compose' ? 'active' : '' ?>" href="/apps/create?mode=compose">Compose (paste / upload)</a>
+  <li class="nav-item">
+    <a class="nav-link <?= $mode === 'git' ? 'active' : '' ?>" href="/apps/create" <?= $mode === 'git' ? 'aria-current="page"' : '' ?>>Clone repo Git</a>
   </li>
-  <li class="nav-item" role="presentation">
-    <a class="nav-link <?= $mode === 'template' ? 'active' : '' ?>" href="/apps/create?mode=template">Template</a>
+  <li class="nav-item">
+    <a class="nav-link <?= $mode === 'compose' ? 'active' : '' ?>" href="/apps/create?mode=compose" <?= $mode === 'compose' ? 'aria-current="page"' : '' ?>>Compose (paste / upload)</a>
   </li>
 </ul>
+</nav>
 
 <?php if ($mode === 'compose'): ?>
 <div class="card form-card">
@@ -103,8 +105,7 @@ $composeError = $compose_error ?? null;
 <div class="mb-3">
   <p class="text-muted small mb-0">
     Template adalah app <strong>docker-ready</strong> yang sudah disiapkan (image prebuilt, port, dan
-    variabel environment-nya). Pilih satu kartu → isi nama app &amp; variabel → <strong>Deploy</strong>.
-    Host port otomatis dicari yang bebas, nama container otomatis berprefix nama app, dan app tetap
+    variabel environment-nya). Host port otomatis dicari yang bebas, nama container otomatis berprefix nama app, dan app tetap
     muncul di daftar seperti app biasa (bisa Stop/Rebuild/Delete, atur domain, terminal, dll).
   </p>
 </div>
@@ -120,60 +121,77 @@ $composeError = $compose_error ?? null;
   </div>
 </div>
 <?php else: ?>
-<div class="row g-3">
-  <?php foreach ($templates as $t): ?>
-  <div class="col-12 col-md-6 col-xl-4">
-    <div class="card h-100 form-card">
-      <div class="card-body d-flex flex-column">
-        <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
-          <h2 class="h6 mb-0">
-            <?php if (!empty($t['icon'])): ?><span class="me-1"><?= e($t['icon']) ?></span><?php endif; ?>
-            <?= e($t['title']) ?>
+<div class="list-group">
+  <?php $templateIndex = 0; foreach ($templates as $t): $modalId = 'template-detail-' . $templateIndex++; ?>
+  <button type="button" class="list-group-item list-group-item-action d-flex align-items-center gap-3 py-3 text-start" data-bs-toggle="modal" data-bs-target="#<?= e($modalId) ?>" aria-haspopup="dialog" aria-controls="<?= e($modalId) ?>" aria-label="Detail template <?= e($t['title']) ?>">
+    <span class="fs-5" aria-hidden="true"><?= ($t['icon'] ?? '') !== '' ? e($t['icon']) : '◈' ?></span>
+    <span class="fw-semibold text-truncate"><?= e($t['title']) ?></span>
+  </button>
+  <?php endforeach; ?>
+</div>
+
+<?php $templateIndex = 0; foreach ($templates as $t): $modalId = 'template-detail-' . $templateIndex++; $docsUrl = is_string($t['docs_url'] ?? null) ? trim($t['docs_url']) : ''; $docsUrlParts = $docsUrl !== '' ? parse_url($docsUrl) : false; $docsUrlIsSafe = filter_var($docsUrl, FILTER_VALIDATE_URL) !== false && is_array($docsUrlParts) && in_array(strtolower((string) ($docsUrlParts['scheme'] ?? '')), ['http', 'https'], true); ?>
+<div class="modal fade" id="<?= e($modalId) ?>" tabindex="-1" aria-labelledby="<?= e($modalId) ?>-title" aria-describedby="<?= e($modalId) ?>-description" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="me-3">
+          <h2 class="modal-title h5 mb-1" id="<?= e($modalId) ?>-title">
+            <span class="me-1" aria-hidden="true"><?= ($t['icon'] ?? '') !== '' ? e($t['icon']) : '◈' ?></span><?= e($t['title']) ?>
           </h2>
           <span class="badge text-bg-secondary"><?= e($t['category']) ?></span>
         </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted" id="<?= e($modalId) ?>-description"><?= ($t['description'] ?? '') !== '' ? e($t['description']) : 'Tidak ada deskripsi.' ?></p>
 
-        <?php if (($t['description'] ?? '') !== ''): ?>
-        <p class="text-muted small"><?= e($t['description']) ?></p>
-        <?php endif; ?>
-
-        <?php if (!$t['valid']): ?>
-        <div class="alert alert-warning small mb-2" role="alert">
-          <strong>Template rusak:</strong> <?= e((string) $t['error']) ?>
+        <?php if ($t['valid']): ?>
+        <div class="alert alert-success py-2" role="status">Template valid dan siap di-deploy.</div>
+        <?php else: ?>
+        <div class="alert alert-danger" role="alert">
+          <strong>Template tidak valid.</strong>
+          <?php if (($t['error'] ?? '') !== ''): ?><div><?= e((string) $t['error']) ?></div><?php endif; ?>
         </div>
         <?php endif; ?>
 
-        <ul class="list-unstyled small text-muted mb-2">
+        <dl class="row small mb-0">
           <?php if (($t['image'] ?? '') !== ''): ?>
-          <li>Image: <span class="mono"><?= e($t['image']) ?></span></li>
+          <dt class="col-sm-4">Image</dt><dd class="col-sm-8 mono text-break"><?= e($t['image']) ?></dd>
           <?php endif; ?>
-          <?php if (($t['ports'] ?? []) !== []): ?>
-          <li>Port: <span class="mono"><?= e(implode(', ', array_map('strval', $t['ports']))) ?></span></li>
-          <?php endif; ?>
-          <?php if (($t['primary']['service'] ?? '') !== ''): ?>
-          <li>Domain → <span class="mono"><?= e($t['primary']['service'] . ':' . $t['primary']['port']) ?></span></li>
-          <?php endif; ?>
-          <li><?= count($t['env']) ?> variabel environment</li>
-          <?php if (($t['files'] ?? []) !== []): ?>
-          <li><?= count($t['files']) ?> file pendukung</li>
-          <?php endif; ?>
-        </ul>
-
-        <div class="mt-auto d-flex gap-2 align-items-center">
-          <?php if ($t['valid']): ?>
-          <a class="btn btn-primary btn-sm" href="/apps/create/template/<?= e($t['slug']) ?>">Pilih &amp; Deploy</a>
-          <?php else: ?>
-          <button type="button" class="btn btn-secondary btn-sm" disabled>Perbaiki template dulu</button>
-          <?php endif; ?>
+          <dt class="col-sm-4">Port</dt>
+          <dd class="col-sm-8 mono"><?= ($t['ports'] ?? []) !== [] ? e(implode(', ', array_map('strval', $t['ports']))) : 'Tidak ada' ?></dd>
+          <dt class="col-sm-4">Domain</dt>
+          <dd class="col-sm-8 mono"><?= ($t['primary']['service'] ?? '') !== '' ? e($t['primary']['service'] . ':' . $t['primary']['port']) : 'Tidak disetel' ?></dd>
+          <dt class="col-sm-4">Variabel environment</dt>
+          <dd class="col-sm-8"><?= e((string) count($t['env'] ?? [])) ?></dd>
+          <dt class="col-sm-4">File pendukung</dt>
+          <dd class="col-sm-8">
+            <?php if (($t['files'] ?? []) === []): ?>Tidak ada
+            <?php else: ?>
+            <ul class="mb-0 ps-3">
+              <?php foreach ($t['files'] as $file): ?><li class="mono text-break"><?= e($file) ?></li><?php endforeach; ?>
+            </ul>
+            <?php endif; ?>
+          </dd>
           <?php if (($t['docs_url'] ?? '') !== ''): ?>
-          <a class="btn btn-outline-secondary btn-sm" href="<?= e($t['docs_url']) ?>" target="_blank" rel="noopener">Dokumentasi</a>
+          <dt class="col-sm-4">Dokumentasi</dt>
+          <dd class="col-sm-8"><?php if ($docsUrlIsSafe): ?><a href="<?= e($docsUrl) ?>" target="_blank" rel="noopener">Buka dokumentasi</a><?php else: ?><?= e($docsUrl) ?><?php endif; ?></dd>
           <?php endif; ?>
-        </div>
+        </dl>
+      </div>
+      <div class="modal-footer">
+        <?php if ($t['valid']): ?>
+        <a class="btn btn-primary" href="/apps/create/template/<?= e($t['slug']) ?>">Deploy</a>
+        <?php else: ?>
+        <button type="button" class="btn btn-primary" disabled>Deploy</button>
+        <?php endif; ?>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Tutup</button>
       </div>
     </div>
   </div>
-  <?php endforeach; ?>
 </div>
+<?php endforeach; ?>
 <?php endif; ?>
 
 <?php else: ?>

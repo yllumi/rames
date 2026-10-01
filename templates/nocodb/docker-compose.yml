@@ -1,0 +1,18 @@
+# NocoDB menggunakan SQLite untuk metadata internal; database eksternal
+# ditambahkan kemudian melalui UI dan tidak dikelola oleh template ini.
+services:
+  nocodb:
+    image: nocodb/nocodb:latest
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      NC_AUTH_JWT_SECRET: ${NC_AUTH_JWT_SECRET}
+
+    volumes:
+      - nocodb-data:/usr/app/data
+
+volumes:
+  nocodb-data:
