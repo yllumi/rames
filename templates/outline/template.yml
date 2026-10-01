@@ -1,0 +1,50 @@
+title: Outline
+description: >-
+  Wiki kolaboratif Outline dengan PostgreSQL dan Redis. Memerlukan domain publik
+  serta Identity Provider OIDC. URL harus cocok dengan domain atau subdomain app
+  yang diatur di Rames. Login baru tersedia setelah provider OIDC dikonfigurasi;
+  Outline tidak menyediakan login lokal atau password.
+category: Wiki/Knowledge Base
+icon: "📚"
+docs_url: https://docs.getoutline.com/s/hosting/doc/docker-7pfeLP5a8t
+
+# URL publik dan kredensial OIDC harus diisi. Rahasia database dan Outline
+# dibuat otomatis; rahasia client OIDC berasal dari Identity Provider.
+env:
+  - key: URL
+    label: URL publik Outline
+    help: >-
+      URL lengkap HTTPS, misalnya https://wiki.example.com. Wajib sama dengan
+      domain atau subdomain app yang diatur di Rames.
+    required: true
+  - key: POSTGRES_PASSWORD
+    label: Password PostgreSQL
+    help: Dibuat otomatis dalam format hex.
+    generate: secret
+  - key: SECRET_KEY
+    label: Secret key Outline
+    help: Dibuat otomatis.
+    generate: secret
+  - key: UTILS_SECRET
+    label: Utils secret Outline
+    help: Dibuat otomatis.
+    generate: secret
+  - key: OIDC_ISSUER_URL
+    label: URL issuer OIDC
+    help: >-
+      URL issuer IdP yang menyediakan /.well-known/openid-configuration.
+      Lihat https://docs.getoutline.com/s/hosting/doc/oidc-8CPBm6uC0I.
+    required: true
+  - key: OIDC_CLIENT_ID
+    label: OIDC client ID
+    help: Client ID aplikasi Outline yang dibuat di IdP.
+    required: true
+  - key: OIDC_CLIENT_SECRET
+    label: OIDC client secret
+    help: Client secret aplikasi Outline yang dibuat di IdP.
+    secret: true
+    required: true
+
+primary:
+  service: outline
+  port: 3000

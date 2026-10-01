@@ -1,0 +1,29 @@
+title: Ghost
+description: >-
+  Blog/CMS Ghost 6 dengan MySQL 8.0. GHOST_URL wajib sama dengan domain atau
+  subdomain yang diatur di Rames. Password database dibuat otomatis dan port
+  container Ghost 2368 dipetakan ke host oleh Rames.
+category: CMS/Blog
+icon: "👻"
+docs_url: https://ghost.org/docs/install/docker/
+
+# GHOST_URL wajib diisi sesuai domain/subdomain app yang dikonfigurasi di Rames.
+# Password root dan database dibuat otomatis bila dikosongkan.
+env:
+  - key: GHOST_URL
+    label: URL Ghost
+    help: >-
+      URL lengkap, misalnya https://blog.example.com. Harus cocok dengan domain
+      atau subdomain yang diatur untuk app ini di Rames.
+  - key: MYSQL_ROOT_PASSWORD
+    label: Password root MySQL
+    help: Kosongkan agar password root MySQL dibuat otomatis.
+    generate: secret
+  - key: MYSQL_PASSWORD
+    label: Password database Ghost
+    help: Kosongkan agar password user database Ghost dibuat otomatis.
+    generate: secret
+
+primary:
+  service: ghost
+  port: 2368

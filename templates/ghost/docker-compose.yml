@@ -1,0 +1,49 @@
+# Ghost + MySQL standalone. Host port Ghost dikelola oleh dashboard Rames.
+services:
+  ghost:
+    image: ghost:6-alpine
+    restart: unless-stopped
+    init: true
+
+    ports:
+      - "2368:2368"
+
+    environment:
+      url: ${GHOST_URL}
+      database__client: mysql
+      database__connection__host: db
+      database__connection__user: ghost
+      database__connection__password: ${MYSQL_PASSWORD}
+      database__connection__database: ghost
+
+    volumes:
+      - ghost-content:/var/lib/ghost/content
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    init: true
+
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ghost
+      MYSQL_USER: ghost
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  ghost-content:
+  mysql-data:
