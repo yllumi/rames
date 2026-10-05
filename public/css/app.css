@@ -78,19 +78,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 .mark::after { content: ""; position: absolute; inset: 6px; border-radius: 3px; background: rgba(255, 255, 255, .9); }
 .mark-sm { width: 12px; height: 12px; border-radius: 4px; background: var(--grad); display: inline-block; }
 
-.navbar-nav .nav-link {
-  color: var(--bs-secondary-color, #5b7a84);
-  font-weight: 500;
-  border-radius: 9px;
-  padding: .45rem .75rem;
-}
-.navbar-nav .nav-link:hover { color: var(--bs-body-color); background: rgba(13, 148, 136, .08); }
-.navbar-nav .nav-link.active {
-  color: #0f766e;
-  background: linear-gradient(135deg, rgba(45, 212, 191, .18), rgba(13, 148, 136, .14));
-  box-shadow: inset 0 0 0 1px rgba(13, 148, 136, .40);
-}
-.user { color: var(--bs-secondary-color, #5b7a84); font-size: 13px; display: inline-flex; align-items: center; gap: 8px; }
+/* Gaya link nav lama (`.navbar-nav .nav-link`) dihapus: menu kini di `.sidebar-nav` (lihat blok Layout sidebar). */
 .avatar {
   width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
   background: var(--grad); color: #ffffff; font-weight: 800; font-size: 12px;
@@ -338,3 +326,171 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 }
 .guide-content img { max-width: 100%; height: auto; }
 .guide-content hr { border-top: 1px solid var(--border); margin: 1.4em 0; }
+
+/* ==================================================================
+   Layout sidebar — shell aside + kolom utama (menggantikan topbar-navbar).
+   ≤991px: aside menjadi offcanvas drawer (Bootstrap .offcanvas-lg),
+   ≥992px: aside menjadi kolom tetap & .app-main digeser selebar sidebar.
+   ================================================================== */
+.app-sidebar {
+  --bs-offcanvas-width: 264px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, .86);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-right: 1px solid var(--border);
+}
+.app-sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex: none;
+  padding: .85rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.app-sidebar-head .brand { font-size: 18px; }
+.sidebar-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: .75rem .6rem;
+}
+.sidebar-nav .nav { gap: .15rem; }
+.sidebar-nav .nav-link {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  color: var(--bs-secondary-color, #5b7a84);
+  font-weight: 500;
+  border-radius: 9px;
+  padding: .55rem .75rem;
+}
+.sidebar-nav .nav-link .nav-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+.sidebar-nav .nav-link .nav-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Tombol burger (lipat desktop & buka drawer mobile). */
+.sidebar-toggle,
+.sidebar-burger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  flex: none;
+  color: var(--bs-secondary-color, #5b7a84);
+  background: rgba(13, 148, 136, .06);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.sidebar-toggle:hover,
+.sidebar-burger:hover { color: var(--bs-body-color); background: rgba(13, 148, 136, .12); }
+.sidebar-nav .nav-link:hover { color: var(--bs-body-color); background: rgba(13, 148, 136, .08); }
+.sidebar-nav .nav-link.active {
+  color: #0f766e;
+  background: linear-gradient(135deg, rgba(45, 212, 191, .18), rgba(13, 148, 136, .14));
+  box-shadow: inset 0 0 0 1px rgba(13, 148, 136, .40);
+}
+.sidebar-user {
+  flex: none;
+  padding: .9rem 1rem;
+  border-top: 1px solid var(--border);
+  color: var(--bs-secondary-color, #5b7a84);
+  font-size: 13px;
+}
+.app-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+@media (min-width: 992px) {
+  .app-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 264px;
+    transform: none;
+    visibility: visible;
+    /* Bootstrap menyetel background offcanvas-lg transparan !important di ≥lg. */
+    background: rgba(255, 255, 255, .86) !important;
+    transition: width .18s ease;
+  }
+  .app-main { margin-left: 264px; transition: margin-left .18s ease; }
+
+  /* Kondisi rail: sidebar menyempit, label disembunyikan, ikon terpusat. */
+  body.sidebar-collapsed .app-sidebar { width: 72px; }
+  body.sidebar-collapsed .app-main { margin-left: 72px; }
+  body.sidebar-collapsed .app-sidebar-head { justify-content: center; padding-left: .5rem; padding-right: .5rem; }
+  body.sidebar-collapsed .app-sidebar-head .brand { display: none; }
+  body.sidebar-collapsed .sidebar-nav .nav-label,
+  body.sidebar-collapsed .sidebar-nav .badge { display: none; }
+  body.sidebar-collapsed .sidebar-nav .nav-link { justify-content: center; padding-left: 0; padding-right: 0; }
+  body.sidebar-collapsed .sidebar-user { padding-left: .5rem; padding-right: .5rem; }
+  body.sidebar-collapsed .sidebar-user-name,
+  body.sidebar-collapsed .sidebar-user-badge,
+  body.sidebar-collapsed .sidebar-logout { display: none; }
+  body.sidebar-collapsed .sidebar-user > .d-flex { justify-content: center; margin-bottom: 0 !important; }
+
+  /* Popover label menu saat rail terlipat — hanya di mode ini (label tersembunyi).
+     `overflow: visible` wajib: kontainer pemotong satu-satunya adalah .sidebar-nav (overflow-y:auto),
+     dan popover menggantung ke kanan keluar dari rail 72px. Tidak diubah saat sidebar terbuka. */
+  body.sidebar-collapsed .sidebar-nav { overflow: visible; }
+  body.sidebar-collapsed .sidebar-nav .nav-link { position: relative; }
+  body.sidebar-collapsed .sidebar-nav .nav-link::before,
+  body.sidebar-collapsed .sidebar-nav .nav-link::after {
+    position: absolute;
+    top: 50%;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 1080;
+    transition: opacity .14s ease, transform .14s ease;
+  }
+  /* Bubble: tampil di kanan ikon, meluncur masuk sedikit. */
+  body.sidebar-collapsed .sidebar-nav .nav-link::after {
+    content: attr(data-label);
+    left: calc(100% + 10px);
+    transform: translateY(-50%) translateX(-4px);
+    white-space: nowrap;
+    background: rgba(255, 255, 255, .98);
+    color: var(--bs-body-color);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: .35rem .65rem;
+    font-size: 12.5px;
+    font-weight: 600;
+    line-height: 1.2;
+    box-shadow: 0 12px 26px -14px rgba(13, 90, 80, .55);
+  }
+  /* Panah kecil menunjuk ke ikon. */
+  body.sidebar-collapsed .sidebar-nav .nav-link::before {
+    content: "";
+    left: calc(100% + 4px);
+    transform: translateY(-50%);
+    border: 5px solid transparent;
+    border-right-color: var(--border);
+  }
+  body.sidebar-collapsed .sidebar-nav .nav-link:hover::after,
+  body.sidebar-collapsed .sidebar-nav .nav-link:focus-visible::after {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+  }
+  body.sidebar-collapsed .sidebar-nav .nav-link:hover::before,
+  body.sidebar-collapsed .sidebar-nav .nav-link:focus-visible::before { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-sidebar, .app-main { transition: none; }
+  body.sidebar-collapsed .sidebar-nav .nav-link::before,
+  body.sidebar-collapsed .sidebar-nav .nav-link::after { transition: none; }
+}

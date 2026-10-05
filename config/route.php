@@ -139,7 +139,7 @@ Route::post('/networks/{id}/connect', [NetworkController::class, 'connect']);
 Route::post('/networks/{id}/disconnect', [NetworkController::class, 'disconnect']);
 Route::post('/networks/{id}/delete', [NetworkController::class, 'delete']);
 
-// Monitoring resource container & VM (halaman global; nav topbar)
+// Monitoring resource container & VM (halaman global; nav sidebar)
 Route::get('/monitor', [MonitorController::class, 'index']);
 Route::get('/api/monitor/overview', [MonitorController::class, 'overview']);
 // Snapshot host saja — dipoll halaman /monitor selama terbuka (tanpa Engine)

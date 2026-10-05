@@ -17,7 +17,7 @@ namespace app\library\Update;
  * dihitung (butuh objek commit). UI karenanya menampilkan tautan "lihat
  * perubahan" ke halaman compare remote (tidak butuh API, tanpa rate limit).
  *
- * Hasil ditulis ke `runtime/update/check.json`; badge nav topbar hanya membaca
+ * Hasil ditulis ke `runtime/update/check.json`; badge nav sidebar hanya membaca
  * berkas itu (tanpa jaringan) sehingga tidak memperlambat halaman.
  */
 final class UpdateChecker

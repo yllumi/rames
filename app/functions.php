@@ -145,7 +145,7 @@ if (!function_exists('app_role_label')) {
 
 if (!function_exists('update_badge')) {
     /**
-     * Ringkasan status pembaruan dashboard untuk badge nav topbar (SPECS.md §7.8).
+     * Ringkasan status pembaruan dashboard untuk badge nav sidebar (SPECS.md §7.8).
      *
      * Membaca HANYA berkas cache yang ditulis proses `update-check` / tombol
      * "Cek pembaruan" — tanpa jaringan sama sekali, supaya setiap render halaman

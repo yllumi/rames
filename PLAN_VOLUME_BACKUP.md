@@ -236,7 +236,7 @@ runtime/logs/backup/{project}.log   # log per volume/project
 - [ ] `config/deploy.php`: tambah key config (baca `getenv`), `config/route.php`: daftar route §4.1.
 
 ### 5.4 [Frontend UI] — halaman `/backups`
-- [ ] Nav topbar (`app/view/partials/header.php`): link **Backup** dengan `active` state (pola `/volumes`).
+- [ ] Nav sidebar (`app/view/partials/header.php`): link **Backup** dengan `active` state (pola `/volumes`).
 - [ ] `app/view/backup/index.php`: tabel volume per app (nama, project, ukuran via `/api/volumes/usage` yang sudah ada,
       **strategi** = dump/snapshot, status container), status run terakhir, jumlah snapshot,
       tombol **Backup sekarang** (`backup`), **Stop & Snapshot** (mode `stop`/jendela perawatan), & **Restore** (`restore`);

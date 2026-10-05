@@ -596,7 +596,7 @@ Setiap app **dimiliki satu user (owner)** dan hanya terlihat oleh user yang berh
 
 ### 7.8 Self-Update Dashboard (update rames dari UI)
 
-Tujuan: menggantikan alur "SSH ke server → `git pull`" dengan satu tombol di dashboard. Panel-nya ada di halaman **`/nginx`** (menu nav **Config**; halaman operasional host yang sudah ada) supaya tidak menambah menu nav baru; badge **update** di nav topbar hanya muncul untuk admin bila ada pembaruan.
+Tujuan: menggantikan alur "SSH ke server → `git pull`" dengan satu tombol di dashboard. Panel-nya ada di halaman **`/nginx`** (menu nav **Config**; halaman operasional host yang sudah ada) supaya tidak menambah menu nav baru; badge **update** di nav sidebar hanya muncul untuk admin bila ada pembaruan.
 
 **Kenapa helper container (bukan langsung dari proses PHP)**
 Proses yang menjalankan update adalah proses **di dalam container dashboard**, dan `docker compose up -d` akan **me-recreate container itu sendiri** — ia mematikan dirinya di tengah pekerjaan (container lama di-stop lebih dulu, sehingga kegagalan di jendela itu meninggalkan dashboard mati). Karena itu update dijalankan oleh **helper container terpisah** (`docker run -d`, *bukan* bagian dari compose project) yang tetap hidup saat dashboard di-recreate — pola yang sama dengan `NginxReloader` (memakai Docker socket host):
@@ -784,7 +784,7 @@ Field tambahan per app:
 
 ## 8d. Monitoring Resource Container & Total VM
 
-**Tujuan:** satu halaman global **`/monitor`** (nav topbar) yang menampilkan pemakaian resource tiap container dan **total VM** (CPU, memori, load, uptime host) — cukup untuk deteksi dini, bukan monitoring historis/alerting penuh.
+**Tujuan:** satu halaman global **`/monitor`** (nav sidebar) yang menampilkan pemakaian resource tiap container dan **total VM** (CPU, memori, load, uptime host) — cukup untuk deteksi dini, bukan monitoring historis/alerting penuh.
 
 **Data:**
 - **Host (total VM)** — dibaca dari pseudo-filesystem `/proc` host (`stat`, `meminfo`, `loadavg`, `uptime`, `cpuinfo`). Di dalam container dashboard, `/proc` **sudah** menampilkan nilai host (Docker tidak men-*namespace*-kan metrik ini) sehingga tidak perlu mount tambahan; path bisa di-override `HOST_PROC_PATH` bila host memakai lxcfs. Nilai yang tidak terbaca → ditampilkan **N/A**, bukan error.
