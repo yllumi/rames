@@ -1,0 +1,38 @@
+title: RaisFast
+description: >-
+  Headless CMS & backend-as-a-service RaisFast (Rust, satu binary) dengan blog,
+  ecommerce, wallet, payment, dan multi-tenant SaaS bawaan. Data dan metadata
+  disimpan di SQLite pada named volume. Wajib mengisi URL publik agar tautan
+  media/RSS dan CORS benar; APP_KEY harus base64 dari 32 byte acak dan harus
+  tetap sama selama data terenkripsi (mis. token API) dipakai. Setelah deploy,
+  buka /admin untuk menyiapkan akun admin.
+category: CMS
+icon: "🦀"
+docs_url: https://www.raisfast.com/en/docs
+
+env:
+  - key: BASE_URL
+    label: URL publik RaisFast
+    help: >-
+      URL lengkap HTTPS, misalnya https://cms.example.com. Wajib sama dengan
+      domain atau subdomain app yang diatur di Rames. Dipakai untuk tautan
+      media/RSS dan sebagai origin CORS.
+    required: true
+  - key: JWT_SECRET
+    label: Secret JWT
+    help: >-
+      Kunci penandatanganan token. Dibuat otomatis (hex 48 karakter, di atas
+      minimum 32 karakter). Isi manual bila ingin memakai nilai sendiri.
+    generate: secret
+  - key: APP_KEY
+    label: Kunci enkripsi APP_KEY
+    help: >-
+      Base64 dari tepat 32 byte acak (44 karakter, berakhiran "="). Hasilkan
+      dengan: openssl rand -base64 32. Dipakai untuk enkripsi AES-256-GCM
+      (mis. token API); nilainya harus tetap sama selama data terenkripsi
+      masih dipakai.
+    secret: true
+
+primary:
+  service: raisfast
+  port: 9898

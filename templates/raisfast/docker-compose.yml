@@ -1,0 +1,27 @@
+# RaisFast — headless CMS & backend-as-a-service (Rust, satu binary).
+# Semua service memakai image prebuilt (tanpa `build:`), TANPA `container_name`
+# (dashboard menulis prefix nama container = nama app), dan TANPA `name:`
+# (nama project compose ditentukan dashboard dari nama app).
+services:
+  raisfast:
+    image: ghcr.io/raisfast/raisfast:latest
+    restart: unless-stopped
+
+    ports:
+      - "9898:9898"
+
+    environment:
+      APP_ENV: production
+      JWT_SECRET: ${JWT_SECRET}
+      APP_KEY: ${APP_KEY}
+      BASE_URL: ${BASE_URL}
+      CORS_ORIGINS: ${BASE_URL}
+
+    volumes:
+      # /app/storage adalah STORAGE_ROOT_DIR default image: SQLite
+      # (storage/db/raisfast.db), uploads, dan logs. Named volume membuat data
+      # bertahan saat container dibuat ulang dengan nama app yang sama.
+      - raisfast-data:/app/storage
+
+volumes:
+  raisfast-data:
