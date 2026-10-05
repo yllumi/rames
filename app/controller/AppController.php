@@ -22,6 +22,7 @@ use app\library\Git\SshKeyManager;
 use app\library\Nginx\NginxReloader;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
+use app\library\Support\Markdown;
 use app\library\Template\TemplateCatalog;
 use RuntimeException;
 use support\Request;
@@ -147,6 +148,20 @@ class AppController
             $sshPubkey = (new SshKeyManager())->publicKey($app['name']);
         }
 
+        // Panduan template app (opsional). Kegagalan membaca katalog TIDAK boleh
+        // menggagalkan halaman detail — panduan hanya pelengkap.
+        $guideHtml = '';
+        if (is_array($app['template'] ?? null) && (string) ($app['template']['slug'] ?? '') !== '') {
+            try {
+                $t = (new TemplateCatalog())->find((string) $app['template']['slug']);
+                if ($t !== null) {
+                    $guideHtml = Markdown::toHtml((string) ($t['guide'] ?? ''));
+                }
+            } catch (\Throwable $e) {
+                // katalog tidak terbaca — halaman detail tetap tampil tanpa panduan
+            }
+        }
+
         // Riwayat deploy (terbaru dulu) + versi aktif untuk tombol rollback
         $deployHistory = array_reverse($app['deploy_history'] ?? []);
         $activeSha = $this->resolveActiveSha($app);
@@ -175,6 +190,7 @@ class AppController
             'volumes' => $volumes,
             'availableNetworks' => $availableNetworks,
             'sshPubkey' => $sshPubkey,
+            'guideHtml' => $guideHtml,
             'deployHistory' => $deployHistory,
             'activeSha' => $activeSha,
             'dbContainers' => $dbContainers,
@@ -241,9 +257,15 @@ class AppController
         // SPECS.md §7.2b). Definisi template dibaca dari folder repo
         // `templates/<slug>/` (dikelola admin lewat git, bukan lewat UI).
         if ($mode === 'template') {
+            $templates = (new TemplateCatalog())->all();
+            foreach ($templates as &$t) {
+                $t['guide_html'] = Markdown::toHtml((string) ($t['guide'] ?? ''));
+            }
+            unset($t);
+
             return view('app/create', [
                 'mode' => 'template',
-                'templates' => (new TemplateCatalog())->all(),
+                'templates' => $templates,
             ]);
         }
 
@@ -442,6 +464,7 @@ class AppController
 
         return view('app/template', [
             'template' => $template,
+            'guide_html' => Markdown::toHtml((string) ($template['guide'] ?? '')),
             'form_name' => (string) $request->get('name', $template['slug']),
             'form_env' => [],
             'form_error' => null,

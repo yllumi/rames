@@ -42,6 +42,12 @@ final class TemplateCatalog
     /** Subdirektori berisi file pendukung template. */
     public const FILES_DIR = 'files';
 
+    /** File panduan Markdown opsional yang dirender di UI (bukan bagian `files[]`). */
+    public const GUIDE_FILE = 'guide.md';
+
+    /** Batas ukuran panduan yang dirender (256 KB); lebih besar diabaikan. */
+    public const GUIDE_MAX_BYTES = 262144;
+
     /** Panjang nilai rahasia hasil auto-generate (karakter heksadesimal). */
     public const SECRET_LENGTH = 48;
 
@@ -138,7 +144,7 @@ final class TemplateCatalog
     /**
      * Baca + validasi satu template.
      *
-     * @return array{slug:string,dir:string,title:string,description:string,category:string,icon:string,docs_url:string,image:string,env:array<int,array>,files:array<int,string>,primary:array{service:string,port:int},ports:array<int,int>,compose:string,services:array<string,array>,valid:bool,error:?string}
+     * @return array{slug:string,dir:string,title:string,description:string,category:string,icon:string,docs_url:string,image:string,env:array<int,array>,files:array<int,string>,guide:string,primary:array{service:string,port:int},ports:array<int,int>,compose:string,services:array<string,array>,valid:bool,error:?string}
      */
     private function read(string $slug): array
     {
@@ -154,6 +160,7 @@ final class TemplateCatalog
             'image' => '',
             'env' => [],
             'files' => [],
+            'guide' => '',
             'primary' => ['service' => '', 'port' => 0],
             'ports' => [],
             'compose' => '',
@@ -186,6 +193,7 @@ final class TemplateCatalog
             $template['primary'] = $this->resolvePrimaryFrom($template['services'], $manifest['primary'] ?? null);
             $template['env'] = $this->readEnv($manifest['env'] ?? null, $compose);
             $template['files'] = $this->readFiles($dir, $manifest['files'] ?? null);
+            $template['guide'] = $this->readGuide($dir);
             $template['ports'] = $this->summarizePorts($template['services']);
             $template['valid'] = true;
         } catch (\Throwable $e) {
@@ -510,6 +518,30 @@ final class TemplateCatalog
         }
 
         return array_values(array_unique($names));
+    }
+
+    /**
+     * Panduan Markdown opsional (`templates/<slug>/guide.md`).
+     *
+     * Non-fatal: file tidak ada/kosong/terlalu besar/gagal dibaca → `''`.
+     * Panduan sengaja TIDAK membuat template menjadi `valid=false`, dan bukan
+     * bagian `files[]` sehingga tidak ikut `materialize()`.
+     */
+    private function readGuide(string $dir): string
+    {
+        $path = $dir . '/' . self::GUIDE_FILE;
+        if (!is_file($path)) {
+            return '';
+        }
+
+        $size = @filesize($path);
+        if ($size === false || $size < 1 || $size > self::GUIDE_MAX_BYTES) {
+            return '';
+        }
+
+        $content = @file_get_contents($path);
+
+        return $content === false ? '' : $content;
     }
 
     private function firstImage(string $compose): string

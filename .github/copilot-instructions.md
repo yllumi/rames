@@ -52,7 +52,7 @@ Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputus
 | `app/library/` | **Semua logika bisnis**: `Storage` (`JsonStore`, `AppStore`), `Auth` (`UserStore`, `AppAccess`, `AppAccessDenied`), `Support` (`ProcessRunner`, `SigchldGuard`), `Docker` (`DockerClient`, `AppPorts`, `AppContainers`, `ContainerLogs`, `ContainerStats`, `DockerComposeRunner`, `DockerExec`), `Deploy` (`DeployerInterface`, `LocalDeployer`, `ComposeSource`, `ComposeBinds`, `ContainerNames`), `Nginx`, `SSL`, `Update`, `Db`, `Monitor`, `System`, `Template`, `Git`. |
 | `cli/*.php` | Worker **detached** (`deploy.php`, `ssl.php`) + skrip helper self-update (`self-update.sh`, `update-report.php`). |
 | `app/view/` + `public/` | View PHP native, CSS, JS. **Hanya merender** — tanpa logika bisnis. |
-| `templates/<slug>/` | Galeri template create app (ikut versi repo, **bukan** data runtime). |
+| `templates/<slug>/` | Galeri template create app (ikut versi repo, **bukan** data runtime): `template.yml` + `docker-compose.yml` + `files/` + `guide.md` (panduan Markdown **katalog-only**, tidak di-materialize ke app). |
 | `database/`, `apps/`, `runtime/`, `nginx-status/` | **Data runtime** (gitignored) — lihat larangan #15/#16. |
 
 **Satu sumber kebenaran** — jangan menduplikasi logika:
@@ -105,7 +105,8 @@ Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputus
 3. Smoke render view di luar HTTP (`php /tmp/rames-view-smoke.php`, `rames-nginx-view-smoke.php`, `rames-template-view-smoke.php`) — error variabel template tidak tertangkap PHPUnit. Skrip ini di `/tmp`, **jangan di-commit**.
 4. Uji compose tiruan di direktori temp + project palsu; **selalu** akhiri `docker compose down -v`.
 5. Validasi compose: `docker compose ... config --quiet` — **jangan** `config` tanpa `--quiet` (ia mencetak nilai secret/env ke terminal).
-6. Laporkan hasil perintah sebagai bukti; jangan mengklaim "selesai" tanpa keluaran perintah.
+6. Bila perubahan menyentuh **kelas yang dipakai runtime dashboard** (`app/controller/**`, `app/library/**`, `app/model/**`, `config/*.php`), reload worker sebagai langkah verifikasi manual tambahan (setelah `php -l`/`composer test`): `docker exec rames-webman php start.php reload`.
+7. Laporkan hasil perintah sebagai bukti; jangan mengklaim "selesai" tanpa keluaran perintah.
 
 ---
 

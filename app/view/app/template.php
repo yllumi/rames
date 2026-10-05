@@ -8,19 +8,24 @@ $formError = $form_error ?? null;
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
-<div class="page-head mb-4">
+<div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <div>
     <h1 class="h3 mb-1">
       <?php if (($template['icon'] ?? '') !== ''): ?><span class="me-1"><?= e($template['icon']) ?></span><?php endif; ?>
       <?= e($template['title']) ?>
     </h1>
     <p class="text-muted small mb-0">
-      <a href="/apps/create?mode=template">&larr; Semua template</a>
-      &middot; image <span class="mono"><?= e($template['image'] !== '' ? $template['image'] : '-') ?></span>
+      image <span class="mono"><?= e($template['image'] !== '' ? $template['image'] : '-') ?></span>
       <?php if (($template['primary']['service'] ?? '') !== ''): ?>
       &middot; domain &rarr; <span class="mono"><?= e($template['primary']['service'] . ':' . $template['primary']['port']) ?></span>
       <?php endif; ?>
     </p>
+  </div>
+  <div class="d-flex flex-wrap gap-2 align-items-center">
+    <?php if (($guide_html ?? '') !== ''): ?>
+    <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#template-guide-modal">📖 Panduan</button>
+    <?php endif; ?>
+    <a class="btn btn-outline-secondary btn-sm" href="/apps/create?mode=template">&larr; Semua Template</a>
   </div>
 </div>
 
@@ -245,5 +250,25 @@ $formError = $form_error ?? null;
   });
 })();
 </script>
+
+<?php if (($guide_html ?? '') !== ''): ?>
+<!-- Modal panduan: HTML hasil sanitasi Markdown::toHtml() — sengaja dirender tanpa e(). -->
+<div class="modal fade" id="template-guide-modal" tabindex="-1" aria-labelledby="template-guide-title" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5 mb-0" id="template-guide-title">Panduan: <?= e($template['title']) ?></h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body">
+        <div class="guide-content"><?= $guide_html ?></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Tutup</button>
+      </div>
+    </div>
+  </div>
+</div>
+<?php endif; ?>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

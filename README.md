@@ -119,6 +119,18 @@ Dashboard menulis config Nginx lalu me-reload nginx host secara **otomatis** set
 
 > Reload memakai helper container `--pid host --privileged` via Docker socket (butuh daemon Docker yang mengizinkan `--privileged`). Bila mekanisme ini tidak tersedia, pasang watcher host (SPECS §8.3) atau reload manual: `sudo systemctl reload nginx`.
 
+### Mengubah kode dashboard (setelah edit)
+
+Perubahan **kelas PHP** dashboard (`app/controller/**`, `app/library/**`, `app/model/**`, `config/*.php`) **WAJIB** disusul reload worker — worker Webman bersifat *persistent* dan memegang kelas lama di memori:
+
+```bash
+docker exec rames-webman php start.php reload
+```
+
+- Perubahan **view** (`app/view/**`) dan **CSS/JS statis** (`public/**`) umumnya **langsung** berlaku (di-include/di-serve per request); cukup **hard refresh** browser (`Ctrl+Shift+R`).
+- **Jangan** `docker compose up -d --build` hanya untuk memuat ulang kode — rebuild hanya bila `Dockerfile`/dependency berubah. Alternatif restart penuh: `docker compose restart rames-webman` (koneksi terputus sesaat).
+- Verifikasi cepat opsional: `docker exec rames-webman php vendor/bin/phpunit`.
+
 ### Backup Volume ke S3 (restic)
 
 Halaman **`/backups`** mem-backup volume Docker milik app ke S3 **harian** via restic (timer host `volume-backup.timer`, 02:30). **Prasyarat & langkah:**

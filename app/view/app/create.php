@@ -179,30 +179,50 @@ foreach (glob(dirname(__DIR__, 3) . '/public/images/templates/*') ?: [] as $logo
         </div>
         <?php endif; ?>
 
-        <dl class="row small mb-0">
-          <?php if (($t['image'] ?? '') !== ''): ?>
-          <dt class="col-sm-4">Image</dt><dd class="col-sm-8 mono text-break"><?= e($t['image']) ?></dd>
-          <?php endif; ?>
-          <dt class="col-sm-4">Port</dt>
-          <dd class="col-sm-8 mono"><?= ($t['ports'] ?? []) !== [] ? e(implode(', ', array_map('strval', $t['ports']))) : 'Tidak ada' ?></dd>
-          <dt class="col-sm-4">Domain</dt>
-          <dd class="col-sm-8 mono"><?= ($t['primary']['service'] ?? '') !== '' ? e($t['primary']['service'] . ':' . $t['primary']['port']) : 'Tidak disetel' ?></dd>
-          <dt class="col-sm-4">Variabel environment</dt>
-          <dd class="col-sm-8"><?= e((string) count($t['env'] ?? [])) ?></dd>
-          <dt class="col-sm-4">File pendukung</dt>
-          <dd class="col-sm-8">
-            <?php if (($t['files'] ?? []) === []): ?>Tidak ada
+        <ul class="nav nav-tabs mb-3" id="<?= e($modalId) ?>-tabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="<?= e($modalId) ?>-tab-detail" data-bs-toggle="tab" data-bs-target="#<?= e($modalId) ?>-pane-detail" type="button" role="tab" aria-controls="<?= e($modalId) ?>-pane-detail" aria-selected="true">Detail</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="<?= e($modalId) ?>-tab-guide" data-bs-toggle="tab" data-bs-target="#<?= e($modalId) ?>-pane-guide" type="button" role="tab" aria-controls="<?= e($modalId) ?>-pane-guide" aria-selected="false">Panduan</button>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane fade show active" id="<?= e($modalId) ?>-pane-detail" role="tabpanel" aria-labelledby="<?= e($modalId) ?>-tab-detail">
+            <dl class="row small mb-0">
+              <?php if (($t['image'] ?? '') !== ''): ?>
+              <dt class="col-sm-4">Image</dt><dd class="col-sm-8 mono text-break"><?= e($t['image']) ?></dd>
+              <?php endif; ?>
+              <dt class="col-sm-4">Port</dt>
+              <dd class="col-sm-8 mono"><?= ($t['ports'] ?? []) !== [] ? e(implode(', ', array_map('strval', $t['ports']))) : 'Tidak ada' ?></dd>
+              <dt class="col-sm-4">Domain</dt>
+              <dd class="col-sm-8 mono"><?= ($t['primary']['service'] ?? '') !== '' ? e($t['primary']['service'] . ':' . $t['primary']['port']) : 'Tidak disetel' ?></dd>
+              <dt class="col-sm-4">Variabel environment</dt>
+              <dd class="col-sm-8"><?= e((string) count($t['env'] ?? [])) ?></dd>
+              <dt class="col-sm-4">File pendukung</dt>
+              <dd class="col-sm-8">
+                <?php if (($t['files'] ?? []) === []): ?>Tidak ada
+                <?php else: ?>
+                <ul class="mb-0 ps-3">
+                  <?php foreach ($t['files'] as $file): ?><li class="mono text-break"><?= e($file) ?></li><?php endforeach; ?>
+                </ul>
+                <?php endif; ?>
+              </dd>
+              <?php if (($t['docs_url'] ?? '') !== ''): ?>
+              <dt class="col-sm-4">Dokumentasi</dt>
+              <dd class="col-sm-8"><?php if ($docsUrlIsSafe): ?><a href="<?= e($docsUrl) ?>" target="_blank" rel="noopener">Buka dokumentasi</a><?php else: ?><?= e($docsUrl) ?><?php endif; ?></dd>
+              <?php endif; ?>
+            </dl>
+          </div>
+          <div class="tab-pane fade" id="<?= e($modalId) ?>-pane-guide" role="tabpanel" aria-labelledby="<?= e($modalId) ?>-tab-guide">
+            <?php if ((string) ($t['guide_html'] ?? '') === ''): ?>
+            <p class="text-muted small mb-0"><?= e('Panduan belum tersedia untuk template ini.') ?></p>
             <?php else: ?>
-            <ul class="mb-0 ps-3">
-              <?php foreach ($t['files'] as $file): ?><li class="mono text-break"><?= e($file) ?></li><?php endforeach; ?>
-            </ul>
+            <?php // HTML hasil sanitasi Markdown::toHtml() — sengaja dirender tanpa e(). ?>
+            <div class="guide-content"><?= $t['guide_html'] ?></div>
             <?php endif; ?>
-          </dd>
-          <?php if (($t['docs_url'] ?? '') !== ''): ?>
-          <dt class="col-sm-4">Dokumentasi</dt>
-          <dd class="col-sm-8"><?php if ($docsUrlIsSafe): ?><a href="<?= e($docsUrl) ?>" target="_blank" rel="noopener">Buka dokumentasi</a><?php else: ?><?= e($docsUrl) ?><?php endif; ?></dd>
-          <?php endif; ?>
-        </dl>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <?php if ($t['valid']): ?>

@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Tests;
 
 use app\library\Deploy\ComposeSource;
+use app\library\Support\Markdown;
 use app\library\Template\TemplateCatalog;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -337,6 +338,40 @@ YAML, $this->composeWithEnv([]), '/dikelola dashboard/');
     }
 
     // ==================================================================
+    // Panduan (guide.md)
+    // ==================================================================
+
+    public function testGuideEmptyWhenFileMissing(): void
+    {
+        $this->writeTemplate('demo', $this->manifest(), $this->composeWithEnv([]));
+
+        $this->assertSame('', (new TemplateCatalog($this->tmp))->require('demo')['guide']);
+    }
+
+    public function testGuideReturnsExactFileContents(): void
+    {
+        $this->writeTemplate('demo', $this->manifest(), $this->composeWithEnv([]));
+        $guide = "# Panduan\n\nLangkah satu.\n";
+        file_put_contents($this->tmp . '/demo/' . TemplateCatalog::GUIDE_FILE, $guide);
+
+        $this->assertSame($guide, (new TemplateCatalog($this->tmp))->require('demo')['guide']);
+    }
+
+    public function testGuideIgnoredWhenTooLargeAndTemplateStaysValid(): void
+    {
+        $this->writeTemplate('demo', $this->manifest(), $this->composeWithEnv([]));
+        file_put_contents(
+            $this->tmp . '/demo/' . TemplateCatalog::GUIDE_FILE,
+            str_repeat('a', TemplateCatalog::GUIDE_MAX_BYTES + 1)
+        );
+
+        $template = (new TemplateCatalog($this->tmp))->require('demo');
+
+        $this->assertSame('', $template['guide']);
+        $this->assertTrue($template['valid']);
+    }
+
+    // ==================================================================
     // Nilai env
     // ==================================================================
 
@@ -497,6 +532,27 @@ YAML, ['nginx.conf' => "server {\n  listen 80;\n}\n"]);
 
             $this->assertNotSame('', $template['primary']['service']);
             $this->assertContains($template['primary']['port'], $template['ports']);
+        }
+    }
+
+    public function testShippedTemplatesHaveGuide(): void
+    {
+        $catalog = new TemplateCatalog(dirname(__DIR__) . '/templates');
+
+        foreach ($catalog->all() as $template) {
+            $slug = (string) $template['slug'];
+
+            $this->assertNotSame(
+                '',
+                trim((string) ($template['guide'] ?? '')),
+                'Template "' . $slug . '" tidak punya guide.md (atau kosong).'
+            );
+
+            $this->assertNotSame(
+                '',
+                Markdown::toHtml((string) $template['guide']),
+                'Panduan template "' . $slug . '" tidak menghasilkan HTML.'
+            );
         }
     }
 
