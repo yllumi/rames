@@ -13,6 +13,11 @@ $policyLabel = $policy === 'skip'
     ? 'manual saja — volume non-DB tidak dijadwalkan otomatis'
     : 'snapshot volume non-DB: stop → snapshot → start (harian)';
 $policyClass = $policy === 'skip' ? 'text-bg-secondary' : 'text-bg-info';
+
+$breadcrumbs = [
+    ['label' => 'Apps', 'href' => '/apps'],
+    ['label' => 'Backup', 'href' => null],
+];
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
@@ -25,13 +30,20 @@ $policyClass = $policy === 'skip' ? 'text-bg-secondary' : 'text-bg-info';
       <strong>dump logis</strong> (container tetap hidup); volume lain di-<strong>snapshot</strong> dari
       filesystem (container dihentikan sementara). Status tiap volume dimuat otomatis di tabel di bawah.
     </p>
+    <p class="form-text small text-muted mb-0 mt-2">
+      Kolom <strong>Berkala</strong>: volume yang belum pernah dibackup nonaktif secara default —
+      aktifkan untuk ikut backup harian.
+    </p>
   </div>
   <div class="d-flex flex-wrap gap-2 align-items-center">
     <span id="backup-running" class="badge text-bg-warning d-none">
       <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Backup berjalan …
     </span>
+    <?php if ($isAdmin): ?>
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="backup-refresh-status">Segarkan status</button>
+      <a class="btn btn-outline-secondary btn-sm" href="/backups/guide">📖 Panduan setup</a>
+    <?php endif; ?>
     <a class="btn btn-outline-secondary btn-sm" href="/volumes">Volumes</a>
-    <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Apps</a>
   </div>
 </div>
 
@@ -64,6 +76,27 @@ $policyClass = $policy === 'skip' ? 'text-bg-secondary' : 'text-bg-info';
      data-is-admin="<?= $isAdmin ? '1' : '0' ?>"
      data-interval="20000">
 
+  <ul class="nav nav-tabs mb-3" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="backup-tab-active" data-bs-toggle="tab"
+              data-bs-target="#pane-active" type="button" role="tab"
+              aria-controls="pane-active" aria-selected="true">Volume aktif</button>
+    </li>
+    <?php if ($isAdmin): ?>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="backup-tab-archive" data-bs-toggle="tab"
+                data-bs-target="#pane-archive" type="button" role="tab"
+                aria-controls="pane-archive" aria-selected="false">Arsip
+          <span class="badge text-bg-secondary d-none" id="archive-count">0</span>
+        </button>
+      </li>
+    <?php endif; ?>
+  </ul>
+
+  <div class="tab-content">
+    <div class="tab-pane fade show active" id="pane-active" role="tabpanel"
+         aria-labelledby="backup-tab-active" tabindex="0">
+
   <div class="card">
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
@@ -76,11 +109,12 @@ $policyClass = $policy === 'skip' ? 'text-bg-secondary' : 'text-bg-info';
             <th>Status container</th>
             <th>Backup terakhir</th>
             <th class="text-end">Snapshot</th>
+            <th>Berkala</th>
             <th class="text-end">Aksi</th>
           </tr>
         </thead>
         <tbody id="backup-rows">
-          <tr><td colspan="8" class="text-muted small">Memuat …</td></tr>
+          <tr><td colspan="9" class="text-muted small">Memuat …</td></tr>
         </tbody>
       </table>
     </div>
@@ -103,6 +137,49 @@ $policyClass = $policy === 'skip' ? 'text-bg-secondary' : 'text-bg-info';
     <?= csrf_field() ?>
     <input type="hidden" name="volume" id="backup-run-volume" value="">
   </form>
+
+    </div><!-- /#pane-active -->
+
+    <?php if ($isAdmin): ?>
+      <div class="tab-pane fade" id="pane-archive" role="tabpanel"
+           aria-labelledby="backup-tab-archive" tabindex="0">
+        <div class="card">
+          <div class="card-header bg-white py-2">
+            <span class="small text-muted">
+              Riwayat volume yang pernah ter-backup namun volumenya sudah tidak ada di Docker.
+            </span>
+          </div>
+          <div class="card-body py-2 d-none" id="backup-archive-empty">
+            <span class="text-muted small">Belum ada volume arsip.</span>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead>
+                <tr>
+                  <th>Volume (asli)</th>
+                  <th>Project</th>
+                  <th>App (asli)</th>
+                  <th>Strategi</th>
+                  <th>Backup terakhir</th>
+                  <th class="text-end">Snapshot</th>
+                  <th class="text-end">Ukuran</th>
+                  <th class="text-end">Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="backup-archive-rows">
+                <tr><td colspan="8" class="text-muted small">Memuat …</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card-footer">
+            <span class="text-muted small">
+              Volume di tab ini sudah tidak ada di Docker. Restore akan membuat volume <strong>baru</strong>.
+            </span>
+          </div>
+        </div>
+      </div>
+    <?php endif; ?>
+  </div><!-- /.tab-content -->
 </div>
 
 <!-- Modal detail snapshot (read-only) -->
@@ -179,5 +256,104 @@ $policyClass = $policy === 'skip' ? 'text-bg-secondary' : 'text-bg-info';
   </div>
 </div>
 
-<script src="/js/backup.js?v=1"></script>
+<div class="toast-container position-fixed top-0 end-0 p-3" id="backup-toasts" role="region" aria-label="Notifikasi" aria-live="polite" aria-atomic="true"></div>
+
+<!-- Modal detail error backup (dibuka dari kolom "Backup terakhir"). Isi diisi
+     via textContent oleh backup.js — jangan pernah innerHTML untuk pesan. -->
+<div class="modal fade" id="backup-error-modal" tabindex="-1" aria-labelledby="backup-error-modal-label" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="backup-error-modal-label">
+          Detail error backup — <span class="mono" id="backup-error-volume">—</span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-2"><span id="backup-error-meta" class="text-muted small"></span></div>
+        <pre class="mb-0 small" id="backup-error-message" style="white-space:pre-wrap; word-break:break-word;"></pre>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Tutup</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal daftar snapshot volume ARSIP (admin-only; dimuat dari /api/backups/archive/snapshots). -->
+<div class="modal fade" id="archive-snapshots-modal" tabindex="-1" aria-labelledby="archive-snapshots-modal-label" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="archive-snapshots-modal-label">Snapshot arsip — <span class="mono" id="archive-snapshots-volume">—</span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body">
+        <div id="archive-snapshots-loading" class="text-muted small">Memuat snapshot …</div>
+        <div id="archive-snapshots-error" class="alert alert-danger py-2 small d-none" role="alert"></div>
+        <div id="archive-snapshots-empty" class="text-muted small d-none">Belum ada snapshot untuk volume arsip ini.</div>
+        <div class="table-responsive d-none" id="archive-snapshots-table-wrap">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Id</th>
+                <th>Waktu</th>
+                <th class="text-end">Ukuran</th>
+                <th>Tag</th>
+                <th class="text-end">Aksi</th>
+              </tr>
+            </thead>
+            <tbody id="archive-snapshots-rows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Tutup</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal restore volume ARSIP → volume Docker BARU (admin-only). -->
+<div class="modal fade" id="archive-restore-modal" tabindex="-1" aria-labelledby="archive-restore-modal-label" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <form class="modal-content" id="archive-restore-form" method="post" action="/backups/archive/restore">
+      <?= csrf_field() ?>
+      <input type="hidden" name="volume" id="archive-restore-volume" value="">
+      <div class="modal-header">
+        <h5 class="modal-title" id="archive-restore-modal-label">Restore volume arsip</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-2 small">Volume arsip <span class="mono fw-semibold" id="archive-restore-volume-label">—</span></p>
+        <div class="alert alert-info py-2 small" role="alert">
+          Volume asal sudah <strong>tidak ada di Docker</strong>. Restore akan membuat volume Docker
+          <strong>baru</strong> dengan nama yang Anda tentukan, lalu mengisinya dari snapshot.
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="archive-restore-snapshot">Snapshot</label>
+          <select class="form-select form-select-sm" name="snapshot" id="archive-restore-snapshot" required>
+            <option value="">Memuat snapshot …</option>
+          </select>
+        </div>
+        <div class="mb-1">
+          <label class="form-label" for="archive-target-name">Nama volume baru</label>
+          <input type="text" class="form-control form-control-sm" name="target_name" id="archive-target-name"
+                 autocomplete="off" autocapitalize="off" spellcheck="false" required
+                 pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]*" placeholder="">
+          <div class="form-text">
+            Pola volume Docker: huruf/angka, boleh <span class="mono">_ . -</span>, harus diawali huruf/angka.
+          </div>
+        </div>
+        <div id="archive-restore-error" class="alert alert-danger py-2 small d-none mt-3" role="alert"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Batal</button>
+        <button type="submit" class="btn btn-danger btn-sm" id="archive-restore-submit" disabled>Restore ke volume baru</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/js/backup.js?v=11"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

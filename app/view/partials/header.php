@@ -101,6 +101,7 @@ $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke=
     </nav>
   </header>
   <main class="container-fluid px-3 px-lg-4 flex-grow-1 py-4">
+<?php if (!empty($breadcrumbs)) { include app_path() . '/view/partials/breadcrumb.php'; } ?>
 <?php $__flash = flash_pull(); ?>
 <?php if ($__flash): ?>
   <?php

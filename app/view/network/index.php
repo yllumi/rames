@@ -1,4 +1,10 @@
 <?php $pageTitle = 'Networks'; $active = 'networks'; ?>
+<?php
+$breadcrumbs = [
+    ['label' => 'Apps', 'href' => '/apps'],
+    ['label' => 'Networks', 'href' => null],
+];
+?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
 <?php
@@ -10,7 +16,7 @@ foreach ($rows as $r) {
 }
 ?>
 
-<div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+<div class="page-head mb-4">
   <div>
     <h1 class="h3 mb-1">Networks</h1>
     <p class="text-muted mb-0">
@@ -22,7 +28,6 @@ foreach ($rows as $r) {
       <?php endif; ?>
     </p>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Apps</a>
 </div>
 
 <?php if ($engineError): ?>
@@ -153,7 +158,6 @@ foreach ($rows as $r) {
           Butuh network bersama antar app? Minta <strong>admin</strong> membuatnya di halaman ini,
           lalu pasang di tab <strong>Network</strong> pada detail app Anda (koneksi persisten).
         </p>
-        <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Kembali ke Apps</a>
       </div>
     </div>
     <?php endif; ?>

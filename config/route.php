@@ -126,10 +126,20 @@ Route::get('/api/volumes/usage', [VolumeController::class, 'usage']);
 
 // Backup volume harian ke S3 via restic (PLAN_VOLUME_BACKUP.md §4.1)
 Route::get('/backups', [BackupController::class, 'index']);
+// Panduan setup Restic (admin-only) — merender Markdown repo `host/restic-setup.md`
+Route::get('/backups/guide', [BackupController::class, 'guide']);
 Route::get('/api/backups/status', [BackupController::class, 'status']);
 Route::get('/api/backups/snapshots', [BackupController::class, 'snapshots']);
 Route::post('/backups/run', [BackupController::class, 'run']);
 Route::post('/backups/restore', [BackupController::class, 'restore']);
+// Segarkan cache status (live Engine/restic) & seleksi backup berkala per volume
+Route::post('/backups/refresh', [BackupController::class, 'refresh']);
+Route::post('/backups/schedule', [BackupController::class, 'setScheduled']);
+// Aksi arsip — volume yang sudah dihapus (admin-only, PLAN §8h): daftar snapshot,
+// restore ke volume baru (nama diisi user), unduh dump SQL.
+Route::get('/api/backups/archive/snapshots', [BackupController::class, 'archivedSnapshots']);
+Route::post('/backups/archive/restore', [BackupController::class, 'restoreArchived']);
+Route::get('/backups/archive/sql', [BackupController::class, 'downloadArchiveSql']);
 
 // Network Docker (lihat, buat, hubungkan/putuskan container, hapus)
 Route::get('/networks', [NetworkController::class, 'index']);

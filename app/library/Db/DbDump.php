@@ -12,9 +12,19 @@ use RuntimeException;
  * mysql / mariadb) yang dieksekusi dengan `docker exec` — konsisten dengan
  * arsitektur terminal yang ada, tanpa membuka port tambahan.
  *
- * Kredensial dikirim lewat environment MYSQL_PWD (bukan argumen command line)
- * agar tidak terlihat di `ps`. Seluruh bagian variabel di-escape dengan
- * escapeshellarg; command tetap lewat `sh -c` di dalam container (tanpa shell host).
+ * Higiene kredensial: password **tidak pernah** menjadi bagian string command/argv
+ * (yang akan terlihat di `ps` host). Password dikirim lewat **stdin** sebagai baris
+ * pertama, lalu dibaca di dalam container dengan `IFS= read -r __pw` dan hanya
+ * dipakai untuk pemanggilan tool (`MYSQL_PWD="$__pw" <tool> ...`). Untuk import,
+ * SQL mengikuti baris password pada stdin yang sama.
+ *
+ * Guard tool: bila `mysqldump`/`mariadb-dump` (export) atau `mysql`/`mariadb`
+ * (import) tidak ada di container, command menulis pesan jelas ke stderr dan
+ * keluar dengan exit 127 — bukan error `sh` yang membingungkan seperti
+ * `sh: --host=127.0.0.1: not found` akibat ekspansi `$()` kosong.
+ *
+ * Seluruh bagian variabel (user, nama database) di-escape dengan escapeshellarg;
+ * command tetap lewat `sh -c` di dalam container (tanpa shell host).
  */
 class DbDump
 {
@@ -37,13 +47,19 @@ class DbDump
         if ($db !== null && !preg_match('/^[a-zA-Z0-9_]+$/', $db)) {
             throw new RuntimeException('Nama database tidak valid.');
         }
-        $this->runToFile($container, $this->dumpCommand($profile, $db), $outFile);
+        $this->runToFile(
+            $container,
+            $this->dumpCommand($profile, $db),
+            $outFile,
+            (string) ($profile['password'] ?? '')
+        );
         return ['bytes' => (int) (is_file($outFile) ? filesize($outFile) : 0)];
     }
 
     /**
-     * Import SQL (string) ke sebuah database. SQL diumpankan lewat stdin ke
-     * client mysql/mariadb di dalam container.
+     * Import SQL (string) ke sebuah database. Password + SQL diumpankan lewat
+     * stdin ke client mysql/mariadb di dalam container: baris pertama = password,
+     * sisanya = SQL. Password tidak pernah menjadi bagian command/argv.
      *
      * @param array{username:string, password:string, internal_port:int} $profile
      * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
@@ -56,15 +72,16 @@ class DbDump
         return $this->exec->runCommandWithInput(
             $container,
             $this->importCommand($profile, $db),
-            $sql,
+            (string) ($profile['password'] ?? '') . "\n" . $sql,
             (int) config('deploy.db_import_timeout', 600)
         );
     }
 
     /**
-     * Jalankan command dump dengan stdout langsung ke file.
+     * Jalankan command dump dengan stdout langsung ke file. `$password` dikirim
+     * sebagai baris pertama pada stdin sehingga tidak muncul di argv `docker exec`.
      */
-    private function runToFile(string $container, string $command, string $outFile): void
+    private function runToFile(string $container, string $command, string $outFile, string $password): void
     {
         $dir = dirname($outFile);
         if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
@@ -81,11 +98,22 @@ class DbDump
         // proc_close() (lihat SigchldGuard) — bila worker meng-ignore SIGCHLD,
         // proc_close() selalu mengembalikan -1 dan dump yang sukses dilaporkan gagal.
         /** @var array{code:int, stderr:string} $result */
-        $result = SigchldGuard::withDefault(static function () use ($args, $descriptors): array {
+        $result = SigchldGuard::withDefault(static function () use ($args, $descriptors, $password): array {
             $pipes = [];
             $proc = @proc_open($args, $descriptors, $pipes, null, null, ['bypass_shell' => true]);
             if (!is_resource($proc)) {
                 throw new RuntimeException('Gagal menjalankan proses dump: ' . implode(' ', $args));
+            }
+            // Password dikirim lewat stdin (bukan argv): dibaca `IFS= read -r` di
+            // dalam container sebelum tool dijalankan. Tulis penuh, lalu tutup pipe
+            // agar `read` melihat satu baris utuh dan EOF bersih.
+            $payload = $password . "\n";
+            for ($off = 0, $len = strlen($payload); $off < $len;) {
+                $written = @fwrite($pipes[0], substr($payload, $off));
+                if ($written === false || $written === 0) {
+                    break;
+                }
+                $off += $written;
             }
             fclose($pipes[0]);
             $stderr = (string) stream_get_contents($pipes[2]);
@@ -99,12 +127,19 @@ class DbDump
         }
     }
 
-    private function dumpCommand(array $profile, ?string $db): string
+    /**
+     * Bangun string command dump untuk `sh -c` di dalam container. Tidak memuat
+     * password: password dibaca dari stdin (`IFS= read -r __pw`), lalu hanya
+     * diset sebagai `MYSQL_PWD` untuk pemanggilan tool. Bila tool tak ada, pesan
+     * jelas ke stderr + exit 127. Publik agar dapat diuji tanpa menyentuh Docker.
+     */
+    public function dumpCommand(array $profile, ?string $db): string
     {
-        $tool = '$(command -v mysqldump || command -v mariadb-dump)';
         $parts = [
-            'MYSQL_PWD=' . escapeshellarg((string) ($profile['password'] ?? '')),
-            $tool,
+            'tool="$(command -v mysqldump || command -v mariadb-dump)"; '
+                . '[ -n "$tool" ] || { echo "mysqldump/mariadb-dump tidak ditemukan di container" >&2; exit 127; };',
+            'IFS= read -r __pw;',
+            'MYSQL_PWD="$__pw" "$tool"',
             '--host=127.0.0.1',
             '--port=' . (int) ($profile['internal_port'] ?? 3306),
             '--user=' . escapeshellarg((string) ($profile['username'] ?? 'root')),
@@ -120,12 +155,19 @@ class DbDump
         return implode(' ', $parts);
     }
 
-    private function importCommand(array $profile, string $db): string
+    /**
+     * Bangun string command import untuk `sh -c` di dalam container. Tidak memuat
+     * password: baris pertama stdin = password (`IFS= read -r __pw`), sisanya = SQL
+     * yang dikonsumsi client. Bila tool tak ada, pesan jelas ke stderr + exit 127.
+     * Publik agar dapat diuji tanpa menyentuh Docker.
+     */
+    public function importCommand(array $profile, string $db): string
     {
-        $tool = '$(command -v mysql || command -v mariadb)';
         return implode(' ', [
-            'MYSQL_PWD=' . escapeshellarg((string) ($profile['password'] ?? '')),
-            $tool,
+            'tool="$(command -v mysql || command -v mariadb)"; '
+                . '[ -n "$tool" ] || { echo "mysql/mariadb tidak ditemukan di container" >&2; exit 127; };',
+            'IFS= read -r __pw;',
+            'MYSQL_PWD="$__pw" "$tool"',
             '--host=127.0.0.1',
             '--port=' . (int) ($profile['internal_port'] ?? 3306),
             '--user=' . escapeshellarg((string) ($profile['username'] ?? 'root')),

@@ -5,6 +5,7 @@ namespace Tests;
 
 use app\library\Backup\BackupReport;
 use app\library\Backup\BackupRunLock;
+use app\library\Backup\BackupSelection;
 use app\library\Backup\DumpRunner;
 use app\library\Backup\VolumeBackupService;
 use app\library\Backup\VolumeStateGuard;
@@ -212,6 +213,9 @@ class VolumeBackupRestartOnFailureTest extends TestCase
             null,
             'stop',
             $this->tmp . '/env-creds',
+            // Isolasi larangan #15: seleksi (backfill) tidak boleh menyentuh
+            // `database/backup.json` nyata — arahkan ke path temp tes.
+            selection: new BackupSelection($this->tmp . '/backup.json'),
         );
 
         $run = $service->run(['trigger' => 'manual', 'volumes' => ['tonidata_data']]);

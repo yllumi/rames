@@ -68,6 +68,11 @@ $hasHostPort = \app\library\Docker\AppPorts::hasHostPort($portContext);
 
 // Container default untuk modal log (service primary, else container pertama)
 $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($app) : null;
+
+$breadcrumbs = [
+    ['label' => 'Apps', 'href' => '/apps'],
+    ['label' => $app['name'], 'href' => null],
+];
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
@@ -80,6 +85,7 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
             title="Hak akses Anda pada app ini"><?= e(app_role_label($role)) ?></span>
     <?php endif; ?>
   </div>
+  <?php if ((($guideHtml ?? '') !== '') || ($logContainer !== null && $logContainer !== '')): ?>
   <div class="d-flex flex-wrap gap-2 align-items-center">
     <?php if (($guideHtml ?? '') !== ''): ?>
       <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#app-guide-modal">📖 Panduan</button>
@@ -89,8 +95,8 @@ $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($
               data-container="<?= e($logContainer) ?>" data-bs-toggle="modal" data-bs-target="#log-modal"
               title="Lihat log container app (docker logs)">⧉ Log</button>
     <?php endif; ?>
-    <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Daftar Apps</a>
   </div>
+  <?php endif; ?>
 </div>
 
 <?php if (!$canOperate): ?>

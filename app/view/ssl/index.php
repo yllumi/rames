@@ -1,4 +1,10 @@
 <?php $pageTitle = 'SSL'; $active = 'ssl'; ?>
+<?php
+$breadcrumbs = [
+    ['label' => 'Apps', 'href' => '/apps'],
+    ['label' => 'SSL', 'href' => null],
+];
+?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
 <?php
@@ -12,12 +18,11 @@ $badges = [
 $anyPending = false;
 ?>
 
-<div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+<div class="page-head mb-4">
   <div>
     <h1 class="h3 mb-1">SSL / Let's Encrypt</h1>
     <p class="text-muted mb-0">Sertifikat TLS otomatis per domain (subdomain atau custom domain app).</p>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/apps">&larr; Apps</a>
 </div>
 
 <?php if (!$sslSupported): ?>

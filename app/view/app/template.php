@@ -5,6 +5,12 @@
 // primary diambil dari template, prefix nama container = nama app.
 $formEnv = $form_env ?? [];
 $formError = $form_error ?? null;
+
+$breadcrumbs = [
+    ['label' => 'Apps', 'href' => '/apps'],
+    ['label' => 'Template', 'href' => '/apps/create?mode=template'],
+    ['label' => $template['title'], 'href' => null],
+];
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
@@ -21,12 +27,11 @@ $formError = $form_error ?? null;
       <?php endif; ?>
     </p>
   </div>
+  <?php if (($guide_html ?? '') !== ''): ?>
   <div class="d-flex flex-wrap gap-2 align-items-center">
-    <?php if (($guide_html ?? '') !== ''): ?>
     <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#template-guide-modal">📖 Panduan</button>
-    <?php endif; ?>
-    <a class="btn btn-outline-secondary btn-sm" href="/apps/create?mode=template">&larr; Semua Template</a>
   </div>
+  <?php endif; ?>
 </div>
 
 <?php if (($template['description'] ?? '') !== ''): ?>

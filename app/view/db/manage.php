@@ -21,6 +21,13 @@ if (!empty($columns)) {
         return !str_contains($extra, 'auto_increment') && !str_contains($extra, 'generated');
     }));
 }
+
+$breadcrumbs = [['label' => 'Apps', 'href' => '/apps']];
+if ($app !== null) {
+    $breadcrumbs[] = ['label' => $app['name'], 'href' => '/apps/' . $app['id']];
+}
+$breadcrumbs[] = ['label' => 'Database', 'href' => '/database'];
+$breadcrumbs[] = ['label' => $container, 'href' => null];
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
@@ -29,18 +36,14 @@ if (!empty($columns)) {
     <h1 class="h4 mb-0 mono"><?= e($container) ?></h1>
     <span class="badge badge-<?= e($state) ?>"><?= e($state) ?></span>
     <span class="text-muted small"><?= e($image) ?></span>
-    <?php if ($app !== null): ?>
-      <a class="text-muted small text-decoration-none" href="/apps/<?= e($app['id']) ?>">&larr; <?= e($app['name']) ?></a>
-    <?php endif; ?>
   </div>
+  <?php if ($connected): ?>
   <div class="d-flex gap-2">
-    <a class="btn btn-outline-secondary btn-sm" href="/database">&larr; Daftar Database</a>
-    <?php if ($connected): ?>
-      <form method="post" action="/database/<?= e($c) ?>/disconnect" onsubmit="return confirm('Putuskan koneksi database ini?');">
-        <?= csrf_field() ?><button class="btn btn-outline-danger btn-sm">Putuskan</button>
-      </form>
-    <?php endif; ?>
+    <form method="post" action="/database/<?= e($c) ?>/disconnect" onsubmit="return confirm('Putuskan koneksi database ini?');">
+      <?= csrf_field() ?><button class="btn btn-outline-danger btn-sm">Putuskan</button>
+    </form>
   </div>
+  <?php endif; ?>
 </div>
 
 <?php if (!$connected): ?>

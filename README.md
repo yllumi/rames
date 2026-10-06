@@ -20,7 +20,7 @@
 - **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri.
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
-- **Backup volume harian ke S3 (restic)** — volume Docker milik app di-backup harian ke object storage (S3) via **restic** (inkremental + dedup + enkripsi + retensi): container database didump logis (tanpa downtime), volume lain di-snapshot (stop → snapshot → start). Restore dari UI di halaman `/backups` (SPECS §8h).
+- **Backup volume harian ke S3 (restic)** — volume Docker milik app di-backup harian ke object storage (S3) via **restic** (inkremental + dedup + enkripsi + retensi): container database didump logis (tanpa downtime), volume lain di-snapshot (stop → snapshot → start). Restore dari UI di halaman `/backups` (SPECS §8h). Volume yang sudah dihapus (app dihapus total) tetap dapat dipulihkan dari tab **Arsip** (admin) — restore ke volume baru atau unduh dump `.sql`.
 - **Batas resource per service** — admin menetapkan batas maksimum CPU & memori tiap service app (hard limit per service, ditulis ke override compose); user lain melihat nilainya read-only.
 - **Keamanan dasar** — CSRF token, eksekusi command bebas injection (`array` + `bypass_shell`), validasi input ketat, JSON dengan file locking (`flock`).
 
@@ -144,7 +144,13 @@ Halaman **`/backups`** mem-backup volume Docker milik app ke S3 **harian** via r
 3. **Siapkan passphrase restic** (file, bukan env): tulis passphrase ke `database/restic/password` lalu `chmod 0600 database/restic/password`.
 4. **Pasang timer host** (bila belum): `sudo ./host/install.sh` memasang `volume-backup.{service,timer}`; jalankan backup pertama dari halaman `/backups` (tombol **Backup sekarang**).
 
+> Panduan langkah demi langkah ini juga tersedia **di dalam UI**: buka **`/backups/guide`** (tombol **📖 Panduan setup** di halaman `/backups`; **khusus admin**) — dashboard merender `host/restic-setup.md`, termasuk prasyarat, izin bucket S3, file passphrase, `restic init`, timer host, dan troubleshooting.
+
 > Fitur ini **terpisah** dari backup data dashboard (`.bak` `apps.json`/`auth.json`, SPECS §8g) — jangan mencampur konfigurasinya (`VOLUME_BACKUP_*` vs `BACKUP_*`).
+
+**Segarkan status & seleksi berkala.** Tabel di `/backups` dimuat dari **cache** (tanpa memanggil Docker/restic tiap poll), jadi kolom **Status container**/**Snapshot** baru akurat setelah run atau setelah menekan **Segarkan status** (khusus admin; footer menampilkan waktu `cached_at`). Admin juga dapat memilih volume mana yang ikut backup **harian** lewat kolom **Berkala**. Default-nya **OFF** (opt-in): volume yang **belum pernah dibackup** nonaktif — aktifkan togglenya agar ikut backup harian; volume yang **sudah pernah dibackup** otomatis diaktifkan (backfill). Pilihannya tersimpan di `database/backup.json` (gitignored, terpisah dari `apps.json`). Mematikan **Berkala** hanya melewati run **harian** — tombol **Backup sekarang** tetap mem-backup volume tersebut. Catatan: menekan **Segarkan status** (admin) juga menjalankan backfill ini, sehingga volume ber-snapshot langsung aktif tanpa dicentang manual.
+
+**Arsip volume (admin).** Snapshot restic tetap ada di S3 walau app beserta volumenya sudah dihapus. Tab **Arsip** di `/backups` (**khusus admin**) menampilkan riwayat volume yang pernah ter-backup dan memungkinkan **Lihat snapshot**, **Restore ke volume baru…** (volume Docker **baru** dibuat — volume lama tidak disentuh), atau **Unduh SQL** untuk volume yang di-backup sebagai dump DB. Riwayat volume yang snapshot-nya sudah habis otomatis dipangkas; pemangkasan **tidak** dijalankan saat repo tak terbaca/kosong, demi keamanan riwayat. Volume yang sudah punya snapshot **sebelum** fitur arsip aktif pun otomatis masuk riwayat (backfill saat **Segarkan status**/akhir run).
 
 **Restore manual darurat (SSH).** Bila UI tidak bisa dipakai, worker CLI yang sama dapat dijalankan langsung di container dashboard. Restore **destruktif** (isi volume ditimpa; container app dihentikan sementara lalu dinyalakan kembali):
 
@@ -155,6 +161,9 @@ docker exec rames-webman php cli/backup.php run <nama-volume> manual
 
 # Restore satu volume dari snapshot (appId `-` untuk volume yatim):
 docker exec rames-webman php cli/backup.php restore <appId|-> <nama-volume> <snapshot-id>
+
+# Restore volume ARSIP (sudah dihapus) ke volume BARU (admin; SPECS §8h.11):
+docker exec rames-webman php cli/backup.php restore-archived <nama-volume> <snapshot-id> <nama-volume-baru>
 ```
 
 Worker memvalidasi ulang kepemilikan volume terhadap `apps.json` sebelum restore (volume milik app lain ditolak). Log: `runtime/logs/backup/{project}.log` + `runtime/backup/status.json`.

@@ -8,6 +8,7 @@ use app\library\Db\DbCredentialResolver;
 use app\library\Db\DbDump;
 use app\library\Docker\DockerClient;
 use app\library\Support\ProcessRunner;
+use InvalidArgumentException;
 use RuntimeException;
 
 /**
@@ -94,10 +95,14 @@ class VolumeRestoreService
      * @param array{name:string,project:string,app_id:?string,app_name:?string,orphaned:bool} $target
      * @param array|null $app entri apps.json pemilik volume (null untuk yatim)
      * @param string     $snapshotId id snapshot restic (short/full hex)
+     * @param string|null $sourceVolume nama volume asal snapshot (tag `volume:<nama>`);
+     *        null = `$target['name']` (jalur lama). Dipakai restore **arsip**: snapshot
+     *        milik volume yang sudah dihapus di-restore ke `$target['name']` (nama baru),
+     *        sehingga pencarian snapshot harus memakai nama **asal**, bukan nama target.
      * @return array{ok:bool,strategy:string,volume:string,snapshot:string,database:?string,message:string}
      * @throws RuntimeException validasi gagal / restore gagal
      */
-    public function restore(array $target, ?array $app, string $snapshotId): array
+    public function restore(array $target, ?array $app, string $snapshotId, ?string $sourceVolume = null): array
     {
         $volume = (string) $target['name'];
         $project = (string) $target['project'];
@@ -106,7 +111,7 @@ class VolumeRestoreService
         ResticRunner::assertSnapshotId($snapshotId);
 
         $containers = $this->guard->containersForVolume($volume);
-        [$strategy, $snapshot] = $this->resolveStrategy($volume, $snapshotId, $containers);
+        [$strategy, $snapshot] = $this->resolveStrategy($sourceVolume ?? $volume, $snapshotId, $containers);
 
         if ($strategy === BackupStrategyResolver::STRATEGY_DUMP) {
             $result = $this->restoreDump($project, $app ?? [], $target, $volume, (string) $snapshot['id'], $containers);
@@ -119,6 +124,115 @@ class VolumeRestoreService
         return $result;
     }
 
+    /**
+     * Buka snapshot arsip ke direktori temp dan temukan berkas `.sql` pertama di
+     * dalamnya (tombol "Unduh SQL" untuk snapshot strategi `dump`).
+     *
+     * **Tidak** menyentuh Engine/volume app: hanya menjalankan helper restic
+     * dengan `--target /restore` ke direktori kerja sementara. Berbeda dari
+     * `restore()`, ia tidak butuh container DB dan tidak menyentuh data live.
+     *
+     * Pemanggil **wajib** menghapus `dir` yang dikembalikan (mis. lewat
+     * `removeWorkDir()`) di `finally`. Bila snapshot tidak memuat `.sql`, metoda
+     * melempar `InvalidArgumentException` (input tak dapat diproses) **dan**
+     * direktori temp sudah dibersihkan.
+     *
+     * @return array{path:string,dir:string}
+     * @throws InvalidArgumentException snapshot tidak memuat berkas .sql
+     * @throws RuntimeException validasi nama/id atau restic gagal
+     */
+    public function extractSnapshotSql(string $volume, string $snapshotId): array
+    {
+        VolumeStateGuard::assertVolumeName($volume);
+        ResticRunner::assertSnapshotId($snapshotId);
+
+        $dir = $this->makeWorkDir($volume);
+        try {
+            $this->withResticSpec([$dir . ':/restore:rw'], function (array $spec) use ($snapshotId): void {
+                (new ResticRunner($this->process, $spec))->restore($snapshotId, '/restore');
+            });
+
+            $sqlFile = self::findFirst($dir, 'sql');
+            if ($sqlFile === null) {
+                throw new InvalidArgumentException(
+                    "Snapshot \"{$snapshotId}\" tidak memuat berkas .sql — tidak ada yang bisa diunduh."
+                );
+            }
+
+            return ['path' => $sqlFile, 'dir' => $dir];
+        } catch (\Throwable $e) {
+            self::removeTree($dir);
+            throw $e;
+        }
+    }
+
+    /**
+     * Putuskan kelayakan restore arsip **tanpa I/O** (murni data) — satu sumber
+     * kebenaran yang dipakai controller (`POST /backups/archive/restore`) **dan**
+     * `cli/backup.php restore-archived` agar aturan konsisten & mudah diuji.
+     *
+     * Urutan gate: entri registry ada (404) → strategi `snapshot` (422, arsip
+     * `dump` diblokir) → nama target belum dipakai (422) → lolos.
+     *
+     * @param array<string,mixed>|null $entry entri registry volume asal (null = tak ada)
+     * @param bool $targetExists apakah nama volume target sudah dipakai Engine
+     * @return array{ok:bool,code:int,msg:string,project:?string}
+     */
+    public static function planArchiveRestore(?array $entry, bool $targetExists): array
+    {
+        if ($entry === null) {
+            return ['ok' => false, 'code' => 404, 'msg' => 'Volume arsip tidak ditemukan.', 'project' => null];
+        }
+        if ((string) ($entry['strategy'] ?? '') !== BackupStrategyResolver::STRATEGY_SNAPSHOT) {
+            return [
+                'ok' => false,
+                'code' => 422,
+                'msg' => "Volume ini backup-nya berupa dump DB — restore butuh container DB (buat ulang app dulu), atau gunakan 'Unduh SQL'.",
+                'project' => null,
+            ];
+        }
+        if ($targetExists) {
+            return ['ok' => false, 'code' => 422, 'msg' => 'Volume target sudah ada — pilih nama lain.', 'project' => null];
+        }
+
+        return ['ok' => true, 'code' => 0, 'msg' => '', 'project' => (string) ($entry['project'] ?? '')];
+    }
+
+    /**
+     * Argv `docker volume create` untuk volume **target** restore arsip — statik
+     * murni (tanpa I/O) agar `cli/backup.php restore-archived` dan tes memakai
+     * bentuk yang sama.
+     *
+     * Volume diberi label compose-project (`VolumeTargetMap::LABEL_PROJECT`) agar
+     * ikut tervalidasi Engine sebagai volume terkelola dashboard. Dipanggil lewat
+     * `ProcessRunner` (array + `bypass_shell`) — tanpa secret di argv.
+     *
+     * @return array<int,string>
+     */
+    public static function archiveVolumeCreateArgv(string $dockerBinary, string $project, string $targetName): array
+    {
+        return [
+            $dockerBinary,
+            'volume',
+            'create',
+            '--label',
+            VolumeTargetMap::LABEL_PROJECT . '=' . $project,
+            $targetName,
+        ];
+    }
+
+    /**
+     * Argv `docker volume rm` untuk membersihkan volume target yang gagal
+     * direstore (best-effort) — statik murni, pasangan
+     * `archiveVolumeCreateArgv()`.
+     *
+     * @return array<int,string>
+     */
+    public static function archiveVolumeRemoveArgv(string $dockerBinary, string $targetName): array
+    {
+        return [$dockerBinary, 'volume', 'rm', $targetName];
+    }
+
     // ==================================================================
     // Strategi
     // ==================================================================
@@ -126,13 +240,18 @@ class VolumeRestoreService
     /**
      * Tentukan strategi restore + pastikan snapshot ADA di repo (fail-fast).
      *
+     * `$sourceVolume` adalah nama volume asal yang dipakai tag `volume:<nama>` saat
+     * backup; pada restore biasa ia sama dengan `$target['name']`, pada restore arsip
+     * ia nama volume **lama** (snapshot tetap bertag nama lama walau volumenya sudah
+     * dihapus).
+     *
      * @param array<int,array{is_db?:bool,running?:bool}> $containers
      * @return array{0:string,1:array}
      */
-    private function resolveStrategy(string $volume, string $snapshotId, array $containers): array
+    private function resolveStrategy(string $sourceVolume, string $snapshotId, array $containers): array
     {
-        $rows = $this->withResticSpec([], function (array $spec) use ($volume): array {
-            return (new ResticRunner($this->process, $spec))->snapshots(['volume:' . $volume]);
+        $rows = $this->withResticSpec([], function (array $spec) use ($sourceVolume): array {
+            return (new ResticRunner($this->process, $spec))->snapshots(['volume:' . $sourceVolume]);
         });
 
         $match = null;
@@ -154,7 +273,7 @@ class VolumeRestoreService
 
         if ($match === null) {
             throw new RuntimeException(
-                "Snapshot \"{$snapshotId}\" tidak ditemukan untuk volume \"{$volume}\" — restore dibatalkan."
+                "Snapshot \"{$snapshotId}\" tidak ditemukan untuk volume \"{$sourceVolume}\" — restore dibatalkan."
             );
         }
 
@@ -427,6 +546,29 @@ class VolumeRestoreService
         return null;
     }
 
+    /**
+     * Berkas `.sql` pertama di dalam direktori hasil buka snapshot (rekursif).
+     *
+     * Publik + statik murni agar penemuan berkas dapat diuji tanpa restic nyata.
+     * Urutan deterministik (nama terurut) sehingga berkas yang dipilih stabil.
+     */
+    public static function findSqlFile(string $dir): ?string
+    {
+        return self::findFirst($dir, 'sql');
+    }
+
+    /**
+     * Hapus direktori kerja sementara (best-effort, idempotent) — pasangan
+     * `extractSnapshotSql()` agar berkas dump tidak tertinggal di disk.
+     */
+    public static function removeWorkDir(string $dir): void
+    {
+        if ($dir === '') {
+            return;
+        }
+        self::removeTree($dir);
+    }
+
     private static function removeTree(string $path): void
     {
         if (!is_dir($path)) {
@@ -487,6 +629,9 @@ class VolumeRestoreService
             $spec['env_file'] = $envFile;
         }
         // Kontrak §4.3: `VOLUME_BACKUP_IMAGE` kosong ⇒ image container dashboard.
+        // `apply()` sekaligus mengisi `dns` dari `HostConfig.Dns` dashboard
+        // (best-effort; override eksplisit dihormati) agar helper restore tetap
+        // bisa me-resolve S3 meski resolv.conf host rusak.
         return $this->imageResolver->apply(ResticRunner::normalizeSpec($spec));
     }
 

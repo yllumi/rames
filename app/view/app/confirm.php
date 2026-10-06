@@ -1,5 +1,12 @@
 <?php $pageTitle = 'Confirm App'; $active = 'apps'; ?>
 <?php $pendingSource = ($pending['source'] ?? 'git') === 'compose' ? 'compose' : 'git'; ?>
+<?php
+$breadcrumbs = [
+    ['label' => 'Apps', 'href' => '/apps'],
+    ['label' => 'Buat App', 'href' => '/apps/create'],
+    ['label' => 'Konfirmasi', 'href' => null],
+];
+?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
 <div class="page-head mb-4">

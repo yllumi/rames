@@ -21,6 +21,11 @@ $formBranch = $form_branch ?? 'main';
 // Nilai form mode compose dipertahankan saat validasi gagal.
 $formCompose = $form_compose ?? '';
 $composeError = $compose_error ?? null;
+
+$breadcrumbs = [
+    ['label' => 'Apps', 'href' => '/apps'],
+    ['label' => 'Buat App', 'href' => null],
+];
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 

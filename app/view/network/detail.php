@@ -1,4 +1,11 @@
 <?php $pageTitle = 'Network · ' . $name; $active = 'networks'; ?>
+<?php
+$breadcrumbs = [
+    ['label' => 'Apps', 'href' => '/apps'],
+    ['label' => 'Networks', 'href' => '/networks'],
+    ['label' => $name, 'href' => null],
+];
+?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
 <?php
@@ -7,7 +14,7 @@ $ipam = is_array($network['IPAM'] ?? null) ? ($network['IPAM']['Config'][0] ?? [
 $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
 ?>
 
-<div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+<div class="page-head mb-4">
   <div class="d-flex align-items-center gap-3 flex-wrap">
     <h1 class="h3 mb-0 mono"><?= e($name) ?></h1>
     <?php if ($builtin): ?>
@@ -16,7 +23,6 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
     <?php if (!empty($network['Internal'])): ?><span class="badge badge-stopped">internal</span><?php endif; ?>
     <?php if (!empty($network['Attachable'])): ?><span class="badge badge-deploying">attachable</span><?php endif; ?>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/networks">&larr; Networks</a>
 </div>
 
 <?php if ($engineError): ?>

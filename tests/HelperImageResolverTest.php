@@ -15,6 +15,9 @@ use RuntimeException;
  */
 class ImageProbeFakeDockerClient extends DockerClient
 {
+    /** Berapa kali `inspectContainer()` dipanggil (membuktikan "satu inspect"). */
+    public int $inspectCalls = 0;
+
     /** @param array<string,mixed> $inspect */
     public function __construct(private array $inspect = [], private string $error = '')
     {
@@ -23,6 +26,7 @@ class ImageProbeFakeDockerClient extends DockerClient
 
     public function inspectContainer(string $id): array
     {
+        $this->inspectCalls++;
         if ($this->error !== '') {
             throw new RuntimeException($this->error);
         }
@@ -162,5 +166,104 @@ class HelperImageResolverTest extends TestCase
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('Image helper backup tidak bisa ditentukan');
         $resolver->resolve();
+    }
+
+    // ==================================================================
+    // DNS helper (HostConfig.Dns) — satu inspect, best-effort, override dihormati
+    // ==================================================================
+
+    public function testChooseDnsSanitizesRawHostConfigDns(): void
+    {
+        $this->assertSame(
+            ['8.8.8.8', '1.1.1.1'],
+            HelperImageResolver::chooseDns(['8.8.8.8', '', '1.1.1.1', null])
+        );
+        $this->assertSame([], HelperImageResolver::chooseDns([]));
+    }
+
+    public function testDnsFromInspectIsAppliedToSpecAndHelperArgv(): void
+    {
+        $resolver = new HelperImageResolver(
+            new ImageProbeFakeDockerClient([
+                'Config' => ['Image' => 'rames:dashboard-1.0'],
+                'HostConfig' => ['Dns' => ['8.8.8.8', '1.1.1.1']],
+            ]),
+            '',
+            'rames-webman'
+        );
+
+        $spec = $resolver->apply(['image' => '']);
+        $this->assertSame(['8.8.8.8', '1.1.1.1'], $spec['dns'], 'DNS dashboard harus diterapkan ke spec');
+        $this->assertSame('rames:dashboard-1.0', $spec['image']);
+
+        $argv = ResticRunner::buildBackupArgv($spec, ['/data'], ['volume:tonidata_data'], '');
+
+        // Pasangan `--dns 8.8.8.8 --dns 1.1.1.1` berurutan.
+        $pairs = [];
+        foreach ($argv as $index => $arg) {
+            if ($arg === '--dns' && isset($argv[$index + 1])) {
+                $pairs[] = $argv[$index + 1];
+            }
+        }
+        $this->assertSame(['8.8.8.8', '1.1.1.1'], $pairs, 'argv helper wajib memuat --dns untuk tiap DNS dashboard');
+    }
+
+    public function testApplyIsDnsBestEffortWhenInspectFails(): void
+    {
+        // Image override diisi agar resolusi image tidak melempar; DNS tetap best-effort.
+        $resolver = new HelperImageResolver(
+            new ImageProbeFakeDockerClient([], 'Engine mati'),
+            'rames:override',
+            'rames-webman'
+        );
+
+        $spec = $resolver->apply(['image' => '', 'dns' => []]);
+
+        $this->assertSame('rames:override', $spec['image']);
+        $this->assertSame([], $spec['dns'], 'inspect gagal ⇒ dns [] tanpa menggagalkan operasi');
+    }
+
+    public function testApplyOmittedDnsWhenInspectHasNoDns(): void
+    {
+        $resolver = new HelperImageResolver(
+            new ImageProbeFakeDockerClient(['Config' => ['Image' => 'rames:dashboard'], 'HostConfig' => ['Dns' => []]]),
+            '',
+            'rames-webman'
+        );
+
+        $spec = $resolver->apply(['image' => '']);
+
+        $this->assertSame([], $spec['dns']);
+    }
+
+    public function testExplicitDnsOverrideIsNotReplaced(): void
+    {
+        $docker = new ImageProbeFakeDockerClient([
+            'Config' => ['Image' => 'rames:dashboard'],
+            'HostConfig' => ['Dns' => ['8.8.8.8', '1.1.1.1']],
+        ]);
+        $resolver = new HelperImageResolver($docker, '', 'rames-webman');
+
+        $spec = $resolver->apply(['image' => 'rames:override', 'dns' => ['9.9.9.9']]);
+
+        $this->assertSame(['9.9.9.9'], $spec['dns'], 'override dns eksplisit tidak boleh ditimpa');
+        $this->assertSame('rames:override', $spec['image']);
+        $this->assertSame(0, $docker->inspectCalls, 'override penuh ⇒ Engine tidak perlu disentuh');
+    }
+
+    public function testImageAndDnsShareSingleInspect(): void
+    {
+        $docker = new ImageProbeFakeDockerClient([
+            'Config' => ['Image' => 'rames:dashboard'],
+            'HostConfig' => ['Dns' => ['8.8.8.8']],
+        ]);
+        $resolver = new HelperImageResolver($docker, '', 'rames-webman');
+
+        $this->assertSame('rames:dashboard', $resolver->resolve());
+        $this->assertSame(['8.8.8.8'], $resolver->dns());
+        $resolver->apply(['image' => '']);
+        $resolver->apply(['image' => '']);
+
+        $this->assertSame(1, $docker->inspectCalls, 'image + DNS harus memakai SATU inspect (memoize per instance)');
     }
 }

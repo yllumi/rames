@@ -65,6 +65,12 @@ class VolumeStateGuard
      * — satu-satunya sumber kebenaran deteksi container DB (jangan menduplikasi
      * heuristik image di sini).
      *
+     * `is_db` di sini berarti **"container DB yang layak di-dump secara logis"**
+     * (`isDumpableForBackup()`), bukan sekadar heuristik tampilan: container yang
+     * hanya mewarisi env `MYSQL_*` tapi tidak punya binary dump (mis. Ghost)
+     * dilaporkan `is_db=false` → pemanggil memilih strategi `snapshot` (volume
+     * tetap ter-backup dengan stop→snapshot→start).
+     *
      * Kegagalan inspect SATU container tidak menggagalkan seluruh daftar
      * (`is_db` = false pada entri itu → pemanggil memilih strategi `snapshot`,
      * jalur aman).
@@ -193,8 +199,11 @@ class VolumeStateGuard
     }
 
     /**
-     * Deteksi container DB lewat `DbContainerDetector` (image/env inspect).
-     * Gagal inspect → false (jalur aman: strategi `snapshot`).
+     * Apakah container ini "DB layak-dump" (untuk pemilihan strategi backup)?
+     *
+     * Memakai `DbContainerDetector::isDumpableForBackup()` (image DB ATAU env DB
+     * yang benar-benar punya binary dump). Gagal inspect → false (jalur aman:
+     * strategi `snapshot`).
      */
     private function isDbContainer(string $id): bool
     {
@@ -202,7 +211,7 @@ class VolumeStateGuard
             return false;
         }
         try {
-            return $this->dbDetector->isDbContainer($this->docker->inspectContainer($id));
+            return $this->dbDetector->isDumpableForBackup($id, $this->docker->inspectContainer($id));
         } catch (\Throwable $e) {
             return false;
         }

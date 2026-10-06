@@ -19,9 +19,15 @@ use RuntimeException;
  *  3. **fail-fast** bila keduanya tak dapat ditentukan (mis. Engine tak dapat
  *     diakses): `RuntimeException` dengan pesan jelas — **tidak pernah** memakai
  *     nama image tebakan (yang akan gagal jauh di dalam `docker run`).
+ *  4. **DNS helper** (`--dns`) diambil dari `HostConfig.Dns` container dashboard
+ *     pada inspect yang **sama** (satu panggilan Engine) — `resolv.conf` host
+ *     bisa rusak, jadi helper restic harus mewarisi DNS eksplisit dashboard
+ *     (pola `UpdateService::selfContext()`). Bersifat **best-effort**: Engine tak
+ *     terjangkau / DNS kosong ⇒ `[]` (perilaku lama), tanpa menggagalkan operasi.
  *
- * Bagian keputusan (`choose()`) **statik murni** sehingga dapat diuji tanpa I/O;
- * bagian yang menyentuh Engine hanya `resolve()`.
+ * Bagian keputusan (`choose()`, `chooseDns()`) **statik murni** sehingga dapat
+ * diuji tanpa I/O; bagian yang menyentuh Engine hanya `resolve()`/`dns()` (di
+ * belakang memo `inspectOnce()`).
  *
  * Instance memoize hasil per instance (satu service = satu resolusi), **bukan**
  * cache lintas-request — service dibuat per request/run (worker persistent).
@@ -32,8 +38,20 @@ class HelperImageResolver
     private string $configured;
     private string $containerId;
 
-    /** Hasil resolusi (memoize per instance). */
+    /** Hasil resolusi image (memoize per instance). */
     private ?string $resolved = null;
+
+    /** Hasil resolusi DNS (memoize per instance). */
+    private ?array $resolvedDns = null;
+
+    /** Hasil inspect container dashboard (memoize per instance; image + DNS satu panggilan). */
+    private ?array $inspectCache = null;
+
+    /** Penanda inspect sudah dicoba (membedakan "belum" dari "gagal"). */
+    private bool $inspected = false;
+
+    /** Pesan kegagalan inspect (untuk konteks error image). */
+    private string $inspectError = '';
 
     /**
      * @param DockerClient|null $docker      Engine client (di-inject agar teruji tanpa Engine)
@@ -55,8 +73,9 @@ class HelperImageResolver
     }
 
     /**
-     * Terapkan image helper ke spec restic. Spec yang **sudah** memuat image
-     * eksplisit tidak diubah (hormati override pemanggil/test).
+     * Terapkan default helper ke spec restic (image + DNS). Nilai yang **sudah**
+     * diisi eksplisit (image non-kosong / `dns` non-kosong) tidak diubah — hormati
+     * override pemanggil/test.
      *
      * @param array<string,mixed> $spec
      * @return array<string,mixed>
@@ -64,10 +83,14 @@ class HelperImageResolver
      */
     public function apply(array $spec): array
     {
-        if (self::clean((string) ($spec['image'] ?? '')) !== '') {
-            return $spec;
+        if (self::clean((string) ($spec['image'] ?? '')) === '') {
+            $spec['image'] = $this->resolve();
         }
-        $spec['image'] = $this->resolve();
+
+        // DNS dashboard best-effort; override `dns` eksplisit (non-kosong) menang.
+        if (self::chooseDns((array) ($spec['dns'] ?? [])) === []) {
+            $spec['dns'] = $this->dns();
+        }
 
         return $spec;
     }
@@ -86,18 +109,55 @@ class HelperImageResolver
             return $this->resolved;
         }
 
-        $dashboardImage = '';
-        $error = '';
+        $inspect = $this->inspectOnce();
+        $dashboardImage = self::clean((string) ($inspect['Config']['Image'] ?? ''));
+
+        return $this->resolved = self::choose('', $dashboardImage, $this->containerId, $this->inspectError);
+    }
+
+    /**
+     * DNS container dashboard (`HostConfig.Dns`) untuk helper restic.
+     *
+     * **Best-effort**: Engine tak terjangkau / DNS kosong ⇒ `[]`, tanpa
+     * menggagalkan backup/restore/status. Memoize per instance; memakai inspect
+     * yang sama dengan `resolve()` (satu panggilan Engine).
+     *
+     * @return array<int,string>
+     */
+    public function dns(): array
+    {
+        if ($this->resolvedDns !== null) {
+            return $this->resolvedDns;
+        }
+
+        $inspect = $this->inspectOnce();
+
+        return $this->resolvedDns = self::chooseDns((array) ($inspect['HostConfig']['Dns'] ?? []));
+    }
+
+    /**
+     * Inspect container dashboard **satu kali** per instance; hasil (atau
+     * kegagalan) dipakai bersama resolusi image & DNS.
+     *
+     * @return array<string,mixed> `[]` bila Engine tak terjangkau
+     */
+    private function inspectOnce(): array
+    {
+        if ($this->inspected) {
+            return $this->inspectCache ?? [];
+        }
+        $this->inspected = true;
+
         try {
             $docker = $this->docker
                 ?? new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'), 30);
-            $inspect = $docker->inspectContainer($this->containerId);
-            $dashboardImage = self::clean((string) ($inspect['Config']['Image'] ?? ''));
+            $this->inspectCache = $docker->inspectContainer($this->containerId);
         } catch (\Throwable $e) {
-            $error = $e->getMessage();
+            $this->inspectCache = null;
+            $this->inspectError = $e->getMessage();
         }
 
-        return $this->resolved = self::choose('', $dashboardImage, $this->containerId, $error);
+        return $this->inspectCache ?? [];
     }
 
     /**
@@ -128,6 +188,19 @@ class HelperImageResolver
             . ($containerId !== '' ? " \"{$containerId}\"" : '')
             . " tidak terbaca{$detail}. Set VOLUME_BACKUP_IMAGE secara eksplisit."
         );
+    }
+
+    /**
+     * Sanitasi DNS mentah dari `HostConfig.Dns` (statik murni, tanpa I/O):
+     * cast tiap entri ke string, buang yang kosong, reindex. Sama persis dengan
+     * penyaringan `UpdateService::selfContext()`.
+     *
+     * @param array<int|string,mixed> $rawDns
+     * @return array<int,string>
+     */
+    public static function chooseDns(array $rawDns): array
+    {
+        return array_values(array_filter(array_map('strval', $rawDns)));
     }
 
     private static function clean(string $value): string

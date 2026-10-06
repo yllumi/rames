@@ -3,16 +3,21 @@ $pageTitle = $app['name'] . ' · Versi';
 $active = 'apps';
 $status = $app['status'] ?? 'unknown';
 $isBusy = in_array($status, ['deploying'], true);
+
+$breadcrumbs = [
+    ['label' => 'Apps', 'href' => '/apps'],
+    ['label' => $app['name'], 'href' => '/apps/' . $app['id']],
+    ['label' => 'Versi', 'href' => null],
+];
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
-<div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+<div class="page-head mb-4">
   <div class="d-flex align-items-center gap-3 flex-wrap">
     <h1 class="h3 mb-0 mono"><?= e($app['name']) ?></h1>
     <span class="badge badge-<?= e($status) ?>" id="app-status"><?= e($status) ?></span>
     <span class="text-muted small">Riwayat versi &amp; rollback</span>
   </div>
-  <a class="btn btn-outline-secondary btn-sm" href="/apps/<?= e($app['id']) ?>">&larr; Detail app</a>
 </div>
 
 <?php if ($isBusy): ?>

@@ -335,8 +335,11 @@ class VolumeRestoreCredentialHygieneTest extends TestCase
         $this->assertSame('snapshots', $snapshot['command']);
         $this->assertTrue($snapshot['exists'], 'env-file harus ada saat restic snapshots dijalankan');
         $this->assertSame(0600, $snapshot['mode'], 'env-file kredensial wajib 0600');
-        $this->assertStringContainsString('AWS_ACCESS_KEY_ID="' . self::SECRET_KEY . '"', $snapshot['content']);
-        $this->assertStringContainsString('AWS_SECRET_ACCESS_KEY="' . self::SECRET_VALUE . '"', $snapshot['content']);
+        // Nilai mentah TANPA kutip: `docker run --env-file` tidak mengupas kutip.
+        $this->assertStringContainsString('AWS_ACCESS_KEY_ID=' . self::SECRET_KEY, $snapshot['content']);
+        $this->assertStringContainsString('AWS_SECRET_ACCESS_KEY=' . self::SECRET_VALUE, $snapshot['content']);
+        $this->assertStringNotContainsString('AWS_ACCESS_KEY_ID="', $snapshot['content']);
+        $this->assertStringNotContainsString('AWS_SECRET_ACCESS_KEY="', $snapshot['content']);
     }
 
     public function testRestoreArgvUsesEnvFileAndRemovesItOnSuccess(): void

@@ -36,6 +36,15 @@ class VolumeBackupService
     private const POLICY_STOP = 'stop';
     private const POLICY_SKIP = 'skip';
 
+    /**
+     * Timeout (detik) untuk panggilan `restic snapshots` **penghitung** di
+     * endpoint status (`GET /api/backups/status`). Sengaja pendek agar S3 yang
+     * lambat/tak terjangkau tidak menggantung UI sampai `volume_backup_timeout`
+     * (3600 dtk); timeout → exception tertangkap → jumlah snapshot `0` tanpa
+     * menutup bagian status lain.
+     */
+    private const SNAPSHOT_COUNT_TIMEOUT = 15;
+
     private DockerClient $docker;
     private AppStore $apps;
     private VolumeStateGuard $guard;
@@ -54,6 +63,15 @@ class VolumeBackupService
     /** Env-file kredensial S3 per-run (satu sumber kebenaran bersama restore). */
     private CredentialEnvFile $envFiles;
 
+    /** Seleksi volume untuk run berkala (opt-in per volume; default OFF). */
+    private BackupSelection $selection;
+
+    /** Cache baris ringkasan (ditulis saat run/refresh, dibaca saat polling status). */
+    private BackupCatalog $catalog;
+
+    /** Riwayat volume yang pernah ter-backup (restore volume yang sudah dihapus). */
+    private BackupRegistry $registry;
+
     private \Closure $logger;
 
     /**
@@ -64,6 +82,9 @@ class VolumeBackupService
      * @param string|null $envDir direktori env-file kredensial per-run; null = `<runtime>/backup/tmp`
      * @param int $staleEnvMaxAge umur (detik) env-file yatim sebelum dibersihkan best-effort
      * @param array<string,string>|null $credentialEnv override nilai env kredensial (uji); null = config
+     * @param BackupSelection|null $selection seleksi volume run berkala (default: `database/backup.json`)
+     * @param BackupCatalog|null $catalog cache ringkasan (default: `<report dir>/catalog.json`)
+     * @param BackupRegistry|null $registry riwayat volume ter-backup (default: path sama dengan seleksi)
      */
     public function __construct(
         ?DockerClient $docker = null,
@@ -80,6 +101,9 @@ class VolumeBackupService
         ?string $envDir = null,
         int $staleEnvMaxAge = 3600,
         ?array $credentialEnv = null,
+        ?BackupSelection $selection = null,
+        ?BackupCatalog $catalog = null,
+        ?BackupRegistry $registry = null,
     ) {
         $this->docker = $docker ?? new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'), 30);
         $this->apps = $apps ?? new AppStore();
@@ -101,6 +125,14 @@ class VolumeBackupService
             ? \Closure::fromCallable($logger)
             : static function (string $project, string $message): void {
             };
+        $this->selection = $selection ?? new BackupSelection();
+        // Default cache ikut direktori laporan (runtime/backup) agar tes dengan
+        // `BackupReport($tmp)` otomatis terisolasi — tanpa menyentuh runtime nyata.
+        $this->catalog = $catalog ?? new BackupCatalog($this->report->dir() . '/catalog.json');
+        // Registry berbagi berkas dengan seleksi (`database/backup.json`) — turunkan
+        // path dari instans seleksi agar override temp pada tes ikut terisolasi
+        // (larangan #15: jangan menyentuh `database/backup.json` nyata).
+        $this->registry = $registry ?? new BackupRegistry($this->selection->path());
     }
 
     // ==================================================================
@@ -145,6 +177,77 @@ class VolumeBackupService
         @fclose($handle);
 
         return !$free;
+    }
+
+    /**
+     * Cache baris ringkasan terakhir — **tanpa** Engine/restic (murni baca file).
+     * Dipakai `GET /api/backups/status` agar polling tidak menyentuh Docker.
+     *
+     * @return array{volumes:array<int,array<string,mixed>>,cached_at:?string}
+     */
+    public function catalog(): array
+    {
+        return $this->catalog->read();
+    }
+
+    /**
+     * Hitung ulang ringkasan secara **live** (Engine + restic) lalu simpan ke
+     * cache; mengembalikan baris live. Dipakai tombol "Segarkan"
+     * (`POST /backups/refresh`) — bukan polling status.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function refreshCatalog(): array
+    {
+        $targets = $this->targets();
+        // Hitung snapshot live SEKALI: dipakai untuk kolom `snapshots` baris
+        // maupun sinkronisasi/prune registry. `null` (repo tak terjangkau) dan
+        // `[]` (repo terjangkau tetapi kosong/salah bucket) = "tidak diketahui"
+        // → jangan prune (riwayat bisa hilang keliru); guard ada di
+        // `BackupRegistry::syncCounts()`.
+        $counts = $this->snapshotCountsByVolume();
+        $rows = $this->overviewWithCounts($targets, $this->report->readStatus(), $counts ?? []);
+        $this->backfillScheduled($rows);
+        $this->catalog->write($rows);
+        $this->syncRegistryCounts($counts);
+        $this->backfillRegistry($rows);
+
+        return $rows;
+    }
+
+    /**
+     * Entri riwayat (registry) yang namanya **tidak ada** di daftar volume aktif
+     * (cache `BackupCatalog`) — mis. app sudah dihapus total beserta volumenya.
+     *
+     * Murni baca berkas (tanpa Engine/restic) sehingga aman untuk polling status;
+     * tiap entri diberi kunci `name`. Otorisasi (admin-only) ditegakkan controller.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function archived(): array
+    {
+        $active = [];
+        foreach ($this->catalog->read()['volumes'] as $row) {
+            if (is_array($row) && isset($row['name'])) {
+                $active[(string) $row['name']] = true;
+            }
+        }
+
+        $rows = [];
+        foreach ($this->registry->read() as $name => $entry) {
+            if (isset($active[$name])) {
+                continue;
+            }
+            $entry['name'] = $name;
+            $rows[] = $entry;
+        }
+
+        usort($rows, static function (array $a, array $b): int {
+            return strcmp((string) ($a['last_backed_up_at'] ?? ''), (string) ($b['last_backed_up_at'] ?? ''))
+                ?: strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+        });
+
+        return $rows;
     }
 
     /**
@@ -193,6 +296,21 @@ class VolumeBackupService
      */
     public function overview(array $targets, array $lastStatus = []): array
     {
+        return $this->overviewWithCounts($targets, $lastStatus, $this->snapshotCountsByVolume() ?? []);
+    }
+
+    /**
+     * Inti `overview()` dengan jumlah snapshot yang sudah dihitung pemanggil —
+     * menghindari panggilan restic ganda saat jalur refresh/run ingin **sekali**
+     * hitung untuk kolom `snapshots` **dan** sinkronisasi registry.
+     *
+     * @param array<int,array{name:string,project:string,app_id:?string,app_name:?string,orphaned:bool}> $targets
+     * @param array $lastStatus isi `status.json` (untuk `last_*`)
+     * @param array<string,int> $counts jumlah snapshot per volume
+     * @return array<int,array<string,mixed>>
+     */
+    private function overviewWithCounts(array $targets, array $lastStatus, array $counts): array
+    {
         $byVolume = [];
         foreach ((array) ($lastStatus['volumes'] ?? []) as $row) {
             if (is_array($row) && isset($row['name'])) {
@@ -201,7 +319,6 @@ class VolumeBackupService
         }
 
         $dbDumpEnabled = (bool) config('deploy.volume_backup_db_dump_enabled', true);
-        $counts = $this->snapshotCountsByVolume();
 
         $rows = [];
         foreach ($targets as $target) {
@@ -313,6 +430,16 @@ class VolumeBackupService
                 $targets,
                 static fn (array $t): bool => isset($filter[(string) $t['name']])
             ));
+        } elseif ($trigger === 'schedule') {
+            // Run berkala (timer) memilih volume lewat seleksi per-volume
+            // (default OFF/opt-in; volume yang sudah punya snapshot di-backfill
+            // otomatis ke ON). Murni baca `database/backup.json` — tanpa
+            // panggilan Engine/restic tambahan. Daftar volume eksplisit (manual)
+            // TIDAK disaring; pemanggil sudah memilih.
+            $targets = array_values(array_filter(
+                $targets,
+                fn (array $t): bool => $this->selection->isScheduled((string) $t['name'])
+            ));
         }
 
         $this->report->writeStatus([
@@ -391,7 +518,99 @@ class VolumeBackupService
         $this->report->writeStatus($run);
         $this->report->appendRun($run);
 
+        // Riwayat permanen: catat volume yang sukses (best-effort).
+        $this->recordRegistry($rows);
+
+        // Segarkan cache ringkasan dari data live (satu pass tambahan; run harian,
+        // bukan polling). Fail-safe: kegagalan cache tidak menggagalkan run.
+        $this->writeCatalog($run);
+
         return $run;
+    }
+
+    /**
+     * Tulis cache baris ringkasan dari data live. **Best-effort** — kegagalan
+     * (Engine/restic/berkas) diabaikan agar tidak menggagalkan run yang sudah
+     * sukses.
+     *
+     * @param array<string,mixed> $run status run baru (untuk kolom `last_*`)
+     */
+    private function writeCatalog(array $run): void
+    {
+        try {
+            $counts = $this->snapshotCountsByVolume();
+            $rows = $this->overviewWithCounts($this->targets(), $run, $counts ?? []);
+            $this->backfillScheduled($rows);
+            $this->catalog->write($rows);
+            $this->syncRegistryCounts($counts);
+            $this->backfillRegistry($rows);
+        } catch (\Throwable $e) {
+            // Cache bersifat best-effort.
+        }
+    }
+
+    /**
+     * Backfill flag `scheduled` untuk volume yang **sudah** punya snapshot
+     * (default kini OFF/opt-in): volume yang pernah ter-backup otomatis tetap
+     * ON tanpa intervensi UI. Dipanggil dari jalur cache (`refreshCatalog()`/
+     * `writeCatalog()`), jadi kegagalannya tidak boleh menggagalkan run.
+     *
+     * @param array<int,array<string,mixed>> $rows baris hasil `overview()`
+     */
+    private function backfillScheduled(array $rows): void
+    {
+        $names = [];
+        foreach ($rows as $row) {
+            if (is_array($row) && (int) ($row['snapshots'] ?? 0) > 0) {
+                $names[] = (string) ($row['name'] ?? '');
+            }
+        }
+        $this->selection->backfill($names);
+    }
+
+    /**
+     * Backfill riwayat (registry) untuk volume yang **sudah punya snapshot**
+     * (`snapshots > 0`) tetapi belum tercatat — mis. snapshot lama yang dibuat
+     * SEBELUM fitur registry ada (yang hanya diisi `recordRegistry()` saat run
+     * sukses). Tanpa ini, volume yang app+volumenya dihapus sebelum run
+     * berikutnya tidak akan bisa direstore dari tab Arsip.
+     *
+     * Hanya menyentuh kunci `registry` (lewat `BackupRegistry::backfill()`, yang
+     * idempotent & tak menimpa entri eksisting). Dipanggil dari jalur cache
+     * (`refreshCatalog()`/`writeCatalog()`) → **best-effort**, kegagalan tidak
+     * boleh menggagalkan run/refresh.
+     *
+     * @param array<int,array<string,mixed>> $rows baris hasil `overviewWithCounts()`
+     */
+    private function backfillRegistry(array $rows): void
+    {
+        $entries = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || (int) ($row['snapshots'] ?? 0) <= 0) {
+                continue;
+            }
+            $name = (string) ($row['name'] ?? '');
+            if ($name === '') {
+                continue;
+            }
+            $entries[$name] = [
+                'project' => (string) ($row['project'] ?? ''),
+                'app_id' => $row['app_id'] ?? null,
+                'app_name' => $row['app_name'] ?? null,
+                'strategy' => (string) ($row['strategy'] ?? ''),
+                'snapshots' => (int) $row['snapshots'],
+                'at' => $row['last_run_at'] ?? null,
+            ];
+        }
+        if ($entries === []) {
+            return;
+        }
+
+        try {
+            $this->registry->backfill($entries);
+        } catch (\Throwable $e) {
+            // Registry bersifat best-effort (jangan gagalkan run/refresh).
+        }
     }
 
     // ==================================================================
@@ -818,6 +1037,9 @@ class VolumeBackupService
         // Kontrak §4.3: `VOLUME_BACKUP_IMAGE` kosong ⇒ image container dashboard.
         // Resolusi fail-fast di sini agar semua jalur (backup/forget/snapshots)
         // memakai image yang sama — bukan menebak di dalam `docker run`.
+        // `apply()` sekaligus mengisi `dns` dari `HostConfig.Dns` dashboard
+        // (best-effort; override eksplisit dihormati) agar helper restic tetap
+        // bisa me-resolve S3 meski resolv.conf host rusak.
         return $this->imageResolver->apply(ResticRunner::normalizeSpec($spec));
     }
 
@@ -859,18 +1081,33 @@ class VolumeBackupService
     }
 
     /**
-     * @return array<string,int>
+     * Jumlah snapshot live per volume.
+     *
+     * `null` = **tidak diketahui** (fitur mati / repo-image-passphrase belum
+     * lengkap / Engine-restic tak terjangkau). `[]` = repo terjangkau tetapi
+     * **tak ada snapshot ber-tag volume** (kosong / salah bucket) — tak dapat
+     * dibedakan dari "seluruh snapshot habis", jadi diperlakukan sama seperti
+     * "tidak diketahui". Keduanya **tidak** memicu prune riwayat (guard di
+     * `BackupRegistry::syncCounts()`); prune hanya sah bila peta non-kosong.
+     * Pemanggil tetap memakai `[]` untuk kolom `snapshots` (bernilai 0).
+     *
+     * @return array<string,int>|null
      */
-    private function snapshotCountsByVolume(): array
+    private function snapshotCountsByVolume(): ?array
     {
         if (!(bool) config('deploy.volume_backup_enabled', true)) {
-            return [];
+            return null;
         }
         try {
-            return $this->withResticSpec([], function (array $spec): array {
+            return $this->withResticSpec([], function (array $spec): ?array {
                 if ((string) $spec['repository'] === '' || (string) $spec['image'] === '' || !is_file((string) $spec['password_file'])) {
-                    return [];
+                    return null;
                 }
+
+                // Batasi panggilan hitung snapshot: ini bagian dari respons status
+                // interaktif, bukan run backup — jangan pakai `volume_backup_timeout`
+                // (3600 dtk). Timeout → RuntimeException → catch di bawah → `null`.
+                $spec['timeout'] = self::SNAPSHOT_COUNT_TIMEOUT;
 
                 $rows = (new ResticRunner($this->process, $spec))->snapshots([]);
 
@@ -894,8 +1131,65 @@ class VolumeBackupService
             });
         } catch (\Throwable $e) {
             // Repo/image tak terkonfigurasi / Engine tak terjangkau: jumlah
-            // snapshot dilewati (bagian lain status tetap tampil).
-            return [];
+            // snapshot tidak diketahui (bagian lain status tetap tampil).
+            return null;
+        }
+    }
+
+    /**
+     * Sinkronkan jumlah snapshot registry (update + prune). **Best-effort** —
+     * `null` (tidak diketahui) dilewati. Peta kosong (`[]`) juga **tidak**
+     * mem-prune (guard di `BackupRegistry::syncCounts()`): repo yang terjangkau
+     * tetapi kosong / salah bucket tak boleh menghapus riwayat.
+     *
+     * @param array<string,int>|null $counts
+     */
+    private function syncRegistryCounts(?array $counts): void
+    {
+        if ($counts === null) {
+            return;
+        }
+        try {
+            $this->registry->syncCounts($counts);
+        } catch (\Throwable $e) {
+            // Registry bersifat best-effort (jangan gagalkan run/refresh).
+        }
+    }
+
+    /**
+     * Catat tiap volume yang **sukses** (`status === 'ok'`) ke registry. Satu
+     * tulis untuk seluruh run; `first_backed_up_at` dipertahankan oleh registry.
+     *
+     * @param array<int,array<string,mixed>> $rows
+     */
+    private function recordRegistry(array $rows): void
+    {
+        $entries = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || (string) ($row['status'] ?? '') !== 'ok') {
+                continue;
+            }
+            $name = (string) ($row['name'] ?? '');
+            if ($name === '') {
+                continue;
+            }
+            $entries[$name] = [
+                'project' => (string) ($row['project'] ?? ''),
+                'app_id' => $row['app_id'] ?? null,
+                'app_name' => $row['app_name'] ?? null,
+                'strategy' => (string) ($row['strategy'] ?? ''),
+                'last_snapshot' => $row['snapshot_id'] ?? null,
+                'bytes' => (int) ($row['bytes'] ?? 0),
+            ];
+        }
+        if ($entries === []) {
+            return;
+        }
+
+        try {
+            $this->registry->upsertMany($entries);
+        } catch (\Throwable $e) {
+            // Registry bersifat best-effort (jangan gagalkan run).
         }
     }
 

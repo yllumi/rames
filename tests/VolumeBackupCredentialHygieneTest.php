@@ -5,6 +5,8 @@ namespace Tests;
 
 use app\library\Backup\BackupReport;
 use app\library\Backup\BackupRunLock;
+use app\library\Backup\BackupSelection;
+use app\library\Backup\CredentialEnvFile;
 use app\library\Backup\DumpRunner;
 use app\library\Backup\VolumeBackupService;
 use app\library\Backup\VolumeStateGuard;
@@ -229,6 +231,9 @@ class VolumeBackupCredentialHygieneTest extends TestCase
             $this->envDir,
             3600,
             $this->credentials(),
+            // Isolasi larangan #15: seleksi (backfill) tidak boleh menyentuh
+            // `database/backup.json` nyata — arahkan ke path temp tes.
+            selection: new BackupSelection($this->tmp . '/backup.json'),
         );
     }
 
@@ -247,8 +252,12 @@ class VolumeBackupCredentialHygieneTest extends TestCase
         $this->assertTrue($snapshot['exists'], 'env-file harus ada saat restic dijalankan');
         $this->assertStringStartsWith($this->envDir . '/restic.env.', $snapshot['path']);
         $this->assertSame(0600, $snapshot['mode'], 'env-file kredensial wajib 0600');
-        $this->assertStringContainsString('AWS_ACCESS_KEY_ID="' . self::SECRET_KEY . '"', $snapshot['content']);
-        $this->assertStringContainsString('AWS_SECRET_ACCESS_KEY="' . self::SECRET_VALUE . '"', $snapshot['content']);
+        // Nilai mentah TANPA kutip: `docker run --env-file` tidak mengupas kutip,
+        // jadi `"…"` akan merusak nilai bagi restic/AWS (S3 Access Denied).
+        $this->assertStringContainsString('AWS_ACCESS_KEY_ID=' . self::SECRET_KEY, $snapshot['content']);
+        $this->assertStringContainsString('AWS_SECRET_ACCESS_KEY=' . self::SECRET_VALUE, $snapshot['content']);
+        $this->assertStringNotContainsString('AWS_ACCESS_KEY_ID="', $snapshot['content']);
+        $this->assertStringNotContainsString('AWS_SECRET_ACCESS_KEY="', $snapshot['content']);
 
         foreach ($runner->argvCalls as $argv) {
             $this->assertNotContains(self::SECRET_VALUE, $argv, 'nilai secret tidak boleh masuk argv');
@@ -256,6 +265,48 @@ class VolumeBackupCredentialHygieneTest extends TestCase
         }
 
         $this->assertSame([], glob($this->envDir . '/restic.env.*') ?: [], 'env-file harus dihapus setelah run sukses');
+    }
+
+    /**
+     * Guard injeksi env-file: nilai kredensial dengan `\n`/`\r` tidak boleh
+     * menambah baris variabel baru (`docker run --env-file` memperlakukan tiap
+     * baris sebagai satu variabel). Nilai wajib ditulis mentah TANPA kutip.
+     */
+    public function testEnvFileWritesRawUnquotedValuesAndStripsNewlines(): void
+    {
+        $envFile = new CredentialEnvFile(
+            [
+                'AWS_ACCESS_KEY_ID' => self::SECRET_KEY,
+                'AWS_SECRET_ACCESS_KEY' => "secret-a\r\nAWS_FAKE_INJECTED=evil",
+                'AWS_DEFAULT_REGION' => 'us-east-1',
+            ],
+            $this->envDir,
+        );
+
+        $path = $envFile->create();
+        try {
+            $this->assertNotSame('', $path, 'env-file harus tertulis');
+            $this->assertSame(0600, fileperms($path) & 0777, 'env-file wajib 0600');
+            $content = (string) file_get_contents($path);
+
+            // (a) mentah tanpa kutip — restic/AWS menerima nilai apa adanya.
+            $this->assertStringContainsString('AWS_ACCESS_KEY_ID=' . self::SECRET_KEY . "\n", $content);
+            $this->assertStringNotContainsString('AWS_ACCESS_KEY_ID="', $content);
+            $this->assertStringNotContainsString('"', $content, 'env-file tidak boleh memuat kutip sama sekali');
+
+            // (b) `\r`/`\n` dibuang → tidak ada baris variabel palsu yang tersuntik.
+            $this->assertStringNotContainsString("\r", $content);
+            foreach (explode("\n", $content) as $line) {
+                $this->assertStringStartsNotWith('AWS_FAKE_INJECTED=', $line, 'tidak boleh ada baris env palsu');
+            }
+            $this->assertStringContainsString('AWS_SECRET_ACCESS_KEY=secret-aAWS_FAKE_INJECTED=evil' . "\n", $content);
+
+            // satu baris per kredensial.
+            $this->assertCount(3, array_filter(explode("\n", $content), static fn (string $l): bool => $l !== ''));
+        } finally {
+            $envFile->remove($path);
+        }
+        $this->assertFileDoesNotExist($path, 'remove() harus menghapus env-file (idempotent)');
     }
 
     public function testEnvFileIsRemovedWhenResticFails(): void
@@ -361,6 +412,9 @@ class VolumeBackupCredentialHygieneTest extends TestCase
             $this->envDir,
             3600,
             $this->credentials(),
+            // Isolasi larangan #15: seleksi (backfill) tidak boleh menyentuh
+            // `database/backup.json` nyata — arahkan ke path temp tes.
+            selection: new BackupSelection($this->tmp . '/backup.json'),
         );
 
         $run = $service->run(['trigger' => 'manual', 'volumes' => ['tonidata_data']]);

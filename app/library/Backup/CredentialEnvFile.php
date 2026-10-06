@@ -21,6 +21,14 @@ namespace app\library\Backup;
  *    `restic.env` tanpa suffix milik implementasi lama) yang lebih tua dari
  *    ambang; berkas asing tidak pernah disentuh.
  *
+ * Baris env ditulis **mentah** (`KEY=VALUE`, tanpa kutip). Ini WAJIB: berkas ini
+ * diteruskan ke `docker run --env-file`, dan `docker run --env-file` **tidak**
+ * memproses/menghapus kutip (berbeda dari `docker compose env_file:` yang
+ * memang mengupas kutip). Bila nilai dibungkus `"…"`, restic/AWS menerima
+ * karakter kutip sebagai bagian nilai → tanda tangan S3 salah → `Access Denied`.
+ * Karena itu nilai juga dinormalisasi: karakter `\r`/`\n` dibuang agar tidak
+ * bisa menyuntik variabel env palsu (satu baris = satu variabel).
+ *
  * **Tidak ada secret di argv/log/JSON** — kelas ini hanya menyentuh file.
  */
 class CredentialEnvFile
@@ -128,7 +136,9 @@ class CredentialEnvFile
 
         $lines = '';
         foreach ($this->credentials as $key => $value) {
-            $lines .= $key . '=' . self::dotenvQuote($value) . "\n";
+            // TANPA kutip: `docker run --env-file` tidak mengupas kutip
+            // (lihat docblock kelas). Nilai sudah bebas `\r`/`\n` dari sanitize().
+            $lines .= $key . '=' . $value . "\n";
         }
 
         $path = $dir . '/' . self::PREFIX . '.' . bin2hex(random_bytes(8));
@@ -201,6 +211,12 @@ class CredentialEnvFile
     }
 
     /**
+     * Bersihkan kredensial (KEY => VALUE).
+     *
+     * Guard injeksi env-file: buang `\r`/`\n` dari nilai agar satu entri tidak
+     * pernah menjadi lebih dari satu baris (`KEY=VAL\nAWS_...=...`). Nilai yang
+     * tersisa kosong setelah normalisasi diabaikan.
+     *
      * @param array<string,mixed> $vars
      * @return array<string,string>
      */
@@ -209,7 +225,7 @@ class CredentialEnvFile
         $clean = [];
         foreach ($vars as $key => $value) {
             $key = trim((string) $key);
-            $value = (string) $value;
+            $value = str_replace(["\r", "\n"], '', (string) $value);
             if ($key !== '' && $value !== '') {
                 $clean[$key] = $value;
             }
@@ -224,10 +240,5 @@ class CredentialEnvFile
     private static function isManagedEnvFile(string $path): bool
     {
         return preg_match('/^restic\.env(\.[0-9a-f]+)?$/', basename($path)) === 1;
-    }
-
-    private static function dotenvQuote(string $value): string
-    {
-        return '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"';
     }
 }
