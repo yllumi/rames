@@ -8,6 +8,7 @@ use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
 use app\library\Git\GitService;
 use app\library\Nginx\NginxConfigGenerator;
+use app\library\Nginx\NginxRoutes;
 use RuntimeException;
 use Symfony\Component\Yaml\Yaml;
 
@@ -495,12 +496,16 @@ class LocalDeployer implements DeployerInterface
         $subdomain = app_subdomain($app['name']);
         $customDomain = (string) ($app['custom_domain'] ?? '');
 
+        // Rute proxy tambahan (apps.json: nginx_routes). all() toleran data
+        // rusak → [] sehingga data lama/rusak tidak menggagalkan deploy.
+        $routes = NginxRoutes::all($app);
+
         // Tanpa custom domain: subdomain melayani app (perilaku default).
         if ($customDomain === '') {
             $ssl = ($app['ssl_status'] ?? null) === 'active';
             return $this->nginx->render($hostPort, [
                 ['server_name' => $subdomain, 'ssl' => $ssl],
-            ]);
+            ], $routes);
         }
 
         // Dengan custom domain: subdomain redirect (301) ke custom domain,
@@ -512,7 +517,7 @@ class LocalDeployer implements DeployerInterface
         return $this->nginx->render($hostPort, [
             ['server_name' => $subdomain, 'redirect_to' => $target],
             ['server_name' => $customDomain, 'ssl' => $customSsl],
-        ]);
+        ], $routes);
     }
 
     public function writeNginxConfig(array $app): void

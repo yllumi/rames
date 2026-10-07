@@ -16,6 +16,7 @@ $canEnv = (bool) ($abilities['env'] ?? false);
 $canNetwork = (bool) ($abilities['network'] ?? false);
 $canDomain = (bool) ($abilities['domain'] ?? false);
 $canSsl = (bool) ($abilities['ssl'] ?? false);
+$canRoutes = (bool) ($abilities['routes'] ?? false);
 $canTerminal = (bool) ($abilities['terminal'] ?? false);
 $canDb = (bool) ($abilities['database'] ?? false);
 $canLogs = (bool) ($abilities['logs'] ?? false);
@@ -35,6 +36,10 @@ $customSslActive = $customSslStatus === 'active';
 $customSslPending = $customSslStatus === 'pending';
 $customSslFailed = $customSslStatus === 'failed';
 $sslSupported = \app\library\SSL\SslIssuer::isPublicDomain((string) config('deploy.app_domain', ''));
+
+// Rute proxy tambahan per app (field apps.json `nginx_routes`) — dirender Nginx
+// sebagai `location ^~ <path>` yang mem-proxy ke <target>.
+$appRoutes = \app\library\Nginx\NginxRoutes::all($app);
 
 // overlay status container live di atas data tersimpan
 $liveByName = [];
@@ -345,6 +350,64 @@ $breadcrumbs = [
     <?php endif; ?>
   </div>
 </section>
+
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="h6 mb-0">Rute Proxy Tambahan</h2>
+      </div>
+      <div class="card-body">
+        <?php if (!$hasHostPort): ?>
+          <p class="text-muted small mb-0">
+            App ini tidak mem-publish port host, sehingga tidak ada vhost yang bisa di-proxy — rute proxy tambahan tidak berlaku.
+            Tambahkan <span class="mono">ports:</span> pada compose app (tab Compose) lalu <strong>Deploy Ulang</strong> bila app perlu diakses lewat domain.
+          </p>
+        <?php else: ?>
+          <p class="text-muted small">
+            Tiap rute dirender Nginx sebagai <span class="mono">location ^~ &lt;path&gt;</span> yang mem-proxy ke <span class="mono">&lt;target&gt;</span>.
+            Tulis satu rute per baris dengan format <span class="mono">&lt;path&gt; &lt;target&gt;</span>, mis. <span class="mono">/api/ http://127.0.0.1:3001</span>.
+            Maksimal <strong>20 rute</strong>; prefix <span class="mono">/.well-known</span> dicadangkan sistem.
+            <span class="mono">target</span> boleh berupa hostname, tetapi hostname harus bisa di-resolve dari host Nginx — bila tidak, <span class="mono">nginx -t</span> gagal dan penyimpanan otomatis dibatalkan.
+          </p>
+          <div class="table-responsive mb-3">
+            <table class="table align-middle mb-0">
+              <thead><tr><th>Path</th><th>Target</th></tr></thead>
+              <tbody>
+                <?php if (empty($appRoutes)): ?>
+                  <tr><td colspan="2" class="text-muted small">Belum ada rute tambahan.</td></tr>
+                <?php else: ?>
+                  <?php foreach ($appRoutes as $r): ?>
+                    <tr>
+                      <td class="mono"><?= e((string) ($r['path'] ?? '')) ?></td>
+                      <td class="mono"><?= e((string) ($r['target'] ?? '')) ?></td>
+                    </tr>
+                  <?php endforeach; ?>
+                <?php endif; ?>
+              </tbody>
+            </table>
+          </div>
+          <?php if (!$canRoutes): ?>
+            <p class="text-muted small mb-0">Anda tidak punya hak mengubah rute proxy app ini.</p>
+          <?php else: ?>
+            <form method="post" action="/apps/<?= e($app['id']) ?>/routes" class="mb-3">
+              <?= csrf_field() ?>
+              <textarea name="routes" class="form-control form-control-sm mono" rows="4" spellcheck="false"><?= e(\app\library\Nginx\NginxRoutes::toText($appRoutes)) ?></textarea>
+              <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+                <button class="btn btn-primary btn-sm">Simpan &amp; Terapkan</button>
+                <span class="text-muted small">Menyimpan akan menulis ulang config Nginx app ini, mengujinya dengan <span class="mono">nginx -t</span>, lalu me-reload Nginx host. Bila uji gagal, rute dikembalikan ke kondisi sebelumnya.</span>
+              </div>
+            </form>
+            <?php if (!empty($appRoutes)): ?>
+              <form method="post" action="/apps/<?= e($app['id']) ?>/routes"
+                    onsubmit="return confirm('Hapus semua rute proxy tambahan app ini?');">
+                <?= csrf_field() ?>
+                <input type="hidden" name="routes" value="">
+                <button class="btn btn-outline-danger btn-sm">Hapus semua rute</button>
+              </form>
+            <?php endif; ?>
+          <?php endif; ?>
+        <?php endif; ?>
+      </div>
+    </section>
   </div>
 
   <!-- ============ Tab: Environment ============ -->
@@ -948,7 +1011,7 @@ $breadcrumbs = [
 
         <div class="alert alert-info py-2 small">
           <strong>Viewer</strong> — hanya lihat (read-only).
-          <strong>Operator</strong> — deploy/rebuild/rollback/stop/start, environment, network, domain &amp; SSL, terminal, database.
+          <strong>Operator</strong> — deploy/rebuild/rollback/stop/start, environment, network, domain &amp; SSL, rute proxy tambahan, terminal, database.
           <strong>Owner</strong> — semua di atas + hapus app, transfer kepemilikan, dan atur akses.
         </div>
 

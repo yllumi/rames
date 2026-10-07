@@ -82,6 +82,9 @@ Route::post('/apps/{id}/delete', [AppController::class, 'delete']);
 Route::post('/apps/{id}/domain/set', [AppController::class, 'setDomain']);
 Route::post('/apps/{id}/domain/remove', [AppController::class, 'removeDomain']);
 
+// Rute proxy tambahan per app (field apps.json `nginx_routes`, Lapis A)
+Route::post('/apps/{id}/routes', [AppController::class, 'saveRoutes']);
+
 // Environment variables per app
 Route::post('/apps/{id}/env', [AppController::class, 'saveEnv']);
 Route::post('/apps/{id}/env/import', [AppController::class, 'importEnv']);

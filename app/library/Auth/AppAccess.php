@@ -69,6 +69,10 @@ final class AppAccess
         'compose' => self::ROLE_OPERATOR,
         'network' => self::ROLE_OPERATOR,
         'domain' => self::ROLE_OPERATOR,
+        // `routes` — rute proxy tambahan per app (field apps.json `nginx_routes`).
+        // Disimpan terstruktur (bukan snippet Nginx mentah) dan setara level
+        // `domain`: operator+ boleh mengubahnya, viewer tidak.
+        'routes' => self::ROLE_OPERATOR,
         'ssl' => self::ROLE_OPERATOR,
         'terminal' => self::ROLE_OPERATOR,
         'database' => self::ROLE_OPERATOR,

@@ -30,11 +30,23 @@ class NginxConfigGenerator
      *                       domain). `location /.well-known/acme-challenge/`
      *                       tetap dirender SEBELUM return agar HTTP-01 tetap jalan.
      *
+     * Blok rute proxy tambahan (`$routes`, lihat {@see NginxRoutes}) dirender
+     * SETELAH `location / { ... }` **hanya** di serve block (HTTP 80 & HTTPS 443)
+     * — tidak di redirect block / blok 80→https, karena blok-blok itu tidak
+     * mem-proxy ke app.
+     *
      * @param array<int,array{server_name:string,ssl?:bool,redirect_to?:string}> $servers
+     * @param array<int,array{path:string,target:string}> $routes
      * @return string
      */
-    public function render(int $hostPort, array $servers): string
+    public function render(int $hostPort, array $servers, array $routes = []): string
     {
+        // Validasi fail-fast: rute tak valid tidak boleh masuk config Nginx
+        // (satu config rusak menggagalkan reload SELURUH host). all() sudah
+        // menyaring data apps.json, jadi umumnya di sini tidak ada yang gagal.
+        $routes = NginxRoutes::normalize($routes);
+        $routeSuffix = $routes === [] ? '' : "\n\n" . $this->routeBlocks($routes);
+
         $webroot = (string) config('deploy.ssl_webroot', base_path() . '/webroot');
         $lePath = (string) config('deploy.letsencrypt_path', '/etc/letsencrypt');
         $acme = <<<ACME
@@ -87,7 +99,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-    }
+    }{$routeSuffix}
 }
 NGINX;
 
@@ -133,12 +145,44 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-    }
+    }{$routeSuffix}
 }
 NGINX;
         }
 
         return implode("\n\n", $blocks) . "\n";
+    }
+
+    /**
+     * Blok `location ^~ {path} { proxy_pass {target}; ... }` (indent 4 spasi).
+     *
+     * `^~` dipakai agar rute tidak pernah kalah dari regex location milik app
+     * di belakang proxy; direktif WebSocket disertakan supaya app real-time di
+     * target rute (mis. gateway API) tetap dapat Upgrade.
+     *
+     * @param array<int,array{path:string,target:string}> $routes
+     */
+    private function routeBlocks(array $routes): string
+    {
+        $blocks = [];
+        foreach ($routes as $route) {
+            $path = $route['path'];
+            $target = $route['target'];
+            $blocks[] = <<<NGINX
+    location ^~ {$path} {
+        proxy_pass {$target};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+NGINX;
+        }
+
+        return implode("\n\n", $blocks);
     }
 
     /**

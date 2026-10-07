@@ -99,7 +99,7 @@ class FakeNginxGenerator extends NginxConfigGenerator
     {
     }
 
-    public function render(int $hostPort, array $servers): string
+    public function render(int $hostPort, array $servers, array $routes = []): string
     {
         return 'mock';
     }

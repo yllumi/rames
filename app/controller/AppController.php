@@ -19,7 +19,9 @@ use app\library\Docker\DockerClient;
 use app\library\Docker\PortManager;
 use app\library\Git\GitService;
 use app\library\Git\SshKeyManager;
+use app\library\Nginx\NginxConfigGuard;
 use app\library\Nginx\NginxReloader;
+use app\library\Nginx\NginxRoutes;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use app\library\Support\Markdown;
@@ -1379,6 +1381,57 @@ class AppController
         } else {
             flash_set('success', 'Custom domain ' . $customDomain . ' dihapus. Sertifikat SSL-nya di-revoke.');
         }
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Simpan rute proxy tambahan per app (field apps.json `nginx_routes`).
+     *
+     * Alur "uji dulu, rollback bila gagal" — seluruh orkestrasi di
+     * `NginxConfigGuard::applyRoutes()` (controller hanya mediator):
+     *   1. simpan `nginx_routes` baru,
+     *   2. tulis ulang config Nginx app,
+     *   3. jalankan `nginx -t` lalu reload host,
+     *   4. bila gagal: kembalikan `nginx_routes` ke nilai sebelumnya + tulis
+     *      ulang config lama (guard melaporkan `rolled_back` + pesan nginx).
+     *
+     * Rute disimpan **terstruktur** (bukan snippet Nginx mentah); parsing &
+     * validasi fail-fast seluruhnya di `NginxRoutes`. Textarea kosong = `[]` =
+     * hapus semua rute. Kegagalan penerapan tidak meninggalkan config rusak —
+     * controller hanya menerjemahkan hasil guard menjadi flash + redirect.
+     * Otorisasi dicek lewat `findApp()` (app tak berhak = 404) sebelum efek
+     * samping apa pun.
+     */
+    public function saveRoutes(Request $request, string $id)
+    {
+        $store = new AppStore();
+        $app = $this->findApp($id, 'routes');
+
+        $text = (string) $request->post('routes', '');
+
+        try {
+            // Prasyarat fail-fast sebelum efek samping: app tanpa host port
+            // terpublish tidak punya vhost → rute proxy tak akan pernah dilayani.
+            if (!AppPorts::hasHostPort($app)) {
+                throw new RuntimeException('App ini tidak mem-publish port host, jadi vhost/subdomain — dan rute proxy — tidak berlaku. Tambahkan `ports:` pada compose app (tab Compose) lalu Deploy Ulang.');
+            }
+
+            $routes = NginxRoutes::parse($text);
+
+            $guard = new NginxConfigGuard(new NginxReloader(), DeployerFactory::create(), $store);
+            $result = $guard->applyRoutes($id, $routes);
+
+            if (!$result['ok']) {
+                flash_set('error', 'Rute proxy TIDAK diterapkan' . ($result['rolled_back'] ? ' — rute dikembalikan ke kondisi sebelumnya' : '') . ': ' . $result['error']);
+                return redirect('/apps/' . $id);
+            }
+
+            $count = count($routes);
+            flash_set('success', ($count > 0 ? $count . ' rute proxy disimpan & diterapkan.' : 'Semua rute proxy dihapus.') . (!$result['reloaded'] ? ' Nginx host belum ter-reload — klik "Reload Nginx".' : ''));
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+
         return redirect('/apps/' . $id);
     }
 

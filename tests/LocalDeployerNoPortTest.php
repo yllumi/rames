@@ -31,7 +31,7 @@ class NoPortFakeNginxGenerator extends NginxConfigGenerator
         $this->calls[] = 'ensureWritable';
     }
 
-    public function render(int $hostPort, array $servers): string
+    public function render(int $hostPort, array $servers, array $routes = []): string
     {
         return 'mock';
     }
