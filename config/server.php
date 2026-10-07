@@ -19,5 +19,8 @@ return [
     'status_file' => runtime_path() . '/webman.status',
     'stdout_file' => runtime_path() . '/logs/stdout.log',
     'log_file' => runtime_path() . '/logs/workerman.log',
-    'max_package_size' => 10 * 1024 * 1024
+    // Batas paket HTTP Webman — dinaikkan ke 68 MiB agar MENAMPUNG OVERHEAD
+    // multipart (boundary + field) untuk unggahan berkas 64 MiB dari klien
+    // (batas klien = 64 MiB, batas nyata per berkas `upload_max_filesize` = 64M).
+    'max_package_size' => 68 * 1024 * 1024
 ];

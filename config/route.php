@@ -23,6 +23,7 @@ use app\controller\NetworkController;
 use app\controller\NginxController;
 use app\controller\AppController;
 use app\controller\DatabaseController;
+use app\controller\FileController;
 use app\controller\HealthController;
 use app\controller\SslController;
 use app\controller\TerminalController;
@@ -194,6 +195,23 @@ Route::get('/api/apps/{id}/terminal/{token}/stream', [TerminalController::class,
 Route::post('/api/apps/{id}/terminal/{token}/input', [TerminalController::class, 'input']);
 Route::post('/api/apps/{id}/terminal/{token}/close', [TerminalController::class, 'close']);
 Route::post('/api/apps/{id}/terminal/run', [TerminalController::class, 'run']);
+
+/*
+|--------------------------------------------------------------------------
+| File manager container (jelajah, unggah, unduh, edit, rename, hapus, mkdir,
+| ekstrak arsip). Semua endpoint dilindungi AuthMiddleware; mutasi lewat POST
+| (CSRF). Otorisasi ability `files` (operator+) lewat AppAccess.
+|--------------------------------------------------------------------------
+*/
+Route::get('/api/apps/{id}/files', [FileController::class, 'list']);
+Route::get('/api/apps/{id}/files/read', [FileController::class, 'read']);
+Route::get('/apps/{id}/files/download', [FileController::class, 'download']);
+Route::post('/apps/{id}/files/write', [FileController::class, 'write']);
+Route::post('/apps/{id}/files/mkdir', [FileController::class, 'mkdir']);
+Route::post('/apps/{id}/files/rename', [FileController::class, 'rename']);
+Route::post('/apps/{id}/files/delete', [FileController::class, 'delete']);
+Route::post('/apps/{id}/files/upload', [FileController::class, 'upload']);
+Route::post('/apps/{id}/files/extract', [FileController::class, 'extract']);
 
 /*
 |--------------------------------------------------------------------------

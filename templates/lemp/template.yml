@@ -1,0 +1,44 @@
+title: LEMP (PHP 8.4 + Nginx + MySQL)
+description: >-
+  Wadah LEMP siap pakai: PHP 8.4 + PHP-FPM, Nginx, dan MySQL 8.4 dalam satu app
+  (gaya shared hosting). Taruh aplikasi PHP Anda secara manual lewat tab Terminal
+  app — seluruh kode tersimpan di named volume. Docroot publik adalah
+  /var/www/html/public, jadi file di luar folder itu tidak dapat diakses dari
+  browser. Password root MySQL dibuat otomatis dan di-inject ke aplikasi.
+category: Web
+icon: "🐘"
+docs_url: https://serversideup.net/open-source/docker-php/docs/
+
+# Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke
+# service (tanpa disimpan di repo). Kosong = pakai `default`; `generate: secret`
+# berarti nilai acak dibuat otomatis bila dikosongkan.
+env:
+  - key: TZ
+    label: Timezone
+    help: >-
+      Zona waktu container. Nilai ini menjadi `TZ` dan sekaligus
+      `PHP_DATE_TIMEZONE` (mis. `WIB Asia/Jakarta`) untuk service web.
+    default: Asia/Jakarta
+  - key: MYSQL_ROOT_PASSWORD
+    label: Password root MySQL
+    help: >-
+      Dibuat otomatis bila dikosongkan. Dipakai aplikasi (via `DB_PASSWORD`) dan
+      halaman /database untuk mengelola server. Nilainya bisa dilihat di tab
+      Environment app ini.
+    generate: secret
+  - key: MYSQL_DATABASE
+    label: Database awal
+    help: Database yang dibuat otomatis saat container MySQL pertama kali dijalankan.
+    default: app
+  - key: PHP_MEMORY_LIMIT
+    label: Memory limit PHP
+    help: Nilai `memory_limit` PHP, mis. `256M`.
+    default: 256M
+  - key: PHP_DISPLAY_ERRORS
+    label: Display errors PHP
+    help: Nilai `On` untuk debug, `Off` untuk produksi.
+    default: "Off"
+
+primary:
+  service: web
+  port: 8080

@@ -81,6 +81,10 @@ return [
     'terminal_idle_timeout' => (int) (getenv('TERMINAL_IDLE_TIMEOUT') ?: 900),  // detik, idle maks sesi interaktif
     'terminal_max_sessions' => (int) (getenv('TERMINAL_MAX_SESSIONS') ?: 20),  // batas sesi aktif serentak
 
+    // File manager container (jelajah, unggah, unduh, edit teks, ekstrak arsip).
+    'files_timeout' => (int) (getenv('FILES_TIMEOUT') ?: 120),                  // detik, perintah singkat di dalam container
+    'files_transfer_timeout' => (int) (getenv('FILES_TRANSFER_TIMEOUT') ?: 600), // detik, docker cp & ekstraksi arsip
+
     // Database manager (phpMyAdmin mini) — koneksi PDO ke MySQL/MariaDB container
     'dashboard_container' => getenv('HOSTNAME') ?: getenv('DASHBOARD_CONTAINER') ?: 'rames-webman',
     'db_connect_timeout' => (int) (getenv('DB_CONNECT_TIMEOUT') ?: 10),   // detik, timeout koneksi PDO

@@ -1,0 +1,90 @@
+# Template LEMP — semua service memakai image prebuilt (tanpa `build:`),
+# TANPA `container_name` (dashboard menulis prefix nama container = nama app),
+# dan TANPA `name:` (nama project compose ditentukan dashboard dari nama app).
+services:
+  web:
+    image: serversideup/php:8.4-fpm-nginx
+    restart: unless-stopped
+
+    # Service web TIDAK memakai `init: true`: image ini memakai s6-overlay sebagai
+    # entrypoint dan wajib berjalan sebagai PID 1. Menambahkan init memicu
+    # "s6-overlay-suexec: fatal: can only run as pid 1" → container restart loop.
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      TZ: ${TZ}
+      APP_BASE_DIR: /var/www/html
+      NGINX_WEBROOT: /var/www/html/public
+      PHP_DATE_TIMEZONE: ${TZ}
+      PHP_OPCACHE_ENABLE: "1"
+      PHP_MEMORY_LIMIT: ${PHP_MEMORY_LIMIT}
+      PHP_DISPLAY_ERRORS: ${PHP_DISPLAY_ERRORS}
+      # Host "mysql" = nama service MySQL di network compose app (bukan 127.0.0.1).
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_DATABASE: ${MYSQL_DATABASE}
+      DB_USERNAME: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+
+    volumes:
+      # Volume kode WAJIB di-mount ke /var/www/html: volume baru mewarisi ownership
+      # `www-data` dari image sehingga user default container bisa menulis.
+      # Docroot publik ada di /var/www/html/public.
+      - app-code:/var/www/html
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+    # Log relatif tenang; batasi supaya disk host tidak penuh.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+
+    # init:true supaya proses MySQL bukan PID 1 (SIGTERM rapi saat stop/restart).
+    init: true
+
+    environment:
+      TZ: ${TZ}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      # JANGAN menambahkan MYSQL_USER/MYSQL_PASSWORD: halaman /database memilih
+      # kredensial otomatis dan mengutamakan user aplikasi di atas root
+      # (DbCredentialResolver), sehingga panel /database kehilangan hak admin.
+      # Buat user terbatas dari tab Pengguna di halaman /database.
+
+    volumes:
+      # Data + system tables MySQL. Volume di-scope per app (nama project compose
+      # = nama app), jadi template ini aman dipakai untuk banyak app sekaligus.
+      - mysql-data:/var/lib/mysql
+
+    # mysql:8.4 TIDAK menyediakan healthcheck bawaan, sedangkan service web
+    # menunggu `condition: service_healthy` — tanpa blok ini deploy GAGAL
+    # ("container ... has no healthcheck configured"). mysqladmin `ping`
+    # mengembalikan 0 selama server hidup, termasuk saat akses ditolak.
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # Kode aplikasi PHP — sumber utama app. Sertakan pada backup.
+  app-code:
+  # Data + system tables MySQL.
+  mysql-data:

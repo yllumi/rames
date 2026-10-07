@@ -67,6 +67,7 @@ class AppAccessTest extends TestCase
         $this->assertTrue(AppAccess::can('logs', $app, self::VIEWER));
         $this->assertFalse(AppAccess::can('operate', $app, self::VIEWER));
         $this->assertFalse(AppAccess::can('terminal', $app, self::VIEWER));
+        $this->assertFalse(AppAccess::can('files', $app, self::VIEWER));
         $this->assertFalse(AppAccess::can('database', $app, self::VIEWER));
         $this->assertFalse(AppAccess::can('env', $app, self::VIEWER));
         $this->assertFalse(AppAccess::can('domain', $app, self::VIEWER));
@@ -81,6 +82,7 @@ class AppAccessTest extends TestCase
         $this->assertTrue(AppAccess::can('operate', $app, self::OPERATOR));
         $this->assertTrue(AppAccess::can('deploy', $app, self::OPERATOR));
         $this->assertTrue(AppAccess::can('terminal', $app, self::OPERATOR));
+        $this->assertTrue(AppAccess::can('files', $app, self::OPERATOR));
         $this->assertTrue(AppAccess::can('database', $app, self::OPERATOR));
         $this->assertTrue(AppAccess::can('env', $app, self::OPERATOR));
         $this->assertTrue(AppAccess::can('network', $app, self::OPERATOR));

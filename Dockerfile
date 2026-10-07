@@ -9,12 +9,21 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 # curl + curl-dev (extension curl utk Guzzle curl handler ke Docker Engine API),
 # util-linux (binary `script` — PTY untuk terminal interaktif `docker exec -it`),
 # oniguruma-dev (dependensi build mbstring — truncasi teks multibyte di UI),
+# unzip (ekstraksi arsip .zip file manager DI HOST dashboard — container app
+#   belum tentu punya unzip),
 # restic (backup volume ke S3 — dijalankan di container helper, PLAN_VOLUME_BACKUP.md §3)
-RUN apk add --no-cache git openssh-client openssh-keygen docker-cli docker-cli-compose curl curl-dev certbot certbot-dns-cloudflare util-linux oniguruma-dev restic
+RUN apk add --no-cache git openssh-client openssh-keygen docker-cli docker-cli-compose curl curl-dev certbot certbot-dns-cloudflare util-linux oniguruma-dev unzip restic
 
 # PHP extensions
 RUN docker-php-ext-install -j$(nproc) pdo pdo_mysql pcntl curl mbstring \
   && docker-php-ext-enable opcache pcntl
+
+# Batas unggah PHP efektif untuk file manager container. `upload_max_filesize`
+# = 64M adalah batas NYATA per berkas (sama dengan batas klien). `post_max_size`
+# = 68M memberi HEADROOM untuk overhead multipart (boundary/field), sehingga
+# berkas ~64 MiB tidak ditolak server padahal lolos cek klien. `memory_limit`
+# sengaja TIDAK dinaikkan: transfer byte lewat docker cp + berkas temp.
+RUN printf 'upload_max_filesize=64M\npost_max_size=68M\n' > "$PHP_INI_DIR/conf.d/zz-files-upload.ini"
 
 # composer
 RUN php -r "copy('https://getcomposer.org/installer', '/tmp/composer-setup.php');" \

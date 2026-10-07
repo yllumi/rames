@@ -10,7 +10,7 @@
 
 ## Fitur
 
-- **Autentikasi** — login/logout berbasis session, password bcrypt, multi-user tanpa role (semua user punya akses penuh).
+- **Autentikasi** — login/logout berbasis session, password bcrypt, multi-user dengan role global (admin/member) + kepemilikan & sharing app per user (viewer/operator/owner; SPECS §7.7).
 - **Manage Users** — tambah/hapus user, ganti password.
 - **App Management** — buat app dari URL repo Git, deteksi & edit host port, deteksi konflik port dengan saran port otomatis.
 - **Deploy otomatis** — clone repo → parse `docker-compose.yml` → tulis override port → `docker compose up -d --build` → kumpulkan info container → generate config Nginx.
@@ -20,6 +20,7 @@
 - **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri.
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
+- **File manager container** — jelajah berkas, unggah multi-berkas, unduh, edit teks, buat folder, rename, hapus, dan ekstrak `.zip`/`.tar.gz` **di dalam container app** dari dashboard (tab **Container**, tombol `📁 Files`; ability `files` = operator ke atas, hanya untuk container yang berjalan; SPECS §7.9).
 - **Backup volume harian ke S3 (restic)** — volume Docker milik app di-backup harian ke object storage (S3) via **restic** (inkremental + dedup + enkripsi + retensi): container database didump logis (tanpa downtime), volume lain di-snapshot (stop → snapshot → start). Restore dari UI di halaman `/backups` (SPECS §8h). Volume yang sudah dihapus (app dihapus total) tetap dapat dipulihkan dari tab **Arsip** (admin) — restore ke volume baru atau unduh dump `.sql`.
 - **Batas resource per service** — admin menetapkan batas maksimum CPU & memori tiap service app (hard limit per service, ditulis ke override compose); user lain melihat nilainya read-only.
 - **Keamanan dasar** — CSRF token, eksekusi command bebas injection (`array` + `bypass_shell`), validasi input ketat, JSON dengan file locking (`flock`).
@@ -193,6 +194,8 @@ Worker memvalidasi ulang kepemilikan volume terhadap `apps.json` sebelum restore
 | `NGINX_RELOAD_IMAGE` | `alpine` | Image helper reload nginx (cukup `sh` + `chroot`) |
 | `DOCKER_SOCKET` | `/var/run/docker.sock` | Socket Docker Engine |
 | `DEPLOY_TIMEOUT` | `600` | Timeout operasi docker compose (detik) |
+| `FILES_TIMEOUT` | `120` | Timeout perintah singkat file manager di dalam container (detik; SPECS §7.9) |
+| `FILES_TRANSFER_TIMEOUT` | `600` | Timeout `docker cp` & ekstraksi arsip file manager (detik; SPECS §7.9) |
 | `DNS_1` / `DNS_2` | `8.8.8.8` / `1.1.1.1` | DNS untuk container (diperlukan jika resolv.conf host bermasalah) |
 | `ADMIN_EMAIL` | — | Email untuk SSL Let's Encrypt (wajib saat mengaktifkan SSL) |
 | `SSL_CHALLENGE` | `http` | Mode challenge: `http` (webroot) atau `dns-cloudflare` |
@@ -216,11 +219,13 @@ Worker memvalidasi ulang kepemilikan volume terhadap `apps.json` sebelum restore
 ```
 app/
 ├── command/MakeAdmin.php        # php webman make:admin (provisioning user awal)
-├── controller/                  # AuthController, AppController, SslController, NginxController, UserController
+├── controller/                  # AuthController, AppController, FileController, SslController, NginxController, UserController
 ├── library/                     # SELURUH logika bisnis (controller hanya mediator)
 │   ├── Auth/UserStore.php
 │   ├── Deploy/                  # DeployerInterface, LocalDeployer, DeployerFactory
-│   ├── Docker/                  # ComposeParser, DockerClient, DockerComposeRunner, PortManager
+│   ├── Docker/                  # ComposeParser, DockerClient, DockerComposeRunner, PortManager, AppContainers
+│   ├── Files/                   # file manager container: PathGuard, TextContent, ArchiveGuard,
+│   │                            #   ListingParser, FileError, FilesInput, ContainerFiles
 │   ├── Git/GitService.php
 │   ├── Nginx/                   # NginxConfigGenerator, NginxStatusReader, NginxReloader
 │   ├── SSL/SslIssuer.php
@@ -235,6 +240,8 @@ database/                        # auth.json, apps.json (runtime, gitignored)
 apps/                           # hasil clone tiap app (gitignored)
 nginx-status/                    # status reload nginx (gitignored)
 public/css/app.css               # stylesheet dashboard
+public/js/app-files.js           # file manager container (modal di detail app)
+runtime/                         # state runtime (gitignored): logs/, files-transfer/ (temp file manager)
 ```
 
 ## Alur Create App
@@ -255,6 +262,7 @@ public/css/app.css               # stylesheet dashboard
 - File JSON ditulis dengan `flock` (anti race condition).
 - Mount `docker.sock` adalah risiko yang **disengaja** untuk Phase 1 — dashboard selalu di balik autentikasi.
 - Direktori Nginx yang di-mount dibatasi hanya `sites-available/` + `sites-enabled/`.
+- File manager container: ability `files` = operator ke atas (setara terminal/database); path & nama dinormalisasi (`PathGuard`) sebelum masuk `docker exec`/`docker cp` (argumen di-`escapeshellarg`), ekstraksi arsip di **host** dengan proteksi zip-slip, dan transfer byte lewat berkas temp — tidak memuat berkas besar ke memori PHP.
 
 ## Troubleshooting Umum
 
@@ -262,6 +270,8 @@ public/css/app.css               # stylesheet dashboard
 - **`Could not resolve host` saat clone** — resolv.conf host rusak; container memakai `dns:` eksplisit (atur `DNS_1`/`DNS_2`).
 - **Port "sudah terpakai"** — dashboard hanya mendeteksi port milik app-nya sendiri; port yang dipakai container luar bisa diedit di halaman konfirmasi.
 - **Subdomain tidak kebuka** — pastikan DNS resolve (hosts/dnsmasq) dan `sudo systemctl reload nginx`.
+- **Unggah file manager gagal `413`** — batas 64 MiB per berkas (SPECS §7.9). Bila dashboard diakses lewat vhost Nginx, naikkan `client_max_body_size` vhost itu; perubahan `Dockerfile`/`config/server.php` juga baru berlaku setelah image dashboard di-build ulang & di-deploy ulang.
+- **Tombol `📁 Files` tidak muncul / operasi file manager menolak `409`** — file manager hanya untuk container app yang **berjalan** dan user ber-ability `files` (operator ke atas). Jalankan app lebih dulu; periksa role user bila tombol tidak tampil.
 
 ## Roadmap (Iterasi Berikutnya)
 

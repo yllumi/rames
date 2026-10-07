@@ -75,6 +75,10 @@ final class AppAccess
         'routes' => self::ROLE_OPERATOR,
         'ssl' => self::ROLE_OPERATOR,
         'terminal' => self::ROLE_OPERATOR,
+        // `files` — file manager container (jelajah, unggah, unduh, edit teks,
+        // rename, hapus). Setara `terminal`: operator sudah memegang shell penuh
+        // di container yang sama, jadi ability ini tidak menambah kuasa baru.
+        'files' => self::ROLE_OPERATOR,
         'database' => self::ROLE_OPERATOR,
         // backup volume ke S3 via restic — `backup` = operator, `restore` = owner
         // (restore menimpa isi volume → destruktif, eksklusif owner).
