@@ -14,14 +14,22 @@ use app\library\Support\ProcessRunner;
  * (volume `-v /:/host`), sehingga memakai binary, config, module, dan user
  * nginx HOST yang persis (menghindari mismatch binary Alpine vs host):
  *
- *   Test  : docker run --rm --pid host --privileged \
+ *   Test  : docker run --rm --network host --pid host --privileged \
  *             -v /:/host:rw --tmpfs /host/run \
  *             {image} sh -c 'chroot /host "$@"' sh {nginx_bin} -t -c {nginx_http_conf}
- *   Reload: docker run --rm --pid host --privileged \
+ *   Reload: docker run --rm --network host --pid host --privileged \
  *             -v /:/host:ro \
  *             {image} sh -c 'chroot /host "$@"' sh {nginx_bin} -s reload -c {nginx_http_conf}
  *
  * Detail penting:
+ * - `--network host` → WAJIB. Karena chroot memakai `/etc/resolv.conf` HOST,
+ *   sementara network namespace container punya loopback sendiri: bila host
+ *   memakai resolver lokal (`nameserver 127.0.0.1`, mis. systemd-resolved/
+ *   dnsmasq), resolusi DNS gagal di dalam helper → `nginx -t` menolak vhost
+ *   ber-`proxy_pass` hostname dengan `host not found in upstream` padahal nginx
+ *   HOST sendiri bisa me-resolve (false negative → guard rollback perubahan yang
+ *   sebenarnya sah). Dengan namespace host, resolusi & konektivitas uji identik
+ *   dengan nginx host.
  * - `--pid host` → pid di /run/nginx.pid (host) merujuk namespace host; SIGHUP
  *   sampai ke master nginx HOST (zero-downtime reload).
  * - `--privileged` → beberapa host membatasi capability/seccomp sehingga
@@ -91,6 +99,9 @@ class NginxReloader
     {
         $command = [
             'docker', 'run', '--rm',
+            // Netns host: agar resolusi DNS helper identik dengan nginx host
+            // (chroot memakai /etc/resolv.conf host — mis. nameserver 127.0.0.1).
+            '--network', 'host',
             '--pid', 'host',
             '--privileged',
         ];
