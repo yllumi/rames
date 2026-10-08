@@ -1,0 +1,35 @@
+title: Adminer
+description: >-
+  Adminer — alat manajemen database berbasis web dalam satu file PHP. Mendukung
+  MySQL/MariaDB, PostgreSQL, SQLite, dan lainnya; dipakai untuk menjelajah tabel
+  serta menjalankan query dari browser lewat domain app ini. App ini stateless:
+  tanpa volume dan tanpa data yang disimpan, sehingga aman dibuat/dihapus berkali-kali.
+category: Database
+icon: "🧰"
+docs_url: https://hub.docker.com/_/adminer
+
+# Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke
+# service (tanpa disimpan di repo). Kosong = pakai `default`; `generate: secret`
+# berarti nilai acak dibuat otomatis bila dikosongkan.
+env:
+  - key: ADMINER_DEFAULT_SERVER
+    label: Server database default
+    help: >-
+      Nilai awal kolom Server di halaman login. Isi host.docker.internal untuk DB
+      yang port-nya dipublish di host, atau nama container DB app lain
+      (mis. namaapp-mariadb-1) bila app di-attach ke shared network yang sama.
+    default: host.docker.internal
+  - key: ADMINER_DESIGN
+    label: Tema tampilan
+    help: >-
+      Design/tema bawaan image (daftar: brade, dracula, nette, pepa-linha, dll).
+    default: pepa-linha
+  - key: TZ
+    label: Timezone
+    help: Zona waktu container.
+    default: Asia/Jakarta
+
+# Port container 8080 di-proxy ke domain app ini (vhost/subdomain dikelola Rames).
+primary:
+  service: adminer
+  port: 8080

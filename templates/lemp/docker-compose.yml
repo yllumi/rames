@@ -3,7 +3,7 @@
 # dan TANPA `name:` (nama project compose ditentukan dashboard dari nama app).
 services:
   web:
-    image: serversideup/php:8.4-fpm-nginx
+    image: yllumi/fpm8.4-nginx
     restart: unless-stopped
 
     # Service web TIDAK memakai `init: true`: image ini memakai s6-overlay sebagai

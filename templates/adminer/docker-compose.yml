@@ -1,0 +1,40 @@
+# Template Adminer — image prebuilt; tanpa `build:`/`container_name`/`name:`
+# (nama project compose = nama app & nama container dikelola dashboard, sehingga
+# template ini aman dipakai untuk banyak app sekaligus).
+#
+# Stateless: Adminer hanya satu file PHP yang menyajikan antarmuka manajemen
+# database, jadi TIDAK ada volume — tidak ada data yang perlu dipersistenkan.
+# Kredensial koneksi tidak disimpan di server; user memasukkannya di halaman login
+# setiap kali (atau lewat browser). Karena itu `Hapus App` + purge tidak
+# menghapus data apa pun.
+services:
+  adminer:
+    image: adminer:6
+    restart: unless-stopped
+
+    # init:true supaya server PHP built-in milik image Adminer bukan PID 1
+    # (SIGTERM rapi saat stop/restart/deploy ulang).
+    init: true
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      TZ: ${TZ}
+      # Nilai awal kolom Server di halaman login Adminer.
+      ADMINER_DEFAULT_SERVER: ${ADMINER_DEFAULT_SERVER}
+      # Tema tampilan bawaan image (brade, dracula, nette, pepa-linha, ...).
+      ADMINER_DESIGN: ${ADMINER_DESIGN}
+
+    # Berguna saat database target punya port yang di-publish di host (mis. DB
+    # milik app Rames lain): container bisa menjangkau host lewat
+    # host.docker.internal, bukan loopback container itu sendiri.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Log Adminer relatif tenang; batasi supaya disk host tidak penuh.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
