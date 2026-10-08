@@ -34,12 +34,19 @@ services:
       TERMINAL_SESSION_TTL: "${TERMINAL_SESSION_TTL:-3600}"
       TERMINAL_IDLE_TIMEOUT: "${TERMINAL_IDLE_TIMEOUT:-900}"
       TERMINAL_MAX_SESSIONS: "${TERMINAL_MAX_SESSIONS:-20}"
-      # Database manager (phpMyAdmin mini)
-      DB_CONNECT_TIMEOUT: "${DB_CONNECT_TIMEOUT:-10}"
-      DB_BROWSE_PER_PAGE: "${DB_BROWSE_PER_PAGE:-50}"
-      DB_MAX_ROWS: "${DB_MAX_ROWS:-500}"
-      DB_EXPORT_TIMEOUT: "${DB_EXPORT_TIMEOUT:-600}"
+      # Halaman /database memakai Adminer (helper container) — tidak ada env
+      # koneksi PDO lagi. DB_IMPORT_TIMEOUT tetap dipakai restore dump (DbDump).
       DB_IMPORT_TIMEOUT: "${DB_IMPORT_TIMEOUT:-600}"
+      # Halaman /database dilayani Adminer lewat helper container (tanpa port
+      # publik, network internal). Nilai bawaan di config/deploy.php sama.
+      ADMINER_IMAGE: "${ADMINER_IMAGE:-adminer:6}"
+      ADMINER_CONTAINER: "${ADMINER_CONTAINER:-rames-adminer}"
+      ADMINER_NETWORK: "${ADMINER_NETWORK:-rames-helpers}"
+      ADMINER_WORKERS: "${ADMINER_WORKERS:-8}"
+      ADMINER_NETWORK_TTL: "${ADMINER_NETWORK_TTL:-1800}"
+      ADMINER_PROXY_TIMEOUT: "${ADMINER_PROXY_TIMEOUT:-30}"
+      ADMINER_PROXY_MAX_BYTES: "${ADMINER_PROXY_MAX_BYTES:-67108864}"
+      ADMINER_PREFIX_BASE: "${ADMINER_PREFIX_BASE:-/database}"
       # Backup volume harian ke S3 via restic (PLAN_VOLUME_BACKUP.md).
       # Namespace env VOLUME_BACKUP_*/RESTIC_*/AWS_* — JANGAN pakai BACKUP_*
       # (itu milik backup database/*.json + config Nginx, SPECS §8g — terpisah).

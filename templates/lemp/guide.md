@@ -61,15 +61,20 @@ $pdo = new PDO(
 ```
 
 > Untuk produksi, sebaiknya **jangan** memakai `root` untuk aplikasi. Buat
-> **user terbatas** dari halaman `/database` → tab **Pengguna**, lalu ubah
+> **user terbatas** dari **Adminer** di halaman `/database` (login `root` dengan
+> password dari tab **Environment**; bila kredensial tak terdeteksi, form login
+> Adminer muncul dengan Server ter-prefill), lalu ubah
 > `DB_USERNAME`/`DB_PASSWORD` di tab **Environment** dan lakukan **Deploy Ulang**.
 
 ## Import/export dump & kelola database
 
 Kelola server MySQL (buat database/user, GRANT, import & export dump) lewat
-halaman **`/database`** pada dashboard — kredensial terdeteksi otomatis dan
-harus resolve ke **root**. Port `3306` sengaja **tidak dipublikasikan ke host**,
-jadi tidak bisa dijangkau dari luar.
+**Adminer** di halaman **`/database`**: Rames menyalakan helper Adminer internal
+(tanpa port publik) dan menyambung sebagai **root**; bila kredensial tidak
+terdeteksi, login lewat form Adminer dengan Server ter-prefill. Port `3306`
+sengaja **tidak dipublikasikan ke host**. Untuk dump/import **besar**, pakai tab
+**Terminal** atau fitur **Volume/backup** — proxy Adminer dibatasi ≤30 detik &
+ukuran respons.
 
 ## HTTPS
 

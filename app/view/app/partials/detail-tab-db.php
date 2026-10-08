@@ -3,7 +3,7 @@
   <div class="tab-pane fade" id="tab-db" role="tabpanel" aria-labelledby="tab-db-btn">
     <section class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center">
-        <h2 class="h6 mb-0">Database (MySQL/MariaDB)</h2>
+        <h2 class="h6 mb-0">Database (MySQL/MariaDB) <span class="text-muted fw-normal">&middot; Adminer</span></h2>
         <a class="btn btn-outline-secondary btn-sm" href="/database">Semua database &rarr;</a>
       </div>
       <div class="table-responsive">
@@ -19,7 +19,7 @@
                 <td><span class="badge badge-<?= e($dc['state'] ?? 'unknown') ?>"><?= e($dc['state'] ?? 'unknown') ?></span></td>
                 <td class="text-end">
                   <?php if ($canDb): ?>
-                    <a class="btn btn-outline-primary btn-sm" href="/database/<?= e(rawurlencode($dc['container_name'])) ?>">Kelola DB &rarr;</a>
+                    <a class="btn btn-outline-primary btn-sm" href="/database/<?= e(rawurlencode($dc['container_name'])) ?>/adminer" target="_blank" rel="noopener">Kelola DB &rarr;</a>
                   <?php else: ?>
                     <span class="text-muted small">tanpa hak</span>
                   <?php endif; ?>

@@ -64,7 +64,7 @@ Jebakan terbukti: SSE wajib `Webman\Http\Response` + chunked (`new Chunk(...)` l
 
 ## Peran 2 — Deploy & Docker
 
-**Wilayah:** `app/library/Deploy/`, `app/library/Docker/`, `Nginx/`, `SSL/`, `Template/`, `Update/`, `Db/` (bagian container/deteksi saja), `templates/`, `cli/deploy.php`, `cli/ssl.php`, `cli/self-update.sh`, `cli/update-report.php`, `host/`, `docker-compose.yml`, `Dockerfile`, `config/deploy.php`.
+**Wilayah:** `app/library/Deploy/`, `app/library/Docker/`, `app/library/Adminer/` (helper container Adminer + reverse proxy halaman `/database`, §5.17), `Nginx/`, `SSL/`, `Template/`, `Update/`, `Db/` (deteksi container + profil koneksi/backup saja), `templates/`, `cli/deploy.php`, `cli/ssl.php`, `cli/self-update.sh`, `cli/update-report.php`, `host/`, `docker-compose.yml`, `Dockerfile`, `config/deploy.php`.
 
 Aturan emas:
 1. **Hybrid yang disengaja**: CLI `docker compose` untuk orkestrasi (up/down/build/stop/start/pull); `DockerClient` (Engine API) untuk baca status/log/stats. Jangan pindahkan orkestrasi ke SDK.
@@ -86,7 +86,7 @@ Jebakan terbukti: SIGCHLD (`index-pack failed`, `proc_close()` selalu `-1`); `do
 
 ## Peran 3 — Auth & Security
 
-**Wilayah:** `app/library/Auth/`, `app/middleware/`, `app/library/Db/` (kebijakan akses), blok otorisasi di controller, guard ability, validasi input, `Update/UpdateService.php` (guard preflight), `app/functions.php` (`is_admin()`, `app_can()`, `app_role()`), `tests/AppAccessTest.php`, `tests/AppOwnershipTest.php`, `tests/DbContainerVisibilityTest.php`.
+**Wilayah:** `app/library/Auth/`, `app/middleware/`, `app/library/Db/` (kebijakan akses), `app/library/Adminer/` (pengecualian CSRF path-presisi + otorisasi proxy `AdminerProxy`), blok otorisasi di controller, guard ability, validasi input, `Update/UpdateService.php` (guard preflight), `app/functions.php` (`is_admin()`, `app_can()`, `app_role()`), `tests/AppAccessTest.php`, `tests/AppOwnershipTest.php`, `tests/DbContainerVisibilityTest.php`, `tests/CsrfExemptAdminerProxyTest.php`.
 
 Peta hak: global `admin`/`member` di `database/auth.json`; per-app `owner`/`operator`/`viewer` di `apps.json` (`owner_id` + `members`). viewer+ = `view`,`logs`; operator+ = `operate`,`deploy`,`stop`,`env`,`compose`,`network`,`domain`,`ssl`,`terminal`,`database`,`sharing`; owner-only = `delete`. Semua cek app **HANYA** lewat `AppAccess` (`roleFor()`, `can()`, `require()`, `visible()`, `abilitiesFor()`); ability tak dikenal → default **owner-only**.
 

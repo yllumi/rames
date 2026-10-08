@@ -8,6 +8,10 @@ declare(strict_types=1);
  * environment-dependent, tidak ada secret hard-coded (lihat copilot-instructions).
  */
 
+// Env adminer boleh bernilai "0" (= nonaktif) — `?:` akan menelan nilai itu,
+// jadi pembacaan dilakukan eksplisit di sini.
+$adminerNetworkTtlEnv = getenv('ADMINER_NETWORK_TTL');
+
 return [
     // Domain dasar; subdomain app = {name}.{app_domain}
     'app_domain' => getenv('APP_DOMAIN') ?: 'example.com',
@@ -85,12 +89,8 @@ return [
     'files_timeout' => (int) (getenv('FILES_TIMEOUT') ?: 120),                  // detik, perintah singkat di dalam container
     'files_transfer_timeout' => (int) (getenv('FILES_TRANSFER_TIMEOUT') ?: 600), // detik, docker cp & ekstraksi arsip
 
-    // Database manager (phpMyAdmin mini) — koneksi PDO ke MySQL/MariaDB container
     'dashboard_container' => getenv('HOSTNAME') ?: getenv('DASHBOARD_CONTAINER') ?: 'rames-webman',
-    'db_connect_timeout' => (int) (getenv('DB_CONNECT_TIMEOUT') ?: 10),   // detik, timeout koneksi PDO
-    'db_browse_per_page' => (int) (getenv('DB_BROWSE_PER_PAGE') ?: 50),   // baris per halaman browse
-    'db_max_rows' => (int) (getenv('DB_MAX_ROWS') ?: 500),                // batas baris hasil SQL editor
-    'db_export_timeout' => (int) (getenv('DB_EXPORT_TIMEOUT') ?: 600),    // detik, timeout mysqldump
+    // Timeout dump/restore logis (dipakai DbDump pada fitur backup/restore volume).
     'db_import_timeout' => (int) (getenv('DB_IMPORT_TIMEOUT') ?: 600),    // detik, timeout restore
 
     // Timeout (detik) untuk operasi docker compose / git yang panjang
@@ -152,4 +152,38 @@ return [
     'update_image' => getenv('UPDATE_IMAGE') ?: '',                            // kosong = image container dashboard
     'update_check_file' => getenv('UPDATE_CHECK_FILE') ?: (base_path() . '/runtime/update/check.json'),
     'update_run_dir' => getenv('UPDATE_RUN_DIR') ?: (base_path() . '/runtime/logs/update'),
+
+    // ---------------------------------------------------------------------
+    // Adminer sebagai mesin halaman /database (fitur D1)
+    // ---------------------------------------------------------------------
+    // Helper Adminer standalone (tanpa port publik) + reverse proxy HTTP dari
+    // dashboard. Dashboard TIDAK PERNAH require/mengeksekusi adminer.php.
+    // Peran AdminerHelper: jalankan `docker run -d --name <adminer_container>`
+    // pada network internal `adminer_network`, dan attach dashboard + helper ke
+    // network app target supaya helper bisa menjangkau container DB lewat DNS.
+    'adminer_image' => getenv('ADMINER_IMAGE') ?: 'adminer:6',
+    'adminer_container' => getenv('ADMINER_CONTAINER') ?: 'rames-adminer',
+    // Network internal (internal: true): Adminer tanpa auth tidak boleh terlihat
+    // container lain; kebutuhan helper hanya dashboard + network app target.
+    'adminer_network' => getenv('ADMINER_NETWORK') ?: 'rames-helpers',
+    // Worker `php -S` di helper (image adminer memakai php -S pada port 8080).
+    'adminer_workers' => (int) (getenv('ADMINER_WORKERS') ?: 8),
+    // Batas umur attach helper ke network app target (detik). Helper hanya perlu
+    // berada di network app saat melayani halaman /database; attach yang idle
+    // melebihi TTL dilepas oportunistik dari ensureRunning() supaya permukaan
+    // jaringan (egress + Adminer tanpa auth terlihat container lain di network
+    // non-internal) tidak menumpuk. 0 = nonaktif (tanpa prune). Network helper
+    // (`adminer_network`) TIDAK PERNAH dilepas. Catatan waktu disimpan tanpa
+    // kredensial apa pun di runtime/adminer-helper/networks.json.
+    'adminer_network_ttl' => max(0, (int) ($adminerNetworkTtlEnv !== false && $adminerNetworkTtlEnv !== ''
+        ? $adminerNetworkTtlEnv
+        : 1800)),
+    // Timeout klien HTTP proxy ke helper — aturan repo: TIDAK BOLEH > 30 detik.
+    // Nilai env di-cap di bawah agar konfigurasi tidak bisa melanggarnya.
+    'adminer_proxy_timeout' => min(30, max(1, (int) (getenv('ADMINER_PROXY_TIMEOUT') ?: 30))),
+    // Batas ukuran respons proxy (byte, default 64 MiB). Dump/import besar harus
+    // lewat fitur Volume/backup atau Terminal — bukan diakali lewat proxy.
+    'adminer_proxy_max_bytes' => max(1024, (int) (getenv('ADMINER_PROXY_MAX_BYTES') ?: 67108864)),
+    // Basis prefix URL publik halaman Adminer (per container: <base>/<container>/adminer).
+    'adminer_prefix_base' => getenv('ADMINER_PREFIX_BASE') ?: '/database',
 ];

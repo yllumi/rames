@@ -58,7 +58,12 @@ return [
 
     'secure' => false,
     
-    'same_site' => '',
+    // WAJIB 'lax': proxy Adminer halaman /database mengecualikan POST-nya dari
+    // token CSRF (form Adminer tidak punya token Rames, SPECS §7.10). Kompensasi
+    // utamanya adalah cookie sesi ini tidak ikut pada request lintas-situs —
+    // jangan dikosongkan (kosong = tanpa atribut SameSite; hanya mengandalkan
+    // default browser).
+    'same_site' => 'lax',
 
     'gc_probability' => [1, 1000],
 

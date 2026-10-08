@@ -248,11 +248,26 @@ class LocalDeployer implements DeployerInterface
         return $app;
     }
 
-    public function teardown(array $app, ?array $preserveVolumes = null): void
+    /**
+     * @param callable|null $logger opsional — callable(string $stage, string $message): void.
+     *        Tidak ada di DeployerInterface (kontrak lama): dipakai test & pemanggil
+     *        yang ingin menangkap peringatan non-fatal; tanpa logger, peringatan
+     *        ditulis ke runtime/logs/deploy/teardown.log.
+     */
+    public function teardown(array $app, ?array $preserveVolumes = null, ?callable $logger = null): void
     {
         $project = $app['name'];
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
+
+        // Lepaskan container ASING (mis. dashboard `rames-webman`, helper
+        // `rames-adminer`, helper backup) dari network project SEBELUM
+        // `docker compose down`. `down` menghapus network project; selama masih
+        // ada container di luar project yang menempel, Docker menolak dengan
+        // "Resource is still in use" → network project tersisa yatim dan
+        // pembersihan via Engine API pun gagal 403. Container milik project
+        // sendiri TIDAK pernah dilepas (label compose project).
+        $this->detachForeignContainers($project, $logger);
 
         // Hapus project lewat docker compose. Bila project TIDAK bisa dimuat
         // (mis. override stale mereferensikan service yang sudah tidak ada di
@@ -268,7 +283,7 @@ class LocalDeployer implements DeployerInterface
         // Sapu bersih sisa container & network project via Engine API (termasuk
         // container orphan yang sudah tidak ada di config compose saat ini) dan
         // volume bila mode purge. Idempoten — hanya menghapus yang masih ada.
-        $this->teardownViaApi($project, $preserveVolumes === null);
+        $this->teardownViaApi($project, $preserveVolumes === null, $logger);
 
         if ($preserveVolumes !== null) {
             // Pertahankan volume terpilih: down tanpa -v, lalu hapus hanya volume
@@ -415,7 +430,7 @@ class LocalDeployer implements DeployerInterface
      * Dipakai sebagai fallback saat compose project tidak bisa dimuat, dan
      * sebagai sapuan pembersih sisa container orphan setelah down.
      */
-    private function teardownViaApi(string $project, bool $removeVolumes): void
+    private function teardownViaApi(string $project, bool $removeVolumes, ?callable $logger = null): void
     {
         // 1) Stop & hapus semua container project.
         foreach ($this->dockerClient->listContainersForProject($project) as $c) {
@@ -429,13 +444,44 @@ class LocalDeployer implements DeployerInterface
             $this->dockerClient->removeContainer($id, true);
         }
 
-        // 2) Hapus network project.
-        foreach ($this->dockerClient->listNetworksForProject($project) as $n) {
+        // 2) Lepaskan container asing yang masih menempel di network project
+        //    (detach diulang di sini karena jalur fallback ini juga dipakai saat
+        //    `docker compose down` gagal sebelum sempat membersihkan network),
+        //    lalu hapus network project.
+        $this->detachForeignContainers($project, $logger);
+
+        try {
+            $networks = $this->dockerClient->listNetworksForProject($project);
+        } catch (\Throwable $e) {
+            $networks = [];
+            $this->teardownLog(
+                "PERINGATAN: daftar network project \"{$project}\" tidak dapat dibaca: " . $e->getMessage(),
+                $logger
+            );
+        }
+
+        foreach ($networks as $n) {
             $id = (string) ($n['Id'] ?? ($n['Name'] ?? ''));
+            $name = (string) ($n['Name'] ?? $id);
             if ($id === '') {
                 continue;
             }
-            $this->dockerClient->removeNetwork($id);
+            try {
+                $this->dockerClient->removeNetwork($id);
+            } catch (\Throwable $e) {
+                // Docker menolak (mis. 403 "Resource is still in use") selama
+                // masih ada container menempel. Penghapusan app TIDAK dibatalkan
+                // — AppController menandai exception sebagai "Gagal menghapus"
+                // dan tidak menghapus record app — tetapi kegagalan ini TIDAK
+                // boleh diam: catat peringatan jelas + sisa yang perlu dibereskan
+                // manual, tanpa mengklaim network sudah terhapus.
+                $this->teardownLog(
+                    "PERINGATAN: network \"{$name}\" ({$id}) GAGAL dihapus dan masih tersisa: " . $e->getMessage()
+                    . ' — kemungkinan masih ada container di luar project yang menempel; '
+                    . 'periksa/putuskan di halaman /networks lalu hapus network-nya.',
+                    $logger
+                );
+            }
         }
 
         // 3) Hapus volume project (hanya mode purge — preserve dikelola pemanggil).
@@ -444,6 +490,167 @@ class LocalDeployer implements DeployerInterface
             if ($names !== []) {
                 $this->compose->removeVolumes($names);
             }
+        }
+    }
+
+    /**
+     * Lepaskan container yang BUKAN milik project dari seluruh network milik
+     * project — tanpa menghentikan atau menghapus container tersebut.
+     *
+     * Latar: network hanya bisa dihapus bila tidak ada container yang menempel.
+     * Container tetap dari luar project (dashboard `rames-webman`, helper
+     * Adminer `rames-adminer`, helper backup, dsb.) membuat
+     * `docker compose down` gagal ("Resource is still in use") dan penghapusan
+     * network via Engine API mengembalikan 403, sehingga teardown app gagal dan
+     * menyisakan network yatim. Melepas attachment container asing TIDAK
+     * menghentikan/menghapus container itu (dashboard tetap hidup).
+     *
+     * Batas & keamanan:
+     *  - Hanya network milik project (`com.docker.compose.project=<project>`)
+     *    yang diperiksa; network app lain & network eksternal `external: true`
+     *    (dipakai bersama) tidak pernah disentuh.
+     *  - Container milik project TIDAK pernah dilepas — dicek lewat filter label
+     *    yang sama (`listContainersForProject`) dan diverifikasi ulang lewat
+     *    `inspectContainer`. Bila daftar container project tidak terbaca, method
+     *    ini berhenti tanpa melepas apa pun (konservatif: lebih baik network
+     *    gagal dihapus daripada memutus container milik project sendiri).
+     *  - Idempoten & toleran error: 404/403/409 dsb. dicatat sebagai peringatan
+     *    dan tidak menggagalkan teardown.
+     */
+    private function detachForeignContainers(string $project, ?callable $logger = null): void
+    {
+        // Daftar network milik project. Gagal baca → jangan menebak.
+        try {
+            $networks = $this->dockerClient->listNetworksForProject($project);
+        } catch (\Throwable $e) {
+            $this->teardownLog(
+                "PERINGATAN: daftar network project \"{$project}\" tidak dapat dibaca: " . $e->getMessage(),
+                $logger
+            );
+            return;
+        }
+        if ($networks === []) {
+            return;
+        }
+
+        // Daftar container milik project (filter label yang sama dengan network).
+        try {
+            $own = [];
+            foreach ($this->dockerClient->listContainersForProject($project) as $c) {
+                $id = (string) ($c['Id'] ?? '');
+                if ($id !== '') {
+                    $own[$id] = true;
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->teardownLog(
+                "PERINGATAN: daftar container project \"{$project}\" tidak dapat dibaca — "
+                . 'attachment tidak dilepas agar container project tidak terputus: ' . $e->getMessage(),
+                $logger
+            );
+            return;
+        }
+
+        foreach ($networks as $network) {
+            $networkId = (string) ($network['Id'] ?? ($network['Name'] ?? ''));
+            $networkName = (string) ($network['Name'] ?? $networkId);
+            if ($networkId === '') {
+                continue;
+            }
+
+            try {
+                $detail = $this->dockerClient->inspectNetwork($networkId);
+            } catch (\Throwable $e) {
+                // Tidak tahu siapa yang menempel → jangan menebak; biarkan langkah
+                // penghapusan network melaporkan kegagalannya sendiri.
+                $this->teardownLog(
+                    "PERINGATAN: network \"{$networkName}\" tidak dapat di-inspect: " . $e->getMessage(),
+                    $logger
+                );
+                continue;
+            }
+
+            $attached = $detail['Containers'] ?? [];
+            foreach (is_array($attached) ? $attached : [] as $key => $endpoint) {
+                $endpoint = is_array($endpoint) ? $endpoint : [];
+                $containerId = is_string($key) && $key !== ''
+                    ? $key
+                    : (string) ($endpoint['ContainerID'] ?? '');
+                if ($containerId === '' || isset($own[$containerId]) || $this->isProjectContainer($containerId, $project)) {
+                    continue;
+                }
+
+                $name = ltrim((string) ($endpoint['Name'] ?? ''), '/');
+                try {
+                    $this->dockerClient->disconnectContainerFromNetwork($networkId, $containerId, false);
+                    $this->teardownLog(
+                        "Container asing \"{$name}\" ({$containerId}) dilepas dari network \"{$networkName}\" "
+                        . 'agar network project dapat dihapus (container tidak dihentikan/dihapus).',
+                        $logger
+                    );
+                } catch (\Throwable $e) {
+                    // 404/403/409 dsb. — jangan gagalkan teardown; bila network
+                    // tetap gagal dihapus, kegagalan itu dicatat di langkah 2.
+                    $this->teardownLog(
+                        "PERINGATAN: gagal melepas container asing \"{$name}\" ({$containerId}) "
+                        . "dari network \"{$networkName}\": " . $e->getMessage(),
+                        $logger
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * True bila container membawa label compose project milik $project.
+     *
+     * Lapis pertahanan kedua sebelum melepas attachment. Container yang tidak
+     * bisa di-inspect (sudah hilang) dianggap BUKAN milik project — pemanggil
+     * sudah menyaring lewat filter label `listContainersForProject`, dan
+     * disconnect sendiri toleran 404.
+     */
+    private function isProjectContainer(string $containerId, string $project): bool
+    {
+        try {
+            $inspect = $this->dockerClient->inspectContainer($containerId);
+        } catch (\Throwable $e) {
+            return false;
+        }
+        $labels = $inspect['Config']['Labels'] ?? [];
+        return is_array($labels) && (string) ($labels['com.docker.compose.project'] ?? '') === $project;
+    }
+
+    /**
+     * Catat pesan teardown non-fatal.
+     *
+     * Teardown dipanggil sinkron dari request HTTP (tanpa logger) maupun dari
+     * worker async (dengan logger). Peringatan sisa resource TIDAK boleh
+     * menggagalkan penghapusan app: AppController menandai exception sebagai
+     * "Gagal menghapus" dan membatalkan penghapusan record app — app yang
+     * container-nya sudah dibersihkan akan tertinggal setengah mati. Karena itu
+     * kegagalan pembersihan network dicatat (dengan prefix "PERINGATAN:") ke
+     * runtime/logs/deploy/teardown.log agar operator bisa membereskannya manual.
+     */
+    private function teardownLog(string $message, ?callable $logger = null): void
+    {
+        if ($logger !== null) {
+            $logger('teardown', $message);
+            return;
+        }
+
+        try {
+            $dir = runtime_path('logs/deploy');
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0775, true);
+            }
+            @file_put_contents(
+                $dir . '/teardown.log',
+                '[' . date('c') . '] ' . $message . PHP_EOL,
+                FILE_APPEND | LOCK_EX
+            );
+        } catch (\Throwable $e) {
+            // Tanpa bootstrap Webman (mis. skrip CLI polos) runtime_path() bisa
+            // melempar; logging bersifat best-effort — jangan gagalkan teardown.
         }
     }
 

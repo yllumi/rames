@@ -6,7 +6,7 @@ $active = 'database';
 
 <div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <h1 class="h3 mb-0">Database</h1>
-  <span class="text-muted small">Kelola MySQL/MariaDB di dalam container (phpMyAdmin mini)</span>
+  <span class="text-muted small">Kelola MySQL/MariaDB di dalam container lewat <strong>Adminer</strong></span>
 </div>
 
 <?php if (!($isAdmin ?? false)): ?>
@@ -68,7 +68,7 @@ $active = 'database';
           <?php endif; ?>
           <td class="text-end">
             <?php if ($r['can_manage'] ?? false): ?>
-              <a class="btn btn-outline-primary btn-sm" href="/database/<?= e(rawurlencode($r['container_name'])) ?>">Kelola &rarr;</a>
+              <a class="btn btn-outline-primary btn-sm" href="/database/<?= e(rawurlencode($r['container_name'])) ?>/adminer" target="_blank" rel="noopener">Kelola &rarr;</a>
             <?php else: ?>
               <span class="text-muted small">tanpa hak</span>
             <?php endif; ?>
@@ -80,5 +80,11 @@ $active = 'database';
   </div>
   <?php endif; ?>
 </div>
+
+<p class="text-muted small mt-3 mb-0">
+  Adminer disajikan dari helper internal Rames (tanpa port publik), tetap di balik login dan hak akses app.
+  Untuk impor/ekspor <em>dump</em> berukuran besar, pakai fitur <strong>Volume/backup</strong> atau tab
+  <strong>Terminal</strong> &mdash; proxy Adminer punya batas waktu (&le;30&nbsp;detik) dan ukuran respons.
+</p>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

@@ -337,7 +337,7 @@ Logo produk yang tersedia dari Dashboard Icons dibundel sebagai aset lokal (sumb
 
 Kegagalan sebelum entri app dibuat membersihkan direktori `apps/{name}` (tidak ada state setengah jadi). Hasil akhirnya adalah **app mode compose biasa**: bisa Stop/Start/Rebuild (Deploy Ulang), atur domain & SSL, kelola env/network/nama container, terminal, log, dan database — dengan catatan **tanpa rollback** karena tidak ada repo Git (§7.5).
 
-**Template bawaan galeri** (ikut versi repo, bukan data runtime): `uptime-kuma`, `n8n`, `waha`, `wabaileys`, `ghost`, `outline`, `nocodb`, `raisfast`, `openclaw`, `lemp`, `cockpit`, `adminer`, serta server database `mysql` (MySQL 8.4 LTS) dan `mariadb` (MariaDB 11.4 LTS). Template database hanya menerima dua hal saat create: **password root** (auto-generate bila dikosongkan) dan **nama database awal** — sengaja **tanpa** user aplikasi (`MYSQL_USER`/`MARIADB_USER`), karena halaman `/database` memilih kredensial otomatis dan mengutamakan user aplikasi di atas root (`DbCredentialResolver`) sehingga panel manager akan kehilangan hak admin; user aplikasi dibuat dari tab **Pengguna** di `/database`. Keduanya juga sengaja **tidak mem-publish port ke host**: app tanpa vhost/subdomain, port 3306 tidak diteruskan ke host (tidak terekspos jaringan), dan server dikelola lewat `/database` (dashboard menyambung sendiri ke network app). Data disimpan di volume per app sehingga aman saat container dibuat ulang; blok `ports:` bisa ditambahkan lewat tab Compose lalu Deploy Ulang bila DB perlu dijangkau dari host / app lain.
+**Template bawaan galeri** (ikut versi repo, bukan data runtime): `uptime-kuma`, `n8n`, `waha`, `wabaileys`, `ghost`, `outline`, `nocodb`, `raisfast`, `openclaw`, `lemp`, `cockpit`, `adminer`, serta server database `mysql` (MySQL 8.4 LTS) dan `mariadb` (MariaDB 11.4 LTS). Template database hanya menerima dua hal saat create: **password root** (auto-generate bila dikosongkan) dan **nama database awal** — sengaja **tanpa** user aplikasi (`MYSQL_USER`/`MARIADB_USER`), karena `DbCredentialResolver` mengutamakan pasangan user aplikasi di atas root: bila dideklarasikan, sesi Adminer `/database` (dan **dump backup otomatis**) ikut memakai user ber-hak-terbatas, bukan root (kemampuan admin penuh seperti CREATE DATABASE/USER & GRANT tidak lagi jadi alasan — panel `/database` kini Adminer, §7.10). User aplikasi untuk dipakai aplikasi dibuat dari **dalam Adminer** (bukan tab Pengguna yang sudah tidak ada). Keduanya juga sengaja **tidak mem-publish port ke host**: app tanpa vhost/subdomain, port 3306 tidak diteruskan ke host (tidak terekspos jaringan), dan server dikelola lewat `/database` — proxy Adminer (§7.10) menyambung sendiri ke network app lewat helper internal. Data disimpan di volume per app sehingga aman saat container dibuat ulang; blok `ports:` bisa ditambahkan lewat tab Compose lalu Deploy Ulang bila DB perlu dijangkau dari host / app lain.
 
 Template `ghost` adalah template Ghost core minimal: `ghost:6-alpine` + `mysql:8.0`, dengan named volume untuk content dan database. `GHOST_URL` wajib sama dengan domain/subdomain app yang diatur di Rames; `MYSQL_ROOT_PASSWORD` dan `MYSQL_PASSWORD` dibuat otomatis bila dikosongkan. Port container Ghost `2368` dipublish dan host port-nya dikelola Rames untuk Nginx native. Template ini **bukan** compose resmi `ghost-docker` utuh: tidak menyertakan Caddy, service Tinybird/Analytics, atau ActivityPub self-hosted.
 
@@ -395,7 +395,7 @@ Template `adminer` adalah klien manajemen database berbasis web serbaguna: satu 
 
 Environment form (3 field, semuanya punya `default` sehingga boleh dikosongkan): `ADMINER_DEFAULT_SERVER` (default `host.docker.internal`) — nilai awal kolom **Server** di halaman login (diisi image dari `$_ENV`; fallback bawaannya `db`); `ADMINER_DESIGN` (default `pepa-linha`) — tema bawaan image; `TZ` (default `Asia/Jakarta`). Compose menambahkan `extra_hosts host.docker.internal:host-gateway` (pola sama dengan template `openclaw`) supaya database yang port-nya dipublish di host bisa dijangkau container — bukan loopback container itu sendiri. Image menyediakan driver **MySQL/MariaDB** (`mysqli`), **PostgreSQL** (`pdo_pgsql`), **SQLite** (`pdo_sqlite`), dan **MS SQL** (`pdo_dblib`) secara langsung; driver lain (mis. Oracle, Firebird, MongoDB) **butuh ekstensi PHP tambahan** (`oci8`/`interbase`/`mongodb`) yang tidak dipasang template ini. SimpleDB & Elasticsearch **tidak** tersedia (tidak muncul di dropdown *System* Adminer 6), berbeda dari teks README Docker Hub yang sudah basi. Plugin tambahan dapat diaktifkan lewat `ADMINER_PLUGINS` + file plugin dengan mengubah compose di tab **Compose** lalu Deploy Ulang; template **tidak** memakainya secara default.
 
-Tiga cara menghubungkan ke database: (a) **DB app Rames lain** — attach kedua app ke shared external network yang sama lewat tab **Network** (ARCHITECTURE §5.8), lalu isi Server dengan nama container DB (mis. `namaapp-mariadb-1`); (b) **DB di host** — publish port DB ke host lalu biarkan Server = `host.docker.internal`; (c) **DB remote** — isi Server dengan hostname/IP server database dan pastikan port-nya terbuka. Adminer **bukan** pengganti halaman `/database` dashboard (yang khusus MySQL/MariaDB dan menyambung sendiri ke network app), melainkan klien serbaguna (mis. PostgreSQL/SQLite) lewat domain app. Logo galeri memakai aset lokal `public/images/templates/adminer.svg` (sumber Dashboard Icons). Dokumentasi resmi: [Adminer Docker](https://hub.docker.com/_/adminer).
+Tiga cara menghubungkan ke database: (a) **DB app Rames lain** — attach kedua app ke shared external network yang sama lewat tab **Network** (ARCHITECTURE §5.8), lalu isi Server dengan nama container DB (mis. `namaapp-mariadb-1`); (b) **DB di host** — publish port DB ke host lalu biarkan Server = `host.docker.internal`; (c) **DB remote** — isi Server dengan hostname/IP server database dan pastikan port-nya terbuka. Perannya **berbeda** dari halaman `/database` dashboard: template ini adalah klien serbaguna untuk DB **remote/arbitrer** (mis. PostgreSQL/SQLite, atau server di luar Rames) lewat domain app, sedangkan container DB yang dikelola dashboard dibuka dari `/database` — di sana Rames menjalankan helper Adminer internal tanpa port publik (§7.10). Logo galeri memakai aset lokal `public/images/templates/adminer.svg` (sumber Dashboard Icons). Dokumentasi resmi: [Adminer Docker](https://hub.docker.com/_/adminer).
 
 ### 7.3 Halaman Detail App
 
@@ -421,10 +421,13 @@ Dua mode (dipilih di modal konfirmasi pada halaman detail app):
 - **Hapus total**: `docker compose -p {name} down -v` → semua named + anonymous volume terhapus permanen (butuh konfirmasi tambahan).
 
 Langkah umum:
-1. Down container sesuai mode volume di atas
-2. Hapus config Nginx terkait, reload Nginx
-3. Hapus direktori `apps/{name}`
-4. Hapus entry dari `apps.json`
+1. **Lepas container asing** dari network project SEBELUM `docker compose down`. Network project tidak bisa dihapus selama masih ada container di luar project yang menempel (mis. helper `rames-adminer` atau container dashboard `rames-webman`) — Docker menolak `Resource is still in use` dan pembersihan network via Engine API gagal 403, sehingga penghapusan app ikut gagal. Container milik project **tidak pernah** dilepas (label `com.docker.compose.project`), dan container asing hanya **dilepas** (tanpa dihentikan/dihapus). Gagal lepas satu container → dicatat, teardown lanjut.
+2. Down container sesuai mode volume di atas
+3. Hapus config Nginx terkait, reload Nginx
+4. Hapus direktori `apps/{name}`
+5. Hapus entry dari `apps.json`
+
+Kegagalan **penghapusan network** project **tidak** lagi menggagalkan penghapusan app: dicatat sebagai **PERINGATAN** ke `runtime/logs/deploy/teardown.log` (jalur produksi tanpa logger), karena exception di sini membuat `AppController::delete()` menandai "Gagal menghapus" **tanpa** menghapus record app — app setengah mati (container sudah dibersihkan, entri tetap ada). Operator diberi tahu sisa resource yang perlu dibereskan manual dari halaman **/networks**.
 
 Volume yatim (ditinggalkan app yang dihapus dengan mode preserve) dapat dilihat & dibersihkan di halaman **/volumes** — hanya volume yang project-nya sudah tidak ada di `apps.json` yang bisa di-purge (volume app aktif ditolak).
 
@@ -598,7 +601,7 @@ Setiap app **dimiliki satu user (owner)** dan hanya terlihat oleh user yang berh
 | Environment variable & external network | — | ✅ | ✅ | ✅ |
 | Custom domain & SSL | — | ✅ | ✅ | ✅ |
 | Rute proxy tambahan per app (`routes`, §8.2a) | — | ✅ | ✅ | ✅ |
-| Terminal container & Database manager | — | ✅ | ✅ | ✅ |
+| Terminal container & Database manager (Adminer, §7.10) | — | ✅ | ✅ | ✅ |
 | File manager container (`files`, §7.9) | — | ✅ | ✅ | ✅ |
 | Atur batas resource CPU/memori per service (`limits`) | — | — | — | ✅ |
 | Lihat log container (popup modal) | ✅ | ✅ | ✅ | ✅ |
@@ -608,13 +611,13 @@ Setiap app **dimiliki satu user (owner)** dan hanya terlihat oleh user yang berh
 
 **Penegakan (satu pintu)**
 - `app\library\Auth\AppAccess` adalah satu-satunya tempat aturan hak: `roleFor()`, `can($ability, $app, $user)`, `require()` (melempar `AppAccessDenied`), `visible()`. Ability `limits` (batas maksimum CPU/memori per service, §7.6b) khusus **admin**; owner/operator/viewer tidak memilikinya. Ability `routes` (rute proxy tambahan, §8.2a) setara `domain` = **operator** ke atas. Ability `files` (file manager container, §7.9) setara `terminal`/`database` = **operator** ke atas — operator pada app yang sama sudah memegang shell penuh di container yang sama, sehingga file manager tidak menambah kuasa baru.
-- Semua controller (App, Terminal, File, Log, Database, SSL, Volume, Network) memanggil `AppAccess`/`visible()`; tidak ada pengecekan `owner_id` yang ditulis ulang di tempat lain. `DatabaseController` memusatkan pemeriksaan pada `findOwningApp()` (dipakai semua endpoint DB).
+- Semua controller (App, Terminal, File, Log, Database, SSL, Volume, Network) memanggil `AppAccess`/`visible()`; tidak ada pengecekan `owner_id` yang ditulis ulang di tempat lain. `DatabaseController` memusatkan pemeriksaan pada `findOwningApp()` (dipakai daftar `/database` **dan** proxy Adminer, §7.10).
 - **403 vs 404**: akses tidak sah → **404 Not Found** (`AppAccessDenied::render()`), supaya keberadaan app milik user lain tidak bocor. Endpoint `/api/*` menerima JSON `{"code":404}`, halaman biasa menerima halaman 404.
 - Semua endpoint aksi tetap menolak di server meski tombolnya disembunyikan di UI (defense in depth).
 
 **Penyaringan resource global**
 - `/apps` — hanya app yang boleh diakses; tab filter **Semua (admin) / Milik Saya / Dibagikan ke Saya**; kolom **Owner** untuk admin.
-- `/database` — non-admin hanya melihat container MySQL/MariaDB milik app yang bisa diaksesnya (milik sendiri + yang dibagikan); container app user lain dan container eksternal hanya tampil untuk admin. Tombol **Kelola** hanya muncul bila user punya ability `database` (operator ke atas) — endpoint-nya tetap menolak 404 bila dipaksa. Kolom Owner ditampilkan untuk admin.
+- `/database` — non-admin hanya melihat container MySQL/MariaDB milik app yang bisa diaksesnya (milik sendiri + yang dibagikan); container app user lain dan container eksternal hanya tampil untuk admin. Tombol **Kelola →** (membuka proxy Adminer, §7.10) hanya muncul bila user punya ability `database` (operator ke atas) — endpoint proxy tetap menolak 404 bila dipaksa. Kolom Owner ditampilkan untuk admin.
 - Nilai **environment variable** (bisa berisi kredensial) hanya ditampilkan untuk role **operator** ke atas; viewer hanya melihat keterangan tanpa nilainya.
 - `/ssl`, `/database`, `/volumes`, `/networks` — daftar disaring ke app yang boleh diakses (admin: semua). Volume **yatim** (project sudah tidak ada di `apps.json`) hanya tampil untuk admin.
 - Operasi global (buat/hapus network, connect/disconnect container, reload Nginx, purge volume) hanya admin.
@@ -729,6 +732,63 @@ Alasan `--user <uid pemilik repo>` (bukan root): (a) `git pull` sebagai root men
 **Batasan / future work**: belum ada editor binary/hex, ubah permission/owner (`chmod`/`chown`), kompresi, pencarian isi berkas, atau streaming berkas besar; format arsip terbatas `.zip`/`.tar.gz`/`.tgz`; operasi hanya pada container **hidup** (container berhenti harus dijalankan dulu).
 
 **Pengujian**: `tests/FilePathsTest.php` (`PathGuard`), `tests/FileTextContentTest.php` (`TextContent`), `tests/FileArchiveGuardTest.php` (zip-slip/symlink), `tests/FileListingParserTest.php` (parser BusyBox/GNU), `tests/FileInputTest.php` (kontrak field UI↔controller).
+
+### 7.10 Database (Adminer via helper + proxy)
+
+**Tujuan**: mengelola database MySQL/MariaDB yang berjalan di **container app** langsung dari dashboard. Halaman `/database` **bukan** lagi phpMyAdmin-mini buatan sendiri: Rames menjalankan **Adminer** (`adminer:6`) di **helper container** tanpa port publik, lalu meneruskan HTTP lewat **reverse proxy** dari Webman. Antarmuka lengkap (query, tabel, import/export, kelola user) tanpa memelihara klien SQL sendiri dan tanpa mengekspos port DB/Adminer ke jaringan. Ini menggantikan `DbClient`/`DbUserManager` dan 13 aksi lama (`manage`/`connect`/`query`/`row*`/`user*`/`export`/`import`) beserta view `db/manage.php` + `db/partials/*`.
+
+```mermaid
+flowchart LR
+    B[Browser + sesi Rames] --> W[Webman: AuthMiddleware + CSRF + AppAccess]
+    W -->|"reverse proxy HTTP, X-Forwarded-Prefix"| H["helper rames-adminer<br/>adminer:6 · php -S · tanpa port publik"]
+    H -->|"TCP via network app"| D[(container DB<br/>MySQL/MariaDB)]
+    W -.->|"jar cookie Adminer di sesi server"| W
+```
+
+**Kebutuhan**
+- Ability `database` = **operator** ke atas (§7.7); penolakan **404** (bukan 403). Controller hanya mediator — logika di `app\library\Adminer\*`.
+- Daftar container disaring `AppAccess::visible()` + `DbContainerDetector::detectAll()` (non-admin: hanya app yang boleh diakses; container eksternal & app user lain disembunyikan). Baris **Kelola →** hanya muncul untuk pemilik ability `database`.
+- Helper dijalankan otomatis saat pertama dibuka (`AdminerHelper::ensureRunning()`): image `adminer:6` (`ADMINER_IMAGE`), nama `rames-adminer` (`ADMINER_CONTAINER`), worker `php -S` (`PHP_CLI_SERVER_WORKERS` dari `ADMINER_WORKERS`, default 8), `--restart unless-stopped` **tanpa** `--rm`.
+- Helper berbagi **network internal** `rames-helpers` (`ADMINER_NETWORK`) dengan dashboard, lalu di-attach ke network app target tempat container DB berada (dipilih `AdminerHelper::targetNetwork()`); host koneksi DB = **nama container** DB (`AdminerHelper::databaseHost()`).
+- **Batas umur attach**: helper hanya perlu berada di network app saat melayani `/database`; attach yang idle melebihi `ADMINER_NETWORK_TTL` (default 1800 detik; `0` = nonaktif) dilepas **oportunistik** dari `ensureRunning()` (tanpa scheduler baru). Network `rames-helpers` **tidak pernah** dilepas. Catatan waktu di `runtime/adminer-helper/networks.json` (direktori 0700/berkas 0600, **tanpa kredensial**, lewat `JsonStore`).
+
+**Risiko sisa (diterima — pemilik: operasi).** Selama helper ter-attach ke network app (yang **bukan** `internal`), helper **punya egress** dan **halaman login Adminer (tanpa auth) dapat dijangkau container lain di network itu**. Mitigasinya: TTL + attach hanya saat `/database` diakses. Karena prune bersifat **oportunistik** (berjalan pada request `/database` berikutnya), sebuah network bisa tetap menempel **lebih lama dari TTL** bila tidak ada request `/database` berikutnya. Operator dapat menurunkan `ADMINER_NETWORK_TTL` untuk jendela yang lebih pendek.
+
+**Alur**
+1. Browser membuka `/database` → daftar container (deteksi murah tanpa exec).
+2. Klik **Kelola →** → `GET /database/{container}/adminer`.
+3. `DatabaseController::adminer()`: validasi nama container → **otorisasi** (`findOwningApp()`/`AppAccess`, sebelum efek samping; gagal → 404) → `DbContainerDetector::isDbContainer()` → pastikan helper hidup & ter-attach → resolusi kredensial (`DbCredentialResolver`) + host/port (`AdminerHelper::databaseHost()`, `DbConnectionResolver::internalPort()`) → teruskan lewat `AdminerProxy::forward()`.
+4. Proxy mempertahankan **sesi Adminer di server**: auto-login `GET /` (ambil `token`) → `POST /` (`auth[driver|server|username|password|db]`) → 302; jar cookie disimpan di sesi Rames per container (kunci `adminer:<container>`), `Set-Cookie` Adminer **tidak pernah** diteruskan ke browser, dan cookie sesi Rames **tidak pernah** dikirim ke helper.
+5. Respons diteruskan kembali; body besar ditulis ke berkas temp `runtime/adminer-proxy/` (`LimitedTempSink`) lalu di-stream Workerman (byte tidak ditahan di memori PHP).
+
+**Kredensial manual (fallback)**: kredensial di-resolve otomatis dari env app/container lewat `DbCredentialResolver` (prioritas pasangan user aplikasi `MYSQL_USER`/`MARIADB_USER`/`DB_USERNAME`/`DB_USER` di atas root). Bila tak ada yang terdeteksi (mis. image DB custom), proxy **tidak** gagal: helper diberi `?server=<host:port>` sehingga **halaman login Adminer** tampil dengan kolom **Server** ter-prefill dan user mengetik kredensialnya sendiri. Jadi kredensial tak terdeteksi **bukan** error/409.
+
+**Perilaku sesi**
+- Sesi Adminer (jar cookie) hidup di sesi server → tidak ada cookie Adminer di browser.
+- Sesi basi pada **GET** dipulihkan otomatis (login ulang **sekali**, lalu permintaan diulang) — aman karena halaman login berarti Adminer belum memproses apa pun.
+- Sesi basi pada request yang **mengubah data** (mis. POST query/import) → Rames menampilkan halaman **`db/session-expired`** berstatus **409**: token form Adminer terikat sesi sehingga aksi tidak dapat diulang otomatis; input user hilang dan harus diulang. Percobaan pertama & kedua **tidak** ber-efek samping.
+- Id helper berubah (helper di-recreate → sesi PHP Adminer hilang) → jar lama dibuang supaya auto-login dijalankan ulang.
+
+**Batas (timeout & ukuran)**
+- Timeout klien HTTP proxy dibatasi **≤30 detik** (`adminer_proxy_timeout`; env `ADMINER_PROXY_TIMEOUT`, nilai di-cap agar tidak bisa dilanggar).
+- Batas ukuran respons **dan** body unggahan `adminer_proxy_max_bytes` (`ADMINER_PROXY_MAX_BYTES`, default **64 MiB**); pelanggaran → **413**.
+- **Tidak** ada streaming inkremental: TTFB = durasi unduh penuh. Untuk **dump/import besar**, arahkan ke fitur **Volume/backup** (§8h) atau tab **Terminal** — jangan diakali lewat proxy Adminer (`AdminerProxy::LIMIT_MESSAGE`).
+- Rames **tidak pernah** menyunting HTML Adminer; prefix proxy diberitahu via `X-Forwarded-Prefix` sehingga `path` cookie & URL relatif benar.
+
+**Keamanan**
+- Helper **tanpa port publik**; hanya dijangkau dashboard lewat **nama container** di network internal `rames-helpers` (`internal: true`).
+- Otorisasi **sebelum** efek samping; nama container dari request divalidasi milik app (`AppContainers::resolve`) dan tidak pernah dipercaya.
+- Tidak ada kredensial DB di argv helper; kredensial hanya dipakai proxy saat auto-login HTTP sisi server.
+- Pengecualian CSRF **path-presisi** untuk proxy (`#^/database/[^/]+/adminer(/|$)#`, dicek **sebelum** `post()` agar body multipart utuh) — detail di `ARCHITECTURE.md` §5.17. Kompensasi: `AuthMiddleware` global tetap berjalan, otorisasi `AppAccess` di controller, cookie sesi ber-`SameSite=lax` yang **ditegakkan** di `config/session.php` (`'same_site' => 'lax'`; kosong = tanpa atribut SameSite, hanya mengandalkan default browser), cookie Adminer tidak pernah ke browser. **Catatan operator**: `config/session.php` memakai `'secure' => false` — cookie sesi **belum** dipaksa hanya-lewat-HTTPS; aktifkan bila dashboard selalu dilayani via HTTPS.
+- Berkas respons temp `runtime/adminer-proxy/` ditegaskan direktori **0700** & berkas **0600** (`AdminerTempDir`), dipangkas TTL 3600 s (juga dipanggil dari `ensureRunning()`) sehingga respons (mis. halaman DB terbuka) tidak bisa dibaca pengguna lain di host.
+- Header `X-Forwarded-*` dari klien **dibuang**; proxy menyetel sendiri `X-Forwarded-Prefix` (dari konfigurasi prefix), `X-Forwarded-Proto` (dari konteks request dashboard — TLS listener dashboard, atau `X-Forwarded-Proto: https` dari **peer internal**), dan `X-Forwarded-For` (`REMOTE_ADDR` dashboard, satu IP valid). `X-Forwarded-Host`/`X-Real-IP` **tidak** dikirim. `AdminerProxy::normalizePath()` juga menolak bentuk ter-encode `%2e`/`%2f`/`%5c` (case-insensitive) selain `..`/path absolut/`\\`/`//`.
+- Audit trail akses: `runtime/logs/db/{date}.log` (per navigasi halaman + sesi kedaluwarsa).
+
+**Batasan / future work**: hanya MySQL/MariaDB (deteksi `DbContainerDetector`); tidak ada streaming dump/import besar (timeout ≤30 s + batas ukuran); tidak ada multi-tab query atau saved query.
+
+**Gap verifikasi (diterima)**: jalur pengembalian body via `Webman\Http\Response::withFile()` + pembersihan berkas temp `Timer` (unduh/ekspor besar) **belum** tercakup uji otomatis ber-sesi — sudah diuji **manual** oleh pemilik, tetapi setiap perubahan di jalur itu wajib diuji manual lagi di browser.
+
+**Pengujian**: `tests/AdminerHelperTest.php`, `tests/AdminerProxyTest.php`, `tests/AdminerProxyForwardTest.php` (fake `tests/FakeAdminerHandler.php`), `tests/CsrfExemptAdminerProxyTest.php`, `tests/AdminerNetworkTtlTest.php` (prune TTL/`ensureOffNetwork`/izin temp; fake Docker client), `tests/AdminerForwardContextTest.php` (`adminerProxyContext()` — proto/for dari konteks dashboard, anti-spoof); `tests/DbContainerDetectorTest.php`, `tests/DbCredentialResolverTest.php`, `tests/DbContainerVisibilityTest.php`.
 
 ## 8. Reverse Proxy / Subdomain Routing
 
@@ -1140,6 +1200,16 @@ MONITOR_STATS_TIMEOUT=20    # timeout satu siklus stats container (detik)
 MONITOR_POLL_MS=7000        # interval polling metrik host di /monitor (ms, 0 = mati)
 FILES_TIMEOUT=120           # timeout perintah singkat file manager di dalam container (detik, §7.9)
 FILES_TRANSFER_TIMEOUT=600  # timeout docker cp & ekstraksi arsip file manager (detik, §7.9)
+# Adminer sebagai mesin halaman /database (§7.10) — helper tanpa port publik + reverse proxy.
+ADMINER_IMAGE=adminer:6             # image helper Adminer
+ADMINER_CONTAINER=rames-adminer     # nama container helper
+ADMINER_NETWORK=rames-helpers       # network internal (internal: true) dashboard + helper
+ADMINER_NETWORK_TTL=1800            # detik; attach helper ke network app dilepas bila idle ≥ TTL (0 = nonaktif)
+ADMINER_WORKERS=8                   # worker `php -S` di helper (PHP_CLI_SERVER_WORKERS)
+ADMINER_PROXY_TIMEOUT=30            # timeout klien HTTP proxy (detik; di-cap ≤30)
+ADMINER_PROXY_MAX_BYTES=67108864    # batas ukuran respons/body proxy (byte, 64 MiB)
+ADMINER_PREFIX_BASE=/database       # basis prefix URL publik Adminer per container
+DB_IMPORT_TIMEOUT=600       # timeout restore dump logis (DbDump) pada Volume/backup (§8h) — bukan halaman /database
 TEMPLATES_PATH={proyek}/templates   # folder galeri template create app (§7.2b)
 UPDATE_ENABLED=true         # false = sembunyikan seluruh fitur self-update (§7.8)
 UPDATE_BRANCH=              # branch yang di-update (kosong = branch aktif repo)

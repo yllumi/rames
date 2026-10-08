@@ -56,10 +56,10 @@ services:
       TZ: ${TZ}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
-      # JANGAN menambahkan MYSQL_USER/MYSQL_PASSWORD: halaman /database memilih
-      # kredensial otomatis dan mengutamakan user aplikasi di atas root
-      # (DbCredentialResolver), sehingga panel /database kehilangan hak admin.
-      # Buat user terbatas dari tab Pengguna di halaman /database.
+      # JANGAN menambahkan MYSQL_USER/MYSQL_PASSWORD: kredensial dipilih otomatis
+      # (DbCredentialResolver) dan mengutamakan user aplikasi di atas root,
+      # sehingga sesi Adminer (/database) dan dump backup otomatis jadi
+      # ber-hak-terbatas. Buat user terbatas dari dalam Adminer (/database → Kelola).
 
     volumes:
       # Data + system tables MySQL. Volume di-scope per app (nama project compose

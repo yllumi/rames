@@ -12,7 +12,7 @@ Kamu adalah AI senior engineer pada **Rames** — **deploy dashboard** berbasis 
 
 - **Framework:** Webman (`workerman/webman-framework`) — HTTP worker **persistent**; state proses bertahan antar-request.
 - **View:** native PHP (mesin `Raw`), ekstensi `.php` di `app/view/` — tanpa build step, tanpa bundler.
-- **Data dashboard:** berkas JSON di `database/` (`apps.json`, `auth.json`) lewat `JsonStore` — **bukan** RDBMS; koneksi PDO hanya untuk *database milik app* yang dikelola (via `DbClient`).
+- **Data dashboard:** berkas JSON di `database/` (`apps.json`, `auth.json`) lewat `JsonStore` — **bukan** RDBMS. Database milik app diakses lewat **Adminer** (reverse proxy ke helper, `app/library/Adminer/`) atau CLI dump (`DbDump`, fitur backup/restore) — **tidak ada** klien PDO di dalam dashboard (`DbClient` dihapus).
 - **Docker:** CLI `docker compose` untuk orkestrasi (`DockerComposeRunner`) + Engine API via unix socket untuk operasi baca (`DockerClient`, Guzzle).
 - **Test:** PHPUnit 10 (`composer test`).
 
@@ -33,13 +33,14 @@ Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputus
 | 7 | **DILARANG** membuat HTTP client (Guzzle) tanpa `timeout` yang wajar (maks 30 detik). | Request menggantung tak terbatas. |
 | 8 | **DILARANG** mengeksekusi command sebagai **string shell** (`shell_exec`, `exec`, string ke `proc_open`). Selalu **array + `bypass_shell`** lewat `app\library\Support\ProcessRunner`. | Command injection. |
 | 9 | **DILARANG** spawn proses yang exit code-nya dibaca tanpa `app\library\Support\SigchldGuard`. `SIGCHLD=SIG_IGN` bocor lewat fork+exec di worker persistent → `waitpid` gagal & `proc_close()` selalu `-1`. | git/compose "gagal" padahal sukses. |
-| 10 | **DILARANG** query tanpa parameter binding (berlaku untuk `DbClient`/PDO ke database app). | SQL injection. |
+| 10 | **DILARANG** query SQL tanpa parameter binding. Di dashboard tidak ada lagi klien PDO (`DbClient` dihapus): SQL hanya dijalankan lewat tool CLI (`DbDump`, backup/restore) dengan kredensial via `MYSQL_PWD` dari stdin — **bukan** argv/string command. | SQL injection / kebocoran kredensial. |
 | 11 | **DILARANG** memakai `pcntl_fork`+`pcntl_exec` untuk spawn worker diganti `proc_open`. | Request HTTP memblokir sampai build selesai. |
 | 12 | **DILARANG** mengubah respons akses tidak sah dari **404 → 403**, atau menaruh cek otorisasi hanya di view/tombol. Semua cek app **hanya** lewat `AppAccess` (satu pintu). | Kebocoran keberadaan app milik user lain. |
 | 13 | **DILARANG** mengeset ulang/menghapus session user di tengah transaksi sebelum transaksi selesai. | Kehilangan konteks user. |
 | 14 | **DILARANG** menambah `container_name`, `name:` level atas, `build:`, atau replica/`scale` > 1 ke `templates/`; dan **DILARANG** menulis `container_name` bentrok tanpa fail-fast `ContainerNames` lebih dulu. | `compose up` gagal di tengah deploy. |
 | 15 | **DILARANG** menyentuh/memodifikasi data runtime nyata saat menguji: `database/*.json`, `database/keys/`, `database/env/`, `apps/`, `nginx-status/`. Pakai path temp (`AppStore($path)`, `UserStore($path)`). | Merusak instalasi nyata. |
 | 16 | **DILARANG** menjalankan update/rollback dashboard sungguhan, menghapus volume, atau `docker compose down` pada project nyata saat verifikasi. | Dashboard mati / data hilang. |
+| 17 | **DILARANG** melebarkan pengecualian CSRF proxy Adminer di luar pola path-presisi `#^/database/[^/]+/adminer(/|$)#` (dicek **sebelum** `post()` agar body multipart utuh), menyunting HTML Adminer (prefix cukup lewat `X-Forwarded-Prefix`), atau menaikkan batas proxy untuk dump/import besar — timeout proxy **≤ 30 detik**, batas ukuran respons default **64 MiB**; dump/import besar lewat Volume/backup atau Terminal. | Celah CSRF/XSS, timeout, memori. |
 
 ---
 
@@ -49,7 +50,7 @@ Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputus
 |---|---|
 | `app/controller/` | Mediator HTTP: validasi input, panggil library, kembalikan respons. Tanpa logika bisnis & tanpa state. |
 | `app/middleware/` | `CsrfMiddleware` (semua POST/PUT/PATCH/DELETE) → `AuthMiddleware` (login + sinkronisasi session↔`auth.json`) → `StaticFile`. |
-| `app/library/` | **Semua logika bisnis**: `Storage` (`JsonStore`, `AppStore`), `Auth` (`UserStore`, `AppAccess`, `AppAccessDenied`), `Support` (`ProcessRunner`, `SigchldGuard`), `Docker` (`DockerClient`, `AppPorts`, `AppContainers`, `ContainerLogs`, `ContainerStats`, `DockerComposeRunner`, `DockerExec`), `Deploy` (`DeployerInterface`, `LocalDeployer`, `ComposeSource`, `ComposeBinds`, `ContainerNames`), `Files` (`ContainerFiles`, `PathGuard`, `TextContent`, `ArchiveGuard`, `ListingParser`, `FilesInput`, `FileError`), `Nginx`, `SSL`, `Update`, `Db`, `Monitor`, `System`, `Template`, `Git`. |
+| `app/library/` | **Semua logika bisnis**: `Storage` (`JsonStore`, `AppStore`), `Auth` (`UserStore`, `AppAccess`, `AppAccessDenied`), `Support` (`ProcessRunner`, `SigchldGuard`), `Docker` (`DockerClient`, `AppPorts`, `AppContainers`, `ContainerLogs`, `ContainerStats`, `DockerComposeRunner`, `DockerExec`), `Deploy` (`DeployerInterface`, `LocalDeployer`, `ComposeSource`, `ComposeBinds`, `ContainerNames`), `Files` (`ContainerFiles`, `PathGuard`, `TextContent`, `ArchiveGuard`, `ListingParser`, `FilesInput`, `FileError`), `Adminer` (`AdminerHelper`, `AdminerProxy`, `LimitedTempSink`, `AdminerProxyError`, `AdminerProxyLimitExceeded` — helper + reverse proxy halaman `/database`), `Nginx`, `SSL`, `Update`, `Db` (`DbContainerDetector`, `DbConnectionResolver`, `DbCredentialResolver`, `DbDump` — backup & profil koneksi), `Monitor`, `System`, `Template`, `Git`. |
 | `cli/*.php` | Worker **detached** (`deploy.php`, `ssl.php`) + skrip helper self-update (`self-update.sh`, `update-report.php`). |
 | `app/view/` + `public/` | View PHP native, CSS, JS. **Hanya merender** — tanpa logika bisnis. |
 | `templates/<slug>/` | Galeri template create app (ikut versi repo, **bukan** data runtime): `template.yml` + `docker-compose.yml` + `files/` + `guide.md` (panduan Markdown **katalog-only**, tidak di-materialize ke app). |

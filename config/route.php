@@ -161,26 +161,19 @@ Route::get('/api/monitor/host', [MonitorController::class, 'host']);
 
 /*
 |--------------------------------------------------------------------------
-| Database manager (MySQL/MariaDB di container) — phpMyAdmin mini
+| Database manager (MySQL/MariaDB di container) — daftar container + Adminer
 |--------------------------------------------------------------------------
-| Halaman global /database + halaman kelola per container. Profile koneksi
-| (host/port/kredensial) hidup di session; semua POST kena CSRF & AuthMiddleware.
+| Halaman global /database (daftar container DB) + reverse proxy Adminer per
+| container (fitur D1). Semua POST kena CSRF & AuthMiddleware; otorisasi
+| per-container dicek di controller (penolakan → 404).
 |--------------------------------------------------------------------------
 */
 Route::get('/database', [DatabaseController::class, 'index']);
-Route::get('/database/{container}', [DatabaseController::class, 'manage']);
-Route::post('/database/{container}/connect', [DatabaseController::class, 'connect']);
-Route::post('/database/{container}/disconnect', [DatabaseController::class, 'disconnect']);
-Route::post('/database/{container}/query', [DatabaseController::class, 'query']);
-Route::post('/database/{container}/row/insert', [DatabaseController::class, 'rowInsert']);
-Route::post('/database/{container}/row/update', [DatabaseController::class, 'rowUpdate']);
-Route::post('/database/{container}/row/delete', [DatabaseController::class, 'rowDelete']);
-Route::post('/database/{container}/user/create', [DatabaseController::class, 'userCreate']);
-Route::post('/database/{container}/user/delete', [DatabaseController::class, 'userDelete']);
-Route::post('/database/{container}/user/grant', [DatabaseController::class, 'userGrant']);
-Route::post('/database/{container}/user/revoke', [DatabaseController::class, 'userRevoke']);
-Route::post('/database/{container}/export', [DatabaseController::class, 'export']);
-Route::post('/database/{container}/import', [DatabaseController::class, 'import']);
+
+// Adminer (fitur D1): reverse proxy HTTP ke helper container Adminer (tanpa port
+// publik). GET (halaman/aset/unduhan) + POST (query, import multipart) lewat sini;
+// AuthMiddleware global tetap berlaku dan AppAccess dicek di controller (404).
+Route::any('/database/{container}/adminer[/{path:.*}]', [DatabaseController::class, 'adminer']);
 
 /*
 |--------------------------------------------------------------------------

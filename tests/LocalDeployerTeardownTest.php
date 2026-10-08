@@ -31,6 +31,21 @@ class TeardownFakeDockerClient extends DockerClient
     /** @var array<int,string> */
     public array $removedNetworks = [];
 
+    /** @var array<string,array> network Id => detail hasil inspectNetwork */
+    public array $networkDetails = [];
+    /** @var array<string,array<string,string>> container Id => Labels (inspectContainer) */
+    public array $containerLabels = [];
+    /** @var array<string,string> container Id => pesan error disconnect (mis. 403) */
+    public array $disconnectErrors = [];
+    /** @var array<string,string> network Id => pesan error removeNetwork (mis. 403) */
+    public array $removeNetworkErrors = [];
+    /** @var array<int,array{network:string,container:string}> */
+    public array $disconnected = [];
+    /** @var array<int,string> urutan operasi: disconnect:<id> / removeNetwork:<id> */
+    public array $ops = [];
+    /** @var bool simulasi inspectNetwork gagal (mis. 404/403) */
+    public bool $inspectNetworkThrows = false;
+
     public function __construct()
     {
         // sengaja tidak memanggil parent
@@ -51,6 +66,19 @@ class TeardownFakeDockerClient extends DockerClient
         return $this->networks;
     }
 
+    public function inspectNetwork(string $id): array
+    {
+        if ($this->inspectNetworkThrows) {
+            throw new \RuntimeException('gagal inspect network: HTTP 404 Not Found');
+        }
+        return $this->networkDetails[$id] ?? ['Id' => $id, 'Name' => '', 'Containers' => []];
+    }
+
+    public function inspectContainer(string $id): array
+    {
+        return ['Config' => ['Labels' => $this->containerLabels[$id] ?? []]];
+    }
+
     public function stopContainer(string $id): void
     {
         $this->stopped[] = $id;
@@ -61,8 +89,27 @@ class TeardownFakeDockerClient extends DockerClient
         $this->removedContainers[] = $id;
     }
 
+    public function disconnectContainerFromNetwork(string $networkId, string $containerId, bool $force = false): void
+    {
+        $this->ops[] = 'disconnect:' . $containerId;
+        if (isset($this->disconnectErrors[$containerId])) {
+            throw new \RuntimeException($this->disconnectErrors[$containerId]);
+        }
+        $this->disconnected[] = ['network' => $networkId, 'container' => $containerId];
+
+        // Simulasi efek nyata: attachment hilang setelah diputus (detach idempoten);
+        // pada kasus gagal (403) attachment TETAP menempel.
+        foreach ($this->networkDetails as $nid => $detail) {
+            unset($this->networkDetails[$nid]['Containers'][$containerId]);
+        }
+    }
+
     public function removeNetwork(string $id): void
     {
+        $this->ops[] = 'removeNetwork:' . $id;
+        if (isset($this->removeNetworkErrors[$id])) {
+            throw new \RuntimeException($this->removeNetworkErrors[$id]);
+        }
         $this->removedNetworks[] = $id;
     }
 }
@@ -157,12 +204,30 @@ class LocalDeployerTeardownTest extends TestCase
     private TeardownFakeDockerClient $docker;
     private TeardownTestDeployer $deployer;
 
+    /** @var array<int,array{stage:string,message:string}> */
+    private array $logs = [];
+
     protected function setUp(): void
     {
         $this->compose = new TeardownFakeComposeRunner();
         $this->docker = new TeardownFakeDockerClient();
         $this->compose->docker = $this->docker;
         $this->deployer = new TeardownTestDeployer($this->compose, $this->docker);
+        $this->logs = [];
+    }
+
+    /** Logger yang merekam seluruh peringatan non-fatal teardown. */
+    private function logger(): callable
+    {
+        return function (string $stage, string $message): void {
+            $this->logs[] = ['stage' => $stage, 'message' => $message];
+        };
+    }
+
+    /** @return array<int,string> */
+    private function logMessages(): array
+    {
+        return array_map(static fn (array $l): string => $l['message'], $this->logs);
     }
 
     private function makeApp(): array
@@ -277,5 +342,114 @@ class LocalDeployerTeardownTest extends TestCase
         $this->assertSame(['n1'], $this->docker->removedNetworks);
         // fallback tidak menghapus volume (preserve) — pemanggil hapus yang tak dipertahankan
         $this->assertSame(['proj_cache'], $this->compose->removedVolumes);
+    }
+
+    /**
+     * Helper: network project dengan daftar container yang menempel.
+     *
+     * @param array<string,array{name:string}> $attached container id => nama
+     */
+    private function attachToProjectNetwork(string $networkId, array $attached): void
+    {
+        $this->docker->networks = [['Id' => $networkId, 'Name' => 'myapp_default']];
+        $containers = [];
+        foreach ($attached as $id => $meta) {
+            $containers[$id] = ['Name' => $meta['name']];
+        }
+        $this->docker->networkDetails[$networkId] = [
+            'Id' => $networkId,
+            'Name' => 'myapp_default',
+            'Containers' => $containers,
+        ];
+    }
+
+    // ==================================================================
+    // Container asing di network project (temuan TINGGI Fase 5b)
+    // ==================================================================
+
+    public function testContainerAsingDiputusSebelumNetworkDihapus(): void
+    {
+        $this->attachToProjectNetwork('n1', ['foreign1' => ['name' => '/rames-webman']]);
+        $this->docker->containerLabels['foreign1'] = ['com.docker.compose.project' => 'rames'];
+
+        $this->deployer->teardown($this->makeApp(), null, $this->logger());
+
+        // Attachment dilepas TANPA menghapus container asing.
+        $this->assertSame([['network' => 'n1', 'container' => 'foreign1']], $this->docker->disconnected);
+        $this->assertSame([], $this->docker->removedContainers);
+        $this->assertSame(['n1'], $this->docker->removedNetworks);
+
+        // Urutan: disconnect HARUS mendahului removeNetwork.
+        $disconnectAt = array_search('disconnect:foreign1', $this->docker->ops, true);
+        $removeAt = array_search('removeNetwork:n1', $this->docker->ops, true);
+        $this->assertIsInt($disconnectAt);
+        $this->assertIsInt($removeAt);
+        $this->assertTrue($disconnectAt < $removeAt, 'disconnect harus sebelum removeNetwork');
+    }
+
+    public function testContainerMilikProjectTidakDiputus(): void
+    {
+        // own1 terdaftar milik project (filter label) & own2 hanya dikenali dari
+        // label hasil inspect — keduanya TIDAK boleh dilepas.
+        $this->docker->containers = [
+            ['Id' => 'own1', 'State' => 'running', 'Names' => ['/myapp-web'], 'Labels' => ['com.docker.compose.project' => 'myapp']],
+        ];
+        $this->attachToProjectNetwork('n1', [
+            'own1' => ['name' => '/myapp-web'],
+            'own2' => ['name' => '/myapp-db'],
+            'foreign1' => ['name' => '/rames-adminer'],
+        ]);
+        $this->docker->containerLabels['own1'] = ['com.docker.compose.project' => 'myapp'];
+        $this->docker->containerLabels['own2'] = ['com.docker.compose.project' => 'myapp'];
+        $this->docker->containerLabels['foreign1'] = ['rames.role' => 'adminer-helper'];
+
+        $this->deployer->teardown($this->makeApp(), null, $this->logger());
+
+        $this->assertSame([['network' => 'n1', 'container' => 'foreign1']], $this->docker->disconnected);
+    }
+
+    public function testInspectNetworkGagalTidakMelepasApaPun(): void
+    {
+        // Konservatif: tanpa detail network, jangan menebak siapa yang menempel.
+        $this->attachToProjectNetwork('n1', ['foreign1' => ['name' => '/rames-webman']]);
+        $this->docker->inspectNetworkThrows = true;
+
+        $this->deployer->teardown($this->makeApp(), null, $this->logger());
+
+        $this->assertSame([], $this->docker->disconnected);
+        $this->assertSame([true], $this->compose->downCalls);
+        $this->assertStringContainsString('tidak dapat di-inspect', implode("\n", $this->logMessages()));
+    }
+
+    public function testDisconnectGagal403TidakMenggagalkanTeardown(): void
+    {
+        $this->attachToProjectNetwork('n1', ['foreign1' => ['name' => '/rames-webman']]);
+        $this->docker->disconnectErrors['foreign1'] = 'Operasi Docker gagal: HTTP 403 Forbidden';
+
+        $this->deployer->teardown($this->makeApp(), null, $this->logger());
+
+        $this->assertSame([true], $this->compose->downCalls); // teardown lanjut
+        $this->assertSame(['n1'], $this->docker->removedNetworks);
+        $messages = implode("\n", $this->logMessages());
+        $this->assertStringContainsString('rames-webman', $messages);
+        $this->assertStringContainsString('403', $messages);
+    }
+
+    public function testNetworkGagalDihapus403TidakMembatalkanTeardownDanDicatat(): void
+    {
+        $this->docker->networks = [['Id' => 'n1', 'Name' => 'myapp_default']];
+        $this->docker->removeNetworkErrors['n1'] = 'Operasi Docker gagal: HTTP 403 Forbidden';
+
+        $this->deployer->teardown($this->makeApp(), null, $this->logger());
+
+        // Teardown selesai (down tetap dijalankan) & TIDAK mengklaim network terhapus.
+        $this->assertSame([true], $this->compose->downCalls);
+        $this->assertSame([], $this->docker->removedNetworks);
+
+        $messages = implode("\n", $this->logMessages());
+        $this->assertStringContainsString('PERINGATAN', $messages);
+        $this->assertStringContainsString('myapp_default', $messages);
+        $this->assertStringContainsString('GAGAL dihapus', $messages);
+        $this->assertStringContainsString('403', $messages);
     }
 }

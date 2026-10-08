@@ -2,11 +2,11 @@
 # (nama project compose = nama app & nama container dikelola dashboard).
 #
 # WAJIB diperhatikan bila menambah variabel di sini:
-#  - JANGAN menambahkan MYSQL_USER/MYSQL_PASSWORD. Halaman /database memilih
-#    kredensial otomatis dan mengutamakan user aplikasi di atas root
-#    (DbCredentialResolver), sehingga menambahkannya membuat panel /database
-#    kehilangan hak admin (CREATE DATABASE/USER, GRANT, dump/restore).
-#    Buat user aplikasi dari tab Pengguna di /database.
+#  - JANGAN menambahkan MYSQL_USER/MYSQL_PASSWORD. Kredensial dipilih otomatis
+#    (DbCredentialResolver) dan mengutamakan user aplikasi di atas root, sehingga
+#    menambahkannya membuat sesi Adminer (/database) dan dump backup otomatis
+#    ber-hak-terbatas — bukan lagi admin (CREATE DATABASE/USER, GRANT, dump/restore).
+#    Buat user aplikasi dari dalam Adminer (/database → Kelola).
 #  - Service ini sengaja TIDAK mem-publish port ke host: app tidak dibuatkan
 #    vhost/subdomain (tidak ada target `proxy_pass`) dan port 3306 tidak
 #    diteruskan ke host. Akses & pengelolaan lewat halaman /database —

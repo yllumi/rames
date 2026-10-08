@@ -20,6 +20,7 @@
 - **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri.
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
+- **Database manager (Adminer)** — halaman `/database` membuka **Adminer** yang disajikan helper internal Rames **tanpa port publik** (di balik login + hak akses app, ability `database` = operator ke atas): daftar container MySQL/MariaDB, tombol **Kelola →**, kredensial terisi otomatis bila terdeteksi (kalau tidak, form login Adminer muncul dengan Server ter-prefill). Dump/import besar diarahkan ke **Volume/backup** atau tab **Terminal** (proxy dibatasi ≤30 detik & ukuran respons; SPECS §7.10).
 - **File manager container** — jelajah berkas, unggah multi-berkas, unduh, edit teks, buat folder, rename, hapus, dan ekstrak `.zip`/`.tar.gz` **di dalam container app** dari dashboard (tab **Container**, tombol `📁 Files`; ability `files` = operator ke atas, hanya untuk container yang berjalan; SPECS §7.9).
 - **Backup volume harian ke S3 (restic)** — volume Docker milik app di-backup harian ke object storage (S3) via **restic** (inkremental + dedup + enkripsi + retensi): container database didump logis (tanpa downtime), volume lain di-snapshot (stop → snapshot → start). Restore dari UI di halaman `/backups` (SPECS §8h). Volume yang sudah dihapus (app dihapus total) tetap dapat dipulihkan dari tab **Arsip** (admin) — restore ke volume baru atau unduh dump `.sql`.
 - **Batas resource per service** — admin menetapkan batas maksimum CPU & memori tiap service app (hard limit per service, ditulis ke override compose); user lain melihat nilainya read-only.
@@ -196,6 +197,15 @@ Worker memvalidasi ulang kepemilikan volume terhadap `apps.json` sebelum restore
 | `DEPLOY_TIMEOUT` | `600` | Timeout operasi docker compose (detik) |
 | `FILES_TIMEOUT` | `120` | Timeout perintah singkat file manager di dalam container (detik; SPECS §7.9) |
 | `FILES_TRANSFER_TIMEOUT` | `600` | Timeout `docker cp` & ekstraksi arsip file manager (detik; SPECS §7.9) |
+| `ADMINER_IMAGE` | `adminer:6` | Image helper Adminer untuk halaman `/database` (SPECS §7.10) |
+| `ADMINER_CONTAINER` | `rames-adminer` | Nama container helper Adminer |
+| `ADMINER_NETWORK` | `rames-helpers` | Network internal (tanpa port publik) yang dipakai dashboard + helper |
+| `ADMINER_NETWORK_TTL` | `1800` | Umur attach helper ke network app (detik); idle ≥ TTL dilepas oportunistik, `0` = nonaktif. Network helper tak pernah dilepas (SPECS §7.10) |
+| `ADMINER_WORKERS` | `8` | Worker `php -S` di helper (`PHP_CLI_SERVER_WORKERS`) |
+| `ADMINER_PROXY_TIMEOUT` | `30` | Timeout HTTP proxy ke helper (detik; di-cap ≤30) |
+| `ADMINER_PROXY_MAX_BYTES` | `67108864` | Batas ukuran respons/body proxy Adminer (byte, 64 MiB) |
+| `ADMINER_PREFIX_BASE` | `/database` | Basis prefix URL publik Adminer per container |
+| `DB_IMPORT_TIMEOUT` | `600` | Timeout restore dump logis (`DbDump`) pada Volume/backup (detik; SPECS §8h) — bukan halaman `/database` |
 | `DNS_1` / `DNS_2` | `8.8.8.8` / `1.1.1.1` | DNS untuk container (diperlukan jika resolv.conf host bermasalah) |
 | `ADMIN_EMAIL` | — | Email untuk SSL Let's Encrypt (wajib saat mengaktifkan SSL) |
 | `SSL_CHALLENGE` | `http` | Mode challenge: `http` (webroot) atau `dns-cloudflare` |

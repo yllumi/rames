@@ -5,6 +5,12 @@ PHP. Ia menyediakan antarmuka untuk menjelajah tabel, menjalankan query, serta
 mengelola skema pada MySQL/MariaDB, PostgreSQL, SQLite, dan lainnya. App ini
 **stateless**: tidak ada volume dan tidak ada data yang disimpan di sisi server.
 
+> **Peran template ini**: untuk database **remote/arbitrer** (mis. PostgreSQL,
+> SQLite, MS SQL, atau server database di luar Rames) lewat domain app. Container
+> DB yang dikelola dashboard Rames sudah dibuka dari halaman **`/database`**
+> (Adminer internal tanpa port publik) — template ini **tidak** diperlukan untuk
+> itu.
+
 ## Yang disiapkan template
 
 | Item | Nilai |

@@ -3,31 +3,38 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Adminer\AdminerHelper;
+use app\library\Adminer\AdminerProxy;
+use app\library\Adminer\AdminerProxyError;
+use app\library\Adminer\AdminerProxyLimitExceeded;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
-use app\library\Db\DbClient;
 use app\library\Db\DbConnectionResolver;
 use app\library\Db\DbContainerDetector;
 use app\library\Db\DbCredentialResolver;
-use app\library\Db\DbDump;
-use app\library\Db\DbUserManager;
+use app\library\Docker\AppContainers;
 use app\library\Docker\DockerClient;
 use app\library\Storage\AppStore;
+use InvalidArgumentException;
 use RuntimeException;
 use support\Request;
+use Webman\Http\Response as WebmanResponse;
 
 /**
- * Database manager (phpMyAdmin mini) — mengelola MySQL/MariaDB di dalam container.
+ * Database (MySQL/MariaDB) — halaman daftar container + proxy Adminer.
  *
- * Controller hanya mediator; seluruh logika di app/library/Db. Profile koneksi
- * (host/port/kredensial) disimpan di SESSION (bukan properti controller — Webman
- * persistent, lihat copilot-instructions). Kredensial terdeteksi otomatis dari
- * env app/container, fallback input manual per sesi.
+ * Controller hanya mediator; seluruh logika di app/library. State hanya di sesi
+ * (jar cookie helper Adminer per container) — tidak ada properti controller yang
+ * menyimpan state lintas-request (Webman persistent, lihat copilot-instructions).
+ *
+ * Fitur D1 memakai **proxy Adminer** (`AdminerHelper` + `AdminerProxy`) yang
+ * meneruskan HTTP ke helper container Adminer tanpa port publik; kredensial DB
+ * terdeteksi otomatis dari env app/container (fallback: form login Adminer).
  */
 class DatabaseController
 {
-    /** Mode tampilan yang diizinkan (dari query string). */
-    private const MODES = ['browse', 'structure', 'sql', 'users', 'export', 'import'];
+    /** Prefiks kunci sesi untuk jar cookie Adminer (per container DB). */
+    private const ADMINER_SESSION_PREFIX = 'adminer:';
 
     // ==================================================================
     // Daftar container DB (difilter per kepemilikan app)
@@ -84,567 +91,143 @@ class DatabaseController
     }
 
     // ==================================================================
-    // Halaman manager (connect / kelola)
+    // Adminer (fitur D1) — reverse proxy ke helper container
     // ==================================================================
 
-    public function manage(Request $request, string $container)
+    /**
+     * Reverse proxy Adminer: `ANY /database/{container}/adminer[/{path:.*}]`.
+     *
+     * Alur: AppAccess (penolakan → 404) → resolve container DB (nama container
+     * dari request tidak pernah dipercaya) → pastikan helper Adminer hidup dan
+     * terhubung ke network app target → kredensial DB dari env app/container →
+     * teruskan permintaan ke helper via {@see AdminerProxy} (jar cookie
+     * server-side di sesi + auto-login sisi server).
+     *
+     * Tidak ada state di properti controller: jar ada di sesi (per container),
+     * berkas respons di `runtime/adminer-proxy/` (dibersihkan terjadwal oleh
+     * proxy). Helper tidak punya port publik dan tidak ada route publik baru —
+     * semuanya di balik login + AppAccess.
+     *
+     * @param string $path path SETELAH prefix (`''` = root Adminer)
+     */
+    public function adminer(Request $request, string $container, string $path = '')
     {
         if (!$this->validContainerName($container)) {
-            flash_set('error', 'Nama container tidak valid.');
-            return redirect('/database');
+            return $this->adminerError('Nama container tidak valid.', 404);
         }
 
-        // Otorisasi lebih dulu (app pemilik container) sebelum menyentuh Engine.
+        // Otorisasi SEBELUM efek samping apa pun (AppAccessDenied → 404).
         $app = $this->findOwningApp($container);
+        if ($app !== null && AppContainers::resolve($app, $container) === null) {
+            throw new AppAccessDenied('database', $app);
+        }
 
         try {
             $inspect = $this->inspectDbContainer($container);
         } catch (RuntimeException $e) {
-            flash_set('error', $e->getMessage());
-            return redirect('/database');
+            return $this->adminerError($e->getMessage(), 502);
         }
 
-        $session = $request->session();
-        $profile = $session->get('db_profile');
-        $connected = is_array($profile) && ($profile['container_name'] ?? '') === $container;
+        $network = AdminerHelper::targetNetwork($inspect, (string) ($app['name'] ?? ''));
 
-        // Kredensial terdeteksi otomatis (untuk prefill form connect).
-        $detected = null;
         try {
-            $detected = (new DbCredentialResolver())->resolve($app ?? [], $inspect);
+            $helper = new AdminerHelper();
+            $helper->ensureRunning();
+            $helper->ensureOnNetwork($network);
         } catch (\Throwable $e) {
-            // abaikan — form tetap tampil manual
+            return $this->adminerError('Helper Adminer tidak siap: ' . $e->getMessage(), 502);
         }
 
-        if (!$connected) {
-            return view('db/manage', [
-                'connected' => false,
-                'container' => $container,
-                'app' => $app,
-                'hasDetected' => $detected !== null,
-                'detectedUser' => $detected['username'] ?? null,
-                'detectedDatabase' => $detected['database'] ?? null,
-                'state' => (string) ($inspect['State']['Status'] ?? 'unknown'),
-                'image' => (string) ($inspect['Config']['Image'] ?? ''),
-            ]);
+        // Kredensial **tidak wajib** ada. Bila tidak terdeteksi (mis. image DB
+        // custom tanpa env kredensial baku), AdminerProxy masuk mode manual:
+        // helper diberi `?server=<host:port>` sehingga halaman login Adminer
+        // tampil dengan kolom Server ter-prefill dan user mengetik sendiri
+        // (tidak boleh jadi regresi 409).
+        $credentials = (new DbCredentialResolver())->resolve($app ?? [], $inspect);
+
+        $host = AdminerHelper::databaseHost($inspect, $network);
+        $port = (new DbConnectionResolver())->internalPort($inspect);
+        if ($host === '' || $port <= 0) {
+            // Satu-satunya kasus "benar-benar tidak bisa dilayani": container DB
+            // tanpa alamat TCP yang bisa dijangkau helper.
+            return $this->adminerError('Container DB tidak punya alamat TCP yang bisa dijangkau helper Adminer.', 502);
         }
 
-        $data = $this->managerData($request, $container, $profile, $app);
-        $data['connected'] = true;
-        $data['container'] = $container;
-        $data['app'] = $app;
-        $data['profileUser'] = (string) ($profile['username'] ?? '');
-        $data['profileDb'] = $profile['database'] ?? null;
-        $data['state'] = (string) ($inspect['State']['Status'] ?? 'unknown');
-        $data['image'] = (string) ($inspect['Config']['Image'] ?? '');
-        $data['lastResult'] = $session->pull('db_last_result');
+        [$jar, $helperId] = $this->adminerState($request, $container, $helper);
 
-        return view('db/manage', $data);
-    }
+        // Konteks proxy tepercaya: `X-Forwarded-Proto`/`X-Forwarded-For` yang
+        // dikirim ke helper dibentuk dari request dashboard (skema + REMOTE_ADDR),
+        // BUKAN dari header kiriman klien — lihat adminerProxyContext().
+        $forwarded = $this->adminerForwardContext($request);
 
-    /**
-     * POST — buat koneksi & simpan profile di session.
-     */
-    public function connect(Request $request, string $container)
-    {
-        if (!$this->validContainerName($container)) {
-            flash_set('error', 'Nama container tidak valid.');
-            return redirect('/database');
-        }
+        $proxy = new AdminerProxy([
+            'base_url' => $helper->baseUrl(),
+            'prefix' => $this->adminerPrefix($container),
+            'forwarded_proto' => $forwarded['proto'],
+            'forwarded_for' => $forwarded['for'],
+            'credentials' => [
+                'driver' => 'server',
+                'server' => $host . ':' . $port,
+                'username' => (string) ($credentials['username'] ?? ''),
+                'password' => (string) ($credentials['password'] ?? ''),
+                'db' => (string) ($credentials['database'] ?? ''),
+            ],
+        ]);
 
-        $app = $this->findOwningApp($container);
-        try {
-            $inspect = $this->inspectDbContainer($container);
-            $resolver = new DbConnectionResolver();
-            $hostPort = $resolver->resolveHostPort($inspect);
-            $host = (string) $hostPort['host'];
-            $port = (int) $hostPort['port'];
-            $internalPort = $resolver->internalPort($inspect);
-
-            $detected = (new DbCredentialResolver())->resolve($app ?? [], $inspect);
-            $username = trim((string) $request->post('username', ''));
-            $password = (string) $request->post('password', '');
-            $database = trim((string) $request->post('database', ''));
-
-            // Fallback otomatis bila user tidak mengisi username (atau username sama
-            // dengan hasil deteksi dan password dikosongkan).
-            if ($detected !== null && ($username === '' || ($username === $detected['username'] && $password === ''))) {
-                $username = (string) $detected['username'];
-                $password = (string) $detected['password'];
-                if ($database === '') {
-                    $database = (string) ($detected['database'] ?? '');
-                }
-            }
-            if ($username === '') {
-                throw new RuntimeException('Kredensial tidak terdeteksi otomatis. Isi username & password manual.');
-            }
-
-            $profile = [
-                'container_name' => $container,
-                'container_id' => (string) ($inspect['Id'] ?? ''),
-                'app_id' => $app !== null ? (string) ($app['id'] ?? '') : null,
-                'app_name' => $app !== null ? (string) ($app['name'] ?? '') : null,
-                'host' => $host,
-                'port' => $port,
-                'internal_port' => $internalPort,
-                'username' => $username,
-                'password' => $password,
-                'database' => $database !== '' ? $database : null,
-                'detected' => $detected !== null,
-            ];
-
-            // Uji koneksi nyata sebelum disimpan.
-            $pdo = (new DbClient())->connect($profile);
-            $pdo->query('SELECT 1');
-        } catch (RuntimeException $e) {
-            flash_set('error', 'Koneksi gagal: ' . $e->getMessage());
-            return redirect('/database/' . rawurlencode($container));
-        } catch (\Throwable $e) {
-            flash_set('error', 'Koneksi gagal: ' . $e->getMessage());
-            return redirect('/database/' . rawurlencode($container));
-        }
-
-        $request->session()->set('db_profile', $profile);
-        $this->audit($app, $container, 'connect (user ' . $username . ')');
-        flash_set('success', 'Terhubung ke ' . $container . ' sebagai ' . $username . '.');
-        return redirect('/database/' . rawurlencode($container));
-    }
-
-    /**
-     * POST — putuskan koneksi (hapus profile dari session).
-     */
-    public function disconnect(Request $request, string $container)
-    {
-        $app = $this->findOwningApp($container);
-        $session = $request->session();
-        $profile = $session->get('db_profile');
-        if (is_array($profile) && ($profile['container_name'] ?? '') === $container) {
-            $session->delete('db_profile');
-            $this->audit($app, $container, 'disconnect');
-        }
-        flash_set('info', 'Koneksi database ditutup.');
-        return redirect('/database/' . rawurlencode($container));
-    }
-
-    // ==================================================================
-    // SQL editor
-    // ==================================================================
-
-    public function query(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $sql = (string) $request->post('sql', '');
-        $back = $this->backUrl($container, $request);
-
-        // Database aktif: dari sidebar (field tersembunyi di form) atau fallback
-        // ke database awal hasil deteksi kredensial.
-        $db = trim((string) $request->post('db', ''));
-        if ($db === '') {
-            $db = trim((string) ($profile['database'] ?? ''));
-        }
+        $method = strtoupper((string) $request->method());
+        // Body mentah (JANGAN `post()` — multipart import tidak boleh diparse).
+        $body = in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true) ? (string) $request->rawBody() : null;
 
         try {
-            $dbClient = new DbClient();
-            $pdo = $dbClient->connect($profile);
-            if ($db !== '' && preg_match('/^[a-zA-Z0-9_]+$/', $db)) {
-                $dbClient->selectDatabase($pdo, $db);
-            }
-            $start = microtime(true);
-            $result = $dbClient->execute($pdo, $sql);
-            $result['elapsedMs'] = (int) round((microtime(true) - $start) * 1000);
-            $request->session()->set('db_last_result', $result);
-            $this->audit($app, $container, 'query: ' . mb_substr($sql, 0, 120));
-            flash_set('success', $result['isSelect'] ? 'Query berhasil (' . $result['affected'] . ' baris).' : 'Statement berhasil (' . $result['affected'] . ' baris terpengaruh).');
-        } catch (\Throwable $e) {
-            flash_set('error', 'Query gagal: ' . $e->getMessage());
-        }
-        return redirect($back);
-    }
-
-    // ==================================================================
-    // CRUD baris (insert / update / delete via UI)
-    // ==================================================================
-
-    public function rowInsert(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $db = (string) $request->post('db', '');
-        $table = (string) $request->post('table', '');
-        $back = $this->backUrl($container, $request);
-
-        try {
-            $pdo = (new DbClient())->connect($profile);
-            $data = $this->postedData($request);
-            $id = (new DbClient())->insert($pdo, $db, $table, $data);
-            $this->audit($app, $container, "insert {$db}.{$table}" . ($id > 0 ? " (id {$id})" : ''));
-            flash_set('success', 'Baris ditambahkan' . ($id > 0 ? ' (id ' . $id . ')' : '') . '.');
-        } catch (\Throwable $e) {
-            flash_set('error', 'Insert gagal: ' . $e->getMessage());
-        }
-        return redirect($back);
-    }
-
-    public function rowUpdate(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $db = (string) $request->post('db', '');
-        $table = (string) $request->post('table', '');
-        $pkCol = (string) $request->post('pk_col', '');
-        $pkVal = (string) $request->post('pk_val', '');
-        $back = $this->backUrl($container, $request);
-
-        try {
-            $pdo = (new DbClient())->connect($profile);
-            $data = $this->postedData($request);
-            $affected = (new DbClient())->update($pdo, $db, $table, $pkCol, $pkVal, $data);
-            $this->audit($app, $container, "update {$db}.{$table} where {$pkCol}={$pkVal}");
-            flash_set('success', $affected . ' baris diperbarui.');
-        } catch (\Throwable $e) {
-            flash_set('error', 'Update gagal: ' . $e->getMessage());
-        }
-        return redirect($back);
-    }
-
-    public function rowDelete(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $db = (string) $request->post('db', '');
-        $table = (string) $request->post('table', '');
-        $pkCol = (string) $request->post('pk_col', '');
-        $pkVal = (string) $request->post('pk_val', '');
-        $back = $this->backUrl($container, $request);
-
-        try {
-            $pdo = (new DbClient())->connect($profile);
-            $affected = (new DbClient())->delete($pdo, $db, $table, $pkCol, $pkVal);
-            $this->audit($app, $container, "delete {$db}.{$table} where {$pkCol}={$pkVal}");
-            flash_set('success', $affected . ' baris dihapus.');
-        } catch (\Throwable $e) {
-            flash_set('error', 'Hapus gagal: ' . $e->getMessage());
-        }
-        return redirect($back);
-    }
-
-    // ==================================================================
-    // Kelola user & hak akses
-    // ==================================================================
-
-    public function userCreate(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $back = $this->backUrl($container, $request);
-
-        try {
-            $pdo = (new DbClient())->connect($profile);
-            (new DbUserManager())->createUser(
-                $pdo,
-                (string) $request->post('user', ''),
-                (string) $request->post('host', '%'),
-                (string) $request->post('password', '')
+            $result = $proxy->forward(
+                $method,
+                $path,
+                (string) $request->queryString(),
+                $body,
+                $this->adminerForwardHeaders($request),
+                $jar
             );
-            $this->audit($app, $container, 'create user ' . $request->post('user', ''));
-            flash_set('success', 'User dibuat.');
-        } catch (\Throwable $e) {
-            flash_set('error', 'Gagal membuat user: ' . $e->getMessage());
-        }
-        return redirect($back);
-    }
-
-    public function userDelete(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $back = $this->backUrl($container, $request);
-
-        try {
-            $pdo = (new DbClient())->connect($profile);
-            (new DbUserManager())->dropUser(
-                $pdo,
-                (string) $request->post('user', ''),
-                (string) $request->post('host', '%')
-            );
-            $this->audit($app, $container, 'drop user ' . $request->post('user', ''));
-            flash_set('success', 'User dihapus.');
-        } catch (\Throwable $e) {
-            flash_set('error', 'Gagal menghapus user: ' . $e->getMessage());
-        }
-        return redirect($back);
-    }
-
-    public function userGrant(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $back = $this->backUrl($container, $request);
-
-        try {
-            $pdo = (new DbClient())->connect($profile);
-            (new DbUserManager())->grant(
-                $pdo,
-                (string) $request->post('user', ''),
-                (string) $request->post('host', '%'),
-                (string) $request->post('db', ''),
-                array_values((array) $request->post('privileges', []))
-            );
-            $this->audit($app, $container, 'grant ' . $request->post('user', '') . ' on ' . $request->post('db', ''));
-            flash_set('success', 'Privilege diberikan.');
-        } catch (\Throwable $e) {
-            flash_set('error', 'Gagal grant privilege: ' . $e->getMessage());
-        }
-        return redirect($back);
-    }
-
-    public function userRevoke(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $back = $this->backUrl($container, $request);
-
-        try {
-            $pdo = (new DbClient())->connect($profile);
-            (new DbUserManager())->revoke(
-                $pdo,
-                (string) $request->post('user', ''),
-                (string) $request->post('host', '%'),
-                (string) $request->post('db', ''),
-                array_values((array) $request->post('privileges', []))
-            );
-            $this->audit($app, $container, 'revoke ' . $request->post('user', '') . ' on ' . $request->post('db', ''));
-            flash_set('success', 'Privilege dicabut.');
-        } catch (\Throwable $e) {
-            flash_set('error', 'Gagal revoke privilege: ' . $e->getMessage());
-        }
-        return redirect($back);
-    }
-
-    // ==================================================================
-    // Export / import
-    // ==================================================================
-
-    public function export(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $db = trim((string) $request->post('db', ''));
-        if ($db === '') {
-            $db = null; // semua database
+        } catch (AdminerProxyLimitExceeded $e) {
+            return $this->adminerError($e->getMessage(), 413);
+        } catch (InvalidArgumentException $e) {
+            return $this->adminerError($e->getMessage(), 400);
+        } catch (AdminerProxyError $e) {
+            return $this->adminerError($e->getMessage(), 502);
         }
 
-        $exportDir = runtime_path() . '/db-export';
-        if (!is_dir($exportDir)) {
-            @mkdir($exportDir, 0775, true);
-        }
-        $filename = ($db ?? 'all-databases') . '-' . date('Ymd-His') . '.sql';
-        $path = $exportDir . '/' . $filename;
+        $request->session()->set(self::ADMINER_SESSION_PREFIX . $container, [
+            'helper_id' => $helperId,
+            'jar' => $jar,
+        ]);
 
-        try {
-            (new DbDump())->export($container, $profile, $db, $path);
-            $this->audit($app, $container, 'export ' . ($db ?? 'all-databases'));
-            return response()->download($path, $filename);
-        } catch (\Throwable $e) {
-            flash_set('error', 'Export gagal: ' . $e->getMessage());
-            return redirect($this->backUrl($container, $request));
-        }
-    }
+        // Sesi Adminer kedaluwarsa pada request yang mengubah data: body Adminer
+        // tidak berguna bagi user (input form-nya hilang) → halaman pesan Rames.
+        if (($result['session_expired'] ?? false) === true) {
+            $this->audit($app, $container, 'adminer sesi kedaluwarsa');
 
-    public function import(Request $request, string $container)
-    {
-        $profile = $this->sessionProfile($request, $container);
-        if ($profile === null) {
-            return $this->notConnected($container);
-        }
-        $app = $this->findOwningApp($container);
-        $db = trim((string) $request->post('db', ''));
-        $back = $this->backUrl($container, $request);
-
-        $file = $request->file('sql');
-        if ($file === null || !is_object($file)) {
-            flash_set('error', 'Pilih file .sql untuk di-import.');
-            return redirect($back);
-        }
-        $sql = @file_get_contents((string) $file->getPathname());
-        if ($sql === false || $sql === '') {
-            flash_set('error', 'File SQL kosong atau tidak dapat dibaca.');
-            return redirect($back);
+            return $this->adminerSessionExpired($container);
         }
 
-        try {
-            $result = (new DbDump())->import($container, $profile, $db, $sql);
-            if ($result['code'] !== 0) {
-                flash_set('error', 'Import gagal (exit ' . $result['code'] . '): ' . trim((string) $result['stderr']));
-            } else {
-                $this->audit($app, $container, 'import ' . $db);
-                flash_set('success', 'Import selesai.');
-            }
-        } catch (\Throwable $e) {
-            flash_set('error', 'Import gagal: ' . $e->getMessage());
+        // Audit trail akses DB (sekali per navigasi halaman, bukan per aset).
+        if ($path === '' && $method === 'GET') {
+            $this->audit($app, $container, 'adminer');
         }
-        return redirect($back);
+
+        $status = (int) $result['status'];
+        $headers = (array) $result['headers'];
+
+        if ((string) $result['body_file'] !== '') {
+            // Berkas dibaca Workerman SETELAH handler kembali (proxy sudah
+            // menjadwalkan pembersihan) → byte tidak ditahan di memori PHP.
+            return (new WebmanResponse($status, $headers))->withFile((string) $result['body_file']);
+        }
+
+        return new WebmanResponse($status, $headers);
     }
 
     // ==================================================================
     // Helper internal
     // ==================================================================
-
-    /**
-     * Kumpulkan data untuk halaman manager (daftar db, tabel, kolom, baris, user).
-     */
-    private function managerData(Request $request, string $container, array $profile, ?array $app): array
-    {
-        $dbClient = new DbClient();
-        $pdo = $dbClient->connect($profile);
-
-        $dbName = (string) $request->get('db', '');
-        $tableName = (string) $request->get('table', '');
-        $mode = (string) $request->get('mode', 'browse');
-        if (!in_array($mode, self::MODES, true)) {
-            $mode = 'browse';
-        }
-
-        $databases = $dbClient->databases($pdo);
-        if ($dbName === '') {
-            // Default ke database awal hasil deteksi kredensial bila valid.
-            $defaultDb = trim((string) ($profile['database'] ?? ''));
-            if ($defaultDb !== '' && in_array($defaultDb, $databases, true)) {
-                $dbName = $defaultDb;
-            }
-        }
-        if ($dbName !== '' && !in_array($dbName, $databases, true)) {
-            $dbName = '';
-        }
-        $tables = [];
-        if ($dbName !== '') {
-            $tables = $dbClient->tables($pdo, $dbName);
-        }
-
-        $columns = [];
-        $indexes = [];
-        $pk = null;
-        $rows = [];
-        $total = 0;
-        $page = max(1, (int) $request->get('page', 1));
-        $perPage = (int) config('deploy.db_browse_per_page', 50);
-
-        if ($dbName !== '' && $tableName !== '' && in_array($mode, ['browse', 'structure'], true)) {
-            $columns = $dbClient->columns($pdo, $dbName, $tableName);
-            $pk = $dbClient->primaryKey($columns);
-            if ($mode === 'structure') {
-                $indexes = $dbClient->indexes($pdo, $dbName, $tableName);
-            } else {
-                $total = $dbClient->countRows($pdo, $dbName, $tableName);
-                $rows = $dbClient->rows($pdo, $dbName, $tableName, $page, $perPage);
-            }
-        }
-
-        $users = [];
-        $userError = null;
-        if ($mode === 'users') {
-            try {
-                $users = (new DbUserManager())->users($pdo);
-            } catch (\Throwable $e) {
-                $userError = $e->getMessage();
-            }
-        }
-
-        return [
-            'databases' => $databases,
-            'tables' => $tables,
-            'db' => $dbName,
-            'table' => $tableName,
-            'mode' => $mode,
-            'columns' => $columns,
-            'indexes' => $indexes,
-            'pk' => $pk,
-            'rows' => $rows,
-            'total' => $total,
-            'page' => $page,
-            'perPage' => $perPage,
-            'users' => $users,
-            'userError' => $userError,
-            'privileges' => DbUserManager::PRIVILEGES,
-        ];
-    }
-
-    /**
-     * Profile koneksi aktif untuk container, atau null bila belum terhubung.
-     */
-    private function sessionProfile(Request $request, string $container): ?array
-    {
-        $profile = $request->session()->get('db_profile');
-        if (!is_array($profile) || ($profile['container_name'] ?? '') !== $container) {
-            return null;
-        }
-        return $profile;
-    }
-
-    private function notConnected(string $container)
-    {
-        flash_set('error', 'Belum terhubung ke container ini. Buat koneksi dulu.');
-        return redirect('/database/' . rawurlencode($container));
-    }
-
-    private function backUrl(string $container, Request $request): string
-    {
-        $db = (string) $request->post('db', (string) $request->get('db', ''));
-        $table = (string) $request->post('table', (string) $request->get('table', ''));
-        $mode = (string) $request->post('mode', (string) $request->get('mode', 'browse'));
-        $query = http_build_query(array_filter([
-            'db' => $db,
-            'table' => $table,
-            'mode' => $mode,
-        ]));
-        return '/database/' . rawurlencode($container) . ($query !== '' ? '?' . $query : '');
-    }
-
-    /**
-     * Ambil data kolom => nilai dari POST (field `cols[<nama>]`).
-     *
-     * @return array<string,string>
-     */
-    private function postedData(Request $request): array
-    {
-        $cols = (array) $request->post('cols', []);
-        $data = [];
-        foreach ($cols as $col => $value) {
-            if ($col === '' || !preg_match('/^[a-zA-Z0-9_]+$/', (string) $col)) {
-                continue;
-            }
-            $data[(string) $col] = (string) $value;
-        }
-        return $data;
-    }
 
     private function inspectDbContainer(string $container): array
     {
@@ -659,7 +242,7 @@ class DatabaseController
     /**
      * Cari app pemilik container DB + pastikan user berhak mengelolanya.
      *
-     * Semua endpoint manager memakai method ini, sehingga otorisasi hanya ada
+     * Dipakai endpoint /database (proxy Adminer) sehingga otorisasi hanya ada
      * di satu tempat. Container DB yang tidak terdaftar di apps.json (mis.
      * dibuat manual di host) hanya boleh diakses admin.
      *
@@ -692,6 +275,156 @@ class DatabaseController
     private function validContainerName(string $name): bool
     {
         return preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/', $name) === 1;
+    }
+
+    /**
+     * Prefix URL publik halaman Adminer container ini.
+     */
+    private function adminerPrefix(string $container): string
+    {
+        $base = rtrim('/' . trim((string) config('deploy.adminer_prefix_base', '/database'), '/'), '/');
+
+        return $base . '/' . rawurlencode($container) . '/adminer';
+    }
+
+    /**
+     * State jar Adminer per container DB (state hanya di sesi — bukan properti
+     * controller). Jar **tidak** boleh dipakai lintas container: `Server`/landing
+     * di dalamnya spesifik untuk satu container DB.
+     *
+     * Bila id helper berubah (helper di-recreate → sesi PHP Adminer hilang), jar
+     * lama dibuang supaya auto-login dijalankan ulang, bukan menampilkan form
+     * login Adminer.
+     *
+     * @return array{0:array<string,string>,1:string} jar + id helper saat ini
+     */
+    private function adminerState(Request $request, string $container, AdminerHelper $helper): array
+    {
+        $helperId = (string) ($helper->containerId() ?? '');
+        $state = $request->session()->get(self::ADMINER_SESSION_PREFIX . $container);
+
+        if (!is_array($state) || (string) ($state['helper_id'] ?? '') !== $helperId) {
+            return [[], $helperId];
+        }
+
+        $jar = $state['jar'] ?? [];
+
+        return [is_array($jar) ? $jar : [], $helperId];
+    }
+
+    /**
+     * Subset header browser yang boleh diteruskan ke helper (proxy memfilternya
+     * ulang; cookie sesi Rames TIDAK pernah diteruskan).
+     *
+     * `X-Forwarded-*` **tidak** diambil dari sini: konteks proxy dibentuk
+     * terpisah dari request dashboard ({@see self::adminerProxyContext()}) agar
+     * header kiriman klien tidak bisa dipalsukan, dan `X-Forwarded-Prefix`
+     * selalu ditulis ulang proxy dari konfigurasi prefix halaman.
+     *
+     * @return array<string,string>
+     */
+    private function adminerForwardHeaders(Request $request): array
+    {
+        $headers = [];
+        foreach (['content-type', 'accept', 'accept-language', 'referer', 'origin'] as $name) {
+            $value = $request->header($name);
+            if (is_string($value) && $value !== '') {
+                $headers[$name] = $value;
+            }
+        }
+
+        return $headers;
+    }
+
+    /**
+     * Konteks `X-Forwarded-*` untuk {@see AdminerProxy} dari request dashboard.
+     *
+     * @return array{proto:string,for:string}
+     */
+    private function adminerForwardContext(Request $request): array
+    {
+        $connection = $request->connection;
+        $tlsHere = $connection !== null && strtolower((string) $connection->transport) === 'ssl';
+
+        return self::adminerProxyContext(
+            (string) $request->getRemoteIp(),
+            (string) $request->header('x-forwarded-proto', ''),
+            $tlsHere
+        );
+    }
+
+    /**
+     * Skema + alamat klien dashboard yang diteruskan ke helper (statik murni —
+     * dipakai {@see self::adminerForwardContext()} dan diuji tanpa HTTP).
+     *
+     * - `proto` = `https` bila **(a)** listener Webman sendiri ber-TLS, atau
+     *   **(b)** `X-Forwarded-Proto: https` datang dari **peer internal** — Nginx
+     *   host/dashboard yang meneruskan permintaan. Aturan peer-internal-nya sama
+     *   dengan `Request::getRealIp()`: klien luar yang menembus port dashboard
+     *   tidak dipercaya, sehingga header skema kiriman klien tidak bisa
+     *   memalsukan skema. Selain itu `http`.
+     * - `for` = `REMOTE_ADDR` permintaan dashboard (satu IP valid saja);
+     *   `''` bila kosong/tidak valid/`0.0.0.0`/`::` → proxy tidak mengirim
+     *   `X-Forwarded-For` sama sekali.
+     *
+     * @return array{proto:string,for:string}
+     */
+    public static function adminerProxyContext(string $remoteIp, string $forwardedProto, bool $tlsTerminatedHere = false): array
+    {
+        $proto = 'http';
+        if ($tlsTerminatedHere) {
+            $proto = 'https';
+        } elseif (Request::isIntranetIp($remoteIp) && strtolower(trim($forwardedProto)) === 'https') {
+            $proto = 'https';
+        }
+
+        return ['proto' => $proto, 'for' => self::adminerClientIp($remoteIp)];
+    }
+
+    /**
+     * `REMOTE_ADDR` yang layak diteruskan (IP valid, bukan unspecified).
+     */
+    private static function adminerClientIp(string $remoteIp): string
+    {
+        $ip = trim($remoteIp);
+        if ($ip === '' || $ip === '0.0.0.0' || $ip === '::') {
+            return '';
+        }
+
+        return filter_var($ip, FILTER_VALIDATE_IP) !== false ? $ip : '';
+    }
+
+    /**
+     * Respons galat polos halaman Adminer — selalu `text/plain` dan tidak pernah
+     * memuat kredensial DB.
+     */
+    private function adminerError(string $message, int $status): WebmanResponse
+    {
+        return new WebmanResponse(
+            $status,
+            ['Content-Type' => ['text/plain; charset=utf-8']],
+            'Adminer: ' . $message
+        );
+    }
+
+    /**
+     * Halaman pesan kecil milik Rames (bukan HTML Adminer) untuk request yang
+     * mengubah data ketika sesi Adminer ternyata sudah kedaluwarsa.
+     *
+     * Kenapa perlu: form Adminer mengikat token CSRF ke sesi
+     * (`AdminerProxy::recoverLoginPage()` tidak memalsukan token), jadi POST dari
+     * sesi lama tetap ditolak Adminer setelah login ulang — input user hilang dan
+     * body Adminer tidak berguna. Halaman ini menjelaskan keadaannya; sengaja
+     * TIDAK menyediakan tombol yang mengirim ulang aksi user (token terikat sesi).
+     * `409 Conflict` = permintaan berbenturan dengan state sesi (dipakai HANYA
+     * untuk kasus ini; kredensial tak terdeteksi bukan 409).
+     */
+    private function adminerSessionExpired(string $container): WebmanResponse
+    {
+        return view('db/session-expired', [
+            'container' => $container,
+            'retryUrl' => $this->adminerPrefix($container) . '/',
+        ])->withStatus(409)->withHeader('Cache-Control', 'no-store');
     }
 
     private function audit(?array $app, string $container, string $action): void
