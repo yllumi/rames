@@ -156,6 +156,34 @@ class FileController
         });
     }
 
+    /**
+     * Pindahkan berkas/folder ke direktori lain.
+     *
+     * Kontrak field: `path` (sumber, absolut), `dest` (direktori tujuan, absolut),
+     * `name` (opsional — nama entri di tujuan; default = nama sumber).
+     * Kontrak respons: sukses `{code:0,data:{from,to}}`; error → `FileError`
+     * dengan status aslinya (400 validasi, 404 sumber hilang, 409 bentrok nama).
+     */
+    public function move(Request $request, string $id)
+    {
+        $app = $this->requireApp($id);
+
+        return $this->run(function () use ($request, $app) {
+            $container = $this->resolveContainer($request, $app);
+            $files = new ContainerFiles();
+            $files->assertRunning($container);
+            $moved = $files->move(
+                $container,
+                (string) $request->input('path', ''),
+                (string) $request->input('dest', ''),
+                $request->input('name') !== null ? (string) $request->input('name') : null
+            );
+            $this->audit($app, $container, 'move ' . $moved['from'] . ' -> ' . $moved['to']);
+
+            return json(['code' => 0, 'data' => $moved]);
+        });
+    }
+
     public function upload(Request $request, string $id)
     {
         $app = $this->requireApp($id);

@@ -1,9 +1,10 @@
-/* File manager container (jelajah / unggah / unduh / edit teks / ekstrak arsip).
+/* File manager container (jelajah / unggah / unduh / edit teks / pindah / ekstrak arsip).
  * Dipakai di halaman detail app (tab Container) lewat tombol 📁 Files per container.
  * Semua mutasi via POST + token CSRF; daftar & isi berkas via GET (JSON).
  * Nama/path dari server TIDAK pernah dimasukkan sebagai innerHTML — selalu
  * textContent/createElement (anti-XSS). XHR/unggahan dibatalkan saat modal ditutup
- * atau saat halaman berpindah (pagehide/beforeunload). */
+ * atau saat halaman berpindah (pagehide/beforeunload); "Pindahkan" memakai picker
+ * folder tujuan di dalam modal (bukan window.prompt). */
 (function () {
   'use strict';
 
@@ -25,11 +26,14 @@
     return (d && d.msg) ? String(d.msg) : fallback;
   }
 
-  function jsonFetch(url) {
-    return fetch(url, {
+  function jsonFetch(url, signal) {
+    var opts = {
       headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       credentials: 'same-origin'
-    }).then(function (r) {
+    };
+    // Opsional: batalkan request saat picker folder tujuan ditutup/ditinggalkan.
+    if (signal) opts.signal = signal;
+    return fetch(url, opts).then(function (r) {
       return r.text().then(function (t) {
         var d = parseJson(t);
         if (!d || typeof d !== 'object') {
@@ -84,7 +88,17 @@
     queue: [],
     curXhr: null,
     aborted: false,
-    uploadedAny: false
+    uploadedAny: false,
+    // Pindah (move): picker folder tujuan punya state + penanda request sendiri.
+    moveSeq: 0,        // respons picker lama diabaikan
+    moveAbort: null,   // AbortController request picker yang berjalan
+    movePath: null,    // folder tujuan yang sedang dibuka di picker
+    moveParent: null,  // induk folder tujuan (dari server)
+    moveSrc: '',       // path absolut entri yang dipindahkan
+    moveSrcName: '',   // nama entri yang dipindahkan
+    moveSrcDir: null,  // folder asal entri (= ST.path saat aksi dimulai)
+    moveSrcIsDir: false,
+    moveBusy: false
   };
 
   // ---------------------------------------------------------------- util UI
@@ -112,8 +126,14 @@
     ST.mode = which;
     var list = el('files-list-pane');
     var edit = el('files-edit-pane');
+    var move = el('files-move-pane');
     if (list) list.classList.toggle('d-none', which !== 'list');
     if (edit) edit.classList.toggle('d-none', which !== 'edit');
+    if (move) move.classList.toggle('d-none', which !== 'move');
+    // Toolbar utama (breadcrumb folder aktif + aksi) disembunyikan saat memilih
+    // folder tujuan agar tidak ada dua breadcrumb yang membingungkan.
+    var toolbar = el('files-toolbar');
+    if (toolbar) toolbar.classList.toggle('d-none', which === 'move');
   }
 
   function clearEntries() {
@@ -196,7 +216,7 @@
 
   // ---------------------------------------------------------------- listing
 
-  function loadFiles(path) {
+  function loadFiles(path, done) {
     if (!ST.container) return;
     showPane('list');
     clearAlert();
@@ -217,6 +237,7 @@
         return;
       }
       renderListing(d.data);
+      if (typeof done === 'function') done();
     }).catch(function () {
       if (seq !== ST.seq) return;
       showAlert('Gagal terhubung ke server.');
@@ -317,6 +338,7 @@
       }
     }
     tdAct.appendChild(actionBtn('⇄', 'Ubah nama ' + name, renameEntry.bind(null, entry)));
+    tdAct.appendChild(actionBtn('📦', 'Pindahkan ' + name, moveEntry.bind(null, entry)));
     tdAct.appendChild(actionBtn('⌫', 'Hapus ' + name, deleteEntry.bind(null, entry), 'btn-outline-danger'));
     tr.appendChild(tdAct);
 
@@ -427,6 +449,280 @@
     if (name.indexOf('/') !== -1) { showAlert('Masukkan nama berkas saja (tanpa "/"), lalu buka folder tempat arsip berada.'); return; }
     if (!isArchive(name)) { showAlert('Hanya arsip .zip / .tar.gz yang didukung.'); return; }
     doExtract(name);
+  }
+
+  // ------------------------------------------------- pindah (move)
+
+  function isDirEntry(entry) {
+    var t = String(entry && entry.type != null ? entry.type : '').toLowerCase();
+    return t === 'dir' || t === 'directory';
+  }
+
+  function moveSrcDirOf(path) {
+    var p = String(path || '/');
+    if (p === '/' || p === '') return '/';
+    var i = p.lastIndexOf('/');
+    return i <= 0 ? '/' : p.slice(0, i);
+  }
+
+  // `dest` = path absolut folder tujuan; `src` = path absolut sumber.
+  // Dipakai untuk mencegah tujuan = sumber atau descendant-nya (server menolak 400).
+  function moveInsideSource(dest, src) {
+    var d = String(dest || '');
+    var s = String(src || '');
+    if (s === '' || s === '/') return false;
+    return d === s || d.indexOf(s + '/') === 0;
+  }
+
+  function moveSetStatus(text) {
+    var s = el('files-move-status');
+    if (s) s.textContent = text || '';
+  }
+
+  function moveReset() {
+    ST.moveSeq++;
+    if (ST.moveAbort) { try { ST.moveAbort.abort(); } catch (e) {} }
+    ST.moveAbort = null;
+    ST.movePath = null;
+    ST.moveParent = null;
+    ST.moveSrc = '';
+    ST.moveSrcName = '';
+    ST.moveSrcDir = null;
+    ST.moveSrcIsDir = false;
+    ST.moveBusy = false;
+
+    var box = el('files-move-list');
+    if (box) box.textContent = '';
+    var bc = el('files-move-breadcrumb');
+    if (bc) bc.textContent = '';
+    var srcEl = el('files-move-source');
+    if (srcEl) srcEl.textContent = '';
+    var destEl = el('files-move-dest');
+    if (destEl) destEl.textContent = '';
+    var nm = el('files-move-name');
+    if (nm) nm.value = '';
+    var empty = el('files-move-empty');
+    if (empty) empty.classList.add('d-none');
+    var up = el('files-move-up');
+    if (up) { up.disabled = true; up.setAttribute('aria-disabled', 'true'); }
+    var cf = el('files-move-confirm');
+    if (cf) cf.disabled = true;
+    var sp = el('files-move-spinner');
+    if (sp) sp.classList.add('d-none');
+    moveSetStatus('');
+  }
+
+  function moveEntry(entry) {
+    var name = String(entry && entry.name != null ? entry.name : '');
+    if (!validName(name)) { showAlert('Nama entri tidak valid.'); return; }
+
+    moveReset();                       // state picker selalu bersih saat dibuka
+    clearAlert();
+    ST.moveSrc = childPath(name);
+    ST.moveSrcName = name;
+    ST.moveSrcDir = ST.path || '/';
+    ST.moveSrcIsDir = isDirEntry(entry);
+
+    var srcEl = el('files-move-source');
+    if (srcEl) srcEl.textContent = ST.moveSrc || name;
+    var nm = el('files-move-name');
+    if (nm) nm.value = name;
+
+    showPane('move');
+    setStatus('');
+    // Mulai dari folder aktif supaya tujuan lain hanya beberapa klik.
+    moveOpenDir(ST.moveSrcDir);
+  }
+
+  function moveOpenDir(dir) {
+    if (moveInsideSource(dir, ST.moveSrc)) {
+      showAlert('Tidak dapat memilih folder yang dipindahkan atau subfolder di dalamnya.');
+      return;
+    }
+    if (ST.moveAbort) { try { ST.moveAbort.abort(); } catch (e) {} }
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    ST.moveAbort = ctrl;
+    var seq = ++ST.moveSeq;
+
+    var box = el('files-move-list');
+    if (box) box.textContent = '';
+    var empty = el('files-move-empty');
+    if (empty) empty.classList.add('d-none');
+    moveSetStatus('Memuat folder ...');
+
+    var url = '/api/apps/' + enc(ST.appId) + '/files?container=' + enc(ST.container) + '&path=' + enc(dir);
+    jsonFetch(url, ctrl ? ctrl.signal : undefined).then(function (d) {
+      if (seq !== ST.moveSeq) return;
+      if (!d || d.code !== 0 || !d.data) {
+        moveSetStatus('');
+        showAlert(errMsg(d, 'Gagal memuat folder tujuan.'));
+        return;
+      }
+      var data = d.data;
+      var path = (typeof data.path === 'string' && data.path !== '') ? data.path : dir;
+      var dirs = (data.entries && data.entries.length ? data.entries : []).filter(isDirEntry);
+      renderMoveListing(path, dirs);
+    }).catch(function () {
+      if (seq !== ST.moveSeq) return;
+      moveSetStatus('');
+      showAlert('Gagal terhubung ke server.');
+    });
+  }
+
+  function renderMoveListing(path, dirs) {
+    ST.movePath = path;
+    ST.moveParent = moveSrcDirOf(path);
+    if (ST.moveParent === path) ST.moveParent = null;
+
+    var destEl = el('files-move-dest');
+    if (destEl) destEl.textContent = path;
+
+    var up = el('files-move-up');
+    if (up) {
+      up.disabled = !ST.moveParent;
+      up.setAttribute('aria-disabled', ST.moveParent ? 'false' : 'true');
+    }
+
+    renderMoveBreadcrumb(path);
+
+    var box = el('files-move-list');
+    if (box) {
+      box.textContent = '';
+      dirs.forEach(function (entry) {
+        var name = String(entry && entry.name != null ? entry.name : '');
+        if (name === '') return;
+        var child = (path === '/' ? '/' + name : path.replace(/\/+$/, '') + '/' + name);
+
+        // Folder sumber tidak boleh dijadikan tujuan (termasuk subfolder di dalamnya).
+        if (moveInsideSource(child, ST.moveSrc)) {
+          var ro = document.createElement('div');
+          ro.className = 'list-group-item px-0 text-muted small mono';
+          ro.textContent = '📁 ' + name + ' (folder yang dipindahkan)';
+          box.appendChild(ro);
+          return;
+        }
+
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'list-group-item list-group-item-action px-0 mono';
+        b.textContent = '📁 ' + name;
+        b.title = 'Buka folder ' + child;
+        b.setAttribute('aria-label', 'Buka folder tujuan ' + name);
+        b.addEventListener('click', function () { moveOpenDir(child); });
+        box.appendChild(b);
+      });
+    }
+
+    var empty = el('files-move-empty');
+    if (empty) empty.classList.toggle('d-none', dirs.length !== 0);
+
+    moveSyncConfirm();
+  }
+
+  function renderMoveBreadcrumb(path) {
+    var ol = el('files-move-breadcrumb');
+    if (!ol) return;
+    ol.textContent = '';
+
+    var parts = String(path || '/').split('/').filter(function (p) { return p !== ''; });
+
+    function addCrumb(label, target) {
+      var li = document.createElement('li');
+      li.className = 'breadcrumb-item';
+      if (target === null) {
+        li.textContent = label;
+        li.setAttribute('aria-current', 'page');
+      } else {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-link btn-sm p-0 mono text-decoration-none';
+        b.textContent = label;
+        b.setAttribute('aria-label', 'Buka folder tujuan ' + target);
+        b.addEventListener('click', function () { moveOpenDir(target); });
+        li.appendChild(b);
+      }
+      ol.appendChild(li);
+    }
+
+    addCrumb('/', parts.length === 0 ? null : '/');
+    var acc = '';
+    parts.forEach(function (p, i) {
+      acc += '/' + p;
+      // Breadcrumb yang menunjuk folder sumber/descendant juga dinonaktifkan.
+      var t = (i === parts.length - 1 || moveInsideSource(acc, ST.moveSrc)) ? null : acc;
+      addCrumb(p, t);
+    });
+  }
+
+  // Sinkronkan status tombol "Pindahkan ke folder ini" dengan folder tujuan + nama.
+  function moveSyncConfirm() {
+    var cf = el('files-move-confirm');
+    if (!cf) return;
+    if (ST.moveBusy) { cf.disabled = true; return; }
+
+    var nm = el('files-move-name');
+    var name = nm ? nm.value.trim() : '';
+    var reason = '';
+    if (!ST.movePath) {
+      reason = 'Folder tujuan belum dipilih.';
+    } else if (name.indexOf('/') !== -1 || name.indexOf('\\') !== -1) {
+      reason = 'Nama tidak valid (tanpa “/”).';
+    } else if (moveInsideSource(ST.movePath, ST.moveSrc)) {
+      reason = 'Folder tujuan berada di dalam folder sumber.';
+    } else if (ST.movePath === ST.moveSrcDir && (name === '' || name === ST.moveSrcName)) {
+      reason = 'Sudah berada di folder asal — tidak ada yang dipindahkan.';
+    }
+    cf.disabled = reason !== '';
+    moveSetStatus(reason);
+  }
+
+  function moveConfirm() {
+    if (ST.moveBusy || !ST.movePath) return;
+    var nm = el('files-move-name');
+    var name = nm ? nm.value.trim() : '';
+    if (name.indexOf('/') !== -1 || name.indexOf('\\') !== -1) {
+      showAlert('Nama tidak valid (tanpa “/”).');
+      return;
+    }
+
+    var cf = el('files-move-confirm');
+    var sp = el('files-move-spinner');
+    ST.moveBusy = true;
+    if (cf) cf.disabled = true;
+    if (sp) sp.classList.remove('d-none');
+    clearAlert();
+    setStatus('Memindahkan ...');
+
+    var dest = ST.movePath;
+    post('/apps/' + enc(ST.appId) + '/files/move', {
+      container: ST.container,
+      path: ST.moveSrc,
+      dest: dest,
+      name: name
+    }).then(function (d) {
+      ST.moveBusy = false;
+      if (sp) sp.classList.add('d-none');
+      if (!d || d.code !== 0) {
+        moveSyncConfirm();
+        showAlert(errMsg(d, 'Gagal memindahkan.'));
+        setStatus('');
+        return;
+      }
+      var to = (d.data && d.data.to) ? String(d.data.to) : '';
+      var target = ST.path;
+      moveReset();
+      showPane('list');
+      loadFiles(target, function () {
+        setStatus(to !== '' ? ('Dipindahkan ke ' + to) : 'Dipindahkan.');
+      });
+    }).catch(function () {
+      ST.moveBusy = false;
+      if (sp) sp.classList.add('d-none');
+      if (cf) cf.disabled = false;
+      moveSetStatus('');
+      showAlert('Gagal terhubung ke server.');
+      setStatus('');
+    });
   }
 
   // ----------------------------------------------------------- edit teks
@@ -661,6 +957,7 @@
     ST.appId = appId || modal.getAttribute('data-app') || '';
     ST.container = container || '';
     resetUploads();
+    moveReset();
     ST.aborted = false;
     ST.seq++;
     ST.path = null;
@@ -696,6 +993,7 @@
 
   modal.addEventListener('hidden.bs.modal', function () {
     resetUploads();
+    moveReset();
     ST.seq++;
     ST.queue = [];
     ST.path = null;
@@ -736,8 +1034,26 @@
   var editSave = el('files-edit-save');
   if (editSave) editSave.addEventListener('click', saveEdit);
 
+  // Pindah (move): picker folder tujuan.
+  var moveUp = el('files-move-up');
+  if (moveUp) moveUp.addEventListener('click', function () { if (ST.moveParent) moveOpenDir(ST.moveParent); });
+  var moveName = el('files-move-name');
+  if (moveName) moveName.addEventListener('input', moveSyncConfirm);
+  var moveCancel = el('files-move-cancel');
+  if (moveCancel) {
+    moveCancel.addEventListener('click', function () {
+      moveReset();
+      showPane('list');
+      clearAlert();
+      setStatus('');
+    });
+  }
+  var moveConfirmBtn = el('files-move-confirm');
+  if (moveConfirmBtn) moveConfirmBtn.addEventListener('click', moveConfirm);
+
   function abortPending() {
     resetUploads();
+    moveReset();
     ST.seq++;
   }
   window.addEventListener('pagehide', abortPending);

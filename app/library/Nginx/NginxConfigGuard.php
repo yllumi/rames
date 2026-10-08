@@ -164,4 +164,151 @@ final class NginxConfigGuard
 
         return ['ok' => false, 'reloaded' => false, 'rolled_back' => true, 'error' => $originalError];
     }
+
+    /**
+     * Field app yang disnapshot/dipulihkan saat subdomain diubah: nilai
+     * `subdomain` itu sendiri + seluruh status SSL subdomain (sertifikat lama
+     * terikat nama domain lama sehingga tidak boleh dipertahankan).
+     */
+    private const SUBDOMAIN_STATE_KEYS = [
+        'subdomain',
+        'ssl_status',
+        'ssl_stage',
+        'ssl_message',
+        'ssl_error',
+        'ssl_expires_at',
+        'needs_ssl',
+    ];
+
+    /**
+     * Sentinel snapshot: menandai key yang **tidak ada** di state, berbeda dari
+     * key yang ada bernilai `null` eksplisit. Tanpa ini, rollback memakai
+     * `null` sebagai penanda "key absen" sehingga key yang semula bernilai
+     * `null` (mis. `ssl_error`/`ssl_stage`) ikut terhapus — mengubah bentuk
+     * JSON `apps.json` pasca-rollback dari sebelum operasi. Nilai NUL di awal
+     * dipilih agar tak pernah bertabrakan dengan nilai JSON sah dari store.
+     */
+    private const ABSENT = "\0absent";
+
+    /**
+     * Ubah field `subdomain` app + tulis ulang config Nginx, lalu uji+reload
+     * host; rollback bila gagal (pola {@see applyRoutes()}).
+     *
+     * Sertifikat Let's Encrypt terikat pada nama domain: setelah subdomain
+     * berubah sertifikat lama tidak lagi cocok. Karena itu status SSL subdomain
+     * di-reset (`ssl_status=disabled`) — TANPA menghapus/menyalin berkas
+     * sertifikat — agar config baru (HTTP) tetap valid, dan user diminta
+     * menerbitkan ulang lewat tab SSL.
+     *
+     * @param string|null $subdomain label baru (null/'' = hapus field → fallback `name`)
+     * @return array{ok:bool,reloaded:bool,rolled_back:bool,error:string}
+     */
+    public function applySubdomain(string $appId, ?string $subdomain): array
+    {
+        try {
+            $app = $this->store->find($appId);
+        } catch (Throwable $e) {
+            return $this->failed('Gagal membaca data app: ' . $e->getMessage());
+        }
+        if ($app === null) {
+            return ['ok' => false, 'reloaded' => false, 'rolled_back' => false, 'error' => 'App tidak ditemukan.'];
+        }
+
+        $previous = [];
+        foreach (self::SUBDOMAIN_STATE_KEYS as $key) {
+            // Rekam KEBERADAAN key (array_key_exists), bukan sekadar nilainya:
+            // key absen → sentinel ABSENT, key bernilai null → null apa adanya.
+            $previous[$key] = array_key_exists($key, $app) ? $app[$key] : self::ABSENT;
+        }
+
+        try {
+            $app = $this->store->update($appId, static function (array &$state) use ($subdomain): void {
+                if ($subdomain === null || $subdomain === '') {
+                    unset($state['subdomain']);
+                } else {
+                    $state['subdomain'] = $subdomain;
+                }
+                $state['ssl_status'] = 'disabled';
+                $state['ssl_stage'] = null;
+                $state['ssl_message'] = null;
+                $state['ssl_error'] = null;
+                $state['ssl_expires_at'] = null;
+                $state['needs_ssl'] = false;
+            });
+        } catch (Throwable $e) {
+            // Belum ada efek samping ke config Nginx — cukup lapor, tanpa rollback.
+            return $this->failed('Gagal menyimpan subdomain: ' . $e->getMessage());
+        }
+
+        try {
+            $this->deployer->writeNginxConfig($app);
+        } catch (Throwable $e) {
+            // Tidak ada config valid untuk direload → JANGAN panggil reload().
+            return $this->rollbackState($appId, $previous, 'Gagal menulis config Nginx: ' . $e->getMessage(), false);
+        }
+
+        try {
+            $result = $this->reloader->reload();
+        } catch (Throwable $e) {
+            $result = ['ok' => false, 'error' => $e->getMessage()];
+        }
+
+        if (($result['ok'] ?? false) !== true) {
+            $error = (string) ($result['error'] ?? 'nginx menolak config');
+            return $this->rollbackState($appId, $previous, $error, true);
+        }
+
+        return ['ok' => true, 'reloaded' => true, 'rolled_back' => false, 'error' => ''];
+    }
+
+    /**
+     * Pulihkan field subdomain/SSL ke nilai sebelumnya dan (opsional) tulis
+     * ulang config lama. Kegagalan pada tahap ini tidak dilempar keluar —
+     * dilaporkan sebagai peringatan (pola {@see rollback()}).
+     *
+     * @param array<string,mixed> $previous snapshot field (nilai {@see self::ABSENT} = key dihapus)
+     * @return array{ok:bool,reloaded:bool,rolled_back:bool,error:string}
+     */
+    private function rollbackState(string $appId, array $previous, string $originalError, bool $rewriteConfig): array
+    {
+        try {
+            $restored = $this->store->update($appId, static function (array &$state) use ($previous): void {
+                foreach ($previous as $key => $value) {
+                    if ($value === self::ABSENT) {
+                        // Key semula tidak ada → hapus (bentuk JSON pulih seperti semula).
+                        unset($state[$key]);
+                    } else {
+                        // Termasuk null eksplisit → tulis apa adanya.
+                        $state[$key] = $value;
+                    }
+                }
+            });
+        } catch (Throwable $e) {
+            return [
+                'ok' => false,
+                'reloaded' => false,
+                'rolled_back' => false,
+                'error' => $originalError . ' — PERINGATAN: rollback gagal: ' . $e->getMessage(),
+            ];
+        }
+
+        if (!$rewriteConfig) {
+            return ['ok' => false, 'reloaded' => false, 'rolled_back' => true, 'error' => $originalError];
+        }
+
+        try {
+            $this->deployer->writeNginxConfig($restored);
+        } catch (Throwable $e) {
+            return [
+                'ok' => false,
+                'reloaded' => false,
+                'rolled_back' => true,
+                'error' => $originalError
+                    . ' — PERINGATAN: config lama gagal ditulis ulang: ' . $e->getMessage()
+                    . ' (periksa/Deploy Ulang).',
+            ];
+        }
+
+        return ['ok' => false, 'reloaded' => false, 'rolled_back' => true, 'error' => $originalError];
+    }
 }

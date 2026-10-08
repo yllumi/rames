@@ -1,7 +1,7 @@
 <?php if ($canFiles && !empty($containers)): ?>
 <!-- Modal file manager container: jelajah berkas, unggah (multi + progres), unduh,
-     edit teks, buat folder, rename, hapus, ekstrak arsip. Logika di /js/app-files.js;
-     semua data dari server dirender via textContent (anti-XSS). -->
+     edit teks, buat folder, rename, pindah (move) ke folder lain, hapus, ekstrak arsip.
+     Logika di /js/app-files.js; semua data dari server dirender via textContent (anti-XSS). -->
 <div class="modal fade" id="files-modal" tabindex="-1" aria-labelledby="files-title" aria-hidden="true"
      data-app="<?= e($app['id']) ?>" data-bs-backdrop="static" data-bs-keyboard="false">
   <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable" style="height:90vh;">
@@ -65,6 +65,40 @@
                 <span id="files-edit-spinner" class="spinner-border spinner-border-sm d-none me-1" role="status" aria-hidden="true"></span>Simpan
               </button>
             </div>
+          </div>
+        </div>
+
+        <!-- Penjelajah folder tujuan untuk "Pindahkan" (bukan window.prompt). -->
+        <div id="files-move-pane" class="d-none">
+          <p class="small mb-1">
+            <span class="text-muted">Memindahkan</span>
+            <span class="mono" id="files-move-source"></span>
+            <span class="text-muted">ke</span>
+            <span class="mono" id="files-move-dest"></span>
+          </p>
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="files-move-up"
+                    title="Naik ke folder induk" aria-label="Naik ke folder induk" disabled>⬆ Naik</button>
+            <nav aria-label="Folder tujuan" class="flex-grow-1" style="min-width:0;">
+              <ol class="breadcrumb mb-0 small flex-nowrap" id="files-move-breadcrumb" style="overflow-x:auto;"></ol>
+            </nav>
+          </div>
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+            <label class="form-label small mb-0" for="files-move-name">Nama di tujuan</label>
+            <input type="text" class="form-control form-control-sm mono" id="files-move-name"
+                   style="max-width:260px;" aria-describedby="files-move-name-help" autocomplete="off">
+            <span class="text-muted small" id="files-move-name-help">Tanpa “/”. Kosongkan untuk memakai nama asli.</span>
+          </div>
+          <div id="files-move-status" class="text-muted small mb-1" aria-live="polite"></div>
+          <div id="files-move-list" class="list-group list-group-flush" style="max-height:42vh; overflow:auto;"></div>
+          <div id="files-move-empty" class="text-muted small py-3 text-center d-none">
+            Tidak ada subfolder di sini — pindahkan ke folder ini, atau naik ke folder lain.
+          </div>
+          <div class="d-flex justify-content-end gap-2 mt-2">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="files-move-cancel">Batal</button>
+            <button type="button" class="btn btn-primary btn-sm" id="files-move-confirm" disabled>
+              <span id="files-move-spinner" class="spinner-border spinner-border-sm d-none me-1" role="status" aria-hidden="true"></span>📦 Pindahkan ke folder ini
+            </button>
           </div>
         </div>
       </div>

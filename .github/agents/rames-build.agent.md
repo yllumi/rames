@@ -100,13 +100,14 @@ Invarian yang wajib dijaga:
 Aturan view:
 1. **Escape output**: `e($nilai)` untuk semua data dari user/DB.
 2. **CSRF** di tiap form (`<?= csrf_field() ?>`) & request mutasi (pola header/token seperti `public/js/*.js`).
-3. **Helper tersedia**: `e()`, `current_user()`, `csrf_field()`, `flash_set()`/`flash_pull()`, `is_admin()`, `app_can()`, `app_role()`, `app_role_label()`, `user_names()`, `app_subdomain()`.
+3. **Helper tersedia**: `e()`, `current_user()`, `csrf_field()`, `flash_set()`/`flash_pull()`, `is_admin()`, `app_can()`, `app_role()`, `app_role_label()`, `user_names()`, `app_subdomain()`, `app_subdomain_of()`, `app_subdomain_label()`, `app_subdomain_is_custom()`, `app_subdomain_valid()`.
 4. **Tombol = lapisan kedua, bukan pengaman**; server tetap sumber kebenaran.
 5. **Tanpa state di server**: interval/polling di browser, dijeda saat `document.hidden`, dibersihkan saat `pagehide`/`beforeunload` (pola `monitor.js`, `update.js`).
 6. **Kontrak API**: `json()` Webman; argumen ke-2 = options, bukan status; umumnya `{code:0, data:{...}}` — periksa controller, jangan mengarang bentuk baru.
 7. **Jangan menyentuh logika bisnis**; view hanya merender.
 8. **Konsisten dengan gaya halaman**; jangan menambah framework/bundler tanpa persetujuan user.
 9. Dilarang `die()`/`exit()`/`var_dump()`/`echo` debug yang tertinggal.
+10. **Cache-bust JS**: setiap perubahan `public/js/app-terminal.js` / `app-files.js` **wajib** menaikkan `?v=N` di `app/view/app/partials/detail-scripts.php` (query `?v=` satu-satunya cache-buster) — kalau tidak, browser memakai JS lama.
 
 Terminal xterm.js + SSE: `EventSource` ke `GET /api/apps/{id}/terminal/stream?token=...`; **jangan tutup sesi saat koneksi SSE drop** (reconnect `EventSource` akan menerima 404 permanen); tangani **semua** event (`output` base64, `close`, `cycle`, `gone`), bukan hanya `output`; input via `POST .../input`; resize kirim `stty cols X rows Y`.
 

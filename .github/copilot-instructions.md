@@ -50,14 +50,14 @@ Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputus
 |---|---|
 | `app/controller/` | Mediator HTTP: validasi input, panggil library, kembalikan respons. Tanpa logika bisnis & tanpa state. |
 | `app/middleware/` | `CsrfMiddleware` (semua POST/PUT/PATCH/DELETE) → `AuthMiddleware` (login + sinkronisasi session↔`auth.json`) → `StaticFile`. |
-| `app/library/` | **Semua logika bisnis**: `Storage` (`JsonStore`, `AppStore`), `Auth` (`UserStore`, `AppAccess`, `AppAccessDenied`), `Support` (`ProcessRunner`, `SigchldGuard`), `Docker` (`DockerClient`, `AppPorts`, `AppContainers`, `ContainerLogs`, `ContainerStats`, `DockerComposeRunner`, `DockerExec`), `Deploy` (`DeployerInterface`, `LocalDeployer`, `ComposeSource`, `ComposeBinds`, `ContainerNames`), `Files` (`ContainerFiles`, `PathGuard`, `TextContent`, `ArchiveGuard`, `ListingParser`, `FilesInput`, `FileError`), `Adminer` (`AdminerHelper`, `AdminerProxy`, `LimitedTempSink`, `AdminerProxyError`, `AdminerProxyLimitExceeded` — helper + reverse proxy halaman `/database`), `Nginx`, `SSL`, `Update`, `Db` (`DbContainerDetector`, `DbConnectionResolver`, `DbCredentialResolver`, `DbDump` — backup & profil koneksi), `Monitor`, `System`, `Template`, `Git`. |
+| `app/library/` | **Semua logika bisnis**: `Storage` (`JsonStore`, `AppStore`), `Auth` (`UserStore`, `AppAccess`, `AppAccessDenied`), `Support` (`ProcessRunner`, `SigchldGuard`), `Docker` (`DockerClient`, `AppPorts`, `AppContainers`, `ContainerLogs`, `ContainerStats`, `DockerComposeRunner`, `DockerExec`), `Deploy` (`DeployerInterface`, `LocalDeployer`, `ComposeSource`, `ComposeBinds`, `ContainerNames`, `SubdomainManager`), `Files` (`ContainerFiles`, `PathGuard`, `TextContent`, `ArchiveGuard`, `ListingParser`, `FilesInput`, `FileError`), `Adminer` (`AdminerHelper`, `AdminerProxy`, `LimitedTempSink`, `AdminerProxyError`, `AdminerProxyLimitExceeded` — helper + reverse proxy halaman `/database`), `Nginx`, `SSL`, `Update`, `Db` (`DbContainerDetector`, `DbConnectionResolver`, `DbCredentialResolver`, `DbDump` — backup & profil koneksi), `Monitor`, `System`, `Template`, `Git`. |
 | `cli/*.php` | Worker **detached** (`deploy.php`, `ssl.php`) + skrip helper self-update (`self-update.sh`, `update-report.php`). |
 | `app/view/` + `public/` | View PHP native, CSS, JS. **Hanya merender** — tanpa logika bisnis. |
 | `templates/<slug>/` | Galeri template create app (ikut versi repo, **bukan** data runtime): `template.yml` + `docker-compose.yml` + `files/` + `guide.md` (panduan Markdown **katalog-only**, tidak di-materialize ke app). |
 | `database/`, `apps/`, `runtime/`, `nginx-status/` | **Data runtime** (gitignored) — lihat larangan #15/#16. |
 
 **Satu sumber kebenaran** — jangan menduplikasi logika:
-`AppAccess` (otorisasi) · `ProcessRunner`+`SigchldGuard` (eksekusi proses) · `AppPorts` (port & dedupe) · `AppContainers` (validasi nama container) · `JsonStore` (mutasi JSON) · `AppController::createAndDeploy()` (jalur create app) · `DeployerFactory`/`DeployerInterface` (keputusan deploy) · `EnvManager`/`NetworkManager`/`ContainerNames` (file override compose).
+`AppAccess` (otorisasi) · `ProcessRunner`+`SigchldGuard` (eksekusi proses) · `AppPorts` (port & dedupe) · `AppContainers` (validasi nama container) · `JsonStore` (mutasi JSON) · `app_subdomain_of()` (resolusi subdomain efektif — jangan menebak dari `name`) · `SubdomainManager` (kebijakan subdomain) · `AppController::createAndDeploy()` (jalur create app) · `DeployerFactory`/`DeployerInterface` (keputusan deploy) · `EnvManager`/`NetworkManager`/`ContainerNames` (file override compose).
 
 ---
 
@@ -92,7 +92,7 @@ Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputus
 ### View & JS
 
 - Escape semua output: `e($nilai)`; setiap form memakai `<?= csrf_field() ?>`; request mutasi mengirim token CSRF.
-- Helper tersedia: `e()`, `current_user()`, `csrf_field()`, `flash_set()`/`flash_pull()`, `is_admin()`, `app_can()`, `app_role()`, `app_role_label()`, `user_names()`, `app_subdomain()`.
+- Helper tersedia: `e()`, `current_user()`, `csrf_field()`, `flash_set()`/`flash_pull()`, `is_admin()`, `app_can()`, `app_role()`, `app_role_label()`, `user_names()`, `app_subdomain()`, `app_subdomain_of()` (satu-satunya jalur resolusi subdomain efektif app), `app_subdomain_label()`, `app_subdomain_is_custom()`, `app_subdomain_valid()`.
 - Tombol/penyembunyian UI = lapisan kedua, **bukan** pengaman — server tetap menolak.
 - Polling/interval dijalankan di browser: dijeda saat `document.hidden`, dibersihkan saat `pagehide`/`beforeunload`.
 - Jangan menambah framework/bundler/CDN baru tanpa persetujuan user.

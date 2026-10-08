@@ -37,7 +37,7 @@ class SslController
                 continue;
             }
 
-            $subdomain = app_subdomain($app['name']);
+            $subdomain = app_subdomain_of($app);
             $customDomain = (string) ($app['custom_domain'] ?? '');
 
             // Bila custom domain di-set, subdomain hanya redirect → SSL yang
@@ -96,7 +96,7 @@ class SslController
             return redirect('/ssl');
         }
 
-        $subdomain = app_subdomain($app['name']);
+        $subdomain = app_subdomain_of($app);
         $customDomain = (string) ($app['custom_domain'] ?? '');
         $domain = strtolower(trim((string) $request->post('domain', '')));
 

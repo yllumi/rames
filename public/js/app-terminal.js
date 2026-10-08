@@ -1,6 +1,8 @@
 /* Terminal container (docker exec) — interaktif (xterm.js + SSE) & one-shot run command.
  * Dipakai di halaman detail app (tab Container). Semua mutasi via POST + token CSRF;
- * output interaktif di-stream via Server-Sent Events (GET). */
+ * output interaktif di-stream via Server-Sent Events (GET).
+ * Label status menampilkan shell & user HASIL RESOLUSI SERVER (respons open: probe
+ * bash > ash > sh, user default root) — tidak pernah menebak dari input klien. */
 (function () {
   'use strict';
 
@@ -38,9 +40,12 @@
     } catch (e) { return ''; }
   }
 
-  function showStatus(cls, text) {
+  function showStatus(cls, text, title) {
     var s = el('terminal-status');
-    if (s) { s.className = 'small ' + (cls || 'text-muted'); s.textContent = text || ''; }
+    if (!s) return;
+    s.className = 'small ' + (cls || 'text-muted');
+    s.textContent = text || '';
+    if (title) s.title = title; else s.removeAttribute('title');
   }
 
   // ==================================================================
@@ -49,7 +54,7 @@
 
   var term = null;
   var fitAddon = null;
-  var termState = { appId: '', container: '', shell: '', token: null, es: null, connected: false };
+  var termState = { appId: '', container: '', shell: '', user: '', token: null, es: null, connected: false };
   var focusTimer = null;
   // Kegagalan sambungan stream berturut-turut, dan penanda bahwa penutupan koneksi
   // berikutnya memang diminta server (akhir siklus SSE) — bukan gangguan jaringan.
@@ -128,8 +133,31 @@
     post('/api/apps/' + encodeURIComponent(termState.appId) + '/terminal/' + encodeURIComponent(termState.token) + '/input', { data: cmd });
   }
 
+  // Shell & user ditampilkan dari HASIL RESOLUSI SERVER (respons open), bukan dari
+  // input klien: `''` = server memprobe (bash > ash > sh) dan user default `root`.
   function streamLabel() {
-    return (termState.shell || 'sh') + ' @ ' + termState.container;
+    var sh = termState.shell || 'shell otomatis';
+    var user = termState.user || 'root';
+    return user + '@' + termState.container + ' · ' + sh;
+  }
+
+  // Catatan keterbatasan: `sh` (dash/BusyBox) tidak punya readline/completion —
+  // Tab tidak melengkapi apa pun. Diturunkan dari shell hasil resolusi server,
+  // bukan dari asumsi UI.
+  function shellNote() {
+    if (termState.shell !== 'sh') return '';
+    return 'shell tanpa completion; image ini tidak menyediakan bash';
+  }
+
+  function connectedLabel() {
+    var note = shellNote();
+    return streamLabel() + (note !== '' ? ' (' + note + ')' : '');
+  }
+
+  function connectedTitle() {
+    var note = shellNote();
+    return 'docker exec -it -u ' + (termState.user || 'root') + ' — $SHELL=' + (termState.shell || 'auto')
+      + (note !== '' ? '; ' + note : '');
   }
 
   function connectStream(appId, token) {
@@ -195,7 +223,7 @@
       termState.connected = true;
       streamFailCount = 0;
       streamCycleExpected = false;
-      showStatus('text-success', 'Terhubung — ' + streamLabel());
+      showStatus('text-success', 'Terhubung — ' + connectedLabel(), connectedTitle());
     };
   }
 
@@ -227,7 +255,8 @@
 
     termState.appId = p.appId;
     termState.container = p.container;
-    termState.shell = p.shell || 'sh';
+    termState.shell = p.shell || '';
+    termState.user = p.user || 'root';
     termState.token = null;
     termState.connected = false;
 
@@ -244,7 +273,9 @@
     // Buka sesi interaktif
     post('/api/apps/' + encodeURIComponent(p.appId) + '/terminal/open', {
       container: p.container,
-      shell: p.shell || 'sh',
+      // '' = server memilih shell terbaik di container (bash > ash > sh).
+      shell: p.shell || '',
+      // '' = default server (root untuk operator+ yang punya ability terminal).
       user: p.user || ''
     }).then(function (d) {
       if (d.code !== 0 || !d.data) {
@@ -253,8 +284,10 @@
         return;
       }
       termState.token = d.data.token;
-      termState.shell = d.data.shell || p.shell || 'sh';
-      showStatus('text-success', 'Terhubung — ' + d.data.shell + ' @ ' + p.container);
+      // Shell & user dari server (hasil resolusi/probe) — jangan mengarang dari input.
+      termState.shell = d.data.shell || p.shell || '';
+      termState.user = d.data.user || p.user || 'root';
+      showStatus('text-success', 'Terhubung — ' + connectedLabel(), connectedTitle());
       connectStream(p.appId, d.data.token);
       if (term) term.focus();
       setTimeout(sendResize, 300);
@@ -294,7 +327,7 @@
     pendingTerm = {
       appId: btn.getAttribute('data-app') || '',
       container: btn.getAttribute('data-container') || '',
-      shell: btn.getAttribute('data-shell') || 'sh',
+      shell: btn.getAttribute('data-shell') || '',
       user: btn.getAttribute('data-user') || ''
     };
     var modal = el('terminal-modal');

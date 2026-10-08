@@ -201,6 +201,37 @@ $breadcrumbs = [
   </p>
   <?php endif; ?>
 
+  <?php
+  // Ringkasan subdomain efektif (read-only). Sengaja TIDAK ada field POST:
+  // confirmCreate() membaca session `pending_app`, sehingga field baru akan
+  // diabaikan (menyesatkan). Subdomain bisa diubah setelah app dibuat di tab
+  // Domain & SSL halaman detail.
+  $confirmSubdomain = (string) ($subdomain ?? '');
+  $confirmSubdomainLabel = (string) ($subdomain_label ?? '');
+  $confirmSubdomainCustom = (bool) ($subdomain_custom ?? false);
+  ?>
+  <?php if ($pendingHasPorts && $confirmSubdomain !== ''): ?>
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h6 mb-2">Subdomain</h2>
+      <p class="mb-1">
+        App akan diakses di
+        <a class="mono text-decoration-none" href="http://<?= e($confirmSubdomain) ?>" target="_blank" rel="noopener"><?= e($confirmSubdomain) ?></a>
+        <?php if ($confirmSubdomainCustom && $confirmSubdomainLabel !== ''): ?>
+        <span class="badge text-bg-secondary ms-1">label: <?= e($confirmSubdomainLabel) ?></span>
+        <?php else: ?>
+        <span class="badge text-bg-secondary ms-1">dari nama app</span>
+        <?php endif; ?>
+      </p>
+      <p class="text-muted small mb-0">
+        Arahkan DNS (wildcard <span class="mono">*.<?= e((string) config('deploy.app_domain')) ?></span>) ke server ini.
+        Subdomain bisa diubah setelah app dibuat di tab <strong>Domain &amp; SSL</strong> halaman detail app —
+        sertifikat SSL perlu diterbitkan ulang bila domainnya berubah.
+      </p>
+    </div>
+  </div>
+  <?php endif; ?>
+
   <div class="d-flex gap-2">
     <button type="submit" class="btn btn-primary" id="deploy-btn">
       <span class="spinner-border spinner-border-sm d-none" id="deploy-btn-spinner" role="status" aria-hidden="true"></span>

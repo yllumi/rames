@@ -5,6 +5,9 @@
 // primary diambil dari template, prefix nama container = nama app.
 $formEnv = $form_env ?? [];
 $formError = $form_error ?? null;
+// Subdomain opsional (label, bukan FQDN) — diisi otomatis dari nama app oleh JS
+// di bawah; nilai dari server (bila ada) tidak pernah ditimpa.
+$formSubdomain = $form_subdomain ?? '';
 
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
@@ -54,8 +57,21 @@ $breadcrumbs = [
         <input type="text" class="form-control" id="template-app-name" name="name" value="<?= e($form_name) ?>"
                placeholder="myapp" required style="max-width:360px;">
         <div class="form-text">
-          Hanya huruf kecil a-z, angka, dan strip (-). Dipakai sebagai subdomain, nama project compose, nama direktori,
+          Hanya huruf kecil a-z, angka, dan strip (-). Dipakai sebagai nama project compose, nama direktori,
           dan prefix nama container (<span class="mono">{nama}-{service}</span>).
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label" for="template-subdomain">Subdomain <span class="text-muted small">(opsional)</span></label>
+        <input type="text" class="form-control mono" id="template-subdomain" name="subdomain" value="<?= e($formSubdomain) ?>"
+               placeholder="myapp-7k2x9p" pattern="[a-z0-9](?:[a-z0-9-]*[a-z0-9])?" maxlength="63" autocomplete="off"
+               title="Huruf kecil a-z, angka, dan strip (-) saja; tidak boleh diawali/diakhiri strip; maksimal 63 karakter."
+               style="max-width:360px;">
+        <div class="form-text">
+          Kosongkan = pakai nama app. Huruf kecil a-z, angka, dan strip (-) saja; harus unik antar app.
+          Dipakai untuk vhost Nginx &amp; sertifikat SSL (<span class="mono">{subdomain}.<?= e((string) config('deploy.app_domain')) ?></span>).
+          Terisi otomatis saat Anda mengetik nama app — boleh diubah.
         </div>
       </div>
 
@@ -253,6 +269,46 @@ $breadcrumbs = [
       showError('Gagal terhubung ke server. Periksa koneksi lalu coba lagi.');
     });
   });
+})();
+
+// Isi otomatis field subdomain dari nama app: `{nama}-{6 karakter acak}`.
+// Hanya saat user mengetik nama (tidak ada prefill saat halaman dimuat) dan
+// berhenti begitu field subdomain disentuh user (flag dirty per-form).
+// Hasil selalu lolos `pattern` (batas server `app_subdomain_valid()`).
+(function () {
+  var name = document.getElementById('template-app-name');
+  var sub = document.getElementById('template-subdomain');
+  if (!name || !sub) return;
+
+  var MAX_LENGTH = 63;
+  var SUFFIX_LENGTH = 6;
+
+  function randomSuffix() {
+    var s = Math.random().toString(36).slice(2, 8);
+    while (s.length < SUFFIX_LENGTH) { s += Math.floor(Math.random() * 36).toString(36); }
+    return s.slice(0, SUFFIX_LENGTH);
+  }
+
+  function slugify(value) {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  // `{nama}-{rand6}`: bagian acak tidak pernah dipotong — nama yang dipangkas
+  // lebih dulu (sisakan ruang '-' + 6 karakter) lalu strip ekor dibuang.
+  function buildSubdomain(nameValue) {
+    var base = slugify(nameValue);
+    if (base === '') return '';
+    var suffix = randomSuffix();
+    base = base.slice(0, MAX_LENGTH - 1 - suffix.length).replace(/-+$/g, '');
+    return base === '' ? suffix : base + '-' + suffix;
+  }
+
+  var dirty = sub.value !== '';
+  name.addEventListener('input', function () {
+    if (dirty) return;
+    sub.value = buildSubdomain(name.value);
+  });
+  sub.addEventListener('input', function () { dirty = true; });
 })();
 </script>
 

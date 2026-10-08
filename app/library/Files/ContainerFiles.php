@@ -25,10 +25,26 @@ class ContainerFiles
     /** Batas jumlah entri yang dikembalikan `list` (sisanya → `truncated`). */
     public const MAX_LIST_ENTRIES = 5000;
 
+    /**
+     * User `docker exec` untuk SEMUA operasi file manager (§7.9).
+     *
+     * Keputusan user: operator+ (`ability files`) sudah memegang shell penuh,
+     * sehingga operasi berkas berjalan sebagai **root** agar bisa mengubah/menghapus
+     * berkas milik siapa pun di dalam container — tanpa ini `rm`/`cat >` gagal
+     * `permission denied` pada berkas milik root atau user image lain.
+     *
+     * Dampak kepemilikan entri BARU dikompensasi `restoreOwner()` (lihat di bawah):
+     * entri yang dulu dibuat user image tetap milik user image.
+     */
+    private const ROOT_USER = '0';
+
     private ?DockerClient $docker;
     private ?DockerExec $exec;
     private ?string $transferRoot;
     private ?string $dockerBinary;
+
+    /** Cache `Config.User` container untuk request ini ('' = root, null = belum dibaca). */
+    private ?string $ownerSpec = null;
 
     public function __construct(
         ?DockerClient $docker = null,
@@ -82,7 +98,7 @@ class ContainerFiles
             throw new FileError('Bukan direktori.', 400);
         }
 
-        $result = $this->exec()->runCommand($container, $this->listingCommand($path), $this->timeout());
+        $result = $this->exec()->runCommand($container, $this->listingCommand($path), $this->timeout(), self::ROOT_USER);
         if ($result['code'] !== 0) {
             throw new FileError('Gagal membaca direktori: ' . $this->errorText($result), 400);
         }
@@ -119,7 +135,7 @@ class ContainerFiles
             throw new FileError('Berkas bukan berkas reguler.', 400);
         }
 
-        $sizeResult = $this->exec()->runCommand($container, 'wc -c < ' . escapeshellarg($path), $this->timeout());
+        $sizeResult = $this->exec()->runCommand($container, 'wc -c < ' . escapeshellarg($path), $this->timeout(), self::ROOT_USER);
         if ($sizeResult['code'] !== 0) {
             throw new FileError('Gagal membaca ukuran berkas: ' . $this->errorText($sizeResult), 400);
         }
@@ -131,7 +147,7 @@ class ContainerFiles
             throw new FileError('Berkas melebihi batas 2 MiB untuk diedit sebagai teks.', 413);
         }
 
-        $contentResult = $this->exec()->runCommand($container, 'cat ' . escapeshellarg($path), $this->timeout());
+        $contentResult = $this->exec()->runCommand($container, 'cat ' . escapeshellarg($path), $this->timeout(), self::ROOT_USER);
         if ($contentResult['code'] !== 0) {
             throw new FileError('Gagal membaca berkas: ' . $this->errorText($contentResult), 400);
         }
@@ -163,10 +179,17 @@ class ContainerFiles
         if ($type === 'dir') {
             throw new FileError('Tujuan adalah direktori.', 400);
         }
+        // Kepemilikan hanya dipulihkan untuk berkas yang BARU dibuat: penulisan
+        // ulang berkas yang sudah ada (mis. milik root) tidak boleh mengubah
+        // pemiliknya — perilaku lama pun mempertahankan pemilik berkas lama.
+        $isNew = $type === 'missing';
 
-        $result = $this->exec()->runCommandWithInput($container, 'cat > ' . escapeshellarg($path), $content, $this->timeout());
+        $result = $this->exec()->runCommandWithInput($container, 'cat > ' . escapeshellarg($path), $content, $this->timeout(), self::ROOT_USER);
         if ($result['code'] !== 0) {
             throw new FileError('Gagal menyimpan berkas: ' . $this->errorText($result), 400);
+        }
+        if ($isNew) {
+            $this->restoreOwner($container, $path);
         }
     }
 
@@ -179,14 +202,23 @@ class ContainerFiles
         if ($path === '/') {
             throw new FileError('Path direktori tidak valid.', 400);
         }
-        $result = $this->exec()->runCommand($container, 'mkdir ' . escapeshellarg($path), $this->timeout());
+        $result = $this->exec()->runCommand($container, 'mkdir ' . escapeshellarg($path), $this->timeout(), self::ROOT_USER);
         if ($result['code'] !== 0) {
             throw new FileError('Gagal membuat direktori: ' . $this->errorText($result), 400);
         }
+        // Direktori baru dulu dibuat user image (mkdir sebagai user container) →
+        // samakan hasilnya walau sekarang dijalankan sebagai root.
+        $this->restoreOwner($container, $path);
     }
 
     /**
      * @throws FileError
+     *
+     * PENTING: pemanggil WAJIB sudah memastikan container berjalan
+     * ({@see assertRunning()} — seperti yang dilakukan `FileController`).
+     * Bila container berhenti, `containerType()` gagal dan kegagalan itu
+     * muncul sebagai `404` "Berkas sumber tidak ditemukan" — bukan `409`
+     * container tidak berjalan. Metode ini TIDAK memanggil `assertRunning()`.
      */
     public function rename(string $container, string $from, string $to): void
     {
@@ -198,14 +230,73 @@ class ContainerFiles
         if ($this->containerType($container, $from) === 'missing') {
             throw new FileError('Berkas sumber tidak ditemukan.', 404);
         }
-        $result = $this->exec()->runCommand($container, 'mv ' . escapeshellarg($from) . ' ' . escapeshellarg($to), $this->timeout());
+        $result = $this->exec()->runCommand($container, 'mv ' . escapeshellarg($from) . ' ' . escapeshellarg($to), $this->timeout(), self::ROOT_USER);
         if ($result['code'] !== 0) {
             throw new FileError('Gagal memindahkan: ' . $this->errorText($result), 400);
         }
     }
 
     /**
+     * Pindahkan berkas/folder ke direktori lain (§7.9).
+     *
+     * Validasi (semua SEBELUM efek samping):
+     *  - sumber wajib ada (`404`);
+     *  - tujuan wajib direktori yang sudah ada (`400`);
+     *  - tujuan tidak boleh berada di dalam sumber (diri sendiri/descendant) —
+     *    dijaga `FilesInput::moveTarget()` (`400`), juga menolak sumber `/`;
+     *  - nama entri di tujuan tidak boleh memuat `/`/diawali `-` (PathGuard);
+     *  - TIDAK menimpa entri yang sudah ada di tujuan (`409`) — tidak ada
+     *    overwrite diam-diam; pemanggil harus memilih nama lain.
+     *
+     * PENTING: pemanggil WAJIB sudah memastikan container berjalan
+     * ({@see assertRunning()} — seperti yang dilakukan `FileController::move()`
+     * yang memanggilnya lebih dulu). Bila container berhenti, `containerType()`
+     * gagal dan kegagalan itu muncul sebagai `404` "Berkas sumber tidak
+     * ditemukan" — bukan `409` container tidak berjalan; kontrak `409` di sini
+     * hanya untuk "entri sudah ada di tujuan". Metode ini TIDAK memanggil
+     * `assertRunning()` sendiri.
+     *
+     * @return array{from:string,to:string}
      * @throws FileError
+     */
+    public function move(string $container, string $from, string $toDir, ?string $name = null): array
+    {
+        $plan = FilesInput::moveTarget($from, $toDir, $name);
+        $from = $plan['from'];
+        $dir = $plan['dir'];
+        $target = $plan['target'];
+
+        if ($this->containerType($container, $from) === 'missing') {
+            throw new FileError('Berkas sumber tidak ditemukan.', 404);
+        }
+        if ($this->containerType($container, $dir) !== 'dir') {
+            throw new FileError('Tujuan bukan direktori yang ada.', 400);
+        }
+        if ($this->containerType($container, $target) !== 'missing') {
+            throw new FileError('Di tujuan sudah ada entri dengan nama tersebut.', 409);
+        }
+
+        $result = $this->exec()->runCommand(
+            $container,
+            'mv ' . escapeshellarg($from) . ' ' . escapeshellarg($target),
+            $this->timeout(),
+            self::ROOT_USER
+        );
+        if ($result['code'] !== 0) {
+            throw new FileError('Gagal memindahkan: ' . $this->errorText($result), 400);
+        }
+
+        return ['from' => $from, 'to' => $target];
+    }
+
+    /**
+     * @throws FileError
+     *
+     * PENTING: pemanggil WAJIB sudah memastikan container berjalan
+     * ({@see assertRunning()} — seperti yang dilakukan `FileController`).
+     * Bila container berhenti, `containerType()` gagal dan kegagalan itu
+     * muncul sebagai `404` "Berkas tidak ditemukan" — bukan `409` container
+     * tidak berjalan. Metode ini TIDAK memanggil `assertRunning()`.
      */
     public function delete(string $container, string $path): void
     {
@@ -213,7 +304,7 @@ class ContainerFiles
         if ($this->containerType($container, $path) === 'missing') {
             throw new FileError('Berkas tidak ditemukan.', 404);
         }
-        $result = $this->exec()->runCommand($container, 'rm -rf ' . escapeshellarg($path), $this->timeout());
+        $result = $this->exec()->runCommand($container, 'rm -rf ' . escapeshellarg($path), $this->timeout(), self::ROOT_USER);
         if ($result['code'] !== 0) {
             throw new FileError('Gagal menghapus: ' . $this->errorText($result), 400);
         }
@@ -315,9 +406,15 @@ class ContainerFiles
 
         $destType = $this->containerType($container, $destPath);
         if ($destType === 'missing') {
-            $mkdir = $this->exec()->runCommand($container, 'mkdir -p ' . escapeshellarg($destPath), $this->timeout());
+            // Direktori yang dibuat `mkdir -p` dicatat dulu supaya pemiliknya bisa
+            // dikembalikan ke user container (perilaku lama) walau exec kini root.
+            $created = $this->missingAncestors($container, $destPath);
+            $mkdir = $this->exec()->runCommand($container, 'mkdir -p ' . escapeshellarg($destPath), $this->timeout(), self::ROOT_USER);
             if ($mkdir['code'] !== 0) {
                 throw new FileError('Gagal membuat direktori tujuan: ' . $this->errorText($mkdir), 400);
+            }
+            foreach ($created as $createdPath) {
+                $this->restoreOwner($container, $createdPath);
             }
         } elseif ($destType !== 'dir') {
             throw new FileError('Tujuan ekstraksi bukan direktori.', 400);
@@ -424,6 +521,81 @@ class ContainerFiles
     }
 
     /**
+     * Kembalikan kepemilikan entri yang BARU dibuat ke user default container —
+     * best-effort, kegagalan diabaikan.
+     *
+     * Latar: seluruh operasi berkas kini dijalankan sebagai root (agar bisa
+     * mengubah berkas milik siapa pun). Tanpa langkah ini, entri yang dulu dibuat
+     * user image (`mkdir`, `cat >` berkas baru, `mkdir -p` tujuan ekstrak) akan
+     * berpindah pemilik ke root. `chown` memakai spesifikasi dari `Config.User`
+     * container (`www-data` → `chown www-data:`, `1000:1000` tetap apa adanya);
+     * container ber-user root (Config.User kosong) tidak perlu chown sama sekali.
+     */
+    private function restoreOwner(string $container, string $path): void
+    {
+        $owner = $this->ownerSpec($container);
+        if ($owner === '') {
+            return;
+        }
+        // Non-rekursif dengan sengaja: hanya entri ini yang kita buat; isinya
+        // (mis. berkas hasil `docker cp` pada ekstrak) tetap seperti perilaku lama.
+        $this->exec()->runCommand(
+            $container,
+            'chown ' . escapeshellarg($owner) . ' ' . escapeshellarg($path) . ' 2>/dev/null || true',
+            $this->timeout(),
+            self::ROOT_USER
+        );
+    }
+
+    /**
+     * Spesifikasi `chown` dari user default container ('' = root → tanpa chown).
+     *
+     * `Config.User` bisa berbentuk `www-data`, `1000`, atau `1000:1000`. Bila grup
+     * tidak disebut, `chown user:` mengeset grup ke login group user tersebut —
+     * meniru hasil "dibuat oleh user itu" (grup = primary group).
+     */
+    private function ownerSpec(string $container): string
+    {
+        if ($this->ownerSpec !== null) {
+            return $this->ownerSpec;
+        }
+        try {
+            $info = $this->docker()->inspectContainer($container);
+        } catch (Throwable $e) {
+            return $this->ownerSpec = '';
+        }
+        $user = trim((string) ($info['Config']['User'] ?? ''));
+        // '' / '0' / 'root' = container berjalan sebagai root → chown tak berguna.
+        if ($user === '' || $user === '0' || $user === 'root' || $user === '0:0') {
+            return $this->ownerSpec = '';
+        }
+
+        return $this->ownerSpec = (str_contains($user, ':') ? $user : $user . ':');
+    }
+
+    /**
+     * Daftar path yang BELUM ada mulai dari `$path` naik ke atas (untuk
+     * mengembalikan pemilik direktori hasil `mkdir -p`).
+     *
+     * @return array<int,string> terdalam → terluar
+     */
+    private function missingAncestors(string $container, string $path): array
+    {
+        // Pemanggil sudah tahu `$path` sendiri belum ada.
+        $missing = [$path];
+        $current = PathGuard::parentOf($path);
+        while ($current !== null && $current !== '/') {
+            if ($this->containerType($container, $current) !== 'missing') {
+                break;
+            }
+            $missing[] = $current;
+            $current = PathGuard::parentOf($current);
+        }
+
+        return $missing;
+    }
+
+    /**
      * Jalankan `unzip` pada arsip di host, setelah validasi entri.
      *
      * @return array{code:int,stdout:string,stderr:string,timedOut:bool}
@@ -508,7 +680,7 @@ class ContainerFiles
             . ' elif [ -L ' . $p . ' ]; then echo link;'
             . ' elif [ -e ' . $p . ' ]; then echo other;'
             . ' else echo missing; fi';
-        $result = $this->exec()->runCommand($container, $command, $this->timeout());
+        $result = $this->exec()->runCommand($container, $command, $this->timeout(), self::ROOT_USER);
         $type = trim($result['stdout']);
 
         return in_array($type, ['dir', 'file', 'link', 'other'], true) ? $type : 'missing';

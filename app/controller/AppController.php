@@ -12,6 +12,7 @@ use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\NetworkManager;
 use app\library\Deploy\ResourceLimits;
+use app\library\Deploy\SubdomainManager;
 use app\library\Db\DbContainerDetector;
 use app\library\Docker\AppPorts;
 use app\library\Docker\ComposeParser;
@@ -83,6 +84,13 @@ class AppController
             $ob = ($owned[(string) $b['id']] ?? false) ? 0 : 1;
             return $oa <=> $ob ?: strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
         });
+
+        // `apps.json.subdomain` menyimpan label (boleh kosong); view memakai
+        // `$app['subdomain']` sebagai FQDN → kirim FQDN efektif.
+        foreach ($apps as &$app) {
+            $app['subdomain'] = app_subdomain_of($app);
+        }
+        unset($app);
 
         return view('app/index', [
             'apps' => $apps,
@@ -186,8 +194,16 @@ class AppController
             // data limits di apps.json tidak valid → form tampil tanpa nilai tersimpan
         }
 
+        // Presentasi subdomain: view memakai `$app['subdomain']` sebagai FQDN.
+        // Field tersimpan menyimpan label → kirim FQDN efektif, plus label & flag
+        // "eksplisit" agar tab Domain & SSL bisa menampilkan/mengeditnya.
+        $viewApp = $app;
+        $viewApp['subdomain'] = app_subdomain_of($app);
+        $viewApp['subdomain_label'] = app_subdomain_label($app);
+        $viewApp['subdomain_custom'] = app_subdomain_is_custom($app);
+
         return view('app/detail', [
-            'app' => $app,
+            'app' => $viewApp,
             'live' => $live,
             'volumes' => $volumes,
             'availableNetworks' => $availableNetworks,
@@ -282,6 +298,7 @@ class AppController
         $repoUrl = trim((string) $request->post('repo_url', ''));
         $branch = trim((string) $request->post('branch', 'main'));
         $authMethod = (string) $request->post('auth_method', 'none');
+        $subdomain = SubdomainManager::normalize((string) $request->post('subdomain', ''));
 
         $keyManager = new SshKeyManager();
         $generatedKey = false;
@@ -293,6 +310,9 @@ class AppController
             if ($store->nameExists($name)) {
                 throw new RuntimeException("Nama app \"{$name}\" sudah dipakai.");
             }
+
+            // Subdomain opsional — validasi format + keunikan sebelum menyentuh disk.
+            $this->assertSubdomainAvailable($subdomain, $name);
 
             $appsPath = (string) config('deploy.apps_path');
             $dest = $appsPath . '/' . $name;
@@ -324,7 +344,7 @@ class AppController
 
             // simpan data pending (belum commit) di session
             $primary = $this->defaultPrimary($services);
-            $request->session()->set('pending_app', [
+            $pending = [
                 'name' => $name,
                 'source' => ComposeSource::SOURCE_GIT,
                 'repo_url' => $repoUrl,
@@ -336,7 +356,12 @@ class AppController
                 'primary_port' => $this->defaultPrimaryPort($services, $primary),
                 'auth_method' => $authMethod,
                 'ssh_key' => $authMethod === 'ssh' ? 'keys/' . $name : null,
-            ]);
+            ];
+            // Kosong ⇒ jangan tulis field (fallback ke `name`).
+            if ($subdomain !== '') {
+                $pending['subdomain'] = $subdomain;
+            }
+            $request->session()->set('pending_app', $pending);
 
             return redirect('/apps/create/confirm');
         } catch (\Throwable $e) {
@@ -374,6 +399,7 @@ class AppController
     {
         $name = strtolower(trim((string) $request->post('name', '')));
         $composeContent = (string) $request->post('compose', '');
+        $subdomain = SubdomainManager::normalize((string) $request->post('subdomain', ''));
         $dest = '';
 
         try {
@@ -383,6 +409,9 @@ class AppController
             if ($store->nameExists($name)) {
                 throw new RuntimeException("Nama app \"{$name}\" sudah dipakai.");
             }
+
+            // Subdomain opsional — validasi format + keunikan sebelum menulis file.
+            $this->assertSubdomainAvailable($subdomain, $name);
 
             // area apps_path dikelola sistem — bersihkan lalu tulis ulang file
             $dest = (string) config('deploy.apps_path') . '/' . $name;
@@ -409,7 +438,7 @@ class AppController
             $parsed = (new ComposeParser())->parse($dest . '/' . $composeFile);
             $services = $this->resolveServicePorts($parsed['services']);
 
-            $request->session()->set('pending_app', [
+            $pending = [
                 'name' => $name,
                 'source' => ComposeSource::SOURCE_COMPOSE,
                 'repo_url' => null,
@@ -421,7 +450,11 @@ class AppController
                 'primary_port' => $this->defaultPrimaryPort($services, $this->defaultPrimary($services)),
                 'auth_method' => 'none',
                 'ssh_key' => null,
-            ]);
+            ];
+            if ($subdomain !== '') {
+                $pending['subdomain'] = $subdomain;
+            }
+            $request->session()->set('pending_app', $pending);
 
             return redirect('/apps/create/confirm');
         } catch (\Throwable $e) {
@@ -493,6 +526,7 @@ class AppController
         $catalog = new TemplateCatalog();
         $template = $catalog->find($slug);
         $name = strtolower(trim((string) $request->post('name', '')));
+        $subdomain = SubdomainManager::normalize((string) $request->post('subdomain', ''));
         $envInput = (array) $request->post('env', []);
         $env = [];
         $generated = [];
@@ -510,6 +544,7 @@ class AppController
             if ((new AppStore())->nameExists($name)) {
                 throw new RuntimeException("Nama app \"{$name}\" sudah dipakai.");
             }
+            $this->assertSubdomainAvailable($subdomain, $name);
             $env = $catalog->resolveEnv($template, $envInput);
             $generated = $catalog->generatedKeys($template, $envInput);
 
@@ -604,6 +639,9 @@ class AppController
                 'auth_method' => 'none',
                 'ssh_key' => null,
             ];
+            if ($subdomain !== '') {
+                $pending['subdomain'] = $subdomain;
+            }
 
             $result = $this->createAndDeploy(
                 $pending,
@@ -613,7 +651,8 @@ class AppController
                 $containerPrefix,
                 $env,
                 ['slug' => $template['slug'], 'title' => $template['title']],
-                $limits
+                $limits,
+                $subdomain
             );
             $app = $result['app'];
             $spawned = $result['spawned'];
@@ -755,8 +794,15 @@ class AppController
         // Base compose sudah ada di disk (hasil clone/upload langkah analisis).
         $dir = (string) config('deploy.apps_path') . '/' . $pending['name'];
 
+        // Data subdomain untuk ditampilkan/diedit di halaman konfirmasi: FQDN
+        // efektif + label + flag "eksplisit" (field terisi, bukan fallback name).
+        $label = SubdomainManager::normalize((string) ($pending['subdomain'] ?? ''));
+
         return view('app/confirm', [
             'pending' => $pending,
+            'subdomain' => $label === '' ? app_subdomain((string) $pending['name']) : app_subdomain($label),
+            'subdomain_label' => $label,
+            'subdomain_custom' => $label !== '',
             'resourceLimits' => $this->limitsContext(
                 $dir,
                 [(string) $pending['compose_file']],
@@ -799,6 +845,13 @@ class AppController
                 (int) ($pending['primary_port'] ?? 0)
             );
 
+            // Subdomain: form konfirmasi boleh menimpanya (bila UI mengirim field);
+            // selain itu pakai nilai yang sudah divalidasi di langkah analisis.
+            $subdomain = $request->post('subdomain') !== null
+                ? SubdomainManager::normalize((string) $request->post('subdomain'))
+                : SubdomainManager::normalize((string) ($pending['subdomain'] ?? ''));
+            $this->assertSubdomainAvailable($subdomain, (string) $pending['name']);
+
             // Batas CPU/memori: hanya admin global (ability `limits`). Non-admin
             // tidak error — form memang tidak mengirim field ini.
             $limits = is_admin()
@@ -816,7 +869,8 @@ class AppController
                 $containerPrefix,
                 [],
                 null,
-                $limits
+                $limits,
+                $subdomain
             );
             $app = $result['app'];
             $spawned = $result['spawned'];
@@ -859,6 +913,7 @@ class AppController
      * @param array<string,string>      $env       map KEY => value (kosong = tanpa env)
      * @param array<string,string>|null $template  metadata asal template (bila dibuat dari template)
      * @param array<string,array{cpus:?float,memory_mb:?int}> $limits batas CPU/memori per service (kosong = tidak diatur)
+     * @param string|null               $subdomain label subdomain eksplisit (null/'' = tanpa field, fallback `name`)
      * @return array{app:array,spawned:bool}
      */
     private function createAndDeploy(
@@ -869,7 +924,8 @@ class AppController
         string $containerPrefix,
         array $env = [],
         ?array $template = null,
-        array $limits = []
+        array $limits = [],
+        ?string $subdomain = null
     ): array {
         // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy —
         // hanya bila ada port yang akan di-proxy ke domain. App tanpa `ports:`
@@ -900,11 +956,10 @@ class AppController
             $composeFiles = $this->orderComposeFiles($composeFiles);
         }
 
-        $app = (new AppStore())->create([
+        $appData = [
             'name' => $pending['name'],
             'owner_id' => (string) (current_user()['id'] ?? ''),
             'members' => [],
-            'subdomain' => app_subdomain($pending['name']),
             'source' => $pending['source'] ?? ComposeSource::SOURCE_GIT,
             'repo_url' => $pending['repo_url'] ?? null,
             'branch' => $pending['branch'] ?? null,
@@ -924,7 +979,14 @@ class AppController
             'auth_method' => $pending['auth_method'] ?? 'none',
             'ssh_key' => $pending['ssh_key'] ?? null,
             'containers' => [],
-        ]);
+        ];
+
+        // Subdomain opsional: kosong ⇒ field tidak ditulis (fallback ke `name`).
+        if ($subdomain !== null && $subdomain !== '') {
+            $appData['subdomain'] = $subdomain;
+        }
+
+        $app = (new AppStore())->create($appData);
 
         $spawned = $this->spawnWorker($app['id'], 'deploy');
         if (!$spawned) {
@@ -1271,7 +1333,7 @@ class AppController
         $app = $this->findApp($id, 'domain');
 
         $domain = strtolower(trim((string) $request->post('domain', '')));
-        $subdomain = app_subdomain($app['name']);
+        $subdomain = app_subdomain_of($app);
         $oldCustom = (string) ($app['custom_domain'] ?? '');
 
         try {
@@ -1385,6 +1447,73 @@ class AppController
     }
 
     /**
+     * Ubah subdomain app (POST /apps/{id}/subdomain) — ability `domain` (operator+).
+     *
+     * Field `apps.json.subdomain` menyimpan label slug; subdomain efektif =
+     * `{label}.{APP_DOMAIN}` (label kosong = kembali ke `name`). Alur "uji dulu,
+     * rollback bila gagal" ditangani {@see SubdomainManager} +
+     * {@see NginxConfigGuard::applySubdomain()}: validasi → simpan → tulis config
+     * Nginx → `nginx -t` + reload → rollback bila gagal.
+     *
+     * Sertifikat Let's Encrypt terikat nama domain lama → tidak diterbitkan/
+     * dihapus otomatis; status SSL subdomain di-reset dan user diarahkan
+     * menerbitkan ulang di tab SSL. Otorisasi dicek lewat `findApp()` (404 bila
+     * tak berhak) SEBELUM efek samping apa pun.
+     */
+    public function setSubdomain(Request $request, string $id)
+    {
+        $store = new AppStore();
+        $this->findApp($id, 'domain');
+
+        $label = SubdomainManager::normalize((string) $request->post('subdomain', ''));
+
+        $manager = new SubdomainManager(
+            $store,
+            new NginxConfigGuard(new NginxReloader(), DeployerFactory::create(), $store)
+        );
+        $result = $manager->change($id, $label);
+
+        if ($request->expectsJson()) {
+            if (!$result['ok']) {
+                return json(['code' => 1, 'error' => $result['error'], 'subdomain' => $result['previous']]);
+            }
+            return json([
+                'code' => 0,
+                'noop' => $result['noop'],
+                'subdomain' => $result['effective'],
+                'previous' => $result['previous'],
+                'reloaded' => $result['reloaded'],
+                'message' => $this->subdomainChangeNote($result),
+            ]);
+        }
+
+        if (!$result['ok']) {
+            flash_set('error', $result['error']);
+        } elseif ($result['noop']) {
+            flash_set('info', 'Subdomain sudah ' . $result['effective'] . ' — tidak ada perubahan.');
+        } else {
+            flash_set('success', $this->subdomainChangeNote($result));
+        }
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Pesan hasil perubahan subdomain (dipakai flash & respons JSON).
+     *
+     * @param array{ok:bool,noop:bool,effective:string,previous:string,reloaded:bool,rolled_back:bool,error:string} $result
+     */
+    private function subdomainChangeNote(array $result): string
+    {
+        $note = 'Subdomain app diubah ke ' . $result['effective'] . '.';
+        if (!$result['reloaded']) {
+            $note .= ' Nginx host belum ter-reload — klik "Reload Nginx".';
+        }
+        $note .= ' Sertifikat SSL lama tidak lagi cocok untuk domain baru — terbitkan ulang di tab SSL bila app memakai HTTPS.';
+        return $note;
+    }
+
+    /**
      * Simpan rute proxy tambahan per app (field apps.json `nginx_routes`).
      *
      * Alur "uji dulu, rollback bila gagal" — seluruh orkestrasi di
@@ -1458,7 +1587,17 @@ class AppController
     }
 
     /**
-     * Pastikan sebuah domain belum dipakai app lain (sebagai subdomain bawaan
+     * Validasi label subdomain create (format + keunikan atas FQDN efektif app
+     * lain). Kosong = fallback `name` (tetap dicek unik). Melempar RuntimeException
+     * dengan pesan jelas bila tidak valid. Delegasi kebijakan ke SubdomainManager.
+     */
+    private function assertSubdomainAvailable(string $label, string $name, string $excludeId = ''): string
+    {
+        return (new SubdomainManager(new AppStore()))->assertAvailable($label, $name, $excludeId);
+    }
+
+    /**
+     * Pastikan sebuah domain belum dipakai app lain (sebagai subdomain efektif
      * maupun custom domain). Subdomain app itu sendiri sudah dicek pemanggil.
      */
     private function assertDomainUnique(AppStore $store, string $excludeId, string $domain): void
@@ -1467,7 +1606,7 @@ class AppController
             if (($other['id'] ?? '') === $excludeId) {
                 continue;
             }
-            if (($other['subdomain'] ?? '') === $domain) {
+            if (app_subdomain_of($other) === $domain) {
                 throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai subdomain app "' . ($other['name'] ?? '?') . '".');
             }
             if (($other['custom_domain'] ?? '') === $domain) {

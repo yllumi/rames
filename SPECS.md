@@ -34,7 +34,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [ ] Rate limiting / proteksi brute-force login (§8f)
 - [ ] Backup otomatis data & config sebelum overwrite (§8g)
 - [x] Backup volume harian ke object storage (S3) via restic — dump logis (DB) & snapshot (non-DB) (§8h)
-- [x] File manager container per container app (jelajah, unggah multi-berkas, unduh, edit teks, buat folder, rename, hapus, ekstrak arsip) — ability `files` = operator+, hanya saat container berjalan (§7.9)
+- [x] File manager container per container app (jelajah, unggah multi-berkas, unduh, edit teks, buat folder, rename, pindah, hapus, ekstrak arsip) — ability `files` = operator+, hanya saat container berjalan (§7.9)
 
 ## 3. Non-Goals (Phase 1)
 
@@ -162,7 +162,7 @@ File: `database/apps.json` — array of app object.
       "u2": { "role": "operator", "added_at": "2026-09-16T09:10:00+07:00", "added_by": "u1" },
       "u3": { "role": "viewer",   "added_at": "2026-09-16T09:12:00+07:00", "added_by": "u1" }
     },
-    "subdomain": "myapp.example.com",
+    "subdomain": "myapp-x7k2",     // label slug (bukan FQDN); kosong/null = {name}.{APP_DOMAIN} (§7.11)
     "repo_url": "https://github.com/user/myapp.git",
     "branch": "main",
     "local_path": "apps/myapp",
@@ -204,7 +204,7 @@ File: `database/apps.json` — array of app object.
 ```
 
 Field penting:
-- `name` — slug unik **global** (dipakai sebagai subdomain, nama project compose, dan direktori lokal `apps/{name}`), sehingga tidak ada dua app dengan nama sama meski pemiliknya berbeda
+- `name` — slug unik **global** (dipakai sebagai nama project compose, direktori lokal `apps/{name}`, dan subdomain **default** bila `subdomain` kosong, §7.11), sehingga tidak ada dua app dengan nama sama meski pemiliknya berbeda
 - `source` — asal source app: `git` (default bila field absen — dibuat lewat mode *Clone repo Git*) atau `compose` (dibuat lewat mode *Compose (paste/upload)*: file `docker-compose.yml` ditulis langsung ke `apps/{name}` **tanpa repo Git**, untuk image prebuilt). Menentukan perilaku Rebuild (§7.2a) dan ketersediaan Rollback (§7.5)
 - `owner_id` — id user pemilik app; app hanya terlihat oleh owner, member yang dibagikan, dan admin (§7.7)
 - `members` — map `userId → {role, added_at, added_by}`; role `viewer` | `operator` | `owner` (co-owner)
@@ -219,6 +219,7 @@ Field penting:
 - `env` — map `KEY => value` environment variable app (§7.6); untuk app dari template diisi saat create (nilai form, default template, atau hasil auto-generate)
 - `limits` — map `service => {cpus: float|null, memory_mb: int|null}`: batas **maksimum** CPU (core, float) & memori (MB, int) per service (§7.6b). `null`/absen = tidak diatur dashboard (nilai compose repo tetap berlaku); tanpa migrasi untuk app lama. Ditulis ke `docker-compose.override.limits.yml` (`ResourceLimits`, §7.6b). Hanya admin yang boleh mengubah (§7.7)
 - `nginx_routes` — daftar rute proxy tambahan per app (§8.2a): `[{path, target}]`, opsional, maks. **20** rute. Absen/`[]` = perilaku lama (config Nginx identik, tanpa perubahan). Dirender ke **serve block** (HTTP 80 & HTTPS 443) saja; tanpa migrasi untuk app lama
+- `subdomain` — label slug subdomain app (§7.11): huruf kecil `a-z`, angka, `-`, diawali & diakhiri alfanumerik, maks. **63** karakter (batas label DNS). FQDN efektif = `{label}.{APP_DOMAIN}`; kosong/absen = `{name}.{APP_DOMAIN}` (perilaku lama). Nilai lama yang sudah berupa **FQDN penuh** (mengandung titik) tetap dihormati — tanpa migrasi data. Ditulis lewat tab **Domain & SSL** (`SubdomainManager` + `NginxConfigGuard::applySubdomain()`, §7.11)
 
 ### 7.2 Alur "Create App"
 
@@ -409,7 +410,7 @@ Menampilkan:
 - Kartu **Rute Proxy Tambahan** (ability `routes` = Operator ke atas, setara `domain`): tabel rute saat ini + textarea satu rute per baris (`<path> <target>`, mis. `/api/ http://127.0.0.1:3001`) + tombol **Simpan & Terapkan** dan **Hapus semua rute**. Menyimpan menulis ulang config Nginx app, mengujinya (`nginx -t`) lalu me-reload Nginx host; bila uji gagal, rute dikembalikan ke kondisi sebelumnya (§8.2a). App **tanpa host port** menampilkan penjelasan bahwa rute tidak berlaku, bukan form
 - Tab **Sumber Daya** (ability `limits` = **admin** untuk mengubah): tabel batas maksimum CPU/memori per service (§7.6b) — admin melihat field editable yang di-prefill dari compose repo, sedangkan role lain melihat nilai **read-only** (termasuk nilai yang berasal dari compose repo)
 - **Log container** (popup modal): tombol `⧉ Log` di header app (container default = service primary) dan di tiap baris container pada tab Container → modal berisi dropdown container, pilihan jumlah baris (50–2000), toggle **Auto** (muat ulang tiap 3 detik), tombol muat ulang & salin, serta panel log monospace (auto-scroll bila user ada di dasar panel). Log diambil `docker logs` (stdout+stderr, dengan timestamp) lewat `GET /api/apps/{id}/logs`; bisa dilihat sejak role **Viewer**. Modal tertutup → polling berhenti.
-- **File manager container** (tombol `📁 Files` di tiap baris container pada tab **Container**, ability `files` = Operator ke atas, §7.9): modal jelajah berkas + unggah, unduh, edit teks (maks 2 MiB; biner ditolak), buat folder, rename, hapus, dan ekstrak `.zip`/`.tar.gz`. Tombol hanya muncul untuk container berstatus `running`; target operasi adalah container app yang **sedang berjalan** (container berhenti → `409`), bukan volume Docker secara langsung
+- **File manager container** (tombol `📁 Files` di tiap baris container pada tab **Container**, ability `files` = Operator ke atas, §7.9): modal jelajah berkas + unggah, unduh, edit teks (maks 2 MiB; biner ditolak), buat folder, rename, pindah, hapus, dan ekstrak `.zip`/`.tar.gz`. Tombol hanya muncul untuk container berstatus `running`; target operasi adalah container app yang **sedang berjalan** (container berhenti → `409`), bukan volume Docker secara langsung
 - Aksi: Rebuild (pull ulang + up ulang), Stop, Start, Delete (hapus container + config nginx + file lokal) — tombol yang tidak diizinkan role user **tidak ditampilkan**, dan endpoint-nya tetap menolak di server
 - Riwayat Deployment + tombol Rollback (lihat §7.5)
 
@@ -684,14 +685,14 @@ Alasan `--user <uid pemilik repo>` (bukan root): (a) `git pull` sebagai root men
 
 ### 7.9 File Manager Container
 
-**Tujuan**: mengelola berkas **di dalam container app** langsung dari dashboard — jelajah, unggah multi-berkas, unduh, edit teks, buat folder, rename, hapus, dan ekstrak arsip — sebagai pengganti `docker cp`/`docker exec` manual dari SSH. Fitur bekerja pada **container app yang sedang berjalan** (dipilih seperti tombol Log/Terminal), **bukan** pada volume Docker secara langsung.
+**Tujuan**: mengelola berkas **di dalam container app** langsung dari dashboard — jelajah, unggah multi-berkas, unduh, edit teks, buat folder, rename, pindah, hapus, dan ekstrak arsip — sebagai pengganti `docker cp`/`docker exec` manual dari SSH. Fitur bekerja pada **container app yang sedang berjalan** (dipilih seperti tombol Log/Terminal), **bukan** pada volume Docker secara langsung.
 
 **Hak akses**
 - Ability `files` = **operator** ke atas (setara `terminal`/`database`, §7.7). Alasan keamanan: operator pada app yang sama sudah memegang shell penuh (`terminal`) di container yang sama, sehingga file manager **tidak menambah kuasa baru**; karena itu cukup operator, bukan owner. Viewer ditolak.
 - Satu pintu `AppAccess::require('files', $app, $user)`; app yang tidak berhak → **404** (bukan 403) supaya keberadaan app user lain tidak bocor.
 - Tombol `📁 Files` hanya dirender untuk container `running` **dan** user ber-ability `files`; endpoint tetap menolak di server (defense in depth).
 
-**Kontrak endpoint (9 rute)**
+**Kontrak endpoint (10 rute)**
 
 | Method | Route | Fungsi |
 |---|---|---|
@@ -700,7 +701,8 @@ Alasan `--user <uid pemilik repo>` (bukan root): (a) `git pull` sebagai root men
 | `GET` | `/apps/{id}/files/download` | unduh berkas (`path`) — respons **file**, bukan JSON |
 | `POST` | `/apps/{id}/files/write` | simpan teks (`path`, `text`; fallback `content`) |
 | `POST` | `/apps/{id}/files/mkdir` | buat folder (`path` = direktori induk, `name`) |
-| `POST` | `/apps/{id}/files/rename` | rename/pindah (`path`, `to`; fallback `name`) |
+| `POST` | `/apps/{id}/files/rename` | rename di tempat (`path`, `to`; fallback `name`) |
+| `POST` | `/apps/{id}/files/move` | pindah ke direktori lain (`path` = sumber, `dest` = direktori tujuan, `name` opsional) → `{code:0,data:{from,to}}` |
 | `POST` | `/apps/{id}/files/delete` | hapus berkas/folder (`path`; menolak akar `/`) |
 | `POST` | `/apps/{id}/files/upload` | unggah multi-berkas (`files[]`, `path` = direktori tujuan) |
 | `POST` | `/apps/{id}/files/extract` | ekstrak `.zip`/`.tar.gz`/`.tgz` (`path`, `name`, opsional `dest`) |
@@ -712,12 +714,14 @@ Alasan `--user <uid pemilik repo>` (bukan root): (a) `git pull` sebagai root men
 
 **Aturan operasi & batas**
 - **Fail-fast container berjalan**: bila container tidak ada/berhenti → **409**; dashboard **tidak** membuat container sementara dan **tidak** menyentuh volume Docker langsung.
+- **Semua `docker exec` file manager dijalankan sebagai root** (`docker exec -u 0`, `ContainerFiles::ROOT_USER`): user default image (mis. `www-data`/`node`) tidak berizin atas berkas milik user lain maupun bind mount milik root host, sehingga operasi gagal `permission denied`. Konsekuensi keamanan: operator+ (pemegang ability `files`) kini bisa mengubah/menghapus berkas di bind mount milik root host — batasnya adalah ability `files` (operator+) + audit log; lihat GOTCHA di bawah. Entri **baru** yang dibuat lewat `exec` (edit/mkdir/move/ekstrak) dipulihkan kepemilikannya ke user image (`ownerSpec()`/`restoreOwner()`, best-effort non-rekursif); unggahan `docker cp` **tidak** diubah kepemilikannya.
 - **Edit teks**: maksimum **2 MiB** (`TextContent::MAX_TEXT_BYTES`); berkas > 2 MiB → **413**; berkas biner/non-UTF-8 → **415**. Penulisan juga dibatasi 2 MiB.
 - **Daftar isi**: parser `stat` portabel BusyBox (Alpine) **dan** GNU (Debian); dibatasi `MAX_LIST_ENTRIES` = 5000 entri (sisanya ditandai `truncated`).
 - **Unggah**: multi-berkas (`files[]`); batas klien & `upload_max_filesize` = **64 MiB** per berkas (lihat catatan build di bawah). Direktori tujuan harus sudah ada.
 - **Transfer byte** (unggah/unduh/ekstrak) memakai `docker cp` + berkas temp di `runtime/files-transfer/` agar berkas besar **tidak** dimuat ke memori PHP (`memory_limit` tetap 128 MiB).
 - **Ekstrak arsip**: hanya `.zip`/`.tar.gz`/`.tgz`; diekstrak **di host dashboard** (tidak bergantung `unzip`/`tar` di container app), dengan proteksi **zip-slip** (entri absolut/`..`/symlink yang keluar dari direktori ekstraksi ditolak) serta batas jumlah entri & total byte hasil ekstrak.
 - **Path & nama**: path wajib absolut & dinormalisasi (`PathGuard`); nama entri tidak boleh memuat `/` atau diawali `-`.
+- **Pindah entri (`move`)**: validasi **berurutan sebelum efek samping** — sumber wajib ada (**404**), tujuan wajib direktori yang sudah ada (**400**), tujuan tidak boleh di dalam sumber/diri sendiri (400, `FilesInput::moveTarget`), nama entri di tujuan divalidasi (`PathGuard::assertName`), dan **tidak menimpa** entri yang sudah ada di tujuan (**409**) — pemanggil harus memilih nama lain. Eksekusi `mv` sebagai root. Sumber akar `/` ditolak (`FilesInput::moveSource`). UI menyediakan penjelajah folder tujuan (bukan `window.prompt`), breadcrumb, field nama tujuan, dan tombol confirm yang di-disable untuk no-op/descendant/nama ber-`/`.
 
 **WAJIB — batas unggah baru berlaku setelah dashboard di-build ulang.** Batas 64 MiB berasal dari tiga tempat yang harus konsisten: `config/server.php` (`max_package_size`, dinaikkan ke **68 MiB** untuk menampung overhead multipart), `Dockerfile` (`upload_max_filesize=64M`, `post_max_size=68M`, plus paket `unzip`), dan batas klien di `public/js/app-files.js` (**64 MiB**). Perubahan pada image/PHP **baru berlaku setelah image dashboard di-build ulang dan di-deploy ulang**. Bila dashboard diakses melalui vhost Nginx milik pengguna, vhost itu perlu `client_max_body_size` yang memadai — bila tidak, Nginx membalas **413** sebelum request sampai ke PHP.
 
@@ -728,10 +732,13 @@ Alasan `--user <uid pemilik repo>` (bukan root): (a) `git pull` sebagai root men
 - Ekstraksi dilakukan di **host** dashboard, bukan di dalam container app (tool `unzip`/`tar` belum tentu ada di sana).
 - Respons unduhan di-stream **setelah** handler selesai, sehingga pembersihan berkas temp tidak boleh sinkron (`Workerman\Timer` + `prune()` untuk sisa).
 - Parser listing `stat -c` harus bekerja di **BusyBox** (Alpine) **dan** **GNU** (Debian).
+- **Root di file manager**: operasi berjalan sebagai root, jadi bind mount milik root host bisa diubah/dihapus lewat UI — ability `files` (operator+) + audit log adalah satu-satunya batas; jangan longgarkan ke viewer.
+- **`docker cp` tidak menerima `-u`**: unggahan (via `docker cp`) tetap dimiliki user image; karena itu pemulihan kepemilikan hanya menyasar entri yang dibuat lewat `exec`.
+- **`mv` lintas device** (layer container → bind mount) menyalin sebagai root dan bisa mengubah pemilik entri; `rename`/`mv` sengaja **tanpa** hook `chown` otomatis.
 
-**Batasan / future work**: belum ada editor binary/hex, ubah permission/owner (`chmod`/`chown`), kompresi, pencarian isi berkas, atau streaming berkas besar; format arsip terbatas `.zip`/`.tar.gz`/`.tgz`; operasi hanya pada container **hidup** (container berhenti harus dijalankan dulu).
+**Batasan / future work**: belum ada editor binary/hex, kontrol permission/owner eksplisit dari UI (`chmod`/`chown` — operasi kini berjalan sebagai root, tetapi pemulihan owner hanya best-effort untuk entri baru), kompresi, pencarian isi berkas, atau streaming berkas besar; format arsip terbatas `.zip`/`.tar.gz`/`.tgz`; operasi hanya pada container **hidup** (container berhenti harus dijalankan dulu).
 
-**Pengujian**: `tests/FilePathsTest.php` (`PathGuard`), `tests/FileTextContentTest.php` (`TextContent`), `tests/FileArchiveGuardTest.php` (zip-slip/symlink), `tests/FileListingParserTest.php` (parser BusyBox/GNU), `tests/FileInputTest.php` (kontrak field UI↔controller).
+**Pengujian**: `tests/FilePathsTest.php` (`PathGuard`), `tests/FileTextContentTest.php` (`TextContent`), `tests/FileArchiveGuardTest.php` (zip-slip/symlink), `tests/FileListingParserTest.php` (parser BusyBox/GNU), `tests/FileInputTest.php` (kontrak field UI↔controller), `tests/FileMoveTest.php` (validasi `move`), `tests/ContainerFilesRootUserTest.php` (semua exec `-u 0` + pemulihan owner).
 
 ### 7.10 Database (Adminer via helper + proxy)
 
@@ -790,6 +797,34 @@ flowchart LR
 
 **Pengujian**: `tests/AdminerHelperTest.php`, `tests/AdminerProxyTest.php`, `tests/AdminerProxyForwardTest.php` (fake `tests/FakeAdminerHandler.php`), `tests/CsrfExemptAdminerProxyTest.php`, `tests/AdminerNetworkTtlTest.php` (prune TTL/`ensureOffNetwork`/izin temp; fake Docker client), `tests/AdminerForwardContextTest.php` (`adminerProxyContext()` — proto/for dari konteks dashboard, anti-spoof); `tests/DbContainerDetectorTest.php`, `tests/DbCredentialResolverTest.php`, `tests/DbContainerVisibilityTest.php`.
 
+### 7.11 Subdomain App (label terpisah dari nama)
+
+**Tujuan**: tiap app bisa diberi subdomain yang **berbeda dari nama app** dan diubah kapan pun tanpa mengganti `name` (yang juga dipakai sebagai nama project compose & direktori `apps/{name}`). Sebelumnya subdomain selalu `{name}.{APP_DOMAIN}`, sehingga mengganti subdomain = mengganti nama app.
+
+**Data & resolusi**
+- Field `apps.json.subdomain` menyimpan **label** slug (mis. `blog-x7k2`), **bukan** FQDN.
+- FQDN efektif = `{label}.{APP_DOMAIN}`; kosong/absen → `{name}.{APP_DOMAIN}` (perilaku lama, **tanpa** migrasi data).
+- Nilai lama yang sudah berupa **FQDN penuh** (mengandung titik) tetap dihormati apa adanya, sehingga app lama tidak perlu diubah.
+- **Satu-satunya jalur resolusi** adalah helper `app_subdomain_of($app)` — dipakai `LocalDeployer::renderNginxConfig()`, `AppController`, `SslController`, dan `cli/ssl.php`. Helper turunan: `app_subdomain_label()` (label untuk UI) & `app_subdomain_is_custom()` (badge "label vs dari nama app"). Validasi format `app_subdomain_valid()`: slug `[a-z0-9-]`, diawali & diakhiri alfanumerik, maks. **63** karakter (batas label DNS).
+
+**Hak akses**: ability `domain` = **operator** ke atas (setara set/hapus custom domain, §8b); app yang tidak berhak → **404**.
+
+**Kontrak endpoint**: `POST /apps/{id}/subdomain`, body `subdomain` (label slug; **kosong** = hapus field → kembali ke `name`). JSON sukses `{code:0,noop,subdomain,previous,reloaded,message}`; gagal `{code:1,error,subdomain}`. Permintaan non-JSON → flash + `redirect('/apps/{id}')`.
+
+**Alur ubah (uji dulu, rollback bila gagal)** — `SubdomainManager` + `NginxConfigGuard::applySubdomain()`:
+1. Validasi format label + keunikan atas **FQDN efektif semua app lain** (termasuk app yang memakai fallback `name`) serta bentrok `custom_domain` app lain, **sebelum** menyimpan.
+2. App **tanpa host port** ditolak lebih dulu dengan pesan prasyarat (tidak ada target `proxy_pass`, konsisten ARCHITECTURE §5.1/§5.6).
+3. Idempoten: bila FQDN efektif baru **sama** dengan lama → `noop` tanpa efek samping.
+4. Simpan `subdomain` → tulis ulang config Nginx → `nginx -t` + reload host. Gagal pada tahap mana pun ⇒ **rollback state** (`subdomain` + seluruh status SSL) **dan** config lama (best-effort, pola §5.6a); reload **tidak** dipanggil bila tidak ada config valid.
+
+**Reset SSL wajib**: sertifikat Let's Encrypt **terikat nama domain lama**, jadi status SSL subdomain di-reset (`ssl_status=disabled`, `ssl_stage`/`ssl_message`/`ssl_error`/`ssl_expires_at` kosong, `needs_ssl=false`) saat subdomain berubah. Berkas sertifikat **tidak** dihapus/dipindah — user harus **menerbitkan ulang** di tab SSL bila app memakai HTTPS.
+
+**Alur create (tiga mode: git / compose / template)**: field `subdomain` **opsional** divalidasi format + keunikan **sebelum** menyentuh disk, lalu disimpan di session `pending_app['subdomain']` **hanya bila tidak kosong**. Halaman konfirmasi menampilkan **FQDN efektif** (read-only, tanpa field POST subdomain di view). Form create mem-prefill `{nama}-{6 karakter alfanumerik acak}` dengan *dirty flag* (berhenti begitu user menyentuh field), `pattern` HTML **identik** `app_subdomain_valid()`, dan pengaman panjang 63 sehingga bagian acak tidak pernah dipotong.
+
+**GOTCHA**: setelah subdomain berubah, sertifikat SSL lama **tidak lagi cocok** untuk domain baru (status SSL di-reset otomatis) — user harus menerbitkan ulang; jangan mengandalkan sertifikat lama. Detail alur + rollback: `ARCHITECTURE.md` §5.6b.
+
+**Pengujian**: `tests/SubdomainTest.php` (helper resolusi/validasi + `SubdomainManager`).
+
 ## 8. Reverse Proxy / Subdomain Routing
 
 ### 8.1 Domain dasar
@@ -797,7 +832,7 @@ Dikonfigurasi lewat `.env`:
 ```
 APP_DOMAIN=example.com
 ```
-App bernama `myapp` otomatis dapat subdomain `myapp.example.com`. DNS wildcard (`*.example.com`) diasumsikan sudah diarahkan oleh user ke IP server ini — di luar tanggung jawab sistem (dicatat sebagai prasyarat, bukan fitur).
+App bernama `myapp` otomatis dapat subdomain `myapp.example.com`. Subdomain **efektif** bisa berbeda dari nama app lewat field `apps.json.subdomain` (label slug, §7.11) — diresolusi **hanya** lewat `app_subdomain_of($app)`; nilai lama berupa FQDN penuh tetap dihormati. DNS wildcard (`*.example.com`) diasumsikan sudah diarahkan oleh user ke IP server ini — di luar tanggung jawab sistem (dicatat sebagai prasyarat, bukan fitur).
 
 ### 8.2 Template Nginx config
 Disimpan sebagai template, di-render per app langsung ke direktori Nginx **di host** (dimount ke dashboard container), mis. `/etc/nginx/sites-available/{name}.conf`, lalu di-symlink otomatis ke `sites-enabled/` (atau ditulis langsung ke `sites-enabled/` kalau setup host tidak memisahkan keduanya):
@@ -1298,7 +1333,7 @@ AWS_DEFAULT_REGION=
 - Direktori Nginx host yang di-mount ke dashboard container dibatasi sesempit mungkin (hanya `sites-available/`, bukan seluruh `/etc/nginx`), agar dashboard tidak bisa menimpa `nginx.conf` utama atau config app lain di luar mekanisme yang disediakan
 - Watcher service di host dijalankan dengan user yang punya izin reload Nginx (lewat `sudoers` khusus untuk `nginx -s reload` saja) — bukan root penuh, dan tidak menerima input dari dashboard secara langsung (dashboard cuma menulis file, bukan mengirim perintah)
 - Deploy key SSH per repo disimpan privat (chmod 0600, gitignored); hanya public key yang ditampilkan ke user. `git` memakai `GIT_SSH_COMMAND` dengan `IdentitiesOnly=yes` & `StrictHostKeyChecking=accept-new` (host key tersimpan di file `known_hosts` sistem)
-- **File manager container (§7.9)**: ability `files` = operator (satu pintu `AppAccess`, penolakan **404**; operator sudah memegang shell penuh di container yang sama sehingga tidak menambah kuasa). Nama container dari request tidak dipercaya (`AppContainers::resolve`); semua path dinormalisasi `PathGuard` (wajib absolut, `.`/`..` diselesaikan, karakter kontrol ditolak) dan nama entri tidak boleh memuat `/` atau diawali `-` sebelum masuk `docker exec`/`docker cp`; argumen `docker exec` di-`escapeshellarg` (array + `sh -c` di dalam container), perintah host (`docker cp`/`unzip`/`tar`) array + `bypass_shell`. Ekstraksi arsip dilakukan **di host dashboard** (bukan di container app) dengan proteksi **zip-slip** (entri absolut/`..`/symlink keluar ditolak). Byte ditransfer via berkas temp `runtime/files-transfer/` yang dibersihkan (`Workerman\Timer` + `prune()`), bukan ke memori PHP. Operasi hanya ke container **berjalan** (berhenti → **409**), tanpa container sementara maupun volume langsung
+- **File manager container (§7.9)**: ability `files` = operator (satu pintu `AppAccess`, penolakan **404**; operator sudah memegang shell penuh di container yang sama sehingga tidak menambah kuasa). Nama container dari request tidak dipercaya (`AppContainers::resolve`); semua path dinormalisasi `PathGuard` (wajib absolut, `.`/`..` diselesaikan, karakter kontrol ditolak) dan nama entri tidak boleh memuat `/` atau diawali `-` sebelum masuk `docker exec`/`docker cp`; argumen `docker exec` di-`escapeshellarg` (array + `sh -c` di dalam container), perintah host (`docker cp`/`unzip`/`tar`) array + `bypass_shell`. Ekstraksi arsip dilakukan **di host dashboard** (bukan di container app) dengan proteksi **zip-slip** (entri absolut/`..`/symlink keluar ditolak). Byte ditransfer via berkas temp `runtime/files-transfer/` yang dibersihkan (`Workerman\Timer` + `prune()`), bukan ke memori PHP. Operasi hanya ke container **berjalan** (berhenti → **409**), tanpa container sementara maupun volume langsung. **Semua `docker exec` dijalankan sebagai root** (`-u 0`) agar tidak `permission denied` atas berkas milik user lain / bind mount root host — konsekuensinya operator+ bisa memodifikasi berkas tersebut lewat UI; batasnya ability `files` (operator+) + audit `runtime/logs/files/{date}.log` (jangan turunkan ke viewer)
 - **Rute proxy tambahan (§8.2a)**: rute disimpan **terstruktur** (path + target), bukan snippet Nginx mentah, sehingga dashboard bisa memvalidasi & membatasi sebelum menulis config Nginx; `path`/`target` divalidasi ketat (`NginxRoutes` — batas **20** rute, path absolut, prefix `/.well-known` **dicadangkan** untuk ACME/challenge certbot, tolak `/`, duplikat, `..`, userinfo/query/fragment). Ability `routes` = operator (satu pintu `AppAccess`, penolakan **404**). Penyimpanan memakai alur uji + **rollback** (`NginxConfigGuard`): `nginx -t` memvalidasi seluruh config host, jadi config invalid yang tertinggal memblokir reload nginx **seluruh** host (semua app + renewal SSL) — kegagalan karena itu tidak boleh meninggalkan config rusak di disk. `applyRoutes()` **tidak pernah melempar**: kegagalan rollback (pemulihan `apps.json` maupun tulis ulang config) dilaporkan lewat `error` dengan `rolled_back` yang mencerminkan keberhasilan pemulihan `apps.json` — konsumen **wajib** menampilkan `error`, bukan hanya membaca `rolled_back`
 
 ## 12. Future Work (di luar Phase 1)

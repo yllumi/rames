@@ -48,7 +48,7 @@ if ($app === null) {
 }
 
 // Tentukan domain target & slot SSL (subdomain -> `ssl`, custom domain -> `custom_ssl`)
-$subdomain = app_subdomain($app['name']);
+$subdomain = app_subdomain_of($app);
 $customDomain = (string) ($app['custom_domain'] ?? '');
 
 if ($domainArg !== '') {

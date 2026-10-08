@@ -700,7 +700,8 @@ class LocalDeployer implements DeployerInterface
     public function renderNginxConfig(array $app): string
     {
         $hostPort = $this->primaryHostPort($app);
-        $subdomain = app_subdomain($app['name']);
+        // Subdomain efektif (field `subdomain` app bila ada, selain itu `name`).
+        $subdomain = app_subdomain_of($app);
         $customDomain = (string) ($app['custom_domain'] ?? '');
 
         // Rute proxy tambahan (apps.json: nginx_routes). all() toleran data

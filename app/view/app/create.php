@@ -16,6 +16,9 @@ $authMethod = $auth_method ?? 'none';
 $previewError = $preview_error ?? null;
 // Nilai form dipertahankan saat re-render setelah Analisis Repo gagal.
 $formName = $form_name ?? '';
+// Subdomain opsional (label, bukan FQDN). Field diisi otomatis dari nama app
+// oleh JS di bawah; nilai dari server (bila ada) tidak pernah ditimpa.
+$formSubdomain = $form_subdomain ?? '';
 $formRepoUrl = $form_repo_url ?? '';
 $formBranch = $form_branch ?? 'main';
 // Nilai form mode compose dipertahankan saat validasi gagal.
@@ -70,7 +73,20 @@ $breadcrumbs = [
       <div class="mb-3">
         <label class="form-label" for="compose-name">Nama app (slug)</label>
         <input type="text" class="form-control" id="compose-name" name="name" placeholder="myapp" value="<?= e($formName) ?>" required>
-        <div class="form-text">Hanya huruf kecil a-z, angka, dan strip (-). Dipakai sebagai subdomain, nama project compose, dan nama direktori.</div>
+        <div class="form-text">Hanya huruf kecil a-z, angka, dan strip (-). Dipakai sebagai nama project compose, nama direktori, dan subdomain default.</div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label" for="compose-subdomain">Subdomain <span class="text-muted small">(opsional)</span></label>
+        <input type="text" class="form-control mono" id="compose-subdomain" name="subdomain" value="<?= e($formSubdomain) ?>"
+               placeholder="myapp-7k2x9p" pattern="[a-z0-9](?:[a-z0-9-]*[a-z0-9])?" maxlength="63" autocomplete="off"
+               title="Huruf kecil a-z, angka, dan strip (-) saja; tidak boleh diawali/diakhiri strip; maksimal 63 karakter."
+               style="max-width:360px;">
+        <div class="form-text">
+          Kosongkan = pakai nama app. Huruf kecil a-z, angka, dan strip (-) saja; harus unik antar app.
+          Dipakai untuk vhost Nginx &amp; sertifikat SSL (<span class="mono">{subdomain}.<?= e((string) config('deploy.app_domain')) ?></span>).
+          Terisi otomatis saat Anda mengetik nama app — boleh diubah.
+        </div>
       </div>
 
       <div class="mb-3">
@@ -268,7 +284,20 @@ foreach (glob(dirname(__DIR__, 3) . '/public/images/templates/*') ?: [] as $logo
       <div class="mb-3">
         <label class="form-label" for="name">Nama app (slug)</label>
         <input type="text" class="form-control" id="name" name="name" placeholder="myapp" value="<?= e($formName) ?>" required>
-        <div class="form-text">Hanya huruf kecil a-z, angka, dan strip (-). Dipakai sebagai subdomain &amp; nama direktori.</div>
+        <div class="form-text">Hanya huruf kecil a-z, angka, dan strip (-). Dipakai sebagai nama direktori &amp; subdomain default.</div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label" for="subdomain">Subdomain <span class="text-muted small">(opsional)</span></label>
+        <input type="text" class="form-control mono" id="subdomain" name="subdomain" value="<?= e($formSubdomain) ?>"
+               placeholder="myapp-7k2x9p" pattern="[a-z0-9](?:[a-z0-9-]*[a-z0-9])?" maxlength="63" autocomplete="off"
+               title="Huruf kecil a-z, angka, dan strip (-) saja; tidak boleh diawali/diakhiri strip; maksimal 63 karakter."
+               style="max-width:360px;">
+        <div class="form-text">
+          Kosongkan = pakai nama app. Huruf kecil a-z, angka, dan strip (-) saja; harus unik antar app.
+          Dipakai untuk vhost Nginx &amp; sertifikat SSL (<span class="mono">{subdomain}.<?= e((string) config('deploy.app_domain')) ?></span>).
+          Terisi otomatis saat Anda mengetik nama app — boleh diubah.
+        </div>
       </div>
 
       <div class="mb-3">
@@ -313,6 +342,53 @@ function copyFormKey() {
   try { navigator.clipboard.writeText(t.value); } catch (e) {}
   try { document.execCommand('copy'); } catch (e) {}
 }
+
+// Isi otomatis field subdomain dari nama app: `{nama}-{6 karakter acak}`.
+// - hanya saat user mengetik nama (tidak ada prefill saat halaman dimuat) →
+//   nilai dari server / nama yang dipertahankan setelah validasi gagal aman;
+// - flag "dirty" per-form: begitu user menyentuh field subdomain, isian
+//   otomatis berhenti sampai halaman dimuat ulang.
+// Hasil selalu lolos `pattern` (batas server `app_subdomain_valid()`):
+// `[a-z0-9](?:[a-z0-9-]*[a-z0-9])?`, maksimal 63 karakter.
+(function () {
+  var MAX_LENGTH = 63;
+  var SUFFIX_LENGTH = 6;
+
+  function randomSuffix() {
+    var s = Math.random().toString(36).slice(2, 8);
+    while (s.length < SUFFIX_LENGTH) { s += Math.floor(Math.random() * 36).toString(36); }
+    return s.slice(0, SUFFIX_LENGTH);
+  }
+
+  function slugify(value) {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  // `{nama}-{rand6}`: bagian acak tidak pernah dipotong — nama yang dipangkas
+  // lebih dulu (sisakan ruang '-' + 6 karakter) lalu strip ekor dibuang.
+  function buildSubdomain(nameValue) {
+    var base = slugify(nameValue);
+    if (base === '') return '';
+    var suffix = randomSuffix();
+    base = base.slice(0, MAX_LENGTH - 1 - suffix.length).replace(/-+$/g, '');
+    return base === '' ? suffix : base + '-' + suffix;
+  }
+
+  function wire(nameId, subdomainId) {
+    var name = document.getElementById(nameId);
+    var sub = document.getElementById(subdomainId);
+    if (!name || !sub) return;
+    var dirty = sub.value !== '';
+    name.addEventListener('input', function () {
+      if (dirty) return;
+      sub.value = buildSubdomain(name.value);
+    });
+    sub.addEventListener('input', function () { dirty = true; });
+  }
+
+  wire('name', 'subdomain');
+  wire('compose-name', 'compose-subdomain');
+})();
 </script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

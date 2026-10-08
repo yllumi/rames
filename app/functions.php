@@ -77,11 +77,80 @@ if (!function_exists('flash_pull')) {
 
 if (!function_exists('app_subdomain')) {
     /**
-     * Subdomain app = {name}.{APP_DOMAIN}.
+     * Subdomain default sebuah app = {name}.{APP_DOMAIN}.
      */
     function app_subdomain(string $name): string
     {
         return $name . '.' . config('deploy.app_domain', 'example.com');
+    }
+}
+
+if (!function_exists('app_subdomain_of')) {
+    /**
+     * FQDN subdomain **efektif** sebuah app.
+     *
+     * Field `subdomain` di `apps.json` menyimpan **label** slug (mis.
+     * `blog-x7k2`) — FQDN dirakit `{label}.{APP_DOMAIN}`. Bila field kosong /
+     * tidak ada, dipakai `{name}.{APP_DOMAIN}` (perilaku lama, tanpa migrasi).
+     * Nilai lama yang sudah berupa FQDN penuh (mengandung titik) dihormati apa
+     * adanya supaya data lama tetap berfungsi.
+     *
+     * Ini satu-satunya jalur yang boleh menurunkan subdomain — jangan menebak
+     * dari `name` langsung.
+     */
+    function app_subdomain_of(array $app): string
+    {
+        $sub = strtolower(trim((string) ($app['subdomain'] ?? '')));
+        if ($sub === '') {
+            return app_subdomain((string) ($app['name'] ?? ''));
+        }
+        return str_contains($sub, '.') ? $sub : app_subdomain($sub);
+    }
+}
+
+if (!function_exists('app_subdomain_label')) {
+    /**
+     * Label subdomain efektif app (tanpa APP_DOMAIN) — dipakai UI untuk
+     * menampilkan/mengedit field `subdomain`. Fallback ke `name`.
+     */
+    function app_subdomain_label(array $app): string
+    {
+        $sub = strtolower(trim((string) ($app['subdomain'] ?? '')));
+        if ($sub === '') {
+            return (string) ($app['name'] ?? '');
+        }
+        if (!str_contains($sub, '.')) {
+            return $sub;
+        }
+        $suffix = '.' . strtolower((string) config('deploy.app_domain', 'example.com'));
+        return str_ends_with($sub, $suffix) ? substr($sub, 0, -strlen($suffix)) : $sub;
+    }
+}
+
+if (!function_exists('app_subdomain_is_custom')) {
+    /**
+     * Apakah app memakai subdomain eksplisit — field `subdomain` terisi dan
+     * hasilnya berbeda dari default `{name}.{APP_DOMAIN}`.
+     */
+    function app_subdomain_is_custom(array $app): bool
+    {
+        if (trim((string) ($app['subdomain'] ?? '')) === '') {
+            return false;
+        }
+        return app_subdomain_of($app) !== app_subdomain((string) ($app['name'] ?? ''));
+    }
+}
+
+if (!function_exists('app_subdomain_valid')) {
+    /**
+     * Validasi format label subdomain: slug `[a-z0-9-]`, diawali & diakhiri
+     * alfanumerik, maksimal 63 karakter (batas label DNS).
+     */
+    function app_subdomain_valid(string $label): bool
+    {
+        return $label !== ''
+            && strlen($label) <= 63
+            && preg_match('/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/', $label) === 1;
     }
 }
 

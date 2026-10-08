@@ -1,5 +1,154 @@
   <!-- ============ Tab: Domain & SSL ============ -->
   <div class="tab-pane fade" id="tab-domain" role="tabpanel" aria-labelledby="tab-domain-btn">
+  <?php if ($hasHostPort): ?>
+  <?php
+  // Editor subdomain app. `apps.json.subdomain` menyimpan label; FQDN efektif
+  // dirakit server (`app_subdomain_of()`). Semua validasi tetap di server —
+  // view hanya merender + mengirim POST ke /apps/{id}/subdomain (ability `domain`).
+  $subdomainLabel = (string) ($app['subdomain_label'] ?? '');
+  $subdomainCustom = (bool) ($app['subdomain_custom'] ?? false);
+  $subdomainNameFallback = app_subdomain((string) ($app['name'] ?? ''));
+  // Field kosong = pakai nama app; jadi hanya diisi label saat app memang
+  // memakai subdomain eksplisit (label efektif = nama app pada mode fallback).
+  $subdomainInput = $subdomainCustom ? $subdomainLabel : '';
+  ?>
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="h6 mb-0">Subdomain</h2>
+        <?php if ($customDomain): ?>
+        <span class="text-muted small">redirect ke custom domain <?= e($customDomain) ?></span>
+        <?php endif; ?>
+      </div>
+      <div class="card-body">
+        <dl class="app-info mb-3">
+          <div class="app-info-item">
+            <dt class="k">Subdomain aktif</dt>
+            <dd class="v mb-0">
+              <a id="subdomain-current-link" class="mono" href="http://<?= e($app['subdomain']) ?>" target="_blank" rel="noopener"><span id="subdomain-current"><?= e($app['subdomain']) ?></span></a>
+              <span class="badge text-bg-secondary ms-1" id="subdomain-source"><?= $subdomainCustom && $subdomainLabel !== '' ? 'label: ' . e($subdomainLabel) : 'dari nama app' ?></span>
+            </dd>
+          </div>
+        </dl>
+        <?php if (!$canDomain): ?>
+        <p class="text-muted small mb-0">Anda tidak punya hak mengubah domain app ini.</p>
+        <?php else: ?>
+        <form id="subdomain-form" method="post" action="/apps/<?= e($app['id']) ?>/subdomain" class="row g-2 align-items-center">
+          <?= csrf_field() ?>
+          <div class="col-12 col-md-auto flex-grow-1">
+            <label class="visually-hidden" for="subdomain-label">Subdomain (label)</label>
+            <input type="text" class="form-control form-control-sm mono" id="subdomain-label" name="subdomain"
+                   value="<?= e($subdomainInput) ?>" pattern="[a-z0-9](?:[a-z0-9-]*[a-z0-9])?" maxlength="63"
+                   autocomplete="off" spellcheck="false"
+                   title="Huruf kecil a-z, angka, dan strip (-) saja; tidak boleh diawali/diakhiri strip; maksimal 63 karakter; kosongkan = pakai nama app."
+                   placeholder="kosong = <?= e((string) ($app['name'] ?? '')) ?>" style="max-width:360px;">
+          </div>
+          <div class="col-12 col-md-auto">
+            <button class="btn btn-primary btn-sm" id="subdomain-submit">
+              <span class="spinner-border spinner-border-sm d-none" id="subdomain-spinner" role="status" aria-hidden="true"></span>
+              Ubah Subdomain
+            </button>
+          </div>
+          <div class="col-12">
+            <div class="form-text">
+              Kosongkan = kembali memakai nama app (<span class="mono"><?= e($subdomainNameFallback) ?></span>).
+              Huruf kecil a-z, angka, dan strip (-) saja; harus unik antar app.
+              Dipakai untuk vhost Nginx &amp; sertifikat SSL (<span class="mono">{subdomain}.<?= e((string) config('deploy.app_domain')) ?></span>).
+            </div>
+          </div>
+        </form>
+        <div id="subdomain-alert" class="alert d-none mt-3 mb-0 py-2 small" role="alert"></div>
+        <p class="text-muted small mb-0 mt-2">
+          Sertifikat SSL lama tidak lagi cocok untuk domain baru — terbitkan ulang di halaman <a href="/ssl">SSL</a> bila app memakai HTTPS.
+          <?php if (is_admin()): ?>Bila Nginx host belum mereload config baru, muat ulang di halaman <a href="/nginx">Nginx</a>.<?php endif; ?>
+        </p>
+        <?php endif; ?>
+      </div>
+    </section>
+  <?php if ($canDomain): ?>
+  <script>
+  // Ubah subdomain via AJAX (tanpa reload). Server menegakkan validasi; view
+  // hanya menampilkan pesan hasil + memperbarui FQDN yang ditampilkan.
+  (function () {
+    var form = document.getElementById('subdomain-form');
+    if (!form) return;
+    var input = document.getElementById('subdomain-label');
+    var btn = document.getElementById('subdomain-submit');
+    var spinner = document.getElementById('subdomain-spinner');
+    var alertBox = document.getElementById('subdomain-alert');
+    var current = document.getElementById('subdomain-current');
+    var currentLink = document.getElementById('subdomain-current-link');
+    var source = document.getElementById('subdomain-source');
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    var token = meta ? meta.getAttribute('content') : '';
+
+    function show(kind, msg) {
+      if (!alertBox) return;
+      alertBox.className = 'alert alert-' + kind + ' mt-3 mb-0 py-2 small';
+      alertBox.textContent = msg;
+    }
+
+    function busy(on) {
+      if (btn) btn.disabled = on;
+      if (spinner) spinner.classList.toggle('d-none', !on);
+    }
+
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (alertBox) alertBox.className = 'alert d-none mt-3 mb-0 py-2 small';
+      busy(true);
+
+      var body = new URLSearchParams();
+      body.append('_token', token);
+      body.append('subdomain', input ? input.value : '');
+
+      fetch(form.action, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+        },
+        body: body.toString()
+      }).then(function (r) {
+        return r.json().then(function (d) {
+          return { ok: r.ok, status: r.status, data: d };
+        }).catch(function () {
+          return { ok: r.ok, status: r.status, data: null };
+        });
+      }).then(function (res) {
+        var d = res.data;
+        if (!d || typeof d !== 'object') {
+          show('danger', 'Respons tidak valid dari server (HTTP ' + res.status + '). Muat ulang halaman lalu coba lagi.');
+          return;
+        }
+        if (d.subdomain && current) current.textContent = d.subdomain;
+        if (d.subdomain && currentLink) currentLink.href = 'http://' + d.subdomain;
+        if (d.code === 419) {
+          show('danger', 'Sesi kedaluwarsa — muat ulang halaman lalu coba lagi.');
+          return;
+        }
+        if (d.code === 0) {
+          if (source && input) {
+            var label = input.value.trim();
+            source.textContent = label === '' ? 'dari nama app' : 'label: ' + label;
+          }
+          show('success', d.message || 'Subdomain diperbarui.');
+          return;
+        }
+        // gagal / rollback: tampilkan domain efektif yang masih berlaku
+        show('danger', d.error || d.msg || 'Gagal mengubah subdomain.');
+      }).catch(function () {
+        show('danger', 'Gagal terhubung ke server. Periksa koneksi lalu coba lagi.');
+      }).then(function () {
+        busy(false);
+      });
+    });
+  })();
+  </script>
+  <?php endif; ?>
+  <?php endif; ?>
+
     <section class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h2 class="h6 mb-0">Custom Domain</h2>

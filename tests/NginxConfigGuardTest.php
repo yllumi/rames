@@ -284,6 +284,151 @@ class NginxConfigGuardTest extends TestCase
         $this->assertCount(1, $deployer->writes, 'hanya penulisan config rute baru sebelum rollback');
     }
 
+    // ==================================================================
+    // applySubdomain(): rollback state harus membedakan "key absen" dari
+    // "key bernilai null" (sentinel ABSENT) — bentuk apps.json harus stabil.
+    // ==================================================================
+
+    /**
+     * Daftar key state subdomain yang disnapshot/dipulihkan guard
+     * (salinan lokal dari NginxConfigGuard::SUBDOMAIN_STATE_KEYS yang privat).
+     *
+     * @return array<int,string>
+     */
+    private function subdomainKeys(): array
+    {
+        return [
+            'subdomain',
+            'ssl_status',
+            'ssl_stage',
+            'ssl_message',
+            'ssl_error',
+            'ssl_expires_at',
+            'needs_ssl',
+        ];
+    }
+
+    public function testSubdomainRollbackKeepsAbsentKeysAbsent(): void
+    {
+        $store = new AppStore($this->file);
+        $app = $this->seedApp(['name' => 'absen']); // tanpa key subdomain/ssl_*
+
+        $saved = $store->find($app['id']);
+        foreach ($this->subdomainKeys() as $key) {
+            $this->assertArrayNotHasKey($key, $saved, "prasyarat: '$key' semula absen");
+        }
+
+        $deployer = new RecordingNginxDeployer();
+        $reloader = new FakeGuardReloader(['ok' => false, 'error' => 'nginx: [emerg] bad config']);
+        $guard = new NginxConfigGuard($reloader, $deployer, $store);
+
+        $result = $guard->applySubdomain($app['id'], 'newlabel');
+
+        $this->assertFalse($result['ok']);
+        $this->assertTrue($result['rolled_back']);
+
+        $saved = $store->find($app['id']);
+        foreach ($this->subdomainKeys() as $key) {
+            $this->assertArrayNotHasKey($key, $saved, "key '$key' semula absen harus tetap absen setelah rollback");
+        }
+    }
+
+    public function testSubdomainRollbackKeepsExplicitNullValues(): void
+    {
+        $store = new AppStore($this->file);
+        $app = $this->seedApp([
+            'name' => 'null-eksplisit',
+            'subdomain' => 'oldlabel',
+            'ssl_status' => 'active',
+            'ssl_stage' => null,
+            'ssl_message' => 'aktif',
+            'ssl_error' => null,
+            'ssl_expires_at' => null,
+            'needs_ssl' => true,
+        ]);
+
+        $deployer = new RecordingNginxDeployer();
+        $reloader = new FakeGuardReloader(['ok' => false, 'error' => 'nginx: [emerg] bad config']);
+        $guard = new NginxConfigGuard($reloader, $deployer, $store);
+
+        $result = $guard->applySubdomain($app['id'], 'newlabel');
+
+        $this->assertFalse($result['ok']);
+        $this->assertTrue($result['rolled_back']);
+
+        $saved = $store->find($app['id']);
+        // Key yang semula bernilai null eksplisit harus TETAP null & key-nya ADA
+        // (dulu ikut terhapus karena null dipakai sebagai penanda "absen").
+        foreach (['ssl_stage', 'ssl_error', 'ssl_expires_at'] as $key) {
+            $this->assertArrayHasKey($key, $saved, "key '$key' semula ada (null) harus tetap ada");
+            $this->assertNull($saved[$key], "key '$key' semula null harus tetap null");
+        }
+    }
+
+    public function testSubdomainRollbackRestoresNonNullValuesVerbatim(): void
+    {
+        $store = new AppStore($this->file);
+        $app = $this->seedApp([
+            'name' => 'non-null',
+            'subdomain' => 'keepme',
+            'ssl_status' => 'pending',
+            'ssl_stage' => 'challenge',
+            'ssl_message' => 'menunggu',
+            'ssl_error' => 'pesan error lama',
+            'ssl_expires_at' => '2030-01-01T00:00:00+00:00',
+            'needs_ssl' => true,
+        ]);
+
+        $deployer = new RecordingNginxDeployer();
+        $reloader = new FakeGuardReloader(['ok' => false, 'error' => 'nginx: [emerg] bad config']);
+        $guard = new NginxConfigGuard($reloader, $deployer, $store);
+
+        $result = $guard->applySubdomain($app['id'], 'newlabel');
+
+        $this->assertFalse($result['ok']);
+        $this->assertTrue($result['rolled_back']);
+
+        $saved = $store->find($app['id']);
+        $this->assertSame('keepme', $saved['subdomain']);
+        $this->assertSame('pending', $saved['ssl_status']);
+        $this->assertSame('challenge', $saved['ssl_stage']);
+        $this->assertSame('menunggu', $saved['ssl_message']);
+        $this->assertSame('pesan error lama', $saved['ssl_error']);
+        $this->assertSame('2030-01-01T00:00:00+00:00', $saved['ssl_expires_at']);
+        $this->assertTrue($saved['needs_ssl']);
+    }
+
+    public function testSubdomainWriteConfigThrowRollsBackAndNeverReloads(): void
+    {
+        $store = new AppStore($this->file);
+        $app = $this->seedApp([
+            'name' => 'gagal-tulis-subdomain',
+            'subdomain' => 'oldlabel',
+            'ssl_status' => 'active',
+            'ssl_error' => null,
+        ]);
+
+        $deployer = new RecordingNginxDeployer();
+        $deployer->failOnCall = 1;
+        $deployer->failMessage = 'write gagal';
+        $reloader = new FakeGuardReloader(['ok' => true, 'error' => null]);
+        $guard = new NginxConfigGuard($reloader, $deployer, $store);
+
+        $result = $guard->applySubdomain($app['id'], 'newlabel');
+
+        $this->assertFalse($result['ok']);
+        $this->assertTrue($result['rolled_back']);
+        $this->assertSame('Gagal menulis config Nginx: write gagal', $result['error']);
+        $this->assertSame(0, $reloader->calls, 'reload() tidak boleh dipanggil saat tulis config gagal');
+
+        $saved = $store->find($app['id']);
+        $this->assertSame('oldlabel', $saved['subdomain']);
+        $this->assertSame('active', $saved['ssl_status']);
+        $this->assertArrayHasKey('ssl_error', $saved, 'null eksplisit harus tetap ada');
+        $this->assertNull($saved['ssl_error']);
+        $this->assertArrayNotHasKey('ssl_stage', $saved, 'key yang semula absen harus tetap absen');
+    }
+
     public function testRollbackConfigRewriteFailureAddsWarning(): void
     {
         $store = new AppStore($this->file);

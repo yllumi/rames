@@ -10,7 +10,7 @@ namespace app\library\Support;
  * -------
  * Dua jalur sengaja menyetel `SIGCHLD = SIG_IGN` agar proses detached
  * (`cli/deploy.php`, sesi terminal) tidak menumpuk zombie:
- * `AppController::spawnWorker()` dan `DockerExec::openInteractive()`.
+ * `AppController::spawnWorker()` dan `DockerExec::open()`.
  *
  * Disposisi `SIG_IGN` **diwariskan melewati fork + exec** (berbeda dari handler
  * yang di-reset ke SIG_DFL) dan menetap selama worker hidup — sehingga SEMUA

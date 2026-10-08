@@ -11,7 +11,7 @@ use RuntimeException;
  *
  * Dua mode:
  *  1. runCommand()      — eksekusi satu-perintah (non-interaktif); output lengkap dikembalikan.
- *  2. openInteractive() — sesi shell interaktif (PTY via `script` + `docker exec -it`) dengan
+ *  2. open()            — sesi shell interaktif (PTY via `script` + `docker exec -it`) dengan
  *     IPC berbasis FIFO di runtime/terminal/{token}/. Proses di-spawn detached (bukan anak dari
  *     satu worker HTTP tertentu) sehingga aman lintas-worker Webman: koneksi SSE (output) dan
  *     POST (input) boleh dilayani oleh worker yang berbeda — semua state lewat file/FIFO.
@@ -49,6 +49,24 @@ class DockerExec
     /** @var array<int,string> shell yang boleh dipakai sesi interaktif */
     private const ALLOWED_SHELLS = ['sh', 'bash', 'ash', 'zsh'];
 
+    /**
+     * Prioritas probing shell (`shell` = `auto`): bash punya readline/completion,
+     * `ash`/`sh` (BusyBox/dash) tidak. Urutan ini juga dipakai `shellFromProbe()`.
+     *
+     * @var array<int,string>
+     */
+    private const SHELL_PROBE_PRIORITY = ['bash', 'ash', 'sh'];
+
+    /**
+     * Perintah probing dijalankan di dalam container. `command -v` mengembalikan
+     * path shell pertama yang ada (path absolut), sehingga hasilnya perlu
+     * dinormalisasi ke basename sebelum divalidasi whitelist.
+     */
+    private const SHELL_PROBE_COMMAND = 'command -v bash || command -v ash || command -v sh || echo sh';
+
+    /** Nilai `shell` dari klien yang berarti "pilih otomatis di server". */
+    public const SHELL_AUTO = 'auto';
+
     public function __construct(?string $dockerBinary = null, ?string $runtimeDir = null, ?string $scriptBinary = null)
     {
         $this->dockerBinary = $dockerBinary ?? (string) config('deploy.docker_binary', 'docker');
@@ -69,11 +87,17 @@ class DockerExec
      * String command diteruskan sebagai satu argumen ke sh di dalam container
      * (tanpa shell host) — aman dari command injection pada sisi dashboard.
      *
+     * Opsi `$user` bersifat OPT-IN per pemanggil (default '' = user container
+     * seperti perilaku lama) dan divalidasi dengan aturan yang sama seperti
+     * `open()` — nilai sah: nama user/grup atau uid[:gid] (`0`/`root` = root).
+     * Dipakai file manager (§7.9) agar operasi berkas tidak gagal karena user
+     * image tidak punya izin atas berkas milik user lain.
+     *
      * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
      */
-    public function runCommand(string $container, string $command, int $timeout = 0): array
+    public function runCommand(string $container, string $command, int $timeout = 0, string $user = ''): array
     {
-        $args = [$this->dockerBinary, 'exec', '-i', $container, 'sh', '-c', $command];
+        $args = $this->execArgs($container, $user, ['sh', '-c', $command]);
         $runner = new \app\library\Support\ProcessRunner();
         return $runner->run($args, null, $timeout > 0 ? $timeout : $this->runTimeout, ['TERM' => 'xterm']);
     }
@@ -84,11 +108,13 @@ class DockerExec
      * argumen ke `sh -c` di dalam container (tanpa shell host) — aman dari
      * command injection di sisi dashboard.
      *
+     * Opsi `$user` sama dengan `runCommand()` (opt-in, validasi identik `open()`).
+     *
      * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
      */
-    public function runCommandWithInput(string $container, string $command, string $input, int $timeout = 0): array
+    public function runCommandWithInput(string $container, string $command, string $input, int $timeout = 0, string $user = ''): array
     {
-        $args = [$this->dockerBinary, 'exec', '-i', $container, 'sh', '-c', $command];
+        $args = $this->execArgs($container, $user, ['sh', '-c', $command]);
         $runner = new \app\library\Support\ProcessRunner();
         return $runner->run($args, null, $timeout > 0 ? $timeout : $this->runTimeout, ['TERM' => 'xterm'], $input);
     }
@@ -100,8 +126,16 @@ class DockerExec
     /**
      * Buka sesi shell interaktif ke container.
      *
+     * Nilai `user` yang dikembalikan adalah user EFEKTIF yang dipakai
+     * `docker exec -u` (hasil validasi `assertUser()`), sehingga pemanggil
+     * (controller) bisa menampilkan/mencatat nilai sebenarnya tanpa menebak
+     * ulang dari permintaan klien. Semantik `''` tetap "user default image"
+     * (perintah dijalankan TANPA flag `-u`); pemetaan `''` → `root` adalah
+     * kebijakan controller, bukan di layer ini.
+     *
      * @param array{shell?:string, user?:string} $opts
-     * @return array{token:string, pid:int, shell:string, container:string}
+     * @return array{token:string, pid:int, shell:string, user:string, container:string}
+     *         `user` = user efektif; `''` = user default image (tanpa `-u`).
      * @throws RuntimeException
      */
     public function open(string $appId, string $container, array $opts = []): array
@@ -109,11 +143,8 @@ class DockerExec
         $this->pruneStale();
         $this->assertCapacity();
 
-        $shell = $this->validateShell((string) ($opts['shell'] ?? 'sh'));
-        $user = (string) ($opts['user'] ?? '');
-        if ($user !== '' && !preg_match('/^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*(:[a-zA-Z0-9_.-]+)?$/', $user)) {
-            throw new RuntimeException('User tidak valid (contoh: root, www-data, 1000:1000).');
-        }
+        $shell = $this->resolveShell($container, (string) ($opts['shell'] ?? ''));
+        $user = $this->assertUser((string) ($opts['user'] ?? ''));
 
         $token = bin2hex(random_bytes(16));
         $dir = $this->runtimeDir . '/' . $token;
@@ -169,7 +200,10 @@ class DockerExec
         // description yang SHARED dengan fd duplikat anak (proc_open). Stream yang
         // diteruskan harus tetap blocking agar `script`/docker exec berperilaku normal.
 
-        $env = array_merge(getenv(), ['TERM' => 'xterm']);
+        // xterm-256color (bukan sekadar `xterm`): memberi `TERM` yang dikenal
+        // readline/ncurses di hampir semua image (entri terminfo dikirim paket yang
+        // sama dengan `xterm`), sekaligus mengaktifkan 256 warna untuk `ls`/prompt.
+        $env = array_merge(getenv(), ['TERM' => 'xterm-256color']);
         // Spawn + ambil PID dalam satu blok: `script` menunggu anaknya (docker exec)
         // lewat waitpid, jadi proses anak wajib mewarisi SIGCHLD=SIG_DFL — bila worker
         // sudah meng-ignore SIGCHLD (lihat SigchldGuard), waitpid itu gagal (ECHILD)
@@ -241,7 +275,7 @@ class DockerExec
         // menjadi zombie — kernel otomatis reap (pola sama dengan worker deploy).
         SigchldGuard::ignoreAndReap();
 
-        return ['token' => $token, 'pid' => $pid, 'shell' => $shell, 'container' => $container];
+        return ['token' => $token, 'pid' => $pid, 'shell' => $shell, 'user' => $user, 'container' => $container];
     }
 
     /**
@@ -371,6 +405,86 @@ class DockerExec
             throw new RuntimeException('Shell tidak diizinkan: ' . $shell);
         }
         return $shell;
+    }
+
+    /**
+     * Tentukan shell sesi.
+     *
+     * Permintaan eksplisit klien (`sh`/`bash`/`ash`/`zsh`) SELALU dihormati.
+     * Selain itu (`''`/`auto`/nilai kosong) container di-probe: `/bin/sh` pada
+     * Debian/Ubuntu adalah `dash` yang TIDAK punya readline/completion, sehingga
+     * tombol Tab tidak melengkapi apa pun; `bash` (bila ada) memberi line-editing.
+     *
+     * Kegagalan probing tidak mematikan fitur terminal: jatuh kembali ke `sh`
+     * (selalu ada bila container berjalan).
+     */
+    private function resolveShell(string $container, string $requested): string
+    {
+        $requested = trim($requested);
+        if ($requested !== '' && strtolower($requested) !== self::SHELL_AUTO) {
+            return $this->validateShell($requested);
+        }
+
+        try {
+            $probe = $this->runCommand($container, self::SHELL_PROBE_COMMAND, 10);
+        } catch (\Throwable $e) {
+            return 'sh';
+        }
+
+        return self::shellFromProbe($probe['stdout']);
+    }
+
+    /**
+     * Terjemahkan keluaran probe shell → nama shell whitelist (logika murni).
+     *
+     * Prioritas `bash` > `ash` > `sh` (lihat SHELL_PROBE_PRIORITY): hasil pertama
+     * yang dikenali menang, apa pun bentuk path-nya (`/usr/bin/bash` → `bash`).
+     * Keluaran tak dikenali/kosong → `sh`.
+     */
+    public static function shellFromProbe(string $output): string
+    {
+        $tokens = preg_split('/\s+/', trim($output)) ?: [];
+        foreach (self::SHELL_PROBE_PRIORITY as $candidate) {
+            foreach ($tokens as $token) {
+                if ($token !== '' && basename($token) === $candidate) {
+                    return $candidate;
+                }
+            }
+        }
+
+        return 'sh';
+    }
+
+    /**
+     * Validasi opsi `user` docker exec (dipakai `open()` dan `runCommand*()`):
+     * nama user/grup atau uid[:gid]. `0`/`root` sah.
+     */
+    private function assertUser(string $user): string
+    {
+        if ($user !== '' && !preg_match('/^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*(:[a-zA-Z0-9_.-]+)?$/', $user)) {
+            throw new RuntimeException('User tidak valid (contoh: root, www-data, 1000:1000).');
+        }
+
+        return $user;
+    }
+
+    /**
+     * Susun argv `docker exec -i [-u <user>] <container> <command...>`.
+     *
+     * @param array<int,string> $command bagian setelah nama container (mis. ['sh','-c',$cmd])
+     * @return array<int,string>
+     */
+    private function execArgs(string $container, string $user, array $command): array
+    {
+        $args = [$this->dockerBinary, 'exec', '-i'];
+        $user = $this->assertUser($user);
+        if ($user !== '') {
+            $args[] = '-u';
+            $args[] = $user;
+        }
+        $args[] = $container;
+
+        return array_merge($args, $command);
     }
 
     private function metaOf(string $token): array

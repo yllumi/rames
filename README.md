@@ -15,13 +15,13 @@
 - **App Management** — buat app dari URL repo Git, deteksi & edit host port, deteksi konflik port dengan saran port otomatis.
 - **Deploy otomatis** — clone repo → parse `docker-compose.yml` → tulis override port → `docker compose up -d --build` → kumpulkan info container → generate config Nginx.
 - **Background worker** — deploy/rebuild berjalan async (proses terpisah) dengan status yang bisa di-*poll* dari UI.
-- **Reverse proxy** — tiap app otomatis mendapat subdomain `{name}.{APP_DOMAIN}`.
+- **Reverse proxy** — tiap app otomatis mendapat subdomain `{name}.{APP_DOMAIN}`; subdomain bisa **diganti** (label sendiri, terpisah dari nama app) lewat tab **Domain & SSL** (SPECS §7.11).
 - **Custom domain** — app bisa diberi satu custom domain; subdomain bawaan redirect (301) ke custom domain.
 - **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri.
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
 - **Database manager (Adminer)** — halaman `/database` membuka **Adminer** yang disajikan helper internal Rames **tanpa port publik** (di balik login + hak akses app, ability `database` = operator ke atas): daftar container MySQL/MariaDB, tombol **Kelola →**, kredensial terisi otomatis bila terdeteksi (kalau tidak, form login Adminer muncul dengan Server ter-prefill). Dump/import besar diarahkan ke **Volume/backup** atau tab **Terminal** (proxy dibatasi ≤30 detik & ukuran respons; SPECS §7.10).
-- **File manager container** — jelajah berkas, unggah multi-berkas, unduh, edit teks, buat folder, rename, hapus, dan ekstrak `.zip`/`.tar.gz` **di dalam container app** dari dashboard (tab **Container**, tombol `📁 Files`; ability `files` = operator ke atas, hanya untuk container yang berjalan; SPECS §7.9).
+- **File manager container** — jelajah berkas, unggah multi-berkas, unduh, edit teks, buat folder, rename, pindah, hapus, dan ekstrak `.zip`/`.tar.gz` **di dalam container app** dari dashboard (tab **Container**, tombol `📁 Files`; ability `files` = operator ke atas, hanya untuk container yang berjalan; operasi berjalan sebagai root di dalam container; SPECS §7.9).
 - **Backup volume harian ke S3 (restic)** — volume Docker milik app di-backup harian ke object storage (S3) via **restic** (inkremental + dedup + enkripsi + retensi): container database didump logis (tanpa downtime), volume lain di-snapshot (stop → snapshot → start). Restore dari UI di halaman `/backups` (SPECS §8h). Volume yang sudah dihapus (app dihapus total) tetap dapat dipulihkan dari tab **Arsip** (admin) — restore ke volume baru atau unduh dump `.sql`.
 - **Batas resource per service** — admin menetapkan batas maksimum CPU & memori tiap service app (hard limit per service, ditulis ke override compose); user lain melihat nilainya read-only.
 - **Keamanan dasar** — CSRF token, eksekusi command bebas injection (`array` + `bypass_shell`), validasi input ketat, JSON dengan file locking (`flock`).
@@ -130,6 +130,7 @@ docker exec rames-webman php start.php reload
 ```
 
 - Perubahan **view** (`app/view/**`) dan **CSS/JS statis** (`public/**`) umumnya **langsung** berlaku (di-include/di-serve per request); cukup **hard refresh** browser (`Ctrl+Shift+R`).
+- **WAJIB**: bila mengubah `public/js/app-terminal.js` atau `public/js/app-files.js`, naikkan query `?v=N` di `app/view/app/partials/detail-scripts.php` — `?v=` adalah satu-satunya cache-buster untuk kedua berkas itu; tanpa menaikkannya browser bisa tetap memakai JS lama.
 - **Jangan** `docker compose up -d --build` hanya untuk memuat ulang kode — rebuild hanya bila `Dockerfile`/dependency berubah. Alternatif restart penuh: `docker compose restart rames-webman` (koneksi terputus sesaat).
 - Verifikasi cepat opsional: `docker exec rames-webman php vendor/bin/phpunit`.
 

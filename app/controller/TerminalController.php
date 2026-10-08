@@ -90,17 +90,20 @@ class TerminalController
         }
 
         $opts = [
-            'shell' => (string) $request->post('shell', 'sh'),
-            'user' => (string) $request->post('user', ''),
+            // '' = auto: server memilih shell terbaik yang ada di container
+            // (bash > ash > sh — lihat DockerExec::resolveShell()). Permintaan
+            // eksplisit klien tetap dihormati apa adanya.
+            'shell' => trim((string) $request->post('shell', '')),
+            'user' => self::resolveUser((string) $request->post('user', '')),
         ];
 
         try {
-            $session = (new DockerExec())->open((string) $app['id'], $container, $opts);
+            $session = $this->dockerExec()->open((string) $app['id'], $container, $opts);
         } catch (RuntimeException $e) {
             return json(['code' => 400, 'msg' => $e->getMessage()]);
         }
 
-        $this->audit($app, $container, 'open shell ' . $session['shell'] . ($opts['user'] !== '' ? ' (user ' . $opts['user'] . ')' : ''));
+        $this->audit($app, $container, 'open shell ' . $session['shell'] . ' (user ' . $opts['user'] . ')');
         return json(['code' => 0, 'data' => $session]);
     }
 
@@ -112,7 +115,7 @@ class TerminalController
     {
         $this->requireApp($id);
 
-        $exec = new DockerExec();
+        $exec = $this->dockerExec();
         if ($exec->sessionInfo($token, $id) === null) {
             return $this->sseGone($request, 'Sesi terminal tidak ditemukan atau sudah berakhir.');
         }
@@ -229,7 +232,7 @@ class TerminalController
     {
         $this->requireApp($id);
 
-        $exec = new DockerExec();
+        $exec = $this->dockerExec();
         if ($exec->sessionInfo($token, $id) === null) {
             return json(['code' => 404, 'msg' => 'Sesi terminal tidak ditemukan atau sudah berakhir.']);
         }
@@ -250,7 +253,7 @@ class TerminalController
     public function close(Request $request, string $id, string $token)
     {
         $app = $this->requireApp($id);
-        $exec = new DockerExec();
+        $exec = $this->dockerExec();
         $session = $exec->sessionInfo($token, $id);
         if ($session === null) {
             return json(['code' => 404, 'msg' => 'Sesi terminal tidak ditemukan atau sudah berakhir.']);
@@ -280,13 +283,21 @@ class TerminalController
             $timeout = 0;
         }
 
+        // Aturan user sama dengan sesi interaktif `open()`: ability `terminal`
+        // identik (operator+ sudah memegang shell root lewat sesi), jadi default
+        // `root` — tanpa ini jalur "Run" justru gagal `permission denied` atas
+        // berkas milik root padahal operator bisa membuka sesi root. Nilai
+        // eksplisit klien dihormati; validasi tetap satu sumber di
+        // `DockerExec::assertUser()`.
+        $user = self::resolveUser((string) $request->post('user', ''));
+
         try {
-            $result = (new DockerExec())->runCommand($container, $command, $timeout);
+            $result = $this->dockerExec()->runCommand($container, $command, $timeout, $user);
         } catch (\Throwable $e) {
             return json(['code' => 500, 'msg' => $e->getMessage()]);
         }
 
-        $this->audit($app, $container, 'run: ' . substr($command, 0, 120));
+        $this->audit($app, $container, 'run: ' . substr($command, 0, 120) . ' (user ' . $user . ')');
         return json(['code' => 0, 'data' => $result]);
     }
 
@@ -295,12 +306,41 @@ class TerminalController
     // ==================================================================
 
     /**
+     * Kebijakan dashboard untuk user eksekusi terminal/one-shot run.
+     *
+     * Ability `terminal` = operator+ yang sudah memegang shell penuh, jadi default
+     * adalah root (tanpa ini `rm`/edit berkas milik root gagal karena user default
+     * image, mis. www-data, tidak berizin). Permintaan eksplisit klien dihormati
+     * apa adanya; `''` diteruskan ke `DockerExec` sebagai "user default image"
+     * HANYA bila pemanggil memang tidak ingin default root — validasinya satu
+     * sumber di `DockerExec::assertUser()` (bukan regex kedua di controller).
+     */
+    private static function resolveUser(string $requested): string
+    {
+        $requested = trim($requested);
+
+        return $requested === '' ? 'root' : $requested;
+    }
+
+    /**
+     * Seam pembuatan `DockerExec` (di-override unit test untuk menyuntik fake
+     * tanpa Docker/Engine nyata). Produksi selalu memakai implementasi asli.
+     */
+    protected function dockerExec(): DockerExec
+    {
+        return new DockerExec();
+    }
+
+    /**
      * Ambil app + pastikan user berhak memakai terminal container-nya.
+     *
+     * `protected` (bukan private) semata agar unit test bisa men-bypass
+     * `AppStore`/`AppAccess` (data runtime nyata) — produksi tidak berubah.
      *
      * @throws AppAccessDenied dirender sebagai 404 oleh webman (JSON untuk
      *                         endpoint /api/*) — app user lain tidak terbocor.
      */
-    private function requireApp(string $id): array
+    protected function requireApp(string $id): array
     {
         $app = (new AppStore())->find($id);
         if ($app === null) {
@@ -338,7 +378,16 @@ class TerminalController
         return false;
     }
 
-    private function audit(array $app, string $container, string $action): void
+    /**
+     * Audit trail operasi terminal (open/close + one-shot run).
+     *
+     * Pemanggil menyertakan user EFEKTIF eksekusi di dalam `$action`
+     * (mis. `run: id (user root)`), sebab `docker exec -u` menentukan izin yang
+     * benar-benar dipakai — tercatat terpisah dari `user` (akun dashboard).
+     *
+     * `protected` semata agar unit test tidak menulis ke `runtime/logs/terminal` nyata.
+     */
+    protected function audit(array $app, string $container, string $action): void
     {
         $user = (string) (current_user()['username'] ?? '?');
         $dir = runtime_path() . '/logs/terminal';

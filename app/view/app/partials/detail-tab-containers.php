@@ -57,7 +57,7 @@
             <?php if ($cRunning && $canTerminal): ?>
               <button type="button" class="btn btn-outline-secondary btn-sm terminal-btn ms-1"
                       data-app="<?= e($app['id']) ?>" data-container="<?= e($cName) ?>"
-                      data-shell="sh" title="Buka shell interaktif (docker exec -it sh)">⌁ Terminal</button>
+                      title="Buka shell interaktif (docker exec -it, shell otomatis: bash bila ada; user root)">⌁ Terminal</button>
               <button type="button" class="btn btn-outline-primary btn-sm run-btn ms-1"
                       data-app="<?= e($app['id']) ?>" data-container="<?= e($cName) ?>"
                       title="Jalankan perintah satu kali (docker exec ... sh -c)">> Run</button>

@@ -83,6 +83,9 @@ Route::post('/apps/{id}/delete', [AppController::class, 'delete']);
 Route::post('/apps/{id}/domain/set', [AppController::class, 'setDomain']);
 Route::post('/apps/{id}/domain/remove', [AppController::class, 'removeDomain']);
 
+// Subdomain app (field apps.json `subdomain`; ability `domain`, operator+)
+Route::post('/apps/{id}/subdomain', [AppController::class, 'setSubdomain']);
+
 // Rute proxy tambahan per app (field apps.json `nginx_routes`, Lapis A)
 Route::post('/apps/{id}/routes', [AppController::class, 'saveRoutes']);
 
@@ -191,7 +194,7 @@ Route::post('/api/apps/{id}/terminal/run', [TerminalController::class, 'run']);
 
 /*
 |--------------------------------------------------------------------------
-| File manager container (jelajah, unggah, unduh, edit, rename, hapus, mkdir,
+| File manager container (jelajah, unggah, unduh, edit, rename, pindah, hapus, mkdir,
 | ekstrak arsip). Semua endpoint dilindungi AuthMiddleware; mutasi lewat POST
 | (CSRF). Otorisasi ability `files` (operator+) lewat AppAccess.
 |--------------------------------------------------------------------------
@@ -203,6 +206,7 @@ Route::post('/apps/{id}/files/write', [FileController::class, 'write']);
 Route::post('/apps/{id}/files/mkdir', [FileController::class, 'mkdir']);
 Route::post('/apps/{id}/files/rename', [FileController::class, 'rename']);
 Route::post('/apps/{id}/files/delete', [FileController::class, 'delete']);
+Route::post('/apps/{id}/files/move', [FileController::class, 'move']);
 Route::post('/apps/{id}/files/upload', [FileController::class, 'upload']);
 Route::post('/apps/{id}/files/extract', [FileController::class, 'extract']);
 
