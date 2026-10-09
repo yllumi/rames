@@ -68,7 +68,7 @@ $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke=
         </li>
         <li class="nav-item">
           <?php $__credit = current_credit_balance(); ?>
-          <a class="nav-link <?= ($active ?? '') === 'credits' ? 'active' : '' ?>" href="/credits" data-label="Kredit" aria-label="Kredit"<?= ($active ?? '') === 'credits' ? ' aria-current="page"' : '' ?>><span class="nav-ico" aria-hidden="true"><?= $__navIcons['credits'] ?></span><span class="nav-label">Kredit</span><?php if ($__credit !== null): ?><span class="badge text-bg-success ms-1" title="Saldo kredit Anda"><?= e(format_credits($__credit)) ?></span><?php endif; ?></a>
+          <a class="nav-link <?= ($active ?? '') === 'credits' ? 'active' : '' ?>" href="/credits" data-label="Kredit" aria-label="Kredit"<?= ($active ?? '') === 'credits' ? ' aria-current="page"' : '' ?>><span class="nav-ico" aria-hidden="true"><?= $__navIcons['credits'] ?></span><span class="nav-label">Kredit</span><?php if ($__credit !== null): ?><span class="badge text-bg-success ms-1" title="Saldo kredit Anda"><?= e(format_credits($__credit, 0)) ?></span><?php endif; ?></a>
         </li>
         <?php if (is_admin()): ?>
         <li class="nav-item">

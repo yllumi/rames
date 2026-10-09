@@ -218,9 +218,9 @@ if (!function_exists('format_credits')) {
      * Format kredit dengan 2 desimal & pemisah ribuan gaya Indonesia
      * (mis. `1234.5` → `1.234,50`). Murni presentasi, tanpa I/O.
      */
-    function format_credits(float $credits): string
+    function format_credits(float $credits, int $decimals = 2): string
     {
-        return number_format($credits, 2, ',', '.');
+        return number_format($credits, $decimals, ',', '.');
     }
 }
 
