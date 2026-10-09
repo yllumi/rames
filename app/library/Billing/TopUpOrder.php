@@ -56,7 +56,7 @@ class TopUpOrder
             throw new InvalidArgumentException('Nominal top-up maksimal Rp' . number_format($max, 0, ',', '.') . '.');
         }
 
-        $perCredit = (float) config('deploy.billing_topup_idr_per_credit', 10.0);
+        $perCredit = (float) config('deploy.billing_topup_idr_per_credit', 1.0);
         if (!($perCredit > 0)) {
             throw new RuntimeException('Konfigurasi tarif kredit (BILLING_TOPUP_IDR_PER_CREDIT) tidak valid.');
         }

@@ -65,7 +65,7 @@ class TopUpService
      */
     public function creditsFor(int $amountIdr): float
     {
-        $perCredit = (float) config('deploy.billing_topup_idr_per_credit', 10.0);
+        $perCredit = (float) config('deploy.billing_topup_idr_per_credit', 1.0);
         if (!($perCredit > 0)) {
             throw new RuntimeException('Konfigurasi tarif kredit (BILLING_TOPUP_IDR_PER_CREDIT) tidak valid.');
         }
@@ -306,10 +306,14 @@ class TopUpService
 
     /**
      * Tambahkan saldo + entri ledger `topup` ke struktur billing.json yang sudah
-     * dibuka pemanggil (satu transaksi). Bentuk entri **identik** dengan
-     * `CreditAccount::deposit(..., 'topup', $reference)` — sengaja ditulis inline
-     * agar transisi order + saldo + ledger berada dalam satu `JsonStore::update()`
-     * (§5.7 #3); `CreditAccount` tidak mengekspos helper `applyDeposit(&$data)`.
+     * dibuka pemanggil (satu transaksi). Bentuk entri **sama** dengan
+     * `CreditAccount::deposit(..., 'topup', $reference)` ditambah field `idr`
+     * (nominal rupiah yang benar-benar dibayar) — `idr` disimpan karena kurs
+     * (`BILLING_TOPUP_IDR_PER_CREDIT`) bisa berubah setelah order dibuat,
+     * sehingga padanan rupiah entri lama tidak boleh ditebak dari kurs saat ini.
+     * Entri sengaja ditulis inline agar transisi order + saldo + ledger berada
+     * dalam satu `JsonStore::update()` (§5.7 #3); `CreditAccount` tidak
+     * mengekspos helper `applyDeposit(&$data)`.
      *
      * @param array<string,mixed> $data
      * @param array<string,mixed> $order
@@ -341,6 +345,10 @@ class TopUpService
         ];
         if (trim($reference) !== '') {
             $entry['reference'] = trim($reference);
+        }
+        $amountIdr = (int) ($order['amount_idr'] ?? 0);
+        if ($amountIdr > 0) {
+            $entry['idr'] = $amountIdr;
         }
 
         $ledger = is_array($current['ledger'] ?? null) ? array_values($current['ledger']) : [];

@@ -148,6 +148,10 @@ class BillingStore
         if (isset($entry['balance_after']) && is_numeric($entry['balance_after'])) {
             $entry['balance_after'] = round((float) $entry['balance_after'], 2);
         }
+        // Nominal rupiah asli entri `topup` (int, tanpa desimal).
+        if (isset($entry['idr']) && is_numeric($entry['idr'])) {
+            $entry['idr'] = (int) $entry['idr'];
+        }
         if (is_array($entry['items'] ?? null)) {
             $entry['items'] = array_map(static function (mixed $item): mixed {
                 if (!is_array($item)) {

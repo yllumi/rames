@@ -226,7 +226,7 @@ Worker memvalidasi ulang kepemilikan volume terhadap `apps.json` sebelum restore
 | `RESTIC_PASSWORD_FILE` | `{proyek}/database/restic/password` | File passphrase restic (chmod `0600`, gitignored) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION` | — | Kredensial S3 (diteruskan ke helper restic via `--env-file`, bukan argv) |
 | `BILLING_ENABLED` | `true` | Aktifkan meteran & gerbang kredit (SPECS §7.12) |
-| `BILLING_RATE_CPU_PER_CORE_HOUR` / `BILLING_RATE_RAM_PER_GB_HOUR` | `100` / `20` | Tarif kredit per core-jam CPU / GB-jam RAM |
+| `BILLING_RATE_CPU_PER_CORE_HOUR` / `BILLING_RATE_RAM_PER_GB_HOUR` | `100` / `20` | Tarif kredit per core-jam CPU / GB-jam RAM (= rupiah per jam pada kurs 1:1) |
 | `BILLING_DEFAULT_CPUS` / `BILLING_DEFAULT_MEMORY_MB` | `0.5` / `512` | Basis limit service tanpa entri `limits` (anti-lubang harga) |
 | `BILLING_MIN_DEPOSIT_DAYS` | `30` | Deposit minimum = estimasi biaya N hari (`0` = cukup saldo ≥ 0) |
 | `BILLING_SAMPLE_SECONDS` | `300` | Resolusi meteran = interval tick proses billing (detik; `0` = tanpa timer) |
@@ -237,7 +237,7 @@ Worker memvalidasi ulang kepemilikan volume terhadap `apps.json` sebelum restore
 | `BILLING_LOG_PATH` | (kosong) | Direktori log billing (kosong = `runtime/logs/billing`) |
 | `BILLING_ADMIN_DEPOSIT_MAX` | `10000000` | Batas nominal satu deposit/adjust manual admin (kredit) |
 | `BILLING_TOPUP_ENABLED` | `false` | Aktifkan top-up mandiri via Duitku (butuh kredensial merchant di bawah) |
-| `BILLING_TOPUP_IDR_PER_CREDIT` | `10` | Kurs konversi: Rp10 = 1 kredit |
+| `BILLING_TOPUP_IDR_PER_CREDIT` | `1` | Kurs konversi: Rp1 = 1 kredit (1:1) |
 | `BILLING_TOPUP_MIN_IDR` / `BILLING_TOPUP_MAX_IDR` | `10000` / `5000000` | Batas nominal top-up (Rp; maksimum aman untuk semua kanal) |
 | `BILLING_TOPUP_EXPIRY_MINUTES` | `0` | `0` = field `expiryPeriod` tidak dikirim (pakai default kanal Duitku) |
 | `BILLING_TOPUP_MAX_PENDING` | `3` | Cap order top-up pending per user (pengganti rate limiter) |

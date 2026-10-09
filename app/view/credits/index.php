@@ -21,7 +21,9 @@ $topupIssues = array_values(array_filter((array) ($topupIssues ?? []), 'is_strin
 $methods = is_array($methods ?? null) ? $methods : [];
 $topupMin = (int) ($topupMin ?? 10000);
 $topupMax = (int) ($topupMax ?? 5000000);
-$idrPerCredit = (float) ($idrPerCredit ?? 10.0);
+$idrPerCredit = (float) ($idrPerCredit ?? 1.0);
+// Kurs bisa pecahan (`BILLING_TOPUP_IDR_PER_CREDIT` float) → jangan paksa 0 desimal.
+$kursLabel = static fn (float $rate): string => number_format($rate, $rate == (int) $rate ? 0 : 2, ',', '.');
 $minDepositDays = (int) ($minDepositDays ?? 30);
 $periodLabel = (string) ($periodLabel ?? '');
 $focusOrder = is_array($focusOrder ?? null) ? $focusOrder : null;
@@ -101,7 +103,7 @@ $breadcrumbs = [
         <div class="form-text mb-3">
           kredit tersedia<?php if ($idrPerCredit > 0): ?>
             · ≈ Rp<?= e(number_format($balance * $idrPerCredit, 0, ',', '.')) ?>
-            <br>Kurs: Rp<?= e(number_format($idrPerCredit, 0, ',', '.')) ?> = 1 kredit
+            <br>Kurs: Rp<?= e($kursLabel($idrPerCredit)) ?> = 1 kredit
           <?php endif; ?>
         </div>
         <?php if ($topupEnabled): ?>
@@ -218,8 +220,16 @@ $breadcrumbs = [
               </td>
               <td class="text-end <?= $amount < 0 ? 'text-danger' : 'text-success' ?>">
                 <?= e($amount < 0 ? '−' : '+') ?><?= e(format_credits(abs($amount))) ?>
-                <?php if ($idrPerCredit > 0): ?>
-                  <div class="text-muted small fw-normal">≈ Rp<?= e(number_format(abs($amount) * $idrPerCredit, 0, ',', '.')) ?></div>
+                <?php
+                  // Nominal rupiah asli (top-up) lebih dipercaya daripada kredit × kurs
+                  // saat ini; entri topup lama tanpa `idr` tidak ditebak sama sekali.
+                  $entryIdr = is_numeric($entry['idr'] ?? null) ? abs((float) $entry['idr']) : null;
+                  if ($entryIdr === null && $type !== 'topup' && $idrPerCredit > 0) {
+                      $entryIdr = abs($amount) * $idrPerCredit;
+                  }
+                ?>
+                <?php if ($entryIdr !== null && $entryIdr > 0): ?>
+                  <div class="text-muted small fw-normal">≈ Rp<?= e(number_format($entryIdr, 0, ',', '.')) ?></div>
                 <?php endif; ?>
               </td>
               <td class="text-end"><?= e(format_credits((float) ($entry['balance_after'] ?? 0.0))) ?></td>
@@ -255,7 +265,7 @@ $breadcrumbs = [
           <div class="form-text">
             Minimum Rp<?= e(number_format($topupMin, 0, ',', '.')) ?><?php if ($topupMax > 0): ?>,
             maksimum Rp<?= e(number_format($topupMax, 0, ',', '.')) ?><?php endif; ?>.
-            <strong>Kurs: Rp<?= e(number_format(max($idrPerCredit, 0.01), 0, ',', '.')) ?> = 1 kredit.</strong>
+            <strong>Kurs: Rp<?= e($kursLabel(max($idrPerCredit, 0.01))) ?> = 1 kredit.</strong>
             Perkiraan kredit: <span id="topup-credits"><?= e(format_credits($topupMin / max($idrPerCredit, 0.01))) ?></span>.
           </div>
         </div>

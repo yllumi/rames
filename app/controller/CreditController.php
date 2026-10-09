@@ -416,7 +416,7 @@ class CreditController
             'methods' => $this->methodCodes(),
             'topupMin' => (int) config('deploy.billing_topup_min_idr', 10000),
             'topupMax' => (int) config('deploy.billing_topup_max_idr', 5000000),
-            'idrPerCredit' => (float) config('deploy.billing_topup_idr_per_credit', 10.0),
+            'idrPerCredit' => (float) config('deploy.billing_topup_idr_per_credit', 1.0),
             'minDepositDays' => (int) config('deploy.billing_min_deposit_days', 30),
             'periodLabel' => BillingPeriod::label(BillingPeriod::current()),
             'focusOrder' => $focusOrder,

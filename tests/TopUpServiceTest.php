@@ -318,6 +318,27 @@ class TopUpServiceTest extends TestCase
         $this->assertSame(0.0, $service->balance('u2'));
     }
 
+    public function testRateChangeAfterOrderKeepsCreditsFrozenAndRecordsPaidIdr(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        $service = $this->service($handler);
+        $order = $this->pendingOrder($service, $handler);
+        $orderId = (string) $order['id'];
+        $this->assertSame(5000.0, (float) $order['credits'], 'order dibuat saat kurs 10');
+
+        // Kurs diubah menjadi 1:1 sebelum pembayaran diselesaikan.
+        $this->useConfig(['billing_topup_idr_per_credit' => 1.0]);
+
+        $result = $service->handleCallback($this->callbackPayload($orderId, 50000));
+        $this->assertTrue($result['ok']);
+        $this->assertSame(5000.0, $result['credits'], 'kredit beku di order — TIDAK dihitung ulang dengan kurs baru');
+        $this->assertSame(5000.0, $service->balance('u2'));
+
+        $ledger = $service->ledger('u2', 5);
+        $this->assertSame(5000.0, $ledger[0]['amount']);
+        $this->assertSame(50000, $ledger[0]['idr'], 'nominal rupiah nyata tetap tercatat agar tampilan riwayat tidak menebak');
+    }
+
     public function testHandleCallbackSuccessCreditsExactlyOnce(): void
     {
         $handler = new FakeDuitkuHandler();
@@ -341,6 +362,7 @@ class TopUpServiceTest extends TestCase
         $this->assertSame('u2', $ledger[0]['by']);
         $this->assertSame('Top-up Duitku', $ledger[0]['note']);
         $this->assertSame('REF-DUITKU-1', $ledger[0]['reference']);
+        $this->assertSame(50000, $ledger[0]['idr'], 'nominal rupiah asli dicatat agar tak bergantung kurs saat ini');
 
         // Callback ganda (retry Duitku) = no-op.
         $second = $service->handleCallback($this->callbackPayload($orderId, 50000));

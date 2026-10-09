@@ -844,21 +844,25 @@ Mengikuti preseden `database/backup.json` (§8h): berkas sendiri agar **skema `a
 { "version": 1,
   "users":  { "u2": { "balance": 250.0, "updated_at": "…",
                        "ledger": [ { "id":"…", "type":"charge|deposit|topup|adjust",
-                                     "amount":-312.5, "balance_after":187.5, "period":"2026-10", "items":[…] } ] } },
+                                     "amount":-312.5, "balance_after":187.5, "period":"2026-10", "items":[…] },
+                                   { "id":"…", "type":"topup", "amount":50000.0, "idr":50000,
+                                     "balance_after":50000.0, "reference":"…" } ] } },
   "usage":  { "<appId>": { "name":"myapp", "owner_id":"u2", "period":"2026-10",
                            "seconds_pending":12345, "credits_pending":118.42, "sampled_at":"…" } },
-  "orders": { "RM-…": { "id":"RM-…", "user_id":"u2", "amount_idr":10000, "credits":1000.0,
+  "orders": { "RM-…": { "id":"RM-…", "user_id":"u2", "amount_idr":10000, "credits":10000.0,
                         "method":"VA", "status":"pending|paid|failed|expired", "created_at":"…",
                         "payment_url":"…", "reference":"…" } } }
 ```
 
-- `users.<id>.balance` (float 2 desimal, boleh negatif), `.ledger` (riwayat; dipangkas ke `BILLING_LEDGER_KEEP` entri terakhir), `.updated_at`.
+> Contoh di atas memakai **kurs default 1:1** (`credits = amount_idr`, `idr = amount`). Bila admin menyetel `BILLING_TOPUP_IDR_PER_CREDIT ≠ 1`, entri lama tetap menyimpan angka saat order dibuat (kurs dibekukan di `orders.<id>.credits`; `idr` = nominal nyata yang dibayar).
+
+- `users.<id>.balance` (float 2 desimal, boleh negatif), `.ledger` (riwayat; dipangkas ke `BILLING_LEDGER_KEEP` entri terakhir), `.updated_at`. Entri ledger `topup` mencatat **`idr`** = nominal rupiah yang benar-benar dibayar (dari `orders.<id>.amount_idr`) supaya padanan rupiah riwayat tidak ditebak dari kurs saat ini — kurs bisa berubah setelah order dibuat. Entri `topup` lama tanpa `idr` **tidak** menampilkan padanan rupiah (tidak ditebak).
 - `usage.<appId>` — akumulasi meteran + **snapshot `name`/`owner_id`** (agar app yang dihapus di tengah periode tetap bisa ditagih lalu barisnya dipruning).
 - `orders` — order top-up Duitku (state machine `pending → paid | failed | expired`).
 - App owner admin **tidak pernah** masuk `usage` (gratis).
 
 **Rumus harga** (satu sumber kebenaran: `Pricing`)
-`harga_per_jam(app) = Σ_service (cpus × BILLING_RATE_CPU_PER_CORE_HOUR + (memory_mb / 1024) × BILLING_RATE_RAM_PER_GB_HOUR)`. Kredit = angka desimal 2 digit (bukan mata uang; tampilan `Pricing::format()` / `format_credits()`).
+`harga_per_jam(app) = Σ_service (cpus × BILLING_RATE_CPU_PER_CORE_HOUR + (memory_mb / 1024) × BILLING_RATE_RAM_PER_GB_HOUR)`. Kredit = angka desimal 2 digit (bukan mata uang; tampilan `Pricing::format()` / `format_credits()`). Kurs top-up default **1:1** (`BILLING_TOPUP_IDR_PER_CREDIT=1`, Rp1 = 1 kredit) sehingga angka tarif di atas = **rupiah per jam**; kurs lain (mis. `10`) menggeser arti rupiah tarif tanpa mengubah angkanya.
 
 > **WAJIB — anti-lubang harga.** Service tanpa entri `limits` dianggap memakai `BILLING_DEFAULT_CPUS`/`BILLING_DEFAULT_MEMORY_MB` (`Pricing::hourlyCredits()`), dan saat member men-deploy tanpa mengirim limit, `AppController::defaultLimitsFor()` menulis basis limit nyata per service — sehingga app member **selalu** punya dasar harga yang ditegakkan (bukan "tanpa limit" = gratis). App lama mulai diakru saat fitur aktif, **tanpa** tagihan retroaktif.
 
@@ -904,6 +908,7 @@ Mengikuti preseden `database/backup.json` (§8h): berkas sendiri agar **skema `a
 - **`transactionStatus`**: `00` sukses / `01` pending / `02` canceled — dokumentasi Duitku **melarang** memanggil berulang otomatis (melewati hit-rate ⇒ diblokir ±1 jam). Klien membatasi jeda `BILLING_DUITKU_STATUS_MIN_INTERVAL` per order & `BILLING_DUITKU_STATUS_MAX_PER_TICK` per tick; hanya order `pending` dicek.
 - **Allowlist kanal**: daftar `getpaymentmethod` **disaring** allowlist `BILLING_DUITKU_METHODS`; kanal kredit/paylater (`VC, DN, AT, T1–T3`) & account-link (`SL, OL`) **selalu dikecualikan** (`DuitkuClient::HARD_EXCLUDE_METHODS`) karena butuh data kartu/`customerDetail` yang tidak dikirim. Bila panggilan daftar gagal → fallback allowlist statis dari config (**bukan** daftar kosong/hardcode di view).
 - **Batas nominal**: `BILLING_TOPUP_MIN_IDR` (default Rp10.000 = minimum resmi) & `BILLING_TOPUP_MAX_IDR` (default Rp5.000.000 — aman untuk semua kanal; QRIS maks Rp10jt, retail Indomaret Rp5jt, VA lebih tinggi). Kuota order `pending` dibatasi `BILLING_TOPUP_MAX_PENDING` (pengganti rate limiter — Phase 1 belum ada).
+- **Kurs kredit**: `BILLING_TOPUP_IDR_PER_CREDIT` (default **`1`** = 1:1, Rp1 = 1 kredit) ⇒ `kredit = amount_idr / kurs` (2 desimal). Kurs **dibekukan di order** saat dibuat (`orders.<id>.credits`) sehingga mengubah kurs tidak mengubah order lama; entri ledger `topup` menyimpan `idr` (nominal nyata) agar tampilan riwayat tetap benar.
 - **`expiryPeriod`**: `BILLING_TOPUP_EXPIRY_MINUTES=0` (default) = field **tidak dikirim** (pakai default kanal Duitku); >0 dikirim apa adanya. Order kedaluwarsa ditandai `expired` **lokal**, tetapi callback valid yang datang terlambat **tetap disettle** selama belum `paid` (uangnya nyata).
 - **IP allowlist callback** Duitku (production/sandbox) bersifat **opsional di level Nginx host** (`allow/deny` pada path callback) dan **tidak** ditegakkan di PHP — dashboard di balik Nginx host sehingga `REMOTE_ADDR` bukan IP asli Duitku. Pertahanan utama tetap **verifikasi HMAC**.
 
@@ -1389,7 +1394,7 @@ BILLING_LOG_PATH=                    # direktori log billing (kosong = runtime/l
 BILLING_ADMIN_DEPOSIT_MAX=10000000   # batas nominal satu deposit/adjust manual admin (kredit)
 # Top-up mandiri member via Duitku (§7.12)
 BILLING_TOPUP_ENABLED=false          # true = aktifkan top-up online (butuh kredensial merchant)
-BILLING_TOPUP_IDR_PER_CREDIT=10      # kurs: Rp10 = 1 kredit
+BILLING_TOPUP_IDR_PER_CREDIT=1       # kurs: Rp1 = 1 kredit (1:1)
 BILLING_TOPUP_MIN_IDR=10000          # minimum nominal top-up (minimum resmi gateway)
 BILLING_TOPUP_MAX_IDR=5000000        # maksimum nominal top-up (aman untuk semua kanal)
 BILLING_TOPUP_EXPIRY_MINUTES=0       # 0 = field expiryPeriod TIDAK dikirim (pakai default kanal Duitku)

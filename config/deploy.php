@@ -211,7 +211,8 @@ return [
     // ---------------------------------------------------------------------
     // false = fitur mati total (tanpa meteran & tanpa gerbang kredit).
     'billing_enabled' => $billingBool('BILLING_ENABLED', true),
-    // Tarif kredit: per core-jam CPU & per GB-jam RAM.
+    // Tarif kredit: per core-jam CPU & per GB-jam RAM. Kurs top-up default 1:1
+    // (Rp1 = 1 kredit) sehingga angka di sini = rupiah per jam.
     'billing_rate_cpu_per_core_hour' => $billingFloat('BILLING_RATE_CPU_PER_CORE_HOUR', 100.0),
     'billing_rate_ram_per_gb_hour' => $billingFloat('BILLING_RATE_RAM_PER_GB_HOUR', 20.0),
     // Service tanpa entri `limits` dianggap memakai nilai default ini supaya
@@ -241,7 +242,8 @@ return [
 
     // ---- Top-up mandiri member via Duitku (SPECS.md §5.7) ----
     'billing_topup_enabled' => $billingBool('BILLING_TOPUP_ENABLED', false),
-    'billing_topup_idr_per_credit' => $billingFloat('BILLING_TOPUP_IDR_PER_CREDIT', 10.0),
+    // Kurs 1:1 (Rp1 = 1 kredit) — sejalan dengan tarif pemakaian di atas.
+    'billing_topup_idr_per_credit' => $billingFloat('BILLING_TOPUP_IDR_PER_CREDIT', 1.0),
     'billing_topup_min_idr' => $billingInt('BILLING_TOPUP_MIN_IDR', 10000),
     'billing_topup_max_idr' => $billingInt('BILLING_TOPUP_MAX_IDR', 5000000),
     // 0 = field expiryPeriod TIDAK dikirim (pakai default kanal Duitku).

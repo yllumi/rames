@@ -55,12 +55,21 @@ class TopUpOrderTest extends TestCase
         $this->assertMatchesRegularExpression('/^RM-[0-9a-f]{16}$/', $order['id']);
         $this->assertSame('u2', $order['user_id']);
         $this->assertSame(50000, $order['amount_idr']);
-        $this->assertSame(round(50000 / (float) config('deploy.billing_topup_idr_per_credit', 10.0), 2), $order['credits']);
+        $this->assertSame(round(50000 / (float) config('deploy.billing_topup_idr_per_credit', 1.0), 2), $order['credits']);
         $this->assertSame('BC', $order['method']);
         $this->assertSame('pending', $order['status']);
         $this->assertNotSame('', $order['created_at']);
         $this->assertArrayNotHasKey('expires_at', $order, 'expiry 0 = tanpa expires_at');
         $this->assertLessThanOrEqual(50, strlen($order['id']));
+    }
+
+    public function testDefaultRateIsOneToOne(): void
+    {
+        // Config uji tidak memuat kunci kurs → produksi memakai fallback 1.0,
+        // jadi Rp1 = 1 kredit (kurs 1:1 — default SPECS §7.12).
+        $order = $this->orders->create('u2', 25000, 'BC');
+
+        $this->assertSame(25000.0, $order['credits']);
     }
 
     public function testCreateRejectsAmountOutsideBounds(): void
