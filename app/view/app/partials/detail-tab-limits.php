@@ -15,6 +15,11 @@
       }
   }
   $limitsMinMemory = \app\library\Deploy\ResourceLimits::MIN_MEMORY_MB;
+  // Estimasi kredit baca-saja dari limit app (dihitung `Pricing` di server;
+  // lihat AppController::billingEstimateFor()). Ditampilkan untuk semua user
+  // yang boleh melihat app — angka hanya informasi, penagihan ditangani server.
+  $billingEstimate = is_array($billingEstimate ?? null) ? $billingEstimate : [];
+  $billingEnabled = (bool) ($billingEstimate['enabled'] ?? false);
   ?>
   <div class="tab-pane fade" id="tab-limits" role="tabpanel" aria-labelledby="tab-limits-btn">
     <section class="card mb-4">
@@ -23,6 +28,17 @@
         <span class="text-muted small">maksimum CPU &amp; memori per service</span>
       </div>
       <div class="card-body">
+        <?php if ($billingEnabled): ?>
+          <div class="alert alert-secondary py-2 small" role="alert">
+            Estimasi biaya kredit: <strong class="mono"><?= e((string) ($billingEstimate['hourly_text'] ?? '0.00')) ?></strong> per jam
+            &middot; <strong class="mono"><?= e((string) ($billingEstimate['month_text'] ?? '0.00')) ?></strong>
+            untuk <?= (int) ($billingEstimate['days'] ?? 30) ?> hari.
+            Batas CPU/memori adalah <strong>dasar penagihan kredit</strong> — mengubahnya mengubah biaya app.
+            <?php if (empty($billingEstimate['applies'])): ?>
+              <span class="text-muted">App milik admin tidak ditagih.</span>
+            <?php endif; ?>
+          </div>
+        <?php endif; ?>
         <?php if ($limitsError !== null): ?>
           <div class="alert alert-warning py-2 small" role="alert"><?= e($limitsError) ?></div>
         <?php endif; ?>

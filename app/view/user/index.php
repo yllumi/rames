@@ -23,13 +23,15 @@
   <div class="table-responsive">
     <table class="table table-hover align-middle mb-0">
       <thead>
-        <tr><th>Username</th><th>Role</th><th>App</th><th>Dibuat</th><th>Aksi</th></tr>
+        <tr><th>Username</th><th>Email</th><th>Role</th><th>Saldo kredit</th><th>App</th><th>Dibuat</th><th>Aksi</th></tr>
       </thead>
       <tbody>
         <?php foreach ($users as $user): ?>
         <?php
           $__self = ($currentUser['id'] ?? '') === ($user['id'] ?? '');
           $__role = ($user['role'] ?? '') === 'admin' ? 'admin' : 'member';
+          $__email = trim((string) ($user['email'] ?? ''));
+          $__balance = (float) (($balances ?? [])[$user['id'] ?? ''] ?? 0.0);
         ?>
         <tr>
           <td>
@@ -39,11 +41,19 @@
               <span class="text-muted small">(Anda)</span>
             <?php endif; ?>
           </td>
+          <td class="small">
+            <?php if ($__email !== ''): ?>
+              <span class="mono"><?= e($__email) ?></span>
+            <?php else: ?>
+              <span class="text-muted">&mdash;</span>
+            <?php endif; ?>
+          </td>
           <td>
             <span class="badge <?= $__role === 'admin' ? 'text-bg-primary' : 'text-bg-secondary' ?>">
               <?= $__role === 'admin' ? 'Admin' : 'Member' ?>
             </span>
           </td>
+          <td class="small mono"><?= e(\app\library\Billing\Pricing::format($__balance)) ?></td>
           <td class="small text-muted">
             <?= (int) (($ownerCounts ?? [])[$user['id'] ?? ''] ?? 0) ?> dimiliki
           </td>
@@ -54,6 +64,7 @@
                     data-user-id="<?= e($user['id']) ?>"
                     data-username="<?= e($user['username']) ?>"
                     data-role="<?= e($user['role'] ?? '') ?>"
+                    data-email="<?= e($__email) ?>"
                     data-self="<?= $__self ? '1' : '0' ?>">Edit</button>
           </td>
         </tr>
@@ -134,6 +145,20 @@
 
         <hr>
 
+        <form method="post" action="" id="editEmailForm" class="mb-3">
+          <?= csrf_field() ?>
+          <div class="mb-2">
+            <label class="form-label" for="editEmail">Email (top-up kredit)</label>
+            <input type="email" class="form-control" id="editEmail" name="email" maxlength="254" autocomplete="email">
+            <div class="form-text">
+              Kosongkan lalu simpan untuk menghapus email. Email wajib untuk top-up mandiri via payment gateway.
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm">Simpan Email</button>
+        </form>
+
+        <hr>
+
         <form method="post" action="" id="editDeleteForm">
           <?= csrf_field() ?>
           <button type="submit" class="btn btn-outline-danger btn-sm">Hapus User</button>
@@ -158,6 +183,8 @@
   var roleSubmit = document.getElementById('editRoleSubmit');
   var passwordForm = document.getElementById('editPasswordForm');
   var passwordInput = document.getElementById('editPassword');
+  var emailForm = document.getElementById('editEmailForm');
+  var emailInput = document.getElementById('editEmail');
   var deleteForm = document.getElementById('editDeleteForm');
 
   modal.addEventListener('show.bs.modal', function (event) {
@@ -179,6 +206,11 @@
 
     passwordForm.setAttribute('action', '/users/' + encodeURIComponent(id) + '/password');
     passwordInput.value = '';
+
+    if (emailForm && emailInput) {
+      emailForm.setAttribute('action', '/users/' + encodeURIComponent(id) + '/email');
+      emailInput.value = btn.dataset.email || '';
+    }
 
     deleteForm.setAttribute('action', '/users/' + encodeURIComponent(id) + '/delete');
     deleteForm.classList.toggle('d-none', isSelf);

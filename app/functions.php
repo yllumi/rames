@@ -7,6 +7,7 @@ declare(strict_types=1);
 
 use app\library\Auth\AppAccess;
 use app\library\Auth\UserStore;
+use app\library\Billing\CreditAccount;
 use support\Request;
 
 if (!function_exists('e')) {
@@ -209,6 +210,44 @@ if (!function_exists('app_role_label')) {
     function app_role_label(?string $role): string
     {
         return AppAccess::label($role ?? '');
+    }
+}
+
+if (!function_exists('format_credits')) {
+    /**
+     * Format kredit dengan 2 desimal & pemisah ribuan gaya Indonesia
+     * (mis. `1234.5` → `1.234,50`). Murni presentasi, tanpa I/O.
+     */
+    function format_credits(float $credits): string
+    {
+        return number_format($credits, 2, ',', '.');
+    }
+}
+
+if (!function_exists('current_credit_balance')) {
+    /**
+     * Saldo kredit user login untuk badge nav sidebar (SPECS.md §7.12).
+     *
+     * **Fail-safe**: mengembalikan `null` bila user tidak login, admin, fitur
+     * billing nonaktif, atau pembacaan gagal — header tidak boleh gagal hanya
+     * karena berkas billing rusak/tak ada. Tanpa memo/statik lintas-request
+     * (worker Webman persistent → nilai statik akan basi).
+     */
+    function current_credit_balance(): ?float
+    {
+        $user = current_user();
+        if ($user === null || is_admin($user)) {
+            return null;
+        }
+        if (!(bool) config('deploy.billing_enabled', true)) {
+            return null;
+        }
+
+        try {
+            return (new CreditAccount())->balance((string) ($user['id'] ?? ''));
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }
 

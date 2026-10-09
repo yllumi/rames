@@ -12,6 +12,25 @@ declare(strict_types=1);
 // jadi pembacaan dilakukan eksplisit di sini.
 $adminerNetworkTtlEnv = getenv('ADMINER_NETWORK_TTL');
 
+// Pembaca env untuk blok billing (SPECS.md §7.12). Sama seperti di atas, `?:`
+// menelan nilai "0" (falsy di PHP) sehingga flag/angka sah seperti 0 akan
+// salah dianggap "tidak diset" — pembacaan dilakukan eksplisit di sini.
+$billingBool = static function (string $name, bool $default): bool {
+    $value = getenv($name);
+    if ($value === false || trim($value) === '') {
+        return $default;
+    }
+    return !in_array(strtolower(trim($value)), ['false', '0', 'no', 'off'], true);
+};
+$billingInt = static function (string $name, int $default): int {
+    $value = getenv($name);
+    return $value === false || trim($value) === '' ? $default : (int) $value;
+};
+$billingFloat = static function (string $name, float $default): float {
+    $value = getenv($name);
+    return $value === false || trim($value) === '' ? $default : (float) $value;
+};
+
 return [
     // Domain dasar; subdomain app = {name}.{app_domain}
     'app_domain' => getenv('APP_DOMAIN') ?: 'example.com',
@@ -186,4 +205,71 @@ return [
     'adminer_proxy_max_bytes' => max(1024, (int) (getenv('ADMINER_PROXY_MAX_BYTES') ?: 67108864)),
     // Basis prefix URL publik halaman Adminer (per container: <base>/<container>/adminer).
     'adminer_prefix_base' => getenv('ADMINER_PREFIX_BASE') ?: '/database',
+
+    // ---------------------------------------------------------------------
+    // Kredit, deposit & penagihan resource (SPECS.md §7.12)
+    // ---------------------------------------------------------------------
+    // false = fitur mati total (tanpa meteran & tanpa gerbang kredit).
+    'billing_enabled' => $billingBool('BILLING_ENABLED', true),
+    // Tarif kredit: per core-jam CPU & per GB-jam RAM.
+    'billing_rate_cpu_per_core_hour' => $billingFloat('BILLING_RATE_CPU_PER_CORE_HOUR', 100.0),
+    'billing_rate_ram_per_gb_hour' => $billingFloat('BILLING_RATE_RAM_PER_GB_HOUR', 20.0),
+    // Service tanpa entri `limits` dianggap memakai nilai default ini supaya
+    // app tanpa limit tidak gratis (harga tetap terkalkulasi).
+    'billing_default_cpus' => $billingFloat('BILLING_DEFAULT_CPUS', 0.5),
+    'billing_default_memory_mb' => $billingInt('BILLING_DEFAULT_MEMORY_MB', 512),
+    // Deposit minimum = estimasi biaya N hari (0 = cukup saldo >= 0).
+    'billing_min_deposit_days' => $billingInt('BILLING_MIN_DEPOSIT_DAYS', 30),
+    // Resolusi meteran = interval tick proses billing (detik; 0 = tanpa timer).
+    'billing_sample_seconds' => $billingInt('BILLING_SAMPLE_SECONDS', 300),
+    // Tanggal penagihan otomatis (1 = awal bulan berikutnya).
+    'billing_invoice_day' => $billingInt('BILLING_INVOICE_DAY', 1),
+    // Kebijakan saldo negatif: 'stop' = hentikan semua app owner (default);
+    // nilai selain 'stop' diperlakukan 'block' (hanya blokir aksi berikutnya).
+    'billing_payment_policy' => getenv('BILLING_PAYMENT_POLICY') ?: 'stop',
+    // Plafon CPU/RAM yang boleh dipilih owner saat create app.
+    'billing_max_cpus' => $billingFloat('BILLING_MAX_CPUS', 4.0),
+    'billing_max_memory_mb' => $billingInt('BILLING_MAX_MEMORY_MB', 8192),
+    // Batas jumlah entri ledger terakhir per user (0 / negatif = tanpa batas).
+    'billing_ledger_keep' => $billingInt('BILLING_LEDGER_KEEP', 200),
+
+    // Direktori log billing (meteran/auto-stop/callback & CLI). Kosong =
+    // `runtime/logs/billing`. Dipakai juga sebagai seam pengujian.
+    'billing_log_path' => getenv('BILLING_LOG_PATH') ?: '',
+    // Batas nominal satu deposit/adjust manual admin (kredit).
+    'billing_admin_deposit_max' => $billingFloat('BILLING_ADMIN_DEPOSIT_MAX', 10000000.0),
+
+    // ---- Top-up mandiri member via Duitku (SPECS.md §5.7) ----
+    'billing_topup_enabled' => $billingBool('BILLING_TOPUP_ENABLED', false),
+    'billing_topup_idr_per_credit' => $billingFloat('BILLING_TOPUP_IDR_PER_CREDIT', 10.0),
+    'billing_topup_min_idr' => $billingInt('BILLING_TOPUP_MIN_IDR', 10000),
+    'billing_topup_max_idr' => $billingInt('BILLING_TOPUP_MAX_IDR', 5000000),
+    // 0 = field expiryPeriod TIDAK dikirim (pakai default kanal Duitku).
+    'billing_topup_expiry_minutes' => $billingInt('BILLING_TOPUP_EXPIRY_MINUTES', 0),
+    // Cap order pending sebagai pengganti rate limiter (Phase 1 belum ada).
+    'billing_topup_max_pending' => $billingInt('BILLING_TOPUP_MAX_PENDING', 3),
+    // sandbox | production → memilih base URL Duitku di klien top-up.
+    'billing_duitku_mode' => getenv('BILLING_DUITKU_MODE') ?: 'sandbox',
+    'billing_duitku_merchant_code' => getenv('BILLING_DUITKU_MERCHANT_CODE') ?: '',
+    // RAHASIA: HMAC-SHA256 key — hanya dari .env, jangan pernah di-log/tampilkan.
+    'billing_duitku_api_key' => getenv('BILLING_DUITKU_API_KEY') ?: '',
+    'billing_duitku_callback_url' => getenv('BILLING_DUITKU_CALLBACK_URL') ?: '',
+    'billing_duitku_return_url' => getenv('BILLING_DUITKU_RETURN_URL') ?: '',
+    // Cache daftar metode pembayaran (detik; Duitku tidak memberi panduan cache).
+    'billing_duitku_method_ttl' => $billingInt('BILLING_DUITKU_METHOD_TTL', 3600),
+
+    // Izinkan callback URL berskema `http://` — HANYA untuk pengujian lokal
+    // (Duitku tetap tidak bisa menjangkau `localhost`, status order bisa
+    // diselesaikan lewat tombol "Cek status" → transactionStatus). Default
+    // **false**: produksi wajib https.
+    'billing_duitku_allow_http' => $billingBool('BILLING_DUITKU_ALLOW_HTTP', false),
+
+    // Allowlist kanal (fallback bila daftar metode online gagal).
+    'billing_duitku_methods' => getenv('BILLING_DUITKU_METHODS')
+        ?: 'BC,BT,I1,M2,VA,B1,DM,BV,BR,NC,A1,AG,S1,FT,IR,OV,DA,SA,LF,LA,SP,NQ,SQ',
+    // Timeout HTTP ke Duitku (detik) — DI-CAP ≤30 sesuai larangan repo #7.
+    'billing_duitku_timeout' => min(30, max(1, $billingInt('BILLING_DUITKU_TIMEOUT', 15))),
+    // Jeda minimum cek transactionStatus per order (hindari hit-rate block ±1 jam).
+    'billing_duitku_status_min_interval' => $billingInt('BILLING_DUITKU_STATUS_MIN_INTERVAL', 900),
+    'billing_duitku_status_max_per_tick' => $billingInt('BILLING_DUITKU_STATUS_MAX_PER_TICK', 20),
 ];

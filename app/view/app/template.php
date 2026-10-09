@@ -134,7 +134,9 @@ $breadcrumbs = [
   <?php endif; ?>
 
   <?php
-  // Batas CPU/memori opsional saat create dari template — hanya admin.
+  // Batas CPU/memori opsional saat create dari template — owner/member boleh
+  // memilih (D2=a) dalam plafon billing; admin bebas plafon. Gerbang kartu
+  // memakai `canManage` dari AppController, bukan `is_admin()` langsung.
   $limitsCtx = is_array($resourceLimits ?? null) ? $resourceLimits : [];
   $limitsServices = [];
   foreach ((array) ($limitsCtx['services'] ?? []) as $limitsService) {
@@ -145,14 +147,31 @@ $breadcrumbs = [
   }
   $limitsRepo = is_array($limitsCtx['repo'] ?? null) ? $limitsCtx['repo'] : [];
   $limitsMinMemory = \app\library\Deploy\ResourceLimits::MIN_MEMORY_MB;
+  $limitsCanManage = (bool) ($limitsCtx['canManage'] ?? false);
+  // Konteks billing baca-saja (estimasi & saldo) — penegak tetap Pricing/BillingGate.
+  $billingCtx = is_array($billing ?? null) ? $billing : [];
+  $billingMember = !empty($billingCtx['enabled']) && !empty($billingCtx['member']);
+  $billingCaps = is_array($billingCtx['caps'] ?? null) ? $billingCtx['caps'] : [];
+  $billingDefaults = is_array($billingCtx['defaults'] ?? null) ? $billingCtx['defaults'] : [];
+  $billingRates = is_array($billingCtx['rates'] ?? null) ? $billingCtx['rates'] : [];
   ?>
-  <?php if (is_admin() && $limitsServices !== []): ?>
+  <?php if ($limitsCanManage && $limitsServices !== []): ?>
   <div class="card mb-3 form-card">
     <div class="card-body">
       <h2 class="h6 mb-1">Batas Sumber Daya (opsional)</h2>
+      <?php if ($billingMember): ?>
+      <p class="text-muted small mb-3">
+        Pilih CPU &amp; memori app ini. Kosongkan untuk memakai nilai default
+        (<span class="mono"><?= e((string) ($billingDefaults['cpus'] ?? '')) ?> core</span> /
+        <span class="mono"><?= e((string) ($billingDefaults['memory_mb'] ?? '')) ?> MB</span> per service).
+        Plafon: maksimum <span class="mono"><?= e((string) ($billingCaps['cpus'] ?? '')) ?> core</span> &amp;
+        <span class="mono"><?= e((string) ($billingCaps['memory_mb'] ?? '')) ?> MB</span> per service.
+      </p>
+      <?php else: ?>
       <p class="text-muted small mb-3">
         Kosongkan = ikut pengaturan compose repo / tanpa batas. Hanya admin dapat mengubah.
       </p>
+      <?php endif; ?>
       <div class="table-responsive">
         <table class="table align-middle mb-0">
           <thead>
@@ -173,7 +192,7 @@ $breadcrumbs = [
             <tr>
               <td><span class="mono"><?= e($limitsService) ?></span></td>
               <td>
-                <input type="number" step="0.1" min="0" class="form-control form-control-sm" style="max-width:160px;"
+                <input type="number" step="0.1" min="0"<?= $billingMember ? ' max="' . e((string) ($billingCaps['cpus'] ?? '')) . '"' : '' ?> class="form-control form-control-sm" style="max-width:160px;"
                        id="limit-cpus-<?= e($limitsId) ?>"
                        name="limits[<?= e($limitsService) ?>][cpus]"
                        value="<?= $cpuRepo !== null ? e((string) $cpuRepo) : '' ?>"
@@ -181,7 +200,7 @@ $breadcrumbs = [
                 <?php if ($cpuRepo !== null): ?><div class="form-text">nilai dari compose repo</div><?php endif; ?>
               </td>
               <td>
-                <input type="number" step="1" min="<?= e((string) $limitsMinMemory) ?>" class="form-control form-control-sm" style="max-width:160px;"
+                <input type="number" step="1" min="<?= e((string) $limitsMinMemory) ?>"<?= $billingMember ? ' max="' . e((string) ($billingCaps['memory_mb'] ?? '')) . '"' : '' ?> class="form-control form-control-sm" style="max-width:160px;"
                        id="limit-memory-<?= e($limitsId) ?>"
                        name="limits[<?= e($limitsService) ?>][memory_mb]"
                        value="<?= $memRepo !== null ? e((string) $memRepo) : '' ?>"
@@ -193,6 +212,47 @@ $breadcrumbs = [
           </tbody>
         </table>
       </div>
+      <?php if ($billingMember): ?>
+      <div class="border rounded p-3 mt-3" id="limit-estimate"
+           data-cpu-rate="<?= e((string) ($billingRates['cpu'] ?? '')) ?>"
+           data-ram-rate="<?= e((string) ($billingRates['ram'] ?? '')) ?>"
+           data-default-cpus="<?= e((string) ($billingDefaults['cpus'] ?? '')) ?>"
+           data-default-memory="<?= e((string) ($billingDefaults['memory_mb'] ?? '')) ?>"
+           data-days="<?= e((string) ($billingCtx['days'] ?? 30)) ?>"
+           data-balance="<?= e((string) ($billingCtx['balance'] ?? 0)) ?>">
+        <h3 class="h6 mb-2">Estimasi biaya kredit</h3>
+        <div class="row g-2 small mb-2">
+          <div class="col-sm-4">
+            Per jam<br>
+            <strong class="mono" id="limit-estimate-hourly"><?= e((string) ($billingCtx['estimate_hourly_text'] ?? '0.00')) ?></strong> kredit
+          </div>
+          <div class="col-sm-4">
+            <?= (int) ($billingCtx['days'] ?? 30) ?> hari<br>
+            <strong class="mono" id="limit-estimate-month"><?= e((string) ($billingCtx['estimate_month_text'] ?? '0.00')) ?></strong> kredit
+          </div>
+          <div class="col-sm-4">
+            Deposit minimum<br>
+            <strong class="mono" id="limit-estimate-required"><?= e((string) ($billingCtx['required_text'] ?? '0.00')) ?></strong> kredit
+          </div>
+        </div>
+        <p class="small mb-2">
+          Saldo Anda saat ini: <strong class="mono" id="limit-estimate-balance"><?= e((string) ($billingCtx['balance_text'] ?? '0.00')) ?></strong> kredit.
+        </p>
+        <div class="alert alert-warning py-2 small mb-2<?= !empty($billingCtx['sufficient']) ? ' d-none' : '' ?>" id="limit-estimate-warning" role="alert">
+          Saldo kredit Anda <strong>kurang</strong> dari deposit minimum — permintaan deploy akan ditolak server.
+          <?php if (!empty($billingCtx['topup_enabled'])): ?>
+          Lakukan top-up di <a href="/credits">halaman Kredit</a>.
+          <?php else: ?>
+          Hubungi admin untuk menambah saldo di <a href="/credits">halaman Kredit</a>.
+          <?php endif; ?>
+        </div>
+        <p class="text-muted small mb-0">
+          Tarif <span class="mono"><?= e((string) ($billingRates['cpu'] ?? '')) ?></span> kredit/core-jam +
+          <span class="mono"><?= e((string) ($billingRates['ram'] ?? '')) ?></span> kredit/GB-jam.
+          Angka di layar hanya bantuan — perhitungan penegak tetap di server (<span class="mono">Pricing</span>/<span class="mono">BillingGate</span>).
+        </p>
+      </div>
+      <?php endif; ?>
     </div>
   </div>
   <?php endif; ?>
@@ -215,6 +275,67 @@ $breadcrumbs = [
 <div id="deploy-error" class="alert alert-danger d-none mt-3" role="alert"></div>
 
 <script>
+// Estimasi biaya kredit saat user mengetik limit — lapisan bantuan saja.
+// Perhitungan penegak tetap `Pricing`/`BillingGate` di PHP (server).
+(function () {
+  var panel = document.getElementById('limit-estimate');
+  if (!panel) return;
+
+  var cpuRate = parseFloat(panel.dataset.cpuRate) || 0;
+  var ramRate = parseFloat(panel.dataset.ramRate) || 0;
+  var defCpus = parseFloat(panel.dataset.defaultCpus) || 0;
+  var defMem = parseFloat(panel.dataset.defaultMemory) || 0;
+  var days = parseFloat(panel.dataset.days) || 30;
+  var balance = parseFloat(panel.dataset.balance) || 0;
+
+  var hourlyEl = document.getElementById('limit-estimate-hourly');
+  var monthEl = document.getElementById('limit-estimate-month');
+  var requiredEl = document.getElementById('limit-estimate-required');
+  var warningEl = document.getElementById('limit-estimate-warning');
+
+  var inputs = document.querySelectorAll('input[name^="limits["]');
+  if (!inputs.length) return;
+
+  function fmt(n) { return (Math.round(n * 100) / 100).toFixed(2); }
+
+  function sumHourly() {
+    var rows = {};
+    Array.prototype.forEach.call(inputs, function (input) {
+      var m = /^limits\[(.+)\]\[(cpus|memory_mb)\]$/.exec(input.getAttribute('name') || '');
+      if (!m) return;
+      if (!rows[m[1]]) rows[m[1]] = {};
+      rows[m[1]][m[2]] = input.value;
+    });
+
+    var total = 0;
+    Object.keys(rows).forEach(function (service) {
+      var row = rows[service];
+      var cpus = parseFloat(row.cpus);
+      var mem = parseFloat(row.memory_mb);
+      if (isNaN(cpus)) cpus = defCpus;
+      if (isNaN(mem)) mem = defMem;
+      total += cpus * cpuRate + (mem / 1024) * ramRate;
+    });
+    return total;
+  }
+
+  function refresh() {
+    var hourly = sumHourly();
+    var month = hourly * 24 * days;
+    panel.dataset.required = fmt(month);
+    if (hourlyEl) hourlyEl.textContent = fmt(hourly);
+    if (monthEl) monthEl.textContent = fmt(month);
+    if (requiredEl) requiredEl.textContent = fmt(month);
+    if (warningEl) warningEl.classList.toggle('d-none', balance >= month);
+  }
+
+  Array.prototype.forEach.call(inputs, function (input) {
+    input.addEventListener('input', refresh);
+    input.addEventListener('change', refresh);
+  });
+  refresh();
+})();
+
 (function () {
   var form = document.getElementById('template-deploy-form');
   var btn = document.getElementById('deploy-btn');

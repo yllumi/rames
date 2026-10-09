@@ -69,4 +69,14 @@ return [
         'reloadable' => true,
         'count' => 1,
     ],
+    // Penjadwal billing (SPECS.md §7.12): akrual meteran + penagihan periode +
+    // auto-stop saldo negatif + konsiliasi order top-up. Billing mati
+    // (`BILLING_ENABLED=false`) atau meteran dimatikan (`BILLING_SAMPLE_SECONDS=0`)
+    // → timer tidak dipasang sama sekali. Semua error ditangkap proses (tidak
+    // boleh mematikan worker).
+    'billing' => [
+        'handler' => app\process\BillingProcess::class,
+        'reloadable' => true,
+        'count' => 1,
+    ],
 ];

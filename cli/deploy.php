@@ -19,6 +19,9 @@ declare(strict_types=1);
  * container dari file compose yang ada + image prebuilt (tanpa build).
  */
 
+use app\library\Auth\UserStore;
+use app\library\Billing\BillingGate;
+use app\library\Billing\InsufficientCredits;
 use app\library\Deploy\DeployerFactory;
 use app\library\Nginx\NginxReloader;
 use app\library\Storage\AppStore;
@@ -52,6 +55,32 @@ if (!is_dir($logDir)) {
 }
 $logFile = $logDir . '/' . $appId . '.log';
 file_put_contents($logFile, '[' . date('c') . "] start mode={$mode}\n", FILE_APPEND);
+
+// Gerbang kredit (pertahanan berlapis) — jalankan SEBELUM compose/dispatcher:
+// bila saldo pemilik (member) kurang, app ditandai error & worker keluar
+// non-zero tanpa menyentuh Docker. Billing mati / owner admin / owner tak
+// ditemukan ⇒ dilewati (jangan mengunci app). Catatan: findPublicById
+// me-resolve role (migrasi lazy user pertama = admin) agar admin legacy tetap
+// bebas, sama seperti jalur HTTP. InsufficientCredits = blokir fungsional.
+try {
+    $ownerId = (string) ($app['owner_id'] ?? '');
+    $owner = $ownerId === '' ? null : (new UserStore())->findPublicById($ownerId);
+    (new BillingGate())->assertCanStart($app, $owner);
+} catch (InsufficientCredits $e) {
+    $msg = $e->getMessage();
+    file_put_contents($logFile, '[' . date('c') . "] BILLING: {$msg}\n", FILE_APPEND);
+    try {
+        $store->update($appId, function (array &$s) use ($msg): void {
+            $s['status'] = 'error';
+            $s['stage'] = null;
+            $s['message'] = $msg;
+            $s['error'] = $msg;
+        });
+    } catch (\Throwable $ignored) {
+        // abaikan jika store juga bermasalah
+    }
+    exit(1);
+}
 
 /** @var callable(string,string):void */
 $logger = function (string $stage, string $message) use ($store, $appId, $logFile): void {

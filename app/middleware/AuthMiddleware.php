@@ -24,8 +24,16 @@ class AuthMiddleware implements MiddlewareInterface
      * memverifikasi versi baru benar-benar melayani request sebelum rollback
      * otomatis diputuskan, dan (b) monitoring eksternal (mis. Uptime Kuma).
      * Responsnya hanya berisi status + SHA commit — tanpa data sensitif.
+     *
+     * `/payments/duitku/callback` publik & **path eksak** (SPECS.md §7.12, plan
+     * §5.7): Duitku adalah pengirim mesin yang tidak punya sesi/cookie kita.
+     * Karena itu keamanannya tidak bertumpu pada autentikasi, melainkan pada
+     * verifikasi di `PaymentController::callback()`: signature HMAC-SHA256 API
+     * key (`hash_equals`), kecocokan amount dengan order tersimpan, idempotensi
+     * (`pending → paid` sekali), dan respons polos tanpa data sensitif. Endpoint
+     * menjawab 404 saat fitur/kredensial tidak lengkap.
      */
-    private const PUBLIC_PATHS = ['/', '/login', '/healthz'];
+    private const PUBLIC_PATHS = ['/', '/login', '/healthz', '/payments/duitku/callback'];
 
     private const STATIC_EXTENSIONS = [
         'css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp',

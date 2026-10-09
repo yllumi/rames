@@ -35,6 +35,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [ ] Backup otomatis data & config sebelum overwrite (§8g)
 - [x] Backup volume harian ke object storage (S3) via restic — dump logis (DB) & snapshot (non-DB) (§8h)
 - [x] File manager container per container app (jelajah, unggah multi-berkas, unduh, edit teks, buat folder, rename, pindah, hapus, ekstrak arsip) — ability `files` = operator+, hanya saat container berjalan (§7.9)
+- [x] Kredit, deposit & penagihan resource (role `member`) — meteran CPU/RAM per jam, tagihan periode otomatis, deposit manual admin + top-up mandiri online via Duitku (§7.12)
 
 ## 3. Non-Goals (Phase 1)
 
@@ -43,6 +44,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - Auto-scaling, health-check lanjutan & monitoring resource penuh (metrik historis, alerting) — Phase 1 hanya ringkasan status/usage per container (§8d)
 - Log viewer streaming penuh & buffer historis — Phase 1 memakai polling tail sederhana (§8c)
 - Podman — Phase 1 tetap pakai Docker Engine yang sudah familiar; migrasi ke rootless Podman jadi pertimbangan keamanan di fase lanjutan
+- Refund/void transaksi kredit, rate limiting top-up, dan rekonsiliasi tagihan berbasis riwayat Docker (`StartedAt`) — Phase 1 memakai meteran tick inkremental + cap order pending (§7.12)
 
 ## 4. Tech Stack
 
@@ -635,7 +637,7 @@ Setiap app **dimiliki satu user (owner)** dan hanya terlihat oleh user yang berh
 
 ### 7.8 Self-Update Dashboard (update rames dari UI)
 
-Tujuan: menggantikan alur "SSH ke server → `git pull`" dengan satu tombol di dashboard. Panel-nya ada di halaman **`/nginx`** (menu nav **Config**; halaman operasional host yang sudah ada) supaya tidak menambah menu nav baru; badge **update** di nav sidebar hanya muncul untuk admin bila ada pembaruan.
+Tujuan: menggantikan alur "SSH ke server → `git pull`" dengan satu tombol di dashboard. Panel-nya ada di halaman **`/nginx`** (menu nav **Config**; halaman operasional host yang sudah ada) supaya tidak menambah menu nav baru; badge **update** di nav sidebar hanya muncul untuk admin bila ada pembaruan. Halaman **`/nginx` admin-only**: menu **Config** (termasuk badge update) **tidak tampil untuk member**, dan akses langsung ditolak **404** (`NginxController::index()` melempar `AppAccessDenied` → 404 — konsisten dengan kebijakan repo: halaman operasional host tidak membocorkan keberadaannya). Aksi `POST /nginx/reload` & endpoint `/api/update/*` memang sudah admin-only.
 
 **Kenapa helper container (bukan langsung dari proses PHP)**
 Proses yang menjalankan update adalah proses **di dalam container dashboard**, dan `docker compose up -d` akan **me-recreate container itu sendiri** — ia mematikan dirinya di tengah pekerjaan (container lama di-stop lebih dulu, sehingga kegagalan di jendela itu meninggalkan dashboard mati). Karena itu update dijalankan oleh **helper container terpisah** (`docker run -d`, *bukan* bagian dari compose project) yang tetap hidup saat dashboard di-recreate — pola yang sama dengan `NginxReloader` (memakai Docker socket host):
@@ -681,7 +683,7 @@ Alasan `--user <uid pemilik repo>` (bukan root): (a) `git pull` sebagai root men
 - `GET /healthz` bersifat **publik** (tanpa session): dibutuhkan helper untuk memutuskan sehat/rollback, sekaligus berguna untuk monitoring eksternal (mis. Uptime Kuma). Isinya hanya `{ok, service, sha, branch, time}` — tanpa data instalasi.
 - Belum ada: penjadwalan update otomatis (mis. cron), notifikasi, changelog terstruktur (hanya tautan compare), dan migrasi database (data dashboard berupa JSON).
 
-**Pengujian**: `tests/RepoInfoTest.php`, `tests/UpdateCheckerTest.php`, `tests/UpdateStateTest.php`, `tests/UpdateHelperTest.php` (perintah helper bebas injeksi + `cli/update-report.php`).
+**Pengujian**: `tests/RepoInfoTest.php`, `tests/UpdateCheckerTest.php`, `tests/UpdateStateTest.php`, `tests/UpdateHelperTest.php` (perintah helper bebas injeksi + `cli/update-report.php`), `tests/NginxControllerAdminOnlyTest.php` (halaman `/nginx` admin-only → 404 non-admin).
 
 ### 7.9 File Manager Container
 
@@ -824,6 +826,103 @@ flowchart LR
 **GOTCHA**: setelah subdomain berubah, sertifikat SSL lama **tidak lagi cocok** untuk domain baru (status SSL di-reset otomatis) — user harus menerbitkan ulang; jangan mengandalkan sertifikat lama. Detail alur + rollback: `ARCHITECTURE.md` §5.6b.
 
 **Pengujian**: `tests/SubdomainTest.php` (helper resolusi/validasi + `SubdomainManager`).
+
+### 7.12 Kredit, Deposit & Penagihan Resource (role `member`)
+
+**Tujuan**: user `member` membayar pemakaian CPU/RAM app-nya lewat **saldo kredit pra-bayar**. Kredit diisi **manual oleh admin** (deposit/adjust) atau **mandiri via payment gateway Duitku**. Pemakaian diakru per jam saat app `running`, ditagih otomatis di awal periode berikutnya; saldo negatif ⇒ app owner dihentikan otomatis (kebijakan `stop`). **Admin gratis**; app yang di-*share* tetap ditagih ke **owner**-nya.
+
+**Keputusan produk**
+- Hanya app milik user **member** yang ditagih (app owner `admin` dilewati meteran & gerbang). App yang dibagikan ke user lain tetap ditagih ke `owner_id`.
+- Saldo **boleh negatif** (penagihan tidak menahan potongan hanya karena saldo kurang); kebijakan lanjutan ditentukan `BILLING_PAYMENT_POLICY` (§ batasan).
+- Limit CPU/RAM = **dasar harga**; owner/member memilihnya saat create dalam plafon `BILLING_MAX_CPUS`/`BILLING_MAX_MEMORY_MB`; mengubahnya setelah app jadi tetap **admin-only** (ability `limits`, §7.6b).
+- Tarif **simpel & terpusat** (`config/deploy.php` + `.env`) — tanpa biaya disk/bandwidth/tier, tanpa hardcode di view.
+
+**Data model — `database/billing.json` (baru, gitignored; berkas TERPISAH)**
+Mengikuti preseden `database/backup.json` (§8h): berkas sendiri agar **skema `apps.json` tidak berubah** (tanpa migrasi app lama). Semua mutasi lewat `JsonStore::update()` (`flock` + `.bak` + atomik), diakses `BillingStore`.
+
+```json
+{ "version": 1,
+  "users":  { "u2": { "balance": 250.0, "updated_at": "…",
+                       "ledger": [ { "id":"…", "type":"charge|deposit|topup|adjust",
+                                     "amount":-312.5, "balance_after":187.5, "period":"2026-10", "items":[…] } ] } },
+  "usage":  { "<appId>": { "name":"myapp", "owner_id":"u2", "period":"2026-10",
+                           "seconds_pending":12345, "credits_pending":118.42, "sampled_at":"…" } },
+  "orders": { "RM-…": { "id":"RM-…", "user_id":"u2", "amount_idr":10000, "credits":1000.0,
+                        "method":"VA", "status":"pending|paid|failed|expired", "created_at":"…",
+                        "payment_url":"…", "reference":"…" } } }
+```
+
+- `users.<id>.balance` (float 2 desimal, boleh negatif), `.ledger` (riwayat; dipangkas ke `BILLING_LEDGER_KEEP` entri terakhir), `.updated_at`.
+- `usage.<appId>` — akumulasi meteran + **snapshot `name`/`owner_id`** (agar app yang dihapus di tengah periode tetap bisa ditagih lalu barisnya dipruning).
+- `orders` — order top-up Duitku (state machine `pending → paid | failed | expired`).
+- App owner admin **tidak pernah** masuk `usage` (gratis).
+
+**Rumus harga** (satu sumber kebenaran: `Pricing`)
+`harga_per_jam(app) = Σ_service (cpus × BILLING_RATE_CPU_PER_CORE_HOUR + (memory_mb / 1024) × BILLING_RATE_RAM_PER_GB_HOUR)`. Kredit = angka desimal 2 digit (bukan mata uang; tampilan `Pricing::format()` / `format_credits()`).
+
+> **WAJIB — anti-lubang harga.** Service tanpa entri `limits` dianggap memakai `BILLING_DEFAULT_CPUS`/`BILLING_DEFAULT_MEMORY_MB` (`Pricing::hourlyCredits()`), dan saat member men-deploy tanpa mengirim limit, `AppController::defaultLimitsFor()` menulis basis limit nyata per service — sehingga app member **selalu** punya dasar harga yang ditegakkan (bukan "tanpa limit" = gratis). App lama mulai diakru saat fitur aktif, **tanpa** tagihan retroaktif.
+
+**Meteran** (`UsageMeter`)
+- Akrual **inkremental per tick** (bukan selisih timestamp): `credits_pending += (seconds/3600) × harga_per_jam(limits)`; `seconds_pending += seconds`.
+- Hanya app `status === 'running'` milik owner **non-admin**; `period` diinisialisasi ke bulan berjalan saat baris pertama dibuat (tanpa tagihan retroaktif); perubahan `limits` di tengah bulan otomatis ter-prorata karena harga dihitung saat tick.
+- Resolusi = `BILLING_SAMPLE_SECONDS` (default 300 s; `0` = tanpa timer). `period` = `YYYY-MM` zona `app.default_timezone` (`Asia/Jakarta`) — satu sumber `BillingPeriod`.
+
+**Penagihan** (`Invoicer`)
+- Dijalankan `BillingRunner::tick()` **hanya pada/atau setelah tanggal `BILLING_INVOICE_DAY`** (`invoiceDayReached()` memakai `BillingPeriod::dayOfMonth()`; nilai **dijepit 1–28**). Baris `usage` dengan `period < bulan berjalan` ditagih: saldo owner dipotong `credits_pending` (boleh negatif) + entri ledger `charge` (rincian per app: `hours`, `cpus`, `memory_mb`, `hourly`, `amount`), lalu `period` direset & akumulasi dinolkan — semuanya dalam **satu** `JsonStore::update()`.
+- **Catch-up**: bila dashboard mati pada tanggal itu, hari berikutnya tetap menagih karena periode tertunggak (`period < bulan berjalan`) tetap terpilih. Penagihan manual (`POST /credits/charge`, `php cli/billing.php invoice [--period=YYYY-MM]`) **tidak** menunggu tanggal tersebut.
+- **Idempoten**: double-run tidak memotong dua kali; dashboard yang mati saat pergantian bulan tetap tertagih pada tick pertama setelah hidup.
+- App yang **sudah dihapus** tetap ditagih dari snapshot `usage`, lalu barisnya dipruning; owner yang sudah tidak ada di `auth.json` dilewati (baris dibiarkan utuh).
+- **Kebijakan `BILLING_PAYMENT_POLICY=stop` (default)**: setelah potongan, bila saldo owner `< 0`, **semua app owner dihentikan** (`AppStopper` → `DeployerInterface::stop()`, status `stopped`, alasan tertulis di `message`). Nilai selain `stop` = `block` (app dibiarkan berjalan; hanya aksi berikutnya diblokir).
+
+**Gerbang kredit** (`BillingGate`)
+- **10 titik panggil di `AppController`** — 2 jalur create (`confirmCreate`, `templateDeploy`, dinilai **sebelum** efek samping) + 8 jalur yang menyalakan/menciptakan container (`rebuild`, `rollback`, `start`, `saveCompose`, `saveEnv`, `saveNetworks`, `saveContainerNames`, `saveLimits`), plus **cek ulang** di `cli/deploy.php` (pertahanan berlapis; gagal ⇒ status `error`, exit non-zero).
+- **Penilaian dua pihak** (`AppController::billingAssertCanStart`): (a) **aktor** — siapa pun yang menekan tombol, bila `member` dan saldonya < kebutuhan ⇒ **ditolak**; (b) **owner/penanggung biaya** — bila owner berbeda dari aktor, saldo owner juga harus cukup. `BillingGate::assertCanStart/assertCanCreate` melempar `InsufficientCredits` bila `saldo < required` (`required` = estimasi `BILLING_MIN_DEPOSIT_DAYS` hari). Bila `$user === null` (tanpa konteks login) gerbang controller `return` dan penilaian owner diserahkan worker `cli/deploy.php`.
+- **Konsekuensi**: admin yang mengoperasikan app milik member **tetap bisa ditolak** bila owner-nya (member) tidak punya saldo; app milik admin tetap bebas tagihan, tetapi **operator member-nya wajib bersaldo** — tidak ada jalan bebas biaya lewat pengalihan kepemilikan.
+- Respons: **402 JSON** `{code:402,…}` untuk AJAX/`/api/*`, **flash + redirect `/credits`** untuk form biasa.
+- **Bukan otorisasi**: `AppAccess` tetap satu-satunya pintu hak akses (penolakan tetap **404**); gerbang kredit hanya blokir **fungsional**.
+- **Perilaku diketahui (N2, aman)**: untuk app **tanpa owner/owner tak dikenal**, controller bisa menolak aktor member (karena penilaian aktor) sementara worker `cli/deploy.php` (hanya menilai owner) **meloloskan**. Tidak berbahaya: setiap jalur controller sudah bergerbang dan worker tidak terjangkau user.
+
+**Anti-escape pengalihan kepemilikan** (`AppStopper::shouldStopOnTransfer`/`stopForBillingEscape`/`stopTransferredToExemptOwner`)
+- Saat `AppController::transferOwner()` memindahkan app ke pemilik yang **bebas tagihan** (admin) sementara pemilik lama adalah pihak yang ditagih (member) **dan** app masih hidup (`running`/`deploying`) **dan** `BILLING_ENABLED` aktif ⇒ app **dihentikan otomatis** (`status=stopped`, `message` = `AppStopper::REASON_TRANSFER`) + flash info; admin dapat menyalakannya kembali (admin gratis). Ini menutup celah "app berjalan yang dialihkan ke pemilik bebas tagihan tetap memakai resource tanpa akrual".
+- **Jalur hapus user** (`UserController::delete()`) memicu aturan yang sama: sebelum `transferAllFrom()`, daftar app pemilik diambil (`AppStore::ownedBy($id)`) dan `previousOwnerBillable = roleOf($user) !== admin` dihitung **sebelum** user dihapus; bila `BILLING_ENABLED` dan pemilik lama pihak yang ditagih ⇒ `stopTransferredToExemptOwner($appsBefore, true, true)` menghentikan setiap app hasil transfer yang **masih hidup** (`status=stopped`), dan flash menyebut jumlahnya.
+- **Alasan `message` dibedakan per sebab**: `stopOwnedBy($userId, $apps = [], ?string $reason = null)` memakai `$reason` untuk `message` app **dan** log (`null`/kosong ⇒ `REASON`). `REASON` = `'Dihentikan otomatis: saldo kredit negatif (billing).'` (jalur saldo negatif); `REASON_TRANSFER` = `'Dihentikan otomatis: app dialihkan ke pemilik bebas tagihan kredit.'` (jalur pengalihan manual & hapus user).
+- **N7 (defensif)**: `billingPayerFor()` memakai `try/catch` — bila `auth.json` tak terbaca, penilaian jatuh ke **aktor** (bukan gagal aksi); `AuthMiddleware` tetap penjaga utama lapisan autentikasi. Bukan celah, hanya ketahanan.
+- **Pengecualian yang disengaja — `AppStore::assignMissingOwners()`**: penugasan owner ke app ber-`owner_id` **kosong** (`AuthController`, `command/AssignOwner`, `command/MakeAdmin`) **tidak** memicu stop, karena app tanpa owner **tidak pernah diakru** (`UsageMeter` melewatinya, `owner_id` kosong ⇒ `continue`). Menugaskan owner karena itu tidak menghapus akrual yang sedang berjalan dan **tidak** menciptakan escape (berbeda dari `transferOwner`/`transferAllFrom` yang menyentuh app tertagih yang berjalan). Bukan bug.
+
+**Deposit** — dua jalur
+- **Manual admin** (`POST /credits/deposit`, admin-only → non-admin **404**): nominal positif = `deposit`, negatif = `adjust` (satu-satunya jenis yang boleh negatif), dibatasi `BILLING_ADMIN_DEPOSIT_MAX` per transaksi. Halaman `/credits` juga menyediakan `POST /credits/charge` (admin) untuk memicu penagihan manual (`Invoicer::runNow`).
+- **Top-up mandiri Duitku** — lihat di bawah.
+
+**Top-up online via Duitku** (ringkas kontrak)
+- Alur: `POST /credits/topup` (nominal + metode) → `TopUpService::start()` membuat order `pending` lalu **inquiry** `POST /v2/inquiry` → **302 redirect** ke `paymentUrl` → member membayar → Duitku `POST` **callback** ke `BILLING_DUITKU_CALLBACK_URL` → `PaymentController::callback()` verifikasi & `TopUpOrder::settle()` (idempoten) + kredit saldo **sekali**. `GET /credits/topup/return` hanya menampilkan status order **milik user login** (order lain → 404) dan opsional memicu re-konsiliasi.
+- **Base URL**: sandbox `https://sandbox.duitku.com/webapi/api/merchant` · production `https://passport.duitku.com/webapi/api/merchant` (kredensial sandbox & production **berbeda**, jangan dicampur).
+- **`BILLING_DUITKU_RETURN_URL` kosong** ⇒ diturunkan otomatis `DuitkuClient::deriveReturnUrl()` dari **origin callback URL** (skema + host + port) + `/credits/topup/return`. Callback URL non-https/relatif ⇒ `isConfigured()=false` ⇒ top-up **404** (fail-safe tetap: tanpa callback https absolut, top-up tidak diaktifkan).
+- **`BILLING_DUITKU_ALLOW_HTTP` (default `false`)** — opt-in **khusus uji lokal**: callback `http://` (mis. `http://localhost:8123/...`) diterima **hanya** bila key ini `true` (`DuitkuClient::allowsHttp()`); default produksi tetap **wajib https**. Tanpa ini, callback `http://` membuat `isConfigured()=false` sehingga form top-up (sengaja) disembunyikan; status order tetap bisa diselesaikan lewat `transactionStatus` ("Cek status") karena Duitku tidak dapat menjangkau `localhost`.
+- **Signature HMAC-SHA256 hex lowercase** (`DuitkuSignature`; MD5/SHA-256 biasa **obsolete**). String-to-sign: inquiry `merchantCode+merchantOrderId+paymentAmount`; status `merchantCode+merchantOrderId`; daftar metode `merchantCode+paymentAmount+datetime`; callback `merchantCode+amount+merchantOrderId`.
+- **Inquiry**: `paymentMethod` (2 huruf) & `email` **wajib**; `expiryPeriod` satuan menit (opsional). Respons sukses `statusCode="00"` dengan `reference` + `paymentUrl`. Error inquiry berbentuk **HTTP status** (400/401/404/409), bukan JSON.
+- **Callback**: field dipakai `merchantCode`, `amount`, `merchantOrderId`, `resultCode` (`00` sukses / `01` gagal), `reference`, `paymentCode` (bukan `paymentMethod`), `signature`; parser defensif menerima `productDetail` vs `productDetails` & `merchantUserId` vs `merchantUserInfo`. **WAJIB** membalas **HTTP 200** (bila tidak, Duitku retry sampai 5× lalu kirim email kegagalan).
+- **`transactionStatus`**: `00` sukses / `01` pending / `02` canceled — dokumentasi Duitku **melarang** memanggil berulang otomatis (melewati hit-rate ⇒ diblokir ±1 jam). Klien membatasi jeda `BILLING_DUITKU_STATUS_MIN_INTERVAL` per order & `BILLING_DUITKU_STATUS_MAX_PER_TICK` per tick; hanya order `pending` dicek.
+- **Allowlist kanal**: daftar `getpaymentmethod` **disaring** allowlist `BILLING_DUITKU_METHODS`; kanal kredit/paylater (`VC, DN, AT, T1–T3`) & account-link (`SL, OL`) **selalu dikecualikan** (`DuitkuClient::HARD_EXCLUDE_METHODS`) karena butuh data kartu/`customerDetail` yang tidak dikirim. Bila panggilan daftar gagal → fallback allowlist statis dari config (**bukan** daftar kosong/hardcode di view).
+- **Batas nominal**: `BILLING_TOPUP_MIN_IDR` (default Rp10.000 = minimum resmi) & `BILLING_TOPUP_MAX_IDR` (default Rp5.000.000 — aman untuk semua kanal; QRIS maks Rp10jt, retail Indomaret Rp5jt, VA lebih tinggi). Kuota order `pending` dibatasi `BILLING_TOPUP_MAX_PENDING` (pengganti rate limiter — Phase 1 belum ada).
+- **`expiryPeriod`**: `BILLING_TOPUP_EXPIRY_MINUTES=0` (default) = field **tidak dikirim** (pakai default kanal Duitku); >0 dikirim apa adanya. Order kedaluwarsa ditandai `expired` **lokal**, tetapi callback valid yang datang terlambat **tetap disettle** selama belum `paid` (uangnya nyata).
+- **IP allowlist callback** Duitku (production/sandbox) bersifat **opsional di level Nginx host** (`allow/deny` pada path callback) dan **tidak** ditegakkan di PHP — dashboard di balik Nginx host sehingga `REMOTE_ADDR` bukan IP asli Duitku. Pertahanan utama tetap **verifikasi HMAC**.
+
+**Halaman & field pendukung**
+- `GET /credits` (semua user login): **member** melihat saldo, pemakaian berjalan per app, estimasi tagihan periode, riwayat ledger, form email + top-up; **admin** melihat seluruh user (saldo), form deposit/adjust, tombol penagihan manual, dan order pending.
+- Pemilihan CPU/RAM oleh **owner** saat create (form create & template) dengan plafon; tab **Sumber Daya** detail app menampilkan estimasi biaya read-only.
+- Nav sidebar menampilkan **badge saldo** untuk member (fail-safe: tidak muncul bila billing mati / pembacaan gagal) — `current_credit_balance()`.
+- **Field `email` user** (opsional, `auth.json`, `UserStore::setEmail`, ≤50 karakter, `FILTER_VALIDATE_EMAIL`) — **prasyarat** top-up (dipakai inquiry Duitku); **tanpa migrasi** (user lama tanpa email tidak bisa top-up sampai diisi; deposit manual tetap jalan). Admin mengisi lewat `/users` (`POST /users/{id}/email`) atau user mengisi sendiri lewat `/credits` (`POST /credits/email`, hanya email sendiri).
+- **Diagnostik admin saat top-up nonaktif**: `CreditController::topupIssues()` (dari `DuitkuClient::configurationIssues()` — daftar alasan Bahasa Indonesia: merchant code/API key kosong, callback URL kosong/bukan https, return URL tidak absolut; plus pesan bila `BILLING_TOPUP_ENABLED=false`) dikirim ke view sebagai `topupIssues` **hanya untuk admin**. Blok admin `/credits` menampilkan `alert-info` "Top-up online belum aktif" + daftar alasan — sebelumnya kondisi ini **senyap** (membingungkan). **Member tidak melihat detail infrastruktur** ini.
+
+**Batasan**
+- Meteran berbasis **tick**: bila dashboard mati, tick hilang ⇒ **under-count** (bukan over-charge); app yang dihentikan otomatis berhenti diakru saat `status = stopped`.
+- **Tidak ada refund/void** top-up maupun pembalikan penagihan; **rate limiting** Phase 1 belum ada (diganti cap `BILLING_TOPUP_MAX_PENDING`).
+- **IP allowlist callback tidak ditegakkan di PHP** (lihat di atas).
+- `adjust` negatif oleh admin **tidak langsung** memicu auto-stop — auto-stop (`BILLING_PAYMENT_POLICY=stop`) berjalan saat `Invoicer`/tick menutup periode yang punya pemakaian tertunggak (bila saldo `< 0` saat itu). Halaman `/credits` menampilkan **hint eksplisit** pada form deposit: "Pengurangan manual **tidak** langsung menghentikan app — auto-stop berjalan saat penagihan periode berikutnya".
+- **Input cacat tidak menjadi 500**: callback pembayaran dengan field non-skalar (`merchantOrderId[]=…`) → **HTTP 400**; `email[]=…` di `POST /credits/email` ditolak sebagai tidak valid dan **tidak** menghapus email lama; field non-skalar lain di `/credits*` diperlakukan sebagai nilai tidak valid (flash + redirect), bukan error server.
+- Rekonsiliasi berbasis `StartedAt`/riwayat Docker **belum** ada (meteran inkremental, bukan hitung-ulang) — lihat §12.
+
+**Pengujian**: `BillingPricingTest`, `BillingStoreTest`, `CreditAccountTest`, `UsageMeterTest`, `InvoicerTest`, `BillingGateTest`, `BillingPeriodTest`, `BillingRunnerTest`, `AppStopperTest`, `TopUpOrderTest`, `TopUpServiceTest`, `DuitkuSignatureTest`, `DuitkuClientTest`, `DuitkuMethodCatalogTest`, `DuitkuCredentialHygieneTest`, `PaymentCallbackTest`, `CreditControllerTest`, `AppControllerBillingGateTest`, `AppControllerBillingContextTest`, `CliDeployBillingGateTest`, `CsrfExemptPaymentCallbackTest`, `UserStoreEmailTest` (semua di `tests/`).
 
 ## 8. Reverse Proxy / Subdomain Routing
 
@@ -1272,6 +1371,40 @@ RESTIC_PASSWORD_FILE={proyek}/database/restic/password   # passphrase restic, ch
 AWS_ACCESS_KEY_ID=                   # kredensial S3 (diteruskan ke helper via --env-file)
 AWS_SECRET_ACCESS_KEY=
 AWS_DEFAULT_REGION=
+
+# Kredit, deposit & penagihan resource (§7.12). Semua opsional (default aman).
+BILLING_ENABLED=true                 # false = fitur billing mati total (tanpa meteran & tanpa gerbang)
+BILLING_RATE_CPU_PER_CORE_HOUR=100   # tarif kredit per core-jam CPU
+BILLING_RATE_RAM_PER_GB_HOUR=20      # tarif kredit per GB-jam RAM
+BILLING_DEFAULT_CPUS=0.5             # default CPU untuk service tanpa entri `limits`
+BILLING_DEFAULT_MEMORY_MB=512        # default memori (MB) untuk service tanpa entri `limits`
+BILLING_MIN_DEPOSIT_DAYS=30          # deposit minimum = estimasi biaya N hari (0 = cukup saldo >= 0)
+BILLING_SAMPLE_SECONDS=300           # resolusi meteran = interval tick proses billing (detik; 0 = tanpa timer)
+BILLING_INVOICE_DAY=1                # tanggal penagihan periode (dijepit 1–28; catch-up bila dashboard sempat mati)
+BILLING_PAYMENT_POLICY=stop          # stop (default) = saldo negatif → hentikan app owner; selain 'stop' = block
+BILLING_MAX_CPUS=4                   # plafon CPU yang boleh dipilih owner saat create
+BILLING_MAX_MEMORY_MB=8192           # plafon RAM yang boleh dipilih owner saat create
+BILLING_LEDGER_KEEP=200              # jumlah entri ledger terakhir per user (0/negatif = tanpa batas)
+BILLING_LOG_PATH=                    # direktori log billing (kosong = runtime/logs/billing); seam pengujian
+BILLING_ADMIN_DEPOSIT_MAX=10000000   # batas nominal satu deposit/adjust manual admin (kredit)
+# Top-up mandiri member via Duitku (§7.12)
+BILLING_TOPUP_ENABLED=false          # true = aktifkan top-up online (butuh kredensial merchant)
+BILLING_TOPUP_IDR_PER_CREDIT=10      # kurs: Rp10 = 1 kredit
+BILLING_TOPUP_MIN_IDR=10000          # minimum nominal top-up (minimum resmi gateway)
+BILLING_TOPUP_MAX_IDR=5000000        # maksimum nominal top-up (aman untuk semua kanal)
+BILLING_TOPUP_EXPIRY_MINUTES=0       # 0 = field expiryPeriod TIDAK dikirim (pakai default kanal Duitku)
+BILLING_TOPUP_MAX_PENDING=3          # cap order pending per user (pengganti rate limiter)
+BILLING_DUITKU_MODE=sandbox          # sandbox | production → base URL Duitku
+BILLING_DUITKU_MERCHANT_CODE=        # merchant/project code (bukan secret)
+BILLING_DUITKU_API_KEY=              # RAHASIA (HMAC-SHA256 key) — jangan log/tampilkan/commit
+BILLING_DUITKU_CALLBACK_URL=         # WAJIB https absolut & publik (dipanggil Duitku)
+BILLING_DUITKU_RETURN_URL=           # opsional; kosong ⇒ diturunkan dari origin callback URL + /credits/topup/return
+BILLING_DUITKU_ALLOW_HTTP=false      # true = izinkan callback http:// (KHUSUS uji lokal; produksi wajib https)
+BILLING_DUITKU_METHOD_TTL=3600       # cache daftar metode pembayaran (detik)
+BILLING_DUITKU_METHODS=BC,BT,I1,M2,VA,B1,DM,BV,BR,NC,A1,AG,S1,FT,IR,OV,DA,SA,LF,LA,SP,NQ,SQ  # allowlist kanal (fallback statis)
+BILLING_DUITKU_TIMEOUT=15            # timeout HTTP ke Duitku (detik; di-cap ≤30)
+BILLING_DUITKU_STATUS_MIN_INTERVAL=900   # jeda minimum cek transactionStatus per order (detik)
+BILLING_DUITKU_STATUS_MAX_PER_TICK=20    # maksimum order yang dicek statusnya per tick
 ```
 
 > `VOLUME_BACKUP_HOST_CONTAINER` (default `rames-webman`) adalah env **host** yang dibaca `host/backup.sh`, disimpan di `/etc/rames/volume-backup.env` — bukan `.env` container.
@@ -1285,6 +1418,7 @@ AWS_DEFAULT_REGION=
 │   ├── auth.json
 │   ├── apps.json
 │   ├── backup.json           # seleksi berkala (volumes) + riwayat volume (registry) — §8h (gitignored)
+│   ├── billing.json          # saldo/ledger user + meteran usage + order top-up — §7.12 (gitignored, terpisah dari apps.json)
 │   ├── backups/              # backup otomatis data & config (§8g)
 │   ├── restic/
 │   │   └── password          # passphrase restic (chmod 0600, gitignored) — §8h
@@ -1336,6 +1470,12 @@ AWS_DEFAULT_REGION=
 - **File manager container (§7.9)**: ability `files` = operator (satu pintu `AppAccess`, penolakan **404**; operator sudah memegang shell penuh di container yang sama sehingga tidak menambah kuasa). Nama container dari request tidak dipercaya (`AppContainers::resolve`); semua path dinormalisasi `PathGuard` (wajib absolut, `.`/`..` diselesaikan, karakter kontrol ditolak) dan nama entri tidak boleh memuat `/` atau diawali `-` sebelum masuk `docker exec`/`docker cp`; argumen `docker exec` di-`escapeshellarg` (array + `sh -c` di dalam container), perintah host (`docker cp`/`unzip`/`tar`) array + `bypass_shell`. Ekstraksi arsip dilakukan **di host dashboard** (bukan di container app) dengan proteksi **zip-slip** (entri absolut/`..`/symlink keluar ditolak). Byte ditransfer via berkas temp `runtime/files-transfer/` yang dibersihkan (`Workerman\Timer` + `prune()`), bukan ke memori PHP. Operasi hanya ke container **berjalan** (berhenti → **409**), tanpa container sementara maupun volume langsung. **Semua `docker exec` dijalankan sebagai root** (`-u 0`) agar tidak `permission denied` atas berkas milik user lain / bind mount root host — konsekuensinya operator+ bisa memodifikasi berkas tersebut lewat UI; batasnya ability `files` (operator+) + audit `runtime/logs/files/{date}.log` (jangan turunkan ke viewer)
 - **Rute proxy tambahan (§8.2a)**: rute disimpan **terstruktur** (path + target), bukan snippet Nginx mentah, sehingga dashboard bisa memvalidasi & membatasi sebelum menulis config Nginx; `path`/`target` divalidasi ketat (`NginxRoutes` — batas **20** rute, path absolut, prefix `/.well-known` **dicadangkan** untuk ACME/challenge certbot, tolak `/`, duplikat, `..`, userinfo/query/fragment). Ability `routes` = operator (satu pintu `AppAccess`, penolakan **404**). Penyimpanan memakai alur uji + **rollback** (`NginxConfigGuard`): `nginx -t` memvalidasi seluruh config host, jadi config invalid yang tertinggal memblokir reload nginx **seluruh** host (semua app + renewal SSL) — kegagalan karena itu tidak boleh meninggalkan config rusak di disk. `applyRoutes()` **tidak pernah melempar**: kegagalan rollback (pemulihan `apps.json` maupun tulis ulang config) dilaporkan lewat `error` dengan `rolled_back` yang mencerminkan keberhasilan pemulihan `apps.json` — konsumen **wajib** menampilkan `error`, bukan hanya membaca `rolled_back`
 
+- **Callback pembayaran publik (§7.12):** pengecualian CSRF **kedua & sempit** — `#^/payments/duitku/callback$#` (eksak, **hanya POST**; pengecualian Adminer tidak dilebarkan, route lain termasuk `/credits/deposit` tetap **wajib** token). Pertahanan di controller: verifikasi signature **HMAC-SHA256** dengan `hash_equals`, kecocokan **amount** dengan order tersimpan, **idempotensi** (`pending → paid` sekali), **tanpa session** (`AuthMiddleware` path publik eksak), dan respons polos tanpa data sensitif (HTTP 200 `OK`; 400/403/404 tanpa detail). Bila fitur/kredensial tidak lengkap → endpoint **404** (disembunyikan). **Produksi wajib `BILLING_DUITKU_CALLBACK_URL` https absolut**; `BILLING_DUITKU_ALLOW_HTTP=true` (callback `http://`) adalah **opt-in khusus pengujian lokal** (default `false`) dan **tidak** untuk produksi. Diagnostik alasan top-up nonaktif hanya ditampilkan ke admin.
+- **Higienitas kredensial (§7.12):** `BILLING_DUITKU_API_KEY` hanya dibaca `config()`/`getenv()` dari `.env` — **tidak pernah** muncul di log, pesan error, view, atau JSON (`DuitkuClient::sanitize()` mengganti kemunculannya dengan `[redacted]`; diawasi `DuitkuCredentialHygieneTest`). Pesan error untuk user sudah tanpa kredensial/raw payload.
+- **Halaman operasional host admin-only (§7.8):** `/nginx` (termasuk panel self-update) menolak non-admin dengan **404** (`NginxController::index()` → `AppAccessDenied`), bukan 403 — konsisten dengan kebijakan tidak membocorkan keberadaan halaman host. Menu **Config** (beserta badge *update*) juga disembunyikan untuk member di UI (`app/view/partials/header.php`) — penyembunyian menu hanyalah **lapisan kedua**; penegakan sebenarnya di server. Aksi `POST /nginx/reload` & endpoint `/api/update/*` sudah admin-only sebelumnya.
+- **Anti-escape pengalihan kepemilikan (§7.12):** saat app berjalan (`running`/`deploying`) dialihkan dari pemilik yang **ditagih** (member) ke pemilik **bebas tagihan** (admin) dan `BILLING_ENABLED` aktif, app **dihentikan otomatis** (`status=stopped`, `message`=`REASON_TRANSFER`) agar tidak ada pemakaian gratis — berlaku pada pengalihan manual (`transferOwner` → `shouldStopOnTransfer`/`stopForBillingEscape`) **dan** pada **hapus user** (`UserController::delete()` → `stopTransferredToExemptOwner($appsBefore, true, true)`, dengan `previousOwnerBillable` dihitung sebelum user dihapus). Admin dapat menyalakannya kembali (admin gratis). `billingPayerFor()` defensif `try/catch (\Throwable)` ⇒ jatuh ke aktor bila `auth.json` tak terbaca (N7; `AuthMiddleware` tetap penjaga utama).
+- **Gerbang kredit bukan otorisasi (§7.12):** `BillingGate` menilai saldo **dua pihak** — **aktor** (siapa pun yang menekan tombol) **dan** **pemilik** app (bila berbeda) — sehingga admin yang mengoperasikan app milik member tetap bisa ditolak bila owner member tidak bersaldo (blokir fungsional — 402/redirect `/credits`); `AppAccess` tetap satu-satunya pintu hak akses (penolakan **404**). Aksi admin-only (`POST /credits/deposit`, `POST /credits/charge`) → non-admin **404**, bukan 403. `POST /credits/email` hanya mengubah email **user login sendiri** (id tidak dibaca dari request — anti IDOR; input non-skalar ditolak tanpa menghapus email lama); `GET /credits/topup/return` hanya membaca order **milik user login** (order lain → 404).
+
 ## 12. Future Work (di luar Phase 1)
 
 - Ekstrak `DeployerInterface` implementation menjadi agent HTTP terpisah untuk dukungan multi-server
@@ -1345,3 +1485,4 @@ AWS_DEFAULT_REGION=
 - Log viewer streaming penuh (SSE) & buffer historis — polling tail sudah masuk Phase 1 (§8c)
 - **Snippet Nginx mentah per app (Lapis B)** — sengaja di luar lingkup §8.2a: hanya rute **terstruktur** (path + target) yang didukung agar dashboard tetap bisa memvalidasi & membatasi sebelum menulis config; `include`/`server`/`listen`/`server_name` dari user **dilarang**. Guard rollback juga belum mencakup jalur `applyNginxConfig()` langsung (`setDomain`/`removeDomain`/`cli/ssl.php`, §8.2a G3). Belum ada **lock per-app** untuk penyimpanan rute yang bersamaan (§8.2a G5) — saat ini hanya `JsonStore::update()` yang terkunci sehingga urutan snapshot→persist→reload→rollback tetap dapat balapan (*lost update*).
 - Monitoring resource penuh (metrik historis, graf, alerting) — ringkasan per-container sudah masuk Phase 1 (§8d)
+- **Kredit & penagihan (§7.12):** refund/void top-up, rate limiting khusus top-up, dan **rekonsiliasi tagihan berbasis riwayat Docker** (`StartedAt`) untuk menutup *under-count* saat dashboard mati (saat ini meteran tick inkremental; §7.12 batasan)

@@ -24,6 +24,7 @@
 - **File manager container** — jelajah berkas, unggah multi-berkas, unduh, edit teks, buat folder, rename, pindah, hapus, dan ekstrak `.zip`/`.tar.gz` **di dalam container app** dari dashboard (tab **Container**, tombol `📁 Files`; ability `files` = operator ke atas, hanya untuk container yang berjalan; operasi berjalan sebagai root di dalam container; SPECS §7.9).
 - **Backup volume harian ke S3 (restic)** — volume Docker milik app di-backup harian ke object storage (S3) via **restic** (inkremental + dedup + enkripsi + retensi): container database didump logis (tanpa downtime), volume lain di-snapshot (stop → snapshot → start). Restore dari UI di halaman `/backups` (SPECS §8h). Volume yang sudah dihapus (app dihapus total) tetap dapat dipulihkan dari tab **Arsip** (admin) — restore ke volume baru atau unduh dump `.sql`.
 - **Batas resource per service** — admin menetapkan batas maksimum CPU & memori tiap service app (hard limit per service, ditulis ke override compose); user lain melihat nilainya read-only.
+- **Kredit, deposit & penagihan resource (role member)** — app milik user `member` ditagih pemakaian CPU/RAM per jam dari **saldo kredit**: meteran per tick, tagihan otomatis awal periode berikutnya, dan saldo negatif ⇒ app owner **dihentikan otomatis** (kebijakan `stop`). Kredit diisi **deposit manual admin** (halaman `/credits`) atau **top-up mandiri via Duitku** (inquiry → redirect → callback tervalidasi HMAC-SHA256). Admin gratis; app yang di-*share* tetap ditagih ke **owner**; owner/member memilih CPU/RAM saat create dalam plafon admin. Gerbang kredit menilai **dua pihak** (aktor **dan** owner) — admin yang mengoperasikan app milik member **tetap bisa ditolak** bila owner-nya (member) tidak bersaldo; app berjalan yang dialihkan ke pemilik bebas tagihan (admin) **dihentikan otomatis** — termasuk saat user pemilik dihapus (app-nya dialihkan ke admin) — agar tidak ada pemakaian gratis. Bila billing/top-up dimatikan, deposit manual tetap berfungsi; bila top-up belum aktif (mis. kredensial belum diisi), **admin** melihat alasannya di halaman Kredit (SPECS §7.12).
 - **Keamanan dasar** — CSRF token, eksekusi command bebas injection (`array` + `bypass_shell`), validasi input ketat, JSON dengan file locking (`flock`).
 
 ## Tech Stack
@@ -117,7 +118,7 @@ Buka `http://{app}.{APP_DOMAIN}` di browser. Pastikan DNS subdomain mengarah ke 
 
 ### Reload Nginx host (dari dashboard)
 
-Dashboard menulis config Nginx lalu me-reload nginx host secara **otomatis** setelah: set/hapus custom domain, deploy/rebuild, dan aktivasi SSL. Ada juga tombol **↻ Reload Nginx** di halaman detail app untuk reload manual.
+Dashboard menulis config Nginx lalu me-reload nginx host secara **otomatis** setelah: set/hapus custom domain, deploy/rebuild, dan aktivasi SSL. Ada juga tombol **↻ Reload Nginx** di halaman detail app untuk reload manual. Halaman operasional host **`/nginx`** (menu **Config**, termasuk panel self-update) bersifat **admin-only**: menu tidak tampil untuk member, dan akses langsung ke `/nginx` ditolak **404**.
 
 > Reload memakai helper container `--pid host --privileged` via Docker socket (butuh daemon Docker yang mengizinkan `--privileged`). Bila mekanisme ini tidak tersedia, pasang watcher host (SPECS §8.3) atau reload manual: `sudo systemctl reload nginx`.
 
@@ -224,15 +225,47 @@ Worker memvalidasi ulang kepemilikan volume terhadap `apps.json` sebelum restore
 | `RESTIC_REPOSITORY` | — | Repo restic, mis. `s3:https://s3.amazonaws.com/<bucket>/rames` — **tanpa** kredensial di dalamnya |
 | `RESTIC_PASSWORD_FILE` | `{proyek}/database/restic/password` | File passphrase restic (chmod `0600`, gitignored) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION` | — | Kredensial S3 (diteruskan ke helper restic via `--env-file`, bukan argv) |
+| `BILLING_ENABLED` | `true` | Aktifkan meteran & gerbang kredit (SPECS §7.12) |
+| `BILLING_RATE_CPU_PER_CORE_HOUR` / `BILLING_RATE_RAM_PER_GB_HOUR` | `100` / `20` | Tarif kredit per core-jam CPU / GB-jam RAM |
+| `BILLING_DEFAULT_CPUS` / `BILLING_DEFAULT_MEMORY_MB` | `0.5` / `512` | Basis limit service tanpa entri `limits` (anti-lubang harga) |
+| `BILLING_MIN_DEPOSIT_DAYS` | `30` | Deposit minimum = estimasi biaya N hari (`0` = cukup saldo ≥ 0) |
+| `BILLING_SAMPLE_SECONDS` | `300` | Resolusi meteran = interval tick proses billing (detik; `0` = tanpa timer) |
+| `BILLING_INVOICE_DAY` | `1` | Tanggal penagihan periode (dijepit 1–28; catch-up bila dashboard sempat mati) |
+| `BILLING_PAYMENT_POLICY` | `stop` | `stop` = saldo negatif → hentikan app owner; selain `stop` = `block` |
+| `BILLING_MAX_CPUS` / `BILLING_MAX_MEMORY_MB` | `4` / `8192` | Plafon CPU/RAM yang boleh dipilih owner saat create |
+| `BILLING_LEDGER_KEEP` | `200` | Jumlah entri ledger terakhir per user (`0`/negatif = tanpa batas) |
+| `BILLING_LOG_PATH` | (kosong) | Direktori log billing (kosong = `runtime/logs/billing`) |
+| `BILLING_ADMIN_DEPOSIT_MAX` | `10000000` | Batas nominal satu deposit/adjust manual admin (kredit) |
+| `BILLING_TOPUP_ENABLED` | `false` | Aktifkan top-up mandiri via Duitku (butuh kredensial merchant di bawah) |
+| `BILLING_TOPUP_IDR_PER_CREDIT` | `10` | Kurs konversi: Rp10 = 1 kredit |
+| `BILLING_TOPUP_MIN_IDR` / `BILLING_TOPUP_MAX_IDR` | `10000` / `5000000` | Batas nominal top-up (Rp; maksimum aman untuk semua kanal) |
+| `BILLING_TOPUP_EXPIRY_MINUTES` | `0` | `0` = field `expiryPeriod` tidak dikirim (pakai default kanal Duitku) |
+| `BILLING_TOPUP_MAX_PENDING` | `3` | Cap order top-up pending per user (pengganti rate limiter) |
+| `BILLING_DUITKU_MODE` | `sandbox` | `sandbox` / `production` → base URL Duitku (kredensial terpisah) |
+| `BILLING_DUITKU_MERCHANT_CODE` | — | Merchant/project code Duitku (bukan secret) |
+| `BILLING_DUITKU_API_KEY` | — | **RAHASIA** (HMAC-SHA256 key) — jangan commit/log/tampilkan |
+| `BILLING_DUITKU_CALLBACK_URL` | — | URL callback **https absolut** yang dipanggil Duitku |
+| `BILLING_DUITKU_RETURN_URL` | — | Opsional; kosong ⇒ diturunkan dari origin callback URL + `/credits/topup/return` |
+| `BILLING_DUITKU_ALLOW_HTTP` | `false` | `true` = izinkan callback `http://` — **khusus uji lokal**; produksi wajib https |
+| `BILLING_DUITKU_METHOD_TTL` | `3600` | Cache daftar metode pembayaran (detik) |
+| `BILLING_DUITKU_METHODS` | allowlist kanal | Fallback statis bila daftar metode online gagal (kanal kredit/paylater & account-link selalu dikecualikan) |
+| `BILLING_DUITKU_TIMEOUT` | `15` | Timeout HTTP ke Duitku (detik; di-cap ≤30) |
+| `BILLING_DUITKU_STATUS_MIN_INTERVAL` | `900` | Jeda minimum cek `transactionStatus` per order (detik; hindari blokir hit-rate) |
+| `BILLING_DUITKU_STATUS_MAX_PER_TICK` | `20` | Maksimum order yang dicek statusnya per tick meteran |
 
 ## Struktur Direktori (Ringkas)
 
 ```
 app/
 ├── command/MakeAdmin.php        # php webman make:admin (provisioning user awal)
-├── controller/                  # AuthController, AppController, FileController, SslController, NginxController, UserController
+├── controller/                  # AuthController, AppController, CreditController, PaymentController,
+│                                #   FileController, SslController, NginxController, UserController
 ├── library/                     # SELURUH logika bisnis (controller hanya mediator)
 │   ├── Auth/UserStore.php
+│   ├── Billing/                 # kredit & penagihan + top-up Duitku: Pricing, BillingStore, CreditAccount,
+│   │                            #   UsageMeter, Invoicer, BillingGate, BillingPeriod, InsufficientCredits,
+│   │                            #   BillingRunner, AppStopper, DuitkuClient, DuitkuSignature, DuitkuError,
+│   │                            #   TopUpOrder, TopUpService
 │   ├── Deploy/                  # DeployerInterface, LocalDeployer, DeployerFactory
 │   ├── Docker/                  # ComposeParser, DockerClient, DockerComposeRunner, PortManager, AppContainers
 │   ├── Files/                   # file manager container: PathGuard, TextContent, ArchiveGuard,
@@ -243,11 +276,13 @@ app/
 │   ├── Storage/                 # JsonStore (flock), AppStore
 │   └── Support/ProcessRunner.php
 ├── middleware/                  # AuthMiddleware, CsrfMiddleware
+├── process/BillingProcess.php   # timer billing (meteran + penagihan + top-up)
 └── view/                        # template Raw Webman (.html)
 cli/deploy.php                   # background worker deploy/rebuild
+cli/billing.php                  # worker CLI billing (status|sample|tick|invoice|expire)
 cli/ssl.php                      # background worker SSL (Let's Encrypt)
 config/                          # konfigurasi Webman + config/deploy.php
-database/                        # auth.json, apps.json (runtime, gitignored)
+database/                        # auth.json, apps.json, billing.json (runtime, gitignored)
 apps/                           # hasil clone tiap app (gitignored)
 nginx-status/                    # status reload nginx (gitignored)
 public/css/app.css               # stylesheet dashboard
@@ -274,6 +309,7 @@ runtime/                         # state runtime (gitignored): logs/, files-tran
 - Mount `docker.sock` adalah risiko yang **disengaja** untuk Phase 1 — dashboard selalu di balik autentikasi.
 - Direktori Nginx yang di-mount dibatasi hanya `sites-available/` + `sites-enabled/`.
 - File manager container: ability `files` = operator ke atas (setara terminal/database); path & nama dinormalisasi (`PathGuard`) sebelum masuk `docker exec`/`docker cp` (argumen di-`escapeshellarg`), ekstraksi arsip di **host** dengan proteksi zip-slip, dan transfer byte lewat berkas temp — tidak memuat berkas besar ke memori PHP.
+- **Callback pembayaran Duitku** (`POST /payments/duitku/callback`) adalah pengecualian CSRF **kedua & sempit** (path eksak, hanya POST; pengecualian Adminer tidak dilebarkan) — keamanannya dari verifikasi signature **HMAC-SHA256** (`hash_equals`) + kecocokan amount + idempotensi, tanpa session, respons polos tanpa data sensitif. `BILLING_DUITKU_API_KEY` hanya lewat `.env`/`config()` dan tidak pernah masuk log/view/JSON.
 
 ## Troubleshooting Umum
 
@@ -292,3 +328,4 @@ runtime/                         # state runtime (gitignored): logs/, files-tran
 - Role & permission antar user
 - Log viewer real-time per container
 - Migrasi JSON → SQLite/RDBMS bila skala bertambah
+- Kredit & penagihan: refund/void top-up, rate limiting top-up, dan rekonsiliasi tagihan berbasis riwayat Docker (`StartedAt`) — menutup *under-count* saat dashboard mati (SPECS §7.12)

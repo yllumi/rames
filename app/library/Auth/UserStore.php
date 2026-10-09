@@ -10,8 +10,12 @@ use RuntimeException;
 /**
  * Penyimpanan user (database/auth.json).
  *
- * Struktur: id, username, password_hash, role (admin|member), created_at.
+ * Struktur: id, username, password_hash, role (admin|member), created_at,
+ * email (opsional — prasyarat top-up Duitku, lihat SPECS §7.12).
  * Password disimpan sebagai bcrypt hash, tidak pernah plaintext.
+ *
+ * Field `email` **tanpa migrasi**: entri lama yang belum punya `email` tetap
+ * valid (`emailOf()` mengembalikan string kosong).
  *
  * Kepemilikan app (owner/member) diatur terpisah di database/apps.json —
  * lihat app\library\Auth\AppAccess.
@@ -39,7 +43,7 @@ class UserStore
     /**
      * Daftar user siap tampil (tanpa password_hash, dengan role hasil resolusi).
      *
-     * @return array<int, array{id:string, username:string, role:string, created_at:string}>
+     * @return array<int, array{id:string, username:string, role:string, created_at:string, email:string}>
      */
     public function listWithRoles(): array
     {
@@ -231,8 +235,54 @@ class UserStore
     }
 
     /**
+     * Email user (dinormalisasi trim); string kosong bila belum diatur/blank.
+     *
+     * `email` adalah field **opsional** pada auth.json — user lama tetap valid
+     * tanpa migrasi. Dipakai sebagai prasyarat top-up Duitku (SPECS §7.12).
+     */
+    public function emailOf(array $user): string
+    {
+        $email = $user['email'] ?? '';
+
+        return is_string($email) ? trim($email) : '';
+    }
+
+    /**
+     * Set/hapus email user.
+     *
+     * Validasi: format email (FILTER_VALIDATE_EMAIL) + panjang maksimum 50
+     * karakter (batas praktis Duitku). String kosong (setelah trim) **menghapus**
+     * field email. Pesan exception dalam Bahasa Indonesia.
+     */
+    public function setEmail(string $id, string $email): void
+    {
+        $email = trim($email);
+
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new InvalidArgumentException('Format email tidak valid.');
+        }
+        if (mb_strlen($email) > 50) {
+            throw new InvalidArgumentException('Email maksimal 50 karakter.');
+        }
+
+        $this->store->update(function (array &$data) use ($id, $email): void {
+            foreach ($data as &$user) {
+                if (($user['id'] ?? '') === $id) {
+                    if ($email === '') {
+                        unset($user['email']);
+                    } else {
+                        $user['email'] = $email;
+                    }
+                    return;
+                }
+            }
+            throw new RuntimeException('User tidak ditemukan.');
+        });
+    }
+
+    /**
      * @param string|null $firstUserId id user pertama (untuk berkas legacy tanpa role)
-     * @return array{id:string, username:string, role:string, created_at:string}
+     * @return array{id:string, username:string, role:string, created_at:string, email:string}
      */
     private function publicUser(array $user, ?string $firstUserId = null): array
     {
@@ -241,6 +291,9 @@ class UserStore
         $user['role'] = in_array($explicit, [self::ROLE_ADMIN, self::ROLE_MEMBER], true)
             ? $explicit
             : $this->legacyRole($user, $firstUserId ?? (string) ($this->all()[0]['id'] ?? ''));
+        // Selalu hadir sebagai string ('' bila belum diatur) agar session & view
+        // dapat menampilkannya tanpa memeriksa keberadaan key.
+        $user['email'] = $this->emailOf($user);
 
         return $user;
     }

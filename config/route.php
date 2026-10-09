@@ -16,6 +16,7 @@ use Webman\Route;
 
 use app\controller\AuthController;
 use app\controller\BackupController;
+use app\controller\CreditController;
 use app\controller\IndexController;
 use app\controller\LogController;
 use app\controller\MonitorController;
@@ -25,6 +26,7 @@ use app\controller\AppController;
 use app\controller\DatabaseController;
 use app\controller\FileController;
 use app\controller\HealthController;
+use app\controller\PaymentController;
 use app\controller\SslController;
 use app\controller\TerminalController;
 use app\controller\UpdateController;
@@ -45,6 +47,12 @@ Route::get('/logout', [AuthController::class, 'logout']);
 // Kesehatan dashboard (publik, lihat AuthMiddleware::PUBLIC_PATHS): dipakai helper
 // self-update untuk memverifikasi versi baru melayani request, + monitoring eksternal.
 Route::get('/healthz', [HealthController::class, 'index']);
+
+// Callback pembayaran Duitku (publik & path eksak, SPECS.md §7.12 / plan §5.7):
+// tanpa sesi — keamanannya dari signature HMAC + kecocokan amount + idempotensi
+// di PaymentController; CSRF dikecualikan hanya untuk POST path ini
+// (CsrfMiddleware::isPaymentCallbackPath). Selalu balas 200 agar Duitku tak retry.
+Route::post('/payments/duitku/callback', [PaymentController::class, 'callback']);
 
 /*
 |--------------------------------------------------------------------------
@@ -220,6 +228,24 @@ Route::post('/users', [UserController::class, 'create']);
 Route::post('/users/{id}/delete', [UserController::class, 'delete']);
 Route::post('/users/{id}/password', [UserController::class, 'changePassword']);
 Route::post('/users/{id}/role', [UserController::class, 'changeRole']);
+// Email member (dipakai untuk top-up Duitku) — admin set/hapus dari halaman Users.
+Route::post('/users/{id}/email', [UserController::class, 'setEmail']);
+
+/*
+|--------------------------------------------------------------------------
+| Kredit, deposit & penagihan (SPECS.md §7.12, plan §5.4/§5.7)
+|--------------------------------------------------------------------------
+| `deposit`/`charge` admin-only → 404 non-admin. `setEmail` hanya email user
+| login sendiri. `topup*` 404 bila fitur/kredensial gateway tidak lengkap.
+| `methods` = satu-satunya jalur yang menyentuh jaringan (dipanggil JS saat load).
+*/
+Route::get('/credits', [CreditController::class, 'index']);
+Route::post('/credits/deposit', [CreditController::class, 'deposit']);
+Route::post('/credits/charge', [CreditController::class, 'charge']);
+Route::post('/credits/email', [CreditController::class, 'setEmail']);
+Route::post('/credits/topup', [CreditController::class, 'topup']);
+Route::get('/credits/topup/return', [CreditController::class, 'topupReturn']);
+Route::get('/api/credits/methods', [CreditController::class, 'methods']);
 
 
 

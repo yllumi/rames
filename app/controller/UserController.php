@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Auth\UserStore;
+use app\library\Billing\AppStopper;
+use app\library\Billing\CreditAccount;
 use app\library\Storage\AppStore;
 use support\Request;
 
@@ -41,6 +43,9 @@ class UserController
             'currentUser' => current_user(),
             'ownerCounts' => $ownerCounts,
             'totalApps' => count($apps),
+            // Saldo kredit semua user (read-only) — diisi `CreditAccount` (baca
+            // `database/billing.json`); user tanpa entri = 0.
+            'balances' => (new CreditAccount())->allBalances(),
         ]);
     }
 
@@ -97,12 +102,25 @@ class UserController
         // App milik user dialihkan ke admin yang menghapus — tidak ada app
         // yang kehilangan pemilik (kebijakan yang disepakati).
         $adminId = (string) (current_user()['id'] ?? '');
+        $previousOwnerBillable = $store->roleOf($user) !== UserStore::ROLE_ADMIN;
+        $appsBefore = (new AppStore())->ownedBy($id);
         $moved = (new AppStore())->transferAllFrom($id, $adminId, $adminId);
 
         $store->delete($id);
+
+        // Bila pemilik lama pihak yang ditagih (member) dan pemilik baru bebas
+        // tagihan (admin), app yang masih hidup dihentikan agar tidak berjalan
+        // tanpa akrual — aturan sama dengan pengalihan kepemilikan manual.
+        $stopped = 0;
+        if ((bool) config('deploy.billing_enabled', true) && $previousOwnerBillable) {
+            $stopped = (new AppStopper())->stopTransferredToExemptOwner($appsBefore, true, true);
+        }
+
         flash_set(
             'success',
-            "User \"{$user['username']}\" dihapus." . ($moved > 0 ? " {$moved} app dialihkan ke Anda." : '')
+            "User \"{$user['username']}\" dihapus."
+            . ($moved > 0 ? " {$moved} app dialihkan ke Anda." : '')
+            . ($stopped > 0 ? " {$stopped} app dihentikan otomatis (kini bebas tagihan kredit)." : '')
         );
         return redirect('/users');
     }
@@ -162,6 +180,39 @@ class UserController
             }
             $store->changeRole($id, $role);
             flash_set('success', "Role user \"{$user['username']}\" diset ke {$role}.");
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+
+        return redirect('/users');
+    }
+
+    /**
+     * Set/hapus email user (POST /users/{id}/email) — admin-only.
+     *
+     * Email dipakai sebagai prasyarat top-up Duitku (SPECS §7.12). String
+     * kosong menghapus email (lihat `UserStore::setEmail()`).
+     */
+    public function setEmail(Request $request, string $id)
+    {
+        if (!$this->guardAdmin()) {
+            return redirect('/apps');
+        }
+
+        $email = (string) $request->post('email', '');
+        $store = new UserStore();
+        $user = $store->findById($id);
+
+        if ($user === null) {
+            flash_set('error', 'User tidak ditemukan.');
+            return redirect('/users');
+        }
+
+        try {
+            $store->setEmail($id, $email);
+            flash_set('success', trim($email) === ''
+                ? "Email user \"{$user['username']}\" dihapus."
+                : "Email user \"{$user['username']}\" diset ke " . trim($email) . '.');
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
         }

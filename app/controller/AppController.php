@@ -6,6 +6,11 @@ namespace app\controller;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Auth\UserStore;
+use app\library\Billing\AppStopper;
+use app\library\Billing\BillingGate;
+use app\library\Billing\CreditAccount;
+use app\library\Billing\InsufficientCredits;
+use app\library\Billing\Pricing;
 use app\library\Deploy\ComposeSource;
 use app\library\Deploy\ContainerNames;
 use app\library\Deploy\DeployerFactory;
@@ -220,6 +225,7 @@ class AppController
                 app_can('limits', $app),
                 $savedLimits
             ),
+            'billingEstimate' => $this->billingEstimateFor($savedLimits, current_user()),
         ]);
     }
 
@@ -506,9 +512,13 @@ class AppController
             'resourceLimits' => $this->limitsContext(
                 (string) $template['dir'],
                 [TemplateCatalog::COMPOSE_FILE],
-                is_admin(),
+                current_user() !== null,
                 [],
                 array_map('strval', array_keys((array) ($template['services'] ?? [])))
+            ),
+            'billing' => $this->billingContext(
+                $this->defaultLimitsFor(array_map('strval', array_keys((array) ($template['services'] ?? [])))),
+                current_user()
             ),
         ]);
     }
@@ -548,13 +558,27 @@ class AppController
             $env = $catalog->resolveEnv($template, $envInput);
             $generated = $catalog->generatedKeys($template, $envInput);
 
-            // Batas CPU/memori: hanya admin global (ability `limits`).
-            $limits = is_admin()
-                ? $this->resolveLimits(
-                    (array) $request->post('limits', []),
-                    array_map('strval', array_keys((array) ($template['services'] ?? [])))
-                )
-                : [];
+            // Batas CPU/memori: owner/member boleh memilih saat create (D2=a),
+            // dibatasi plafon billing. Admin bebas (billing bukan untuk admin).
+            $limits = $this->resolveLimits(
+                (array) $request->post('limits', []),
+                array_map('strval', array_keys((array) ($template['services'] ?? [])))
+            );
+            $user = current_user();
+            if ($this->isBillingMember($user)) {
+                Pricing::assertWithinCaps($limits);
+                if ($limits === []) {
+                    // Anti-lubang harga: app member selalu punya limit nyata.
+                    $limits = $this->defaultLimitsFor(
+                        array_map('strval', array_keys((array) ($template['services'] ?? [])))
+                    );
+                }
+            }
+
+            // Gerbang kredit — fail-fast SEBELUM materialisasi/efek samping.
+            $this->billingAssertCanCreate($limits, $user);
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
         } catch (\Throwable $e) {
             // Template tidak ada/rusak → tidak ada form yang bisa dirender ulang.
             if ($template === null || !$template['valid']) {
@@ -569,7 +593,7 @@ class AppController
             $limitsContext = $this->limitsContext(
                 (string) $template['dir'],
                 [TemplateCatalog::COMPOSE_FILE],
-                is_admin(),
+                current_user() !== null,
                 $postedLimits,
                 array_map('strval', array_keys((array) ($template['services'] ?? [])))
             );
@@ -583,6 +607,12 @@ class AppController
                 'form_env' => $envInput,
                 'form_error' => $e->getMessage(),
                 'resourceLimits' => $limitsContext,
+                'billing' => $this->billingContext(
+                    $postedLimits === []
+                        ? $this->defaultLimitsFor(array_map('strval', array_keys((array) ($template['services'] ?? []))))
+                        : $postedLimits,
+                    current_user()
+                ),
             ]);
         }
 
@@ -806,9 +836,13 @@ class AppController
             'resourceLimits' => $this->limitsContext(
                 $dir,
                 [(string) $pending['compose_file']],
-                is_admin(),
+                current_user() !== null,
                 [],
                 array_map('strval', array_keys((array) ($pending['services'] ?? [])))
+            ),
+            'billing' => $this->billingContext(
+                $this->defaultLimitsFor(array_map('strval', array_keys((array) ($pending['services'] ?? [])))),
+                current_user()
             ),
         ]);
     }
@@ -852,14 +886,25 @@ class AppController
                 : SubdomainManager::normalize((string) ($pending['subdomain'] ?? ''));
             $this->assertSubdomainAvailable($subdomain, (string) $pending['name']);
 
-            // Batas CPU/memori: hanya admin global (ability `limits`). Non-admin
-            // tidak error — form memang tidak mengirim field ini.
-            $limits = is_admin()
-                ? $this->resolveLimits(
-                    (array) $request->post('limits', []),
-                    array_map('strval', array_keys((array) ($pending['services'] ?? [])))
-                )
-                : [];
+            // Batas CPU/memori: owner/member boleh memilih saat create (D2=a),
+            // dibatasi plafon billing. Admin bebas (billing bukan untuk admin).
+            $limits = $this->resolveLimits(
+                (array) $request->post('limits', []),
+                array_map('strval', array_keys((array) ($pending['services'] ?? [])))
+            );
+            $user = current_user();
+            if ($this->isBillingMember($user)) {
+                Pricing::assertWithinCaps($limits);
+                if ($limits === []) {
+                    // Anti-lubang harga: app member selalu punya limit nyata.
+                    $limits = $this->defaultLimitsFor(
+                        array_map('strval', array_keys((array) ($pending['services'] ?? [])))
+                    );
+                }
+            }
+
+            // Gerbang kredit — fail-fast SEBELUM efek samping apa pun.
+            $this->billingAssertCanCreate($limits, $user);
 
             $result = $this->createAndDeploy(
                 $pending,
@@ -889,6 +934,8 @@ class AppController
 
             flash_set('success', 'App "' . $app['name'] . '" sedang di-deploy.');
             return redirect('/apps/' . $app['id']);
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
         } catch (\Throwable $e) {
             if ($request->expectsJson()) {
                 return json(['code' => 1, 'error' => $e->getMessage()]);
@@ -1050,6 +1097,13 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
+        // Gerbang kredit — sebelum mengubah status / spawn worker.
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        }
+
         $store->update($id, function (array &$s): void {
             $s['status'] = 'deploying';
             $s['stage'] = 'queued';
@@ -1134,6 +1188,13 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
+        // Gerbang kredit — sebelum mengubah status / spawn worker rollback.
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        }
+
         $store->update($id, function (array &$s): void {
             $s['status'] = 'deploying';
             $s['stage'] = 'queued';
@@ -1176,6 +1237,14 @@ class AppController
     {
         $store = new AppStore();
         $app = $this->findApp($id, 'stop');
+
+        // Gerbang kredit — sebelum menyalakan container.
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        }
+
         try {
             DeployerFactory::create()->start($app);
             $store->update($id, function (array &$s): void {
@@ -1298,17 +1367,35 @@ class AppController
     public function transferOwner(Request $request, string $id)
     {
         $store = new AppStore();
-        $this->findApp($id, 'sharing');
+        $app = $this->findApp($id, 'sharing');
 
         $userId = trim((string) $request->post('user_id', ''));
 
         try {
-            $target = (new UserStore())->findPublicById($userId);
+            $users = new UserStore();
+            $target = $users->findPublicById($userId);
             if ($target === null) {
                 throw new RuntimeException('User tidak ditemukan.');
             }
+
+            $previousOwner = $users->findPublicById((string) ($app['owner_id'] ?? ''));
+
             $store->transferOwner($id, $userId, (string) (current_user()['id'] ?? ''));
             flash_set('success', 'Kepemilikan app dipindahkan ke "' . $target['username'] . '". Anda tetap terdaftar sebagai co-owner.');
+
+            // Pemilik lama ditagih, pemilik baru bebas tagihan (admin) & app masih
+            // hidup ⇒ app akan berjalan tanpa akrual. Hentikan supaya tidak ada
+            // pemakaian gratis; admin bisa menyalakannya kembali.
+            $previousOwnerBillable = $previousOwner !== null && !$users->isAdmin($previousOwner);
+            $newOwnerExempt = $users->isAdmin($target);
+            if ((bool) config('deploy.billing_enabled', true)
+                && AppStopper::shouldStopOnTransfer($app, $previousOwnerBillable, $newOwnerExempt)
+            ) {
+                $updated = $store->find($id) ?? $app;
+                if ((new AppStopper())->stopForBillingEscape($updated, $previousOwnerBillable, $newOwnerExempt)) {
+                    flash_set('info', 'App dihentikan otomatis karena pemilik barunya bebas tagihan kredit — nyalakan kembali bila diperlukan.');
+                }
+            }
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
         }
@@ -1641,6 +1728,13 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
+        // Gerbang kredit — sebelum menulis env & recreate container (applyEnv).
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        }
+
         try {
             $posted = (array) $request->post('env', []);
             $deleteKeys = array_values(array_filter(
@@ -1808,6 +1902,13 @@ class AppController
             }
         }
 
+        // Gerbang kredit — sebelum menulis override & recreate container.
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        }
+
         try {
             // 1) Tulis override dulu — gagal => state apps.json tidak berubah.
             $composeFiles = $app['compose_files'] ?? ['docker-compose.yml'];
@@ -1872,6 +1973,13 @@ class AppController
         }
 
         $composeFiles = (array) ($app['compose_files'] ?? ['docker-compose.yml']);
+
+        // Gerbang kredit — sebelum menulis override nama & recreate container.
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        }
 
         try {
             $prefix = $this->resolveContainerPrefix(
@@ -1950,6 +2058,13 @@ class AppController
         if (!is_dir($dir)) {
             flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
             return redirect('/apps/' . $id);
+        }
+
+        // Gerbang kredit — sebelum menulis override limit & recreate container.
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
         }
 
         try {
@@ -2177,6 +2292,14 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
+        // Gerbang kredit — sebelum menulis file compose / mengubah apps.json /
+        // spawn worker `apply` (jalur ignition yang membuat ulang container).
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        }
+
         $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
         if (!is_dir($dir)) {
             flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
@@ -2378,6 +2501,237 @@ class AppController
         AppAccess::require($ability, $app, current_user());
 
         return $app;
+    }
+
+    // ==================================================================
+    // Gerbang kredit (billing) — mediator; logika di app\library\Billing
+    // ==================================================================
+
+    /**
+     * Gerbang kredit untuk jalur **membuat** app (create/confirm & template).
+     * `$limits` wajib sudah divalidasi & (untuk member) diberi basis default.
+     * Melempar `InsufficientCredits` — blokir **fungsional**, bukan otorisasi
+     * (`AppAccess` tetap satu-satunya pintu hak akses); pemanggil menanganinya
+     * lewat `billingBlocked()`.
+     *
+     * `$gate` hanya untuk pengujian (inject); produksi memakai default.
+     *
+     * @param array<int|string,mixed> $limits
+     * @throws InsufficientCredits
+     */
+    private function billingAssertCanCreate(array $limits, ?array $user, ?BillingGate $gate = null): void
+    {
+        ($gate ?? new BillingGate())->assertCanCreate($limits, $user);
+    }
+
+    /**
+     * Gerbang kredit untuk app yang **sudah ada** (rebuild/rollback/start/simpan
+     * compose/env/network/nama/limits) — limit dibaca dari field `limits` app.
+     *
+     * Yang dinilai adalah saldo **penanggung biaya** (`billingPayerFor()`), bukan
+     * aktor: app yang dibagikan tetap ditagih ke ownernya, sama seperti penilaian
+     * ulang di worker `cli/deploy.php` (agar controller & worker tidak berbeda
+     * putusan).
+     *
+     * @throws InsufficientCredits
+     */
+    private function billingAssertCanStart(array $app, ?array $user, ?BillingGate $gate = null, ?UserStore $users = null): void
+    {
+        if ($user === null) {
+            // Tanpa konteks user login: penilaian pemilik dilakukan worker
+            // `cli/deploy.php` (gerbang kredit bukan lapisan autentikasi).
+            return;
+        }
+
+        $gate ??= new BillingGate();
+
+        // (1) Aktor — siapa pun yang menekan tombol tetap harus punya kredit bila
+        //     ia member. Menutup escape: owner dipindahkan ke user admin (bebas)
+        //     sementara operator member-nya tetap mengoperasikan app tanpa saldo.
+        $gate->assertCanStart($app, $user);
+
+        // (2) Penanggung biaya (owner) — app yang dibagikan tetap ditagih ke
+        //     ownernya, selaras dengan penilaian ulang di worker.
+        $payer = $this->billingPayerFor($app, $user, $users);
+        if ($payer !== null && (string) ($payer['id'] ?? '') !== (string) ($user['id'] ?? '')) {
+            $gate->assertCanStart($app, $payer);
+        }
+    }
+
+    /**
+     * User yang menanggung biaya sebuah app: **owner** bila diketahui, selain itu
+     * aktor saat ini (app tanpa owner tetap dinilai atas nama aktor, dan user
+     * `null` tetap dilewatkan `BillingGate` — bukan lapisan autentikasi).
+     */
+    private function billingPayerFor(array $app, ?array $user, ?UserStore $users = null): ?array
+    {
+        $ownerId = trim((string) ($app['owner_id'] ?? ''));
+        if ($ownerId === '') {
+            return $user;
+        }
+        if ($user !== null && (string) ($user['id'] ?? '') === $ownerId) {
+            return $user;
+        }
+
+        try {
+            return ($users ?? new UserStore())->findPublicById($ownerId) ?? $user;
+        } catch (\Throwable) {
+            // `auth.json` tak terbaca/korup: jatuh ke aktor, jangan gagalkan aksi
+            // (AuthMiddleware tetap penjaga utama lapisan autentikasi).
+            return $user;
+        }
+    }
+
+    /**
+     * Bentuk respons blokir kredit: 402 JSON untuk AJAX/`/api/*`, flash pesan +
+     * redirect `/credits` untuk form biasa. Pesan (saldo, kebutuhan minimum, cara
+     * menambah kredit) sudah disusun `InsufficientCredits`.
+     */
+    private function billingBlocked(Request $request, InsufficientCredits $e): \Webman\Http\Response
+    {
+        if ($request->expectsJson()) {
+            return json(['code' => 402, 'error' => $e->getMessage()])->withStatus(402);
+        }
+
+        flash_set('error', $e->getMessage());
+
+        return redirect('/credits');
+    }
+
+    /**
+     * Apakah user tunduk pada plafon & basis limit billing (member login)?
+     * Admin gratis dan user null (tanpa konteks login) dikecualikan — konsisten
+     * dengan aturan lama `is_admin()`.
+     */
+    private function isBillingMember(?array $user): bool
+    {
+        return $user !== null && ($user['role'] ?? '') !== UserStore::ROLE_ADMIN;
+    }
+
+    /**
+     * Basis limit default untuk setiap service (anti-lubang harga): app milik
+     * member **selalu** punya limit nyata sehingga harga = limit yang ditegakkan
+     * (bukan "tanpa limit"). Dipakai saat member tidak mengirim limit (mis.
+     * deploy dari template).
+     *
+     * @param array<int,string> $services
+     * @return array<string,array{cpus:float,memory_mb:int}>
+     */
+    private function defaultLimitsFor(array $services): array
+    {
+        $cpus = (float) config('deploy.billing_default_cpus', 0.5);
+        $memoryMb = (int) config('deploy.billing_default_memory_mb', 512);
+
+        $limits = [];
+        foreach ($services as $service) {
+            $service = trim((string) $service);
+            if ($service === '') {
+                continue;
+            }
+            $limits[$service] = ['cpus' => $cpus, 'memory_mb' => $memoryMb];
+        }
+
+        return $limits;
+    }
+
+    /**
+     * Konteks billing **baca-saja** untuk view create/confirm/template
+     * (kartu "Batas Sumber Daya" + estimasi biaya kredit).
+     *
+     * PENTING: method ini **tidak menegakkan** apa pun — penegakan tetap
+     * `billingAssertCanCreate()`/`BillingGate` + `Pricing::assertWithinCaps()`.
+     * Angka di view hanya lapisan bantuan; server tetap sumber kebenaran.
+     *
+     * `$user` diberikan pemanggil (tidak membaca `current_user()` di sini) agar
+     * mudah diuji tanpa session. `$accounts`/`$gate` hanya untuk pengujian.
+     *
+     * @param array<int|string,mixed> $limits limit efektif yang dipakai menghitung `required`
+     * @return array{enabled:bool,canManage:bool,member:bool,caps:array{cpus:float,memory_mb:int},rates:array<string,float>,defaults:array{cpus:float,memory_mb:int},balance:float,balance_text:string,required:float,required_text:string,estimate_hourly:float,estimate_hourly_text:string,estimate_month:float,estimate_month_text:string,sufficient:bool,days:int,topup_enabled:bool}
+     */
+    private function billingContext(
+        array $limits,
+        ?array $user,
+        ?CreditAccount $accounts = null,
+        ?BillingGate $gate = null
+    ): array {
+        $enabled = (bool) config('deploy.billing_enabled', true);
+        $member = $this->isBillingMember($user);
+        $days = (int) config('deploy.billing_min_deposit_days', 30);
+        $rates = Pricing::rates();
+
+        $caps = [
+            'cpus' => (float) config('deploy.billing_max_cpus', 4.0),
+            'memory_mb' => (int) config('deploy.billing_max_memory_mb', 8192),
+        ];
+        $defaults = [
+            'cpus' => (float) config('deploy.billing_default_cpus', 0.5),
+            'memory_mb' => (int) config('deploy.billing_default_memory_mb', 512),
+        ];
+
+        $balance = 0.0;
+        $required = 0.0;
+        if ($enabled && $member) {
+            $gate ??= new BillingGate($accounts, null);
+            $required = $gate->requiredFor($limits);
+            $userId = (string) ($user['id'] ?? '');
+            if ($userId !== '') {
+                $balance = ($accounts ?? new CreditAccount())->balance($userId);
+            }
+        }
+
+        $hourly = $enabled && $member ? Pricing::hourlyCredits($limits, $rates) : 0.0;
+        $month = $enabled && $member ? Pricing::estimate($limits, $rates, $days) : 0.0;
+
+        return [
+            'enabled' => $enabled,
+            'canManage' => $user !== null,
+            'member' => $member,
+            'caps' => $caps,
+            'rates' => $rates,
+            'defaults' => $defaults,
+            'balance' => $balance,
+            'balance_text' => Pricing::format($balance),
+            'required' => $required,
+            'required_text' => Pricing::format($required),
+            'estimate_hourly' => $hourly,
+            'estimate_hourly_text' => Pricing::format($hourly),
+            'estimate_month' => $month,
+            'estimate_month_text' => Pricing::format($month),
+            'sufficient' => $balance >= $required,
+            'days' => $days,
+            'topup_enabled' => (bool) config('deploy.billing_topup_enabled', false),
+        ];
+    }
+
+    /**
+     * Estimasi kredit **baca-saja** untuk tab "Sumber Daya" di halaman detail —
+     * dihitung dari `ResourceLimits::of($app)` (satu sumber aturan limit).
+     *
+     * @param array<int|string,mixed> $limits
+     * @return array{enabled:bool,applies:bool,estimate_hourly:float,estimate_month:float,days:int,hourly_text:string,month_text:string,format:array{hourly:string,month:string}}
+     */
+    private function billingEstimateFor(array $limits, ?array $user): array
+    {
+        $enabled = (bool) config('deploy.billing_enabled', true);
+        $days = (int) config('deploy.billing_min_deposit_days', 30);
+        $rates = Pricing::rates();
+        $hourly = Pricing::hourlyCredits($limits, $rates);
+        $month = Pricing::estimate($limits, $rates, $days);
+
+        return [
+            'enabled' => $enabled,
+            'applies' => $this->isBillingMember($user),
+            'estimate_hourly' => $hourly,
+            'estimate_month' => $month,
+            'days' => $days,
+            'hourly_text' => Pricing::format($hourly),
+            'month_text' => Pricing::format($month),
+            // Nilai kredit yang sudah diformat (2 desimal) untuk tampilan read-only.
+            'format' => [
+                'hourly' => Pricing::format($hourly),
+                'month' => Pricing::format($month),
+            ],
+        ];
     }
 
     /**

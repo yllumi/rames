@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\AppAccessDenied;
 use app\library\Nginx\NginxReloader;
 use app\library\Nginx\NginxStatusReader;
 use app\library\Update\RepoInfo;
@@ -23,11 +24,29 @@ class NginxController
 {
     /**
      * GET /nginx — status reload Nginx host terakhir + tombol Reload + panel update.
+     *
+     * **Admin-only** (penolakan **404**, bukan 403 — konsisten dengan halaman
+     * operasional host lain): halaman ini berisi operasi host (Nginx global) dan
+     * panel self-update dashboard. Menu "Config" juga disembunyikan dari member;
+     * namun penyembunyian UI **bukan** pengaman — pemeriksaan di sini yang menolak.
      */
     public function index(Request $request)
     {
+        if (!$this->isAdmin()) {
+            throw new AppAccessDenied('nginx');
+        }
+
         $status = (new NginxStatusReader((string) config('deploy.nginx_reload_status_file')))->lastReload();
         return view('nginx/index', ['status' => $status, 'update' => $this->updatePanel()]);
+    }
+
+    /**
+     * Seam pengujian (pola `CreditController`): produksi memakai helper global
+     * `is_admin()` yang membaca user session.
+     */
+    protected function isAdmin(): bool
+    {
+        return is_admin();
     }
 
     /**
