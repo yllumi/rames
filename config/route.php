@@ -155,6 +155,12 @@ Route::post('/backups/schedule', [BackupController::class, 'setScheduled']);
 Route::get('/api/backups/archive/snapshots', [BackupController::class, 'archivedSnapshots']);
 Route::post('/backups/archive/restore', [BackupController::class, 'restoreArchived']);
 Route::get('/backups/archive/sql', [BackupController::class, 'downloadArchiveSql']);
+// Database dashboard (SQLite) — snapshot/unduh/restore DB dashboard sendiri
+// (admin-only, 404 untuk non-admin). Bukan bagian restic/S3.
+Route::post('/backups/db/run', [BackupController::class, 'dbRun']);
+Route::post('/backups/db/prune', [BackupController::class, 'dbPrune']);
+Route::post('/backups/db/restore', [BackupController::class, 'dbRestore']);
+Route::get('/backups/db/download', [BackupController::class, 'dbDownload']);
 
 // Network Docker (lihat, buat, hubungkan/putuskan container, hapus)
 Route::get('/networks', [NetworkController::class, 'index']);

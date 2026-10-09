@@ -14,6 +14,7 @@ use app\library\Backup\VolumeRestoreService;
 use app\library\Backup\VolumeStateGuard;
 use app\library\Docker\DockerClient;
 use app\library\Storage\AppStore;
+use app\library\Storage\DbBackup;
 use app\library\Support\Markdown;
 use support\Request;
 use Webman\Http\Response;
@@ -45,16 +46,24 @@ use Webman\Http\Response;
  */
 class BackupController
 {
+    /** Teks konfirmasi restore DB SQLite (kartu "Database dashboard"). */
+    private const DB_RESTORE_CONFIRM = 'RESTORE';
+
     /**
      * Halaman /backups. Data volume diambil via AJAX (`status()`) agar halaman
      * tidak menunggu Engine/restic.
      */
     public function index(Request $request)
     {
+        $isAdmin = $this->isAdmin();
+
         return view('backup/index', [
             'enabled' => (bool) config('deploy.volume_backup_enabled', true),
             'policy' => (string) config('deploy.volume_backup_snapshot_policy', 'stop'),
-            'isAdmin' => is_admin(),
+            'isAdmin' => $isAdmin,
+            // Kartu "Database dashboard (SQLite)" — admin-only (data infra);
+            // non-admin menerima null sehingga kartu tidak dirender.
+            'db' => $isAdmin ? $this->dbDashboard() : null,
         ]);
     }
 
@@ -458,6 +467,195 @@ class BackupController
     }
 
     // ==================================================================
+    // Database dashboard (SQLite) — kartu & aksi di halaman /backups
+    //
+    // Semua endpoint admin-only (pola 404, bukan 403). Controller hanya
+    // mediator: seluruh logika ada di `DbBackup` (snapshot/retensi/restore).
+    // Aksi memakai POST + flash lalu redirect kembali ke `#db-backup`.
+    // ==================================================================
+
+    /**
+     * Buat snapshot DB dashboard sekarang (manual).
+     */
+    public function dbRun(Request $request)
+    {
+        if (!$this->isAdmin()) {
+            return $this->notFound();
+        }
+
+        try {
+            $result = (new DbBackup())->run('manual');
+        } catch (\Throwable $e) {
+            $this->flash('error', 'Gagal membuat snapshot database: ' . $e->getMessage());
+
+            return redirect('/backups#db-backup');
+        }
+
+        if (!empty($result['skipped'])) {
+            // Busy bukan kegagalan — beri tahu, jangan tampilkan sebagai error.
+            $this->flash('info', 'Snapshot dilewati: backup lain sedang berjalan (busy). Coba lagi sebentar lagi.');
+        } else {
+            $this->flash('success', 'Snapshot database dibuat: ' . (string) ($result['file'] ?? ''));
+        }
+
+        return redirect('/backups#db-backup');
+    }
+
+    /**
+     * Jalankan retensi (prune) snapshot DB dashboard sekarang.
+     */
+    public function dbPrune(Request $request)
+    {
+        if (!$this->isAdmin()) {
+            return $this->notFound();
+        }
+
+        try {
+            $result = (new DbBackup())->prune();
+        } catch (\Throwable $e) {
+            $this->flash('error', 'Gagal menjalankan prune: ' . $e->getMessage());
+
+            return redirect('/backups#db-backup');
+        }
+
+        if (!empty($result['skipped'])) {
+            $this->flash('info', 'Prune dilewati: backup lain sedang berjalan (busy).');
+        } else {
+            $this->flash('success', sprintf(
+                'Prune selesai — %d snapshot dihapus, %d dipertahankan.',
+                (int) ($result['removed'] ?? 0),
+                (int) ($result['kept'] ?? 0)
+            ));
+        }
+
+        return redirect('/backups#db-backup');
+    }
+
+    /**
+     * Pulihkan DB dashboard dari snapshot terpilih.
+     *
+     * **Wajib** konfirmasi teks `RESTORE` + nama snapshot valid. Setelah sukses,
+     * worker **tidak** di-reload di sini (proses ini sendiri memakai DB) — pesan
+     * flash meminta operator menjalankan `php start.php reload` manual.
+     */
+    public function dbRestore(Request $request)
+    {
+        if (!$this->isAdmin()) {
+            return $this->notFound();
+        }
+
+        $confirm = trim((string) $request->post('confirm', ''));
+        if ($confirm !== self::DB_RESTORE_CONFIRM) {
+            $this->flash('error', 'Konfirmasi restore tidak cocok — ketik RESTORE untuk melanjutkan.');
+
+            return redirect('/backups#db-backup');
+        }
+
+        $file = trim((string) $request->post('file', ''));
+
+        try {
+            $result = (new DbBackup())->restore($file);
+        } catch (\Throwable $e) {
+            $this->flash('error', 'Restore gagal: ' . $e->getMessage());
+
+            return redirect('/backups#db-backup');
+        }
+
+        $this->flash('success', 'Database dipulihkan dari ' . (string) ($result['file'] ?? '') . '. '
+            . 'Jalankan `php start.php reload` agar worker memakai DB baru.');
+
+        return redirect('/backups#db-backup');
+    }
+
+    /**
+     * Unduh satu snapshot DB dashboard (`Content-Disposition: attachment`).
+     *
+     * Nama berkas divalidasi `DbBackup::download()` (basename `*.sqlite`, di
+     * dalam direktori backup) sehingga path traversal ditolak **sebelum**
+     * berkas disentuh. Streaming via `Response::download()` (sendfile) — isi
+     * tidak dimuat ke memori. Nama tidak sah ⇒ 404 (bukan 403/422) agar
+     * keberadaan berkas tidak bocor.
+     */
+    public function dbDownload(Request $request)
+    {
+        if (!$this->isAdmin()) {
+            return $this->notFound();
+        }
+
+        $file = trim((string) $request->get('file', ''));
+
+        try {
+            $path = (new DbBackup())->download($file);
+        } catch (\Throwable $e) {
+            return $this->notFound();
+        }
+
+        return (new Response(200, [
+            'Content-Type' => 'application/octet-stream',
+            'X-Content-Type-Options' => 'nosniff',
+        ]))->download($path, basename($path));
+    }
+
+    /**
+     * Data kartu "Database dashboard (SQLite)" untuk `index()` (admin-only).
+     *
+     * Fail-safe: `DbBackup` tak dapat dibangun (mis. `deploy.sqlite_file` belum
+     * diset) atau daftar snapshot tak terbaca tidak boleh menggagalkan halaman —
+     * kembalikan `available=false` + pesan error. Tanpa logika bisnis: hanya
+     * membaca data & meneruskan angka mentah; format tampilan dihitung view.
+     *
+     * @return array<string,mixed>
+     */
+    private function dbDashboard(): array
+    {
+        try {
+            $backup = new DbBackup();
+        } catch (\Throwable $e) {
+            return ['available' => false, 'error' => $e->getMessage(), 'snapshots' => [], 'state' => [], 'keep' => []];
+        }
+
+        $snapshots = [];
+        $state = [];
+        $available = true;
+        $error = null;
+
+        try {
+            $snapshots = $backup->list();
+            $state = $backup->state();
+        } catch (\Throwable $e) {
+            $available = false;
+            $error = $e->getMessage();
+        }
+
+        $totalBytes = 0;
+        foreach ($snapshots as $row) {
+            $totalBytes += (int) ($row['bytes'] ?? 0);
+        }
+
+        $dbFile = $backup->dbFile();
+
+        return [
+            'available' => $available,
+            'error' => $error,
+            'path' => $dbFile,
+            'db_bytes' => is_file($dbFile) ? (int) (filesize($dbFile) ?: 0) : 0,
+            'snapshots' => $snapshots,
+            'count' => count($snapshots),
+            'total_bytes' => $totalBytes,
+            'latest' => $snapshots[0] ?? null,
+            'enabled' => (bool) config('deploy.db_backup_enabled', true),
+            'hour' => (int) config('deploy.db_backup_hour', 3),
+            'due' => $available && $backup->isDue(),
+            'keep' => [
+                'daily' => (int) config('deploy.db_backup_keep_daily', 7),
+                'weekly' => (int) config('deploy.db_backup_keep_weekly', 4),
+                'monthly' => (int) config('deploy.db_backup_keep_monthly', 3),
+            ],
+            'state' => $state,
+        ];
+    }
+
+    // ==================================================================
     // Helper
     // ==================================================================
 
@@ -661,6 +859,25 @@ class BackupController
         } catch (\Throwable $e) {
             return false;
         }
+    }
+
+    /**
+     * Apakah user login admin global (seam uji; default helper `is_admin()`).
+     *
+     * Ditulis agar mediator dapat diuji tanpa memuat `app/functions.php`
+     * (pola `CreditController`) — perilaku produksi identik dengan `is_admin()`.
+     */
+    protected function isAdmin(): bool
+    {
+        return is_admin();
+    }
+
+    /**
+     * Set pesan flash (seam uji; default memakai session).
+     */
+    protected function flash(string $type, string $message): void
+    {
+        flash_set($type, $message);
     }
 
     private function notFound()

@@ -11,6 +11,7 @@ use app\library\Docker\DockerClient;
 use app\library\Docker\DockerExec;
 use app\library\Storage\AppStore;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SqliteFixture;
 use RuntimeException;
 
 /**
@@ -67,14 +68,11 @@ class VolumeStateGuardDumpabilityTest extends TestCase
     {
         $this->tmp = sys_get_temp_dir() . '/volguarddump_' . bin2hex(random_bytes(4));
         mkdir($this->tmp . '/apps', 0777, true);
-        file_put_contents(
-            $this->tmp . '/apps.json',
-            json_encode([[
-                'id' => 'app1',
-                'name' => 'myblog',
-                'compose_files' => ['docker-compose.yml'],
-            ]], JSON_PRETTY_PRINT)
-        );
+        SqliteFixture::apps($this->tmp . '/apps.sqlite', [[
+            'id' => 'app1',
+            'name' => 'myblog',
+            'compose_files' => ['docker-compose.yml'],
+        ]]);
     }
 
     protected function tearDown(): void
@@ -91,7 +89,7 @@ class VolumeStateGuardDumpabilityTest extends TestCase
         return new VolumeStateGuard(
             new DumpableFakeDockerClient($containers, $inspects, $throwOnInspect),
             null,
-            new AppStore($this->tmp . '/apps.json'),
+            new AppStore($this->tmp . '/apps.sqlite'),
             $this->tmp . '/apps',
             new EnvManager($this->tmp . '/env'),
             new DbContainerDetector(new DumpableDetectorDockerClient(), $exec),

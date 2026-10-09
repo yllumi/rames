@@ -17,6 +17,7 @@ use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
 use RuntimeException;
+use Tests\Support\SqliteFixture;
 use Webman\Config;
 
 /**
@@ -45,14 +46,15 @@ class TopUpServiceTest extends TestCase
         $this->configState = $this->snapshotConfigState();
         $this->useConfig([]);
 
-        file_put_contents($this->tmp . '/auth.json', (string) json_encode([
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::users($db, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => '', 'email' => 'admin@example.com'],
             ['id' => 'u2', 'username' => 'budi', 'password_hash' => 'x', 'role' => 'member', 'created_at' => '', 'email' => 'budi@example.com'],
             ['id' => 'u3', 'username' => 'nomail', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
-        ]));
+        ]);
 
-        $this->billing = new BillingStore($this->tmp . '/billing.json');
-        $this->users = new UserStore($this->tmp . '/auth.json');
+        $this->billing = new BillingStore($db);
+        $this->users = new UserStore($db);
     }
 
     protected function tearDown(): void
@@ -86,6 +88,8 @@ class TopUpServiceTest extends TestCase
         file_put_contents(
             $this->tmp . '/config/deploy.php',
             '<?php return ' . var_export(array_merge([
+                'sqlite_file' => $this->tmp . '/rames.sqlite',
+                'database_path' => $this->tmp,
                 'billing_topup_idr_per_credit' => 10.0,
                 'billing_topup_min_idr' => 10000,
                 'billing_topup_max_idr' => 5000000,

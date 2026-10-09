@@ -16,6 +16,7 @@ use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use SplFileInfo;
+use Tests\Support\SqliteFixture;
 
 /**
  * Higienitas kredensial Duitku: `billing_duitku_api_key` **tidak pernah** bocor ke
@@ -37,12 +38,13 @@ class DuitkuCredentialHygieneTest extends TestCase
         $this->tmp = sys_get_temp_dir() . '/duitkuhygiene_' . getmypid() . '_' . bin2hex(random_bytes(4));
         mkdir($this->tmp . '/runtime', 0777, true);
 
-        file_put_contents($this->tmp . '/auth.json', (string) json_encode([
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::users($db, [
             ['id' => 'u2', 'username' => 'budi', 'password_hash' => 'x', 'role' => 'member', 'created_at' => '', 'email' => 'budi@example.com'],
-        ]));
+        ]);
 
-        $this->billing = new BillingStore($this->tmp . '/billing.json');
-        $this->users = new UserStore($this->tmp . '/auth.json');
+        $this->billing = new BillingStore($db);
+        $this->users = new UserStore($db);
     }
 
     protected function tearDown(): void
@@ -169,8 +171,8 @@ class DuitkuCredentialHygieneTest extends TestCase
         $this->assertNotNull($order);
         $this->assertStringNotContainsString(self::API_KEY, (string) json_encode($order));
 
-        // Berkas state + cache ada, tetapi tanpa rahasia.
-        $this->assertFileExists($this->tmp . '/billing.json');
+        // Store state (SQLite) + cache ada, tetapi tanpa rahasia.
+        $this->assertFileExists($this->tmp . '/rames.sqlite');
         $this->assertFileExists($this->tmp . '/runtime/duitku-methods.json');
         $this->assertKeyAbsentFromTree($this->tmp);
     }

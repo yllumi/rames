@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 namespace app\library\Backup;
 
-use app\library\Storage\JsonStore;
+use app\library\Storage\SchemaMigrations;
+use app\library\Storage\SqliteStore;
 
 /**
  * Riwayat volume yang **pernah ter-backup** (PLAN/SPECS §8h — restore volume
@@ -14,19 +15,17 @@ use app\library\Storage\JsonStore;
  * app, dan strategi**-nya. `BackupSelection` menyimpan flag jadwal; kelas ini
  * menyimpan riwayat permanen tersebut.
  *
- * Berbagi berkas dengan seleksi (`database/backup.json`, gitignored) agar tidak
- * menambah skema `apps.json` — tetapi **hanya** menyentuh kunci `registry`,
- * sedangkan `BackupSelection` hanya menyentuh `volumes`. Keduanya memakai
- * `JsonStore` (atomic + `flock` + backup `.bak`) sehingga mutasi keduanya tidak
- * saling merusak.
+ * Berbagi store `backup` dengan seleksi (koleksi `volumes` vs `registry`) agar
+ * tidak menambah skema store `apps` — tetapi **hanya** menyentuh koleksi
+ * `registry`, sedangkan `BackupSelection` hanya menyentuh `volumes`. Keduanya
+ * memakai `SqliteStore` (satu transaksi) sehingga mutasi keduanya tidak saling
+ * merusak.
  *
- * Bentuk berkas:
- *   {"version":1,
- *    "volumes":{…milik BackupSelection…},
- *    "registry":{"<nama>":{
+ * Bentuk entri registry:
+ *   {"<nama>":{
  *        "project":string,"app_id":?string,"app_name":?string,"strategy":string,
  *        "first_backed_up_at":string,"last_backed_up_at":string,
- *        "last_snapshot":?string,"snapshots":int,"bytes":int}}}
+ *        "last_snapshot":?string,"snapshots":int,"bytes":int}}
  *
  * `first_backed_up_at` dipertahankan sekali (lihat `upsertMany()`), `snapshots`
  * & prune dikelola `syncCounts()` (keputusan 3b: entri dihapus begitu snapshot
@@ -39,19 +38,24 @@ use app\library\Storage\JsonStore;
  */
 final class BackupRegistry
 {
-    private JsonStore $store;
+    private SqliteStore $store;
 
     /**
-     * @param string|null $path path berkas registry; null = `database/backup.json`
-     *                          (path default yang sama dengan `BackupSelection`)
+     * @param string|null $path path berkas .sqlite store `backup`; null =
+     *                          {@see self::defaultPath()} (path default yang
+     *                          sama dengan `BackupSelection`)
      */
     public function __construct(?string $path = null)
     {
-        $this->store = new JsonStore($path ?? self::defaultPath());
+        $this->store = new SqliteStore(
+            'backup',
+            SchemaMigrations::storeDefinitions()['backup'],
+            $path ?? self::defaultPath()
+        );
     }
 
     /**
-     * Path default — **sama persis** dengan seleksi (satu berkas, dua kunci).
+     * Path default — **sama persis** dengan seleksi (satu store, dua koleksi).
      */
     public static function defaultPath(): string
     {
@@ -84,7 +88,7 @@ final class BackupRegistry
     }
 
     /**
-     * Catat/segarkan sekumpulan volume dalam **satu** `JsonStore::update`.
+     * Catat/segarkan sekumpulan volume dalam **satu** `SqliteStore::update`.
      *
      * `first_backed_up_at` dipertahankan bila entri sudah ada; `last_backed_up_at`
      * selalu disegarkan (kecuali pemanggil menyuplai nilai eksplisit). Nilai yang
@@ -150,8 +154,8 @@ final class BackupRegistry
      * `{project, app_id, app_name, strategy, snapshots, first_backed_up_at,
      * last_backed_up_at, last_snapshot: null, bytes: 0}`. Entri yang sudah ada
      * **tidak** ditimpa ⇒ idempotent. Semua nama ditulis dalam **satu**
-     * `JsonStore::update`; hanya kunci `registry` yang disentuh (kunci `volumes`
-     * milik seleksi dibiarkan utuh). Nama invalid **dibuang** (bukan fail-fast)
+     * `SqliteStore::update`; hanya koleksi `registry` yang disentuh (koleksi
+     * `volumes` milik seleksi dibiarkan utuh). Nama invalid **dibuang** (bukan fail-fast)
      * agar satu baris rusak tidak membatalkan backfill baris lain.
      *
      * @param array<string,array<string,mixed>> $entries kunci = nama volume;
@@ -213,7 +217,7 @@ final class BackupRegistry
 
     /**
      * Sinkronkan jumlah snapshot live + **prune** entri yang snapshot-nya habis
-     * (keputusan 3b) dalam **satu** `JsonStore::update`.
+     * (keputusan 3b) dalam **satu** `SqliteStore::update`.
      *
      * Entri yang namanya tidak ada di `$countsByName` dianggap snapshot-nya `0`
      * → dibuang. Karena itu **hanya** prune bila jumlah snapshot benar-benar

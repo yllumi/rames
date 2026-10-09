@@ -12,6 +12,7 @@ use app\library\Billing\InsufficientCredits;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use support\Request;
+use Tests\Support\SqliteFixture;
 
 /**
  * Test gerbang kredit di AppController — helper mediator:
@@ -37,14 +38,15 @@ class AppControllerBillingGateTest extends TestCase
         $this->tmp = sys_get_temp_dir() . '/rames-appctrl-gate-' . bin2hex(random_bytes(6));
         mkdir($this->tmp, 0777, true);
 
-        file_put_contents($this->tmp . '/auth.json', json_encode([
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::users($db, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
-        ]));
+        ]);
 
         $this->account = new CreditAccount(
-            new BillingStore($this->tmp . '/billing.json'),
-            new UserStore($this->tmp . '/auth.json')
+            new BillingStore($db),
+            new UserStore($db)
         );
     }
 
@@ -252,7 +254,7 @@ class AppControllerBillingGateTest extends TestCase
      */
     public function testBillingPayerPrefersOwnerOverActor(): void
     {
-        $users = new UserStore($this->tmp . '/auth.json');
+        $users = new UserStore($this->tmp . '/rames.sqlite');
 
         $payer = $this->invoke('billingPayerFor', [['owner_id' => 'u2'], self::ADMIN, $users]);
         self::assertSame('u2', $payer['id'] ?? null, 'aktor bukan owner → owner yang dinilai');
@@ -296,7 +298,7 @@ class AppControllerBillingGateTest extends TestCase
     public function testMemberActorWithBalanceCanOperateAdminOwnedApp(): void
     {
         $app = ['id' => 'a1', 'owner_id' => 'u1', 'limits' => []];
-        $users = new UserStore($this->tmp . '/auth.json');
+        $users = new UserStore($this->tmp . '/rames.sqlite');
         $this->account->deposit('u2', 100000.0, 'u1', 'topup');
 
         $this->invoke('billingAssertCanStart', [$app, self::MEMBER, $this->gate(), $users]);
@@ -311,7 +313,7 @@ class AppControllerBillingGateTest extends TestCase
     public function testOwnerBalanceIsRequiredForAdminActorToo(): void
     {
         $app = ['id' => 'a1', 'owner_id' => 'u2', 'limits' => []];
-        $users = new UserStore($this->tmp . '/auth.json');
+        $users = new UserStore($this->tmp . '/rames.sqlite');
 
         $this->expectException(InsufficientCredits::class);
         $this->invoke('billingAssertCanStart', [$app, self::ADMIN, $this->gate(), $users]);

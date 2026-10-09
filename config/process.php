@@ -79,4 +79,14 @@ return [
         'reloadable' => true,
         'count' => 1,
     ],
+    // Backup berkala basis data SQLite (snapshot VACUUM INTO + retensi).
+    // Tick tiap 300 dtk; hanya jalan bila `DB_BACKUP_ENABLED=true` dan jadwal
+    // harian `DB_BACKUP_HOUR` belum terlewat untuk hari ini. Semua error
+    // ditangkap proses (tidak boleh mematikan worker). CATATAN: proses BARU →
+    // butuh restart (bukan reload) saat pertama kali di-deploy.
+    'db-backup' => [
+        'handler' => app\process\DbBackupProcess::class,
+        'reloadable' => true,
+        'count' => 1,
+    ],
 ];

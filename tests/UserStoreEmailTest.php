@@ -7,12 +7,14 @@ use app\library\Auth\UserStore;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Tests\Support\SqliteFixture;
 
 /**
  * Test field `email` opsional pada UserStore (prasyarat top-up Duitku, SPECS
  * §7.12) — tanpa migrasi: entri lama tanpa `email` tetap valid.
  *
- * Semua I/O memakai berkas temp unik; `database/auth.json` nyata tidak disentuh.
+ * Semua I/O memakai berkas basis data temp unik; data runtime nyata tidak
+ * disentuh.
  */
 class UserStoreEmailTest extends TestCase
 {
@@ -23,13 +25,13 @@ class UserStoreEmailTest extends TestCase
     {
         $this->tmp = sys_get_temp_dir() . '/rames-user-email-' . bin2hex(random_bytes(6));
         mkdir($this->tmp, 0777, true);
-        $this->path = $this->tmp . '/auth.json';
+        $this->path = $this->tmp . '/rames.sqlite';
 
         // Skema lama: TANPA field email (harus tetap valid).
-        file_put_contents($this->path, json_encode([
+        SqliteFixture::users($this->path, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
-        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        ]);
     }
 
     protected function tearDown(): void
@@ -45,9 +47,14 @@ class UserStoreEmailTest extends TestCase
         return new UserStore($this->path);
     }
 
+    /**
+     * Isi store `auth` (list user, sama seperti bentuk `apps.json`/`auth.json` lama).
+     *
+     * @return array<int,array>
+     */
     private function raw(): array
     {
-        return json_decode((string) file_get_contents($this->path), true);
+        return SqliteFixture::readAll($this->path, 'auth');
     }
 
     public function testLegacyUserWithoutEmailIsValid(): void

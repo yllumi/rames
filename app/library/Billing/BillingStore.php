@@ -3,19 +3,19 @@ declare(strict_types=1);
 
 namespace app\library\Billing;
 
-use app\library\Storage\JsonStore;
+use app\library\Storage\SchemaMigrations;
+use app\library\Storage\SqliteStore;
 
 /**
- * Penyimpanan kredit/billing (`database/billing.json`) — berkas TERPISAH dari
- * `apps.json`/`auth.json` supaya skema keduanya tidak berubah (tanpa migrasi
- * app lama). Semua mutasi lewat `JsonStore::update()` (atomik + flock + .bak).
+ * Penyimpanan kredit/billing — store logis `billing` pada basis data SQLite
+ * (`config('deploy.sqlite_file')`, dahulu `database/billing.json`). Semua mutasi
+ * lewat satu transaksi (`SqliteStore::update()` → `BEGIN IMMEDIATE`) sehingga
+ * penulisan lintas tabel (order + saldo + ledger) tetap atomik.
  *
- * Bentuk data:
- *   {version, users, usage, orders}
- *
- * Berkas boleh belum ada: pembacaan mengembalikan struktur default, dan berkas
- * baru dibuat saat penulisan pertama. `$path` di konstruktor (pola
- * `UserStore`/`BackupSelection`) supaya bisa di-override saat tes.
+ * Bentuk data yang dibaca pemakai tetap `{version, users, usage, orders}`
+ * (`read()` menambahkan `version` sendiri karena `SqliteStore` hanya
+ * menyimpan koleksi). `$path` di konstruktor (pola `UserStore`/
+ * `BackupSelection`) = berkas .sqlite, supaya bisa di-override saat tes.
  *
  * Normalisasi dijalankan pada setiap baca & tulis: memastikan keempat kunci
  * ada, saldo dibulatkan 2 desimal, dan ledger dipangkas ke
@@ -23,11 +23,14 @@ use app\library\Storage\JsonStore;
  */
 class BillingStore
 {
-    private JsonStore $store;
+    /** Versi skema berkas billing (dipertahankan untuk kompatibilitas bentuk lama). */
+    private const VERSION = 1;
+
+    private SqliteStore $store;
 
     public function __construct(?string $path = null)
     {
-        $this->store = new JsonStore($path ?? (config('deploy.database_path') . '/billing.json'));
+        $this->store = new SqliteStore('billing', SchemaMigrations::storeDefinitions()['billing'], $path);
     }
 
     public function path(): string
@@ -36,11 +39,21 @@ class BillingStore
     }
 
     /**
+     * Isi store lengkap dalam bentuk kanonik `{version, users, usage, orders}`.
+     *
+     * @return array{version:int,users:array<string,array>,usage:array<string,array>,orders:array<string,array>}
+     */
+    public function read(): array
+    {
+        return $this->normalize($this->store->read());
+    }
+
+    /**
      * @return array<string,array>
      */
     public function users(): array
     {
-        return $this->normalize($this->store->read())['users'];
+        return $this->read()['users'];
     }
 
     /**
@@ -48,7 +61,7 @@ class BillingStore
      */
     public function usage(): array
     {
-        return $this->normalize($this->store->read())['usage'];
+        return $this->read()['usage'];
     }
 
     /**
@@ -56,13 +69,14 @@ class BillingStore
      */
     public function orders(): array
     {
-        return $this->normalize($this->store->read())['orders'];
+        return $this->read()['orders'];
     }
 
     /**
-     * Update atomik seluruh berkas. Mutator menerima `array &$data` (struktur
-     * lengkap billing.json yang sudah dinormalisasi) dan boleh mengubahnya;
-     * normalisasi dijalankan ulang setelah mutator sebelum ditulis.
+     * Update atomik seluruh store. Mutator menerima `array &$data` (struktur
+     * lengkap `{version, users, usage, orders}` yang sudah dinormalisasi) dan
+     * boleh mengubahnya; normalisasi dijalankan ulang setelah mutator sebelum
+     * ditulis. Semua kunci dibaca & ditulis dalam satu transaksi.
      */
     public function update(callable $mutator): void
     {
@@ -123,7 +137,7 @@ class BillingStore
         }
 
         return [
-            'version' => 1,
+            'version' => self::VERSION,
             'users' => $users,
             'usage' => $usage,
             'orders' => $data['orders'],

@@ -12,7 +12,7 @@ use app\library\Storage\AppStore;
  * dipotong dari saldo owner + ditulis ke ledger, lalu baris usage di-reset.
  *
  * **Idempoten**: potongan + reset periode terjadi dalam SATU
- * `JsonStore::update()` sehingga menjalankan dua kali tidak memotong dua kali
+ * `SqliteStore::update()` sehingga menjalankan dua kali tidak memotong dua kali
  * (dan dashboard yang mati tanggal 1 tetap tertagih saat tick pertama hidup).
  *
  * Baris `usage` milik app yang sudah tidak ada di `AppStore` tetap ditagih,

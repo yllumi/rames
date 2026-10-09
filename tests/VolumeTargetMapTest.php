@@ -97,4 +97,58 @@ class VolumeTargetMapTest extends TestCase
         $admin = VolumeTargetMap::filterAccessible($targets, ['tonidata', 'waha'], true);
         $this->assertSame(['gone_data', 'mine_data', 'theirs_data'], VolumeTargetMap::names($admin));
     }
+
+    /**
+     * Volume database dashboard (`rames.role=dashboard-db`) lolos filter label
+     * compose tetapi **bukan** volume app → wajib tidak pernah jadi target
+     * backup/restore/schedule (dengan kebijakan snapshot `stop` + `require_stopped`
+     * ia bisa menghentikan container dashboard, yaitu proses yang menjalankan
+     * backup itu sendiri).
+     */
+    public function testDashboardVolumeIsNeverATarget(): void
+    {
+        $targets = VolumeTargetMap::build([
+            [
+                'Name' => 'rames',
+                'Labels' => [
+                    'com.docker.compose.project' => 'rames',
+                    VolumeTargetMap::DASHBOARD_VOLUME_LABEL_KEY => VolumeTargetMap::DASHBOARD_VOLUME_LABEL_VALUE,
+                ],
+            ],
+            ['Name' => 'tonidata_data', 'Labels' => ['com.docker.compose.project' => 'tonidata']],
+        ], $this->apps());
+
+        $this->assertSame(['tonidata_data'], VolumeTargetMap::names($targets), 'volume app tetap masuk, volume DB dashboard tidak');
+        $this->assertSame('tonidata', $targets[0]['app_name']);
+    }
+
+    /**
+     * Volume dashboard tetap dikecualikan meski project-nya cocok dengan nama
+     * app, dan label `rames.role` dengan nilai lain **tidak** dikecualikan
+     * (filter presisi, bukan cocok-prefiks).
+     */
+    public function testDashboardExclusionIsPrecise(): void
+    {
+        $dashboard = [
+            'Name' => 'rames',
+            'Labels' => [
+                'com.docker.compose.project' => 'tonidata',
+                VolumeTargetMap::DASHBOARD_VOLUME_LABEL_KEY => VolumeTargetMap::DASHBOARD_VOLUME_LABEL_VALUE,
+            ],
+        ];
+        $otherRole = [
+            'Name' => 'lain_data',
+            'Labels' => [
+                'com.docker.compose.project' => 'tonidata',
+                VolumeTargetMap::DASHBOARD_VOLUME_LABEL_KEY => 'volume-app',
+            ],
+        ];
+
+        $this->assertTrue(VolumeTargetMap::isDashboardVolume($dashboard));
+        $this->assertFalse(VolumeTargetMap::isDashboardVolume($otherRole));
+        $this->assertFalse(VolumeTargetMap::isDashboardVolume(['Name' => 'x']), 'tanpa Labels → bukan volume dashboard');
+
+        $targets = VolumeTargetMap::build([$dashboard, $otherRole], $this->apps());
+        $this->assertSame(['lain_data'], VolumeTargetMap::names($targets));
+    }
 }

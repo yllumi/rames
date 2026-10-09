@@ -11,7 +11,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 
 ## 2. Goals (Phase 1)
 
-- [x] Login dashboard dengan kredensial sederhana (username/password) dari `database/auth.json`
+- [x] Login dashboard dengan kredensial sederhana (username/password) dari store `auth` (SQLite, dahulu `database/auth.json`)
 - [x] User bisa membuat app baru dengan menyuplai URL repo Git yang sudah punya `docker-compose.yml`
 - [x] Sistem clone repo, build & jalankan `docker compose` untuk app tersebut
 - [x] Sistem mendeteksi port yang dipakai di `docker-compose.yml`, mendeteksi konflik dengan app lain, dan memungkinkan user mengedit port host sebelum build
@@ -34,6 +34,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [ ] Rate limiting / proteksi brute-force login (§8f)
 - [ ] Backup otomatis data & config sebelum overwrite (§8g)
 - [x] Backup volume harian ke object storage (S3) via restic — dump logis (DB) & snapshot (non-DB) (§8h)
+- [x] Data domain dashboard (app/user/billing/seleksi+riwayat volume) disimpan di **SQLite** dalam named volume `rames` + **backup berkala** & impor otomatis JSON lama (§8i)
 - [x] File manager container per container app (jelajah, unggah multi-berkas, unduh, edit teks, buat folder, rename, pindah, hapus, ekstrak arsip) — ability `files` = operator+, hanya saat container berjalan (§7.9)
 - [x] Kredit, deposit & penagihan resource (role `member`) — meteran CPU/RAM per jam, tagihan periode otomatis, deposit manual admin + top-up mandiri online via Duitku (§7.12)
 
@@ -53,7 +54,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 | Backend/dashboard | Webman (PHP) | Sesuai stack yang sudah dikuasai user |
 | Container runtime | Docker + Docker Compose | Dieksekusi lewat shell (`proc_open`/`exec`), bukan Docker API SDK, untuk kesederhanaan Phase 1 |
 | Reverse proxy | Nginx (jalan sebagai container dalam compose stack yang sama) | Config di-generate ke direktori yang di-mount, reload via `docker exec nginx nginx -s reload` |
-| Storage data | File JSON (`database/auth.json`, `database/apps.json`) | Bukan RDBMS dulu — cukup untuk skala Phase 1 |
+| Storage data | SQLite (satu berkas `rames.sqlite` di named volume `rames`), dokumen JSON di kolom `data` | Data domain (app/user/billing/seleksi+riwayat volume) dalam transaksi `BEGIN IMMEDIATE`; cache runtime tetap JSON (§8i) |
 | Parsing YAML | Library YAML parser PHP (mis. `symfony/yaml`) | Untuk membaca & menulis ulang `docker-compose.yml` |
 
 ## 5. Arsitektur Phase 1
@@ -110,7 +111,7 @@ Struktur kode disiapkan dengan interface `DeployerInterface` (clone, build, up, 
 ## 6. Autentikasi
 
 ### 6.1 Sumber data
-File: `database/auth.json`
+Store `auth` di basis data SQLite (`config('deploy.sqlite_file')`, tabel `auth_users`) — dahulu `database/auth.json`. Tiap user = satu baris (dokumen JSON di kolom `data`; kolom turunan terindeks: `username`, `role`, `email`); berkas JSON lama diimpor otomatis sekali (§8i.3). Dokumen user berbentuk:
 
 ```json
 [
@@ -134,24 +135,24 @@ File: `database/auth.json`
 - **Role global user** (`role`):
   - `admin` — melihat **semua** app (beserta nama pemiliknya) dan **punya kuasa penuh** ke semua app; satu-satunya yang boleh mengelola user.
   - `member` — hanya melihat app miliknya sendiri dan app yang **dibagikan** kepadanya; app user lain tidak terlihat sama sekali.
-- **Migrasi berkas lama**: `auth.json` tanpa field `role` diperlakukan sebagai user pertama = admin, sisanya member (dibaca saat runtime, tanpa menulis ulang berkas) — instalasi lama tidak pernah kehilangan admin.
-- Halaman **Manage Users** (`/users`) hanya bisa diakses admin: tambah/hapus user, ganti password, ubah role. Menghapus user **mengalihkan seluruh app miliknya ke admin yang menghapus**; admin terakhir tidak bisa dihapus/diturunkan. Perubahan role & penghapusan user **langsung berlaku** pada request berikutnya (session disinkronkan dengan `auth.json` oleh `AuthMiddleware`, bukan hanya saat login).
-- Kepemilikan app diatur terpisah (per app) di `apps.json` — lihat §7.7.
+- **Migrasi dokumen lama**: user tanpa field `role` diperlakukan sebagai user pertama = admin, sisanya member (dibaca saat runtime, tanpa menulis ulang) — instalasi lama tidak pernah kehilangan admin.
+- Halaman **Manage Users** (`/users`) hanya bisa diakses admin: tambah/hapus user, ganti password, ubah role. Menghapus user **mengalihkan seluruh app miliknya ke admin yang menghapus**; admin terakhir tidak bisa dihapus/diturunkan. Perubahan role & penghapusan user **langsung berlaku** pada request berikutnya (session disinkronkan dengan store `auth` oleh `AuthMiddleware`, bukan hanya saat login).
+- Kepemilikan app diatur terpisah (per app) di store `apps` — lihat §7.7.
 
 ### 6.2 Alur
 1. User akses `/login`, isi username & password
-2. Sistem baca `auth.json`, cari entry dengan `username` yang cocok, verifikasi password
+2. Sistem baca store `auth`, cari entry dengan `username` yang cocok, verifikasi password
 3. Jika valid, buat session (Webman session bawaan) yang menyimpan `id`/`username` user tsb
 4. Semua route dashboard selain `/login` dilindungi middleware auth
 5. Logout menghapus session
 
 ### 6.3 Provisioning awal
-Karena belum ada installer resmi di Phase 1, entry pertama di `auth.json` dibuat manual lewat script/console command (mis. `php webman make:admin`) yang generate username/password default dan menuliskannya ke file — dijalankan sekali saat setup. User pertama otomatis berrole **admin**. User tambahan berikutnya dibuat lewat halaman "Manage Users" di dashboard (khusus admin). Command `php webman app:assign-owner` menugaskan app lama yang belum punya owner (§7.7).
+Karena belum ada installer resmi di Phase 1, entry pertama di store `auth` dibuat manual lewat script/console command (mis. `php webman make:admin`) yang generate username/password default dan menuliskannya — dijalankan sekali saat setup. User pertama otomatis berrole **admin**. User tambahan berikutnya dibuat lewat halaman "Manage Users" di dashboard (khusus admin). Command `php webman app:assign-owner` menugaskan app lama yang belum punya owner (§7.7).
 
 ## 7. App Management
 
 ### 7.1 Sumber data
-File: `database/apps.json` — array of app object.
+Store `apps` di basis data SQLite (`config('deploy.sqlite_file')`, tabel `apps_apps`) — dahulu `database/apps.json`. Satu baris = satu app (dokumen JSON di kolom `data`; kolom turunan terindeks: `name`, `owner_id`, `status`, `source`, `subdomain`; urutan via kolom `ord`). Berikut bentuk dokumen app:
 
 ```json
 [
@@ -204,6 +205,8 @@ File: `database/apps.json` — array of app object.
   }
 ]
 ```
+
+> Konvensi: sebutan lama `apps.json` di bagian lain dokumen ini (mis. §7.2, §7.4, §8.2a) merujuk pada store `apps` (SQLite) ini.
 
 Field penting:
 - `name` — slug unik **global** (dipakai sebagai nama project compose, direktori lokal `apps/{name}`, dan subdomain **default** bila `subdomain` kosong, §7.11), sehingga tidak ada dua app dengan nama sama meski pemiliknya berbeda
@@ -837,8 +840,8 @@ flowchart LR
 - Limit CPU/RAM = **dasar harga**; owner/member memilihnya saat create dalam plafon `BILLING_MAX_CPUS`/`BILLING_MAX_MEMORY_MB`; mengubahnya setelah app jadi tetap **admin-only** (ability `limits`, §7.6b).
 - Tarif **simpel & terpusat** (`config/deploy.php` + `.env`) — tanpa biaya disk/bandwidth/tier, tanpa hardcode di view.
 
-**Data model — `database/billing.json` (baru, gitignored; berkas TERPISAH)**
-Mengikuti preseden `database/backup.json` (§8h): berkas sendiri agar **skema `apps.json` tidak berubah** (tanpa migrasi app lama). Semua mutasi lewat `JsonStore::update()` (`flock` + `.bak` + atomik), diakses `BillingStore`.
+**Data model — store `billing` di basis data SQLite (`billing_users`/`billing_usage`/`billing_orders`, §8i)**
+Dahulu `database/billing.json` (berkas **terpisah**). Semua mutasi lewat **satu transaksi `BEGIN IMMEDIATE`** (`SqliteStore::update()`), diakses `BillingStore`; bentuk kanonik `{version, users, usage, orders}` dipertahankan (`read()` menambahkan `version`).
 
 ```json
 { "version": 1,
@@ -872,10 +875,10 @@ Mengikuti preseden `database/backup.json` (§8h): berkas sendiri agar **skema `a
 - Resolusi = `BILLING_SAMPLE_SECONDS` (default 300 s; `0` = tanpa timer). `period` = `YYYY-MM` zona `app.default_timezone` (`Asia/Jakarta`) — satu sumber `BillingPeriod`.
 
 **Penagihan** (`Invoicer`)
-- Dijalankan `BillingRunner::tick()` **hanya pada/atau setelah tanggal `BILLING_INVOICE_DAY`** (`invoiceDayReached()` memakai `BillingPeriod::dayOfMonth()`; nilai **dijepit 1–28**). Baris `usage` dengan `period < bulan berjalan` ditagih: saldo owner dipotong `credits_pending` (boleh negatif) + entri ledger `charge` (rincian per app: `hours`, `cpus`, `memory_mb`, `hourly`, `amount`), lalu `period` direset & akumulasi dinolkan — semuanya dalam **satu** `JsonStore::update()`.
+- Dijalankan `BillingRunner::tick()` **hanya pada/atau setelah tanggal `BILLING_INVOICE_DAY`** (`invoiceDayReached()` memakai `BillingPeriod::dayOfMonth()`; nilai **dijepit 1–28**). Baris `usage` dengan `period < bulan berjalan` ditagih: saldo owner dipotong `credits_pending` (boleh negatif) + entri ledger `charge` (rincian per app: `hours`, `cpus`, `memory_mb`, `hourly`, `amount`), lalu `period` direset & akumulasi dinolkan — semuanya dalam **satu** `SqliteStore::update()` (transaksi `BEGIN IMMEDIATE`).
 - **Catch-up**: bila dashboard mati pada tanggal itu, hari berikutnya tetap menagih karena periode tertunggak (`period < bulan berjalan`) tetap terpilih. Penagihan manual (`POST /credits/charge`, `php cli/billing.php invoice [--period=YYYY-MM]`) **tidak** menunggu tanggal tersebut.
 - **Idempoten**: double-run tidak memotong dua kali; dashboard yang mati saat pergantian bulan tetap tertagih pada tick pertama setelah hidup.
-- App yang **sudah dihapus** tetap ditagih dari snapshot `usage`, lalu barisnya dipruning; owner yang sudah tidak ada di `auth.json` dilewati (baris dibiarkan utuh).
+- App yang **sudah dihapus** tetap ditagih dari snapshot `usage`, lalu barisnya dipruning; owner yang sudah tidak ada di store `auth` dilewati (baris dibiarkan utuh).
 - **Kebijakan `BILLING_PAYMENT_POLICY=stop` (default)**: setelah potongan, bila saldo owner `< 0`, **semua app owner dihentikan** (`AppStopper` → `DeployerInterface::stop()`, status `stopped`, alasan tertulis di `message`). Nilai selain `stop` = `block` (app dibiarkan berjalan; hanya aksi berikutnya diblokir).
 
 **Gerbang kredit** (`BillingGate`)
@@ -890,7 +893,7 @@ Mengikuti preseden `database/backup.json` (§8h): berkas sendiri agar **skema `a
 - Saat `AppController::transferOwner()` memindahkan app ke pemilik yang **bebas tagihan** (admin) sementara pemilik lama adalah pihak yang ditagih (member) **dan** app masih hidup (`running`/`deploying`) **dan** `BILLING_ENABLED` aktif ⇒ app **dihentikan otomatis** (`status=stopped`, `message` = `AppStopper::REASON_TRANSFER`) + flash info; admin dapat menyalakannya kembali (admin gratis). Ini menutup celah "app berjalan yang dialihkan ke pemilik bebas tagihan tetap memakai resource tanpa akrual".
 - **Jalur hapus user** (`UserController::delete()`) memicu aturan yang sama: sebelum `transferAllFrom()`, daftar app pemilik diambil (`AppStore::ownedBy($id)`) dan `previousOwnerBillable = roleOf($user) !== admin` dihitung **sebelum** user dihapus; bila `BILLING_ENABLED` dan pemilik lama pihak yang ditagih ⇒ `stopTransferredToExemptOwner($appsBefore, true, true)` menghentikan setiap app hasil transfer yang **masih hidup** (`status=stopped`), dan flash menyebut jumlahnya.
 - **Alasan `message` dibedakan per sebab**: `stopOwnedBy($userId, $apps = [], ?string $reason = null)` memakai `$reason` untuk `message` app **dan** log (`null`/kosong ⇒ `REASON`). `REASON` = `'Dihentikan otomatis: saldo kredit negatif (billing).'` (jalur saldo negatif); `REASON_TRANSFER` = `'Dihentikan otomatis: app dialihkan ke pemilik bebas tagihan kredit.'` (jalur pengalihan manual & hapus user).
-- **N7 (defensif)**: `billingPayerFor()` memakai `try/catch` — bila `auth.json` tak terbaca, penilaian jatuh ke **aktor** (bukan gagal aksi); `AuthMiddleware` tetap penjaga utama lapisan autentikasi. Bukan celah, hanya ketahanan.
+- **N7 (defensif)**: `billingPayerFor()` memakai `try/catch` — bila store `auth` tak terbaca, penilaian jatuh ke **aktor** (bukan gagal aksi); `AuthMiddleware` tetap penjaga utama lapisan autentikasi. Bukan celah, hanya ketahanan.
 - **Pengecualian yang disengaja — `AppStore::assignMissingOwners()`**: penugasan owner ke app ber-`owner_id` **kosong** (`AuthController`, `command/AssignOwner`, `command/MakeAdmin`) **tidak** memicu stop, karena app tanpa owner **tidak pernah diakru** (`UsageMeter` melewatinya, `owner_id` kosong ⇒ `continue`). Menugaskan owner karena itu tidak menghapus akrual yang sedang berjalan dan **tidak** menciptakan escape (berbeda dari `transferOwner`/`transferAllFrom` yang menyentuh app tertagih yang berjalan). Bukan bug.
 
 **Deposit** — dua jalur
@@ -916,7 +919,7 @@ Mengikuti preseden `database/backup.json` (§8h): berkas sendiri agar **skema `a
 - `GET /credits` (semua user login): **member** melihat saldo, pemakaian berjalan per app, estimasi tagihan periode, riwayat ledger, form email + top-up; **admin** melihat seluruh user (saldo), form deposit/adjust, tombol penagihan manual, dan order pending.
 - Pemilihan CPU/RAM oleh **owner** saat create (form create & template) dengan plafon; tab **Sumber Daya** detail app menampilkan estimasi biaya read-only.
 - Nav sidebar menampilkan **badge saldo** untuk member (fail-safe: tidak muncul bila billing mati / pembacaan gagal) — `current_credit_balance()`.
-- **Field `email` user** (opsional, `auth.json`, `UserStore::setEmail`, ≤50 karakter, `FILTER_VALIDATE_EMAIL`) — **prasyarat** top-up (dipakai inquiry Duitku); **tanpa migrasi** (user lama tanpa email tidak bisa top-up sampai diisi; deposit manual tetap jalan). Admin mengisi lewat `/users` (`POST /users/{id}/email`) atau user mengisi sendiri lewat `/credits` (`POST /credits/email`, hanya email sendiri).
+- **Field `email` user** (opsional, store `auth`, `UserStore::setEmail`, ≤50 karakter, `FILTER_VALIDATE_EMAIL`) — **prasyarat** top-up (dipakai inquiry Duitku); **tanpa migrasi** (user lama tanpa email tidak bisa top-up sampai diisi; deposit manual tetap jalan). Admin mengisi lewat `/users` (`POST /users/{id}/email`) atau user mengisi sendiri lewat `/credits` (`POST /credits/email`, hanya email sendiri).
 - **Diagnostik admin saat top-up nonaktif**: `CreditController::topupIssues()` (dari `DuitkuClient::configurationIssues()` — daftar alasan Bahasa Indonesia: merchant code/API key kosong, callback URL kosong/bukan https, return URL tidak absolut; plus pesan bila `BILLING_TOPUP_ENABLED=false`) dikirim ke view sebagai `topupIssues` **hanya untuk admin**. Blok admin `/credits` menampilkan `alert-info` "Top-up online belum aktif" + daftar alasan — sebelumnya kondisi ini **senyap** (membingungkan). **Member tidak melihat detail infrastruktur** ini.
 
 **Batasan**
@@ -999,10 +1002,10 @@ Selain `location / { … }` (seluruh app) tiap app bisa mendeklarasikan rute `lo
 - **GOTCHA (G1)** — `target` berupa *hostname* **WAJIB** resolvable dari host Nginx: nginx me-resolve `proxy_pass` saat memuat config, hostname non-resolvable → `nginx -t` gagal (`emerg: host not found in upstream`). **Penangkal**: alur Simpan & Terapkan + rollback di atas; IP literal (mis. `http://127.0.0.1:3001`) bebas masalah ini. **Catatan**: "resolvable" berarti resolvable **dengan konteks host** — helper `NginxReloader` yang menjalankan uji memakai network namespace host (§8.4), jadi hostname yang **hanya** bisa di-resolve oleh resolver lokal host tetap lolos `nginx -t`; jangan menyimpulkan hostname non-publik akan selalu ditolak.
 - **DILARANG (G2)** — jangan menghapus/menimpa `location ^~ /.well-known/acme-challenge/`: renewal certbot bergantung padanya (karena itu prefix `/.well-known` ditolak oleh validasi).
 - **GOTCHA (G3)** — cakupan guard terbatas pada jalur **rute**: `setDomain`/`removeDomain`/`cli/ssl.php` (dan jalur deploy/rebuild) tetap menulis config langsung via `applyNginxConfig()`/`writeNginxConfig()` **tanpa** uji-dulu + rollback guard — jangan diasumsikan tercakup. Rute memang ikut ter-render di jalur deploy (lewat `renderNginxConfig`), tetapi kegagalannya **tidak** di-rollback transaksional oleh guard.
-- **GOTCHA (G4)** — rollback bersifat *best-effort* dan bisa gagal sebagian: `rolled_back=true` hanya berarti `apps.json` sudah pulih; bila penulisan ulang config lama gagal (disk/kewenangan), file config di disk bisa tetap versi baru sehingga watcher terus menolak reload. **Penangkal**: `error` menyertakan `PERINGATAN: config lama gagal ditulis ulang … (periksa/Deploy Ulang)` — UI wajib menampilkan `error`. Bila pemulihan rute di `apps.json` sendiri yang gagal (app terhapus konkuren / IO / JSON korup) → `rolled_back=false` + `PERINGATAN: rollback gagal: …`, dan **rute baru tetap tersimpan**; pengguna harus memperbaiki manual / simpan ulang.
-- **GOTCHA (G5)** — race dua penyimpanan rute bersamaan pada app yang sama: hanya `JsonStore::update()` yang terkunci; urutan snapshot→persist→write→reload→rollback **tidak atomik** sehingga bisa terjadi *lost update* (yang terakhir menang). **Penangkal**: belum ada lock per-app — dicatat sebagai future work (§12).
+- **GOTCHA (G4)** — rollback bersifat *best-effort* dan bisa gagal sebagian: `rolled_back=true` hanya berarti store `apps` sudah pulih; bila penulisan ulang config lama gagal (disk/kewenangan), file config di disk bisa tetap versi baru sehingga watcher terus menolak reload. **Penangkal**: `error` menyertakan `PERINGATAN: config lama gagal ditulis ulang … (periksa/Deploy Ulang)` — UI wajib menampilkan `error`. Bila pemulihan rute di store `apps` sendiri yang gagal (app terhapus konkuren / IO / dokumen korup) → `rolled_back=false` + `PERINGATAN: rollback gagal: …`, dan **rute baru tetap tersimpan**; pengguna harus memperbaiki manual / simpan ulang.
+- **GOTCHA (G5)** — race dua penyimpanan rute bersamaan pada app yang sama: hanya `SqliteStore::update()` (satu transaksi `BEGIN IMMEDIATE`) yang terkunci; urutan snapshot→persist→write→reload→rollback **tidak atomik** sehingga bisa terjadi *lost update* (yang terakhir menang). **Penangkal**: belum ada lock per-app — dicatat sebagai future work (§12).
 - **GOTCHA (G7)** — `NginxRoutes::all()` bersifat **best-effort** (entri rusak dilewati, rute valid tetap dipakai, hasil ≤ `MAX`) sedangkan `normalize()`/`parse()` **fail-fast** — jangan tertukar.
-- **GOTCHA (G8)** — non-atomik terhadap crash: bila proses mati antara persist `apps.json` dan reload/rollback, `apps.json` bisa memuat rute baru sementara config/reload di disk belum konsisten (tidak ada transaksi lintas-langkah). **Penangkal**: jalankan ulang Simpan & Terapkan atau **Deploy Ulang** agar config ditulis & diuji ulang.
+- **GOTCHA (G8)** — non-atomik terhadap crash: bila proses mati antara persist store `apps` dan reload/rollback, store `apps` bisa memuat rute baru sementara config/reload di disk belum konsisten (tidak ada transaksi lintas-langkah). **Penangkal**: jalankan ulang Simpan & Terapkan atau **Deploy Ulang** agar config ditulis & diuji ulang.
 
 **Prasyarat**
 - App mem-publish host port (`AppPorts::hasHostPort`, §7.2) — app tanpa host port tidak punya vhost.
@@ -1171,20 +1174,19 @@ Field tambahan per app:
 
 ## 8g. Backup Otomatis Data & Config
 
-**Tujuan:** menjaga jejak pemulihan bila terjadi overwrite/kerusakan pada file data (`auth.json`, `apps.json`) dan config Nginx yang di-generate, sekaligus memenuhi butir §11 ("Backup sebelum overwrite").
+**Status per migrasi SQLite (§8i):** skema lama "backup otomatis = salinan `.bak` ber-timestamp per berkas (`database/backups/…`)" **sudah tidak berlaku** untuk data domain:
 
-**Alur:**
-1. **Sebelum setiap write** `apps.json` / `auth.json` (di `AppStore`/`AuthStore`), salin file lama ke `database/backups/{file}.{timestamp}.bak` (mis. `apps.json.2026-08-18T10-00-00.bak`).
-2. **Rotasi:** pertahankan `BACKUP_RETENTION` (default 20) file backup terbaru per jenis; sisanya dihapus.
-3. **Config Nginx:** sebelum menulis/menghapus `.conf` app (`writeNginxConfig`), backup file lama ke `nginx-status/backups/` dengan pola nama sama.
-4. **Backup penuh (arsip tar):** *belum diimplementasikan* — dulu direncanakan lewat `cli/backup.php`, tetapi nama berkas itu kini dipakai worker **backup volume** (§8h). Backup data/config saat ini mengandalkan salinan `.bak` per-file (butir 1–3).
-5. Restore manual: salin ulang `.bak` terpilih ke file utama (dokumentasikan di README/ARCHITECTURE).
+- **Data domain** (app/user/billing/seleksi+riwayat volume) kini di **SQLite** dengan backup berkala sendiri (§8i.4). Mutasi atomik lewat **satu transaksi `BEGIN IMMEDIATE`** (`SqliteStore::update()`) — tidak ada lagi penulisan parsial, sehingga tidak perlu salinan `.bak` per berkas. Pemulihan = snapshot SQLite (`php cli/db.php restore <berkas> --yes` / tombol **Restore** di `/backups`), bukan menyalin `.bak` manual.
+- **Config Nginx** tidak lagi menulis salinan ke `nginx-status/backups/`; keamanan penulisan config kini lewat **alur uji + rollback transaksional** `NginxConfigGuard` (`nginx -t` dulu, config/state lama dipulihkan bila gagal — §5.6a/§5.6b).
+- Env lama `BACKUP_ENABLED`/`BACKUP_RETENTION`/`BACKUP_PATH` **sudah tidak ada** di `config/deploy.php`/§9.
 
-**Config (.env):** `BACKUP_ENABLED=true`, `BACKUP_RETENTION=20`, `BACKUP_PATH={proyek}/database/backups`.
+Yang **masih** memakai salinan `.bak`: **cache runtime JSON** (bukan data domain, §8i.2) — `JsonStore` menyalin berkas ke `<file>.bak` sebelum menimpa (mis. `runtime/update/check.json`, `runtime/backup/catalog.json`/`status.json`/`runs/*.json`, state Adminer). Ini cache yang bisa dibangun ulang, bukan sumber kebenaran.
+
+**Config (.env):** — (tidak ada variabel §8g lagi; backup data dashboard memakai `DB_BACKUP_*`, §8i/§9).
 
 ## 8h. Backup Volume Harian ke S3 (restic)
 
-**Tujuan:** mem-backup **volume Docker milik app** ke object storage eksternal (S3) secara **harian** dengan **restic** (inkremental + dedup + enkripsi + retensi native `forget`). Terpisah dari §8g (yang hanya menyalin `database/*.json` + config Nginx) — **jangan digabung**. Fitur mencakup **restore** dari UI, bukan sekadar prosedur manual.
+**Tujuan:** mem-backup **volume Docker milik app** ke object storage eksternal (S3) secara **harian** dengan **restic** (inkremental + dedup + enkripsi + retensi native `forget`). Terpisah dari §8g (backup data/config dashboard) dan §8i (basis data dashboard SQLite) — **jangan digabung**. Fitur mencakup **restore** dari UI, bukan sekadar prosedur manual.
 
 ### 8h.1 Dua strategi konsistensi (keputusan D1)
 
@@ -1270,7 +1272,7 @@ Image dashboard harus memuat binary `restic` (`Dockerfile`: paket `restic` dari 
 ### 8h.8 Aturan kredensial (DILARANG)
 
 - **DILARANG** menyematkan kredensial di dalam nilai `RESTIC_REPOSITORY` — nilai repo masuk **argv** helper (`ps` dapat membacanya). Kredensial `AWS_*` hanya lewat **env-file sementara 0600** (`--env-file`), passphrase restic hanya lewat **`--password-file`** (file di-mount `:ro`).
-- **DILARANG** menaruh kredensial di `apps.json`, log, atau respons JSON (backup volume **bukan** backup data dashboard §8g).
+- **DILARANG** menaruh kredensial di store `apps`/SQLite, log, atau respons JSON (backup volume **bukan** backup data dashboard §8i).
 - **DILARANG** membungkus nilai env-file kredensial dengan kutip: `docker run --env-file` (dipakai helper) **tidak** mengupas kutip (beda dari `docker compose env_file:`), sehingga kutip menjadi bagian nilai → tanda tangan S3 salah → `Access Denied`. Env-file ditulis **mentah** `KEY=VALUE`.
 - **DILARANG** menaruh password DB pada string command/argv host: `DbDump` mengirim password sebagai **baris pertama stdin** (`IFS= read -r __pw`), bukan di argv (`ps` aman). Batasan: password tidak boleh mengandung newline.
 - **DILARANG** menyediakan jalur "paksa" snapshot saat container hidup.
@@ -1285,9 +1287,9 @@ Image dashboard harus memuat binary `restic` (`Dockerfile`: paket `restic` dari 
 
 **Kebutuhan.** Admin dapat memilih **volume mana** yang ikut backup **terjadwal** (timer), tanpa mengubah policy stop/skip, dan halaman `/backups` dimuat murah (tanpa memanggil Engine/restic tiap poll). Default bersifat **opt-in**: volume baru tidak ikut run harian sampai diaktifkan, sedangkan volume yang sudah pernah di-backup aktif otomatis (backfill).
 
-- **Seleksi per volume** disimpan di `database/backup.json` (gitignored, **terpisah** dari `apps.json` — skema tidak berubah): `{"version":1,"volumes":{"<nama>":{"scheduled":bool,"updated_at":ISO,"updated_by":id}}}`. **Default OFF (opt-in)**: entri/kunci `scheduled` absen ⇒ volume **tidak** ikut run harian; hanya volume yang **eksplisit** diaktifkan yang diproses. Pengecualian: volume yang **sudah punya snapshot** (`snapshots > 0`) di-**backfill** otomatis ke `scheduled=true` (`updated_by="system"`) oleh `refreshCatalog()`/akhir run agar backup yang sudah ada tidak berhenti terjadwal; entri eksplisit (ON/OFF) **tidak** ditimpa (idempotent). Diubah lewat `POST /backups/schedule` (**admin**) atau toggle kolom **Berkala** di UI, ditulis via `JsonStore` (atomik).
-- **Filter run terjadwal murni baca seleksi**: run `trigger=schedule` (tanpa `volumes` eksplisit) menyaring target dari `database/backup.json` **tanpa** panggilan Engine/restic tambahan.
-- **Status cache-read**: `GET /api/backups/status` membaca cache `runtime/backup/catalog.json` (`BackupCatalog`) + status run/lock — **tanpa** Engine/restic. Cache ditulis akhir run (**best-effort**) & tombol **Segarkan status** (`POST /backups/refresh`, **admin**) yang menghitung live (`targets()` + `overview()`); refresh juga memicu backfill seleksi (memutasi `database/backup.json` — hanya menandai volume ber-snapshot, lihat di atas). Respons `{running, cached_at, status, volumes[], archived[]}`; tiap baris `volumes[]` menyertakan `scheduled` **segar** (bukan dari cache); `archived[]` (riwayat volume terhapus) **admin-only** — `[]` untuk non-admin, §8h.11; footer UI menampilkan `cached_at`.
+- **Seleksi per volume** disimpan di store `backup` (SQLite), koleksi `volumes` (tabel `backup_volumes`, §8i) — dahulu `database/backup.json`: tiap entri `{"<nama>":{"scheduled":bool,"updated_at":ISO,"updated_by":id}}`. **Default OFF (opt-in)**: entri/kunci `scheduled` absen ⇒ volume **tidak** ikut run harian; hanya volume yang **eksplisit** diaktifkan yang diproses. Pengecualian: volume yang **sudah punya snapshot** (`snapshots > 0`) di-**backfill** otomatis ke `scheduled=true` (`updated_by="system"`) oleh `refreshCatalog()`/akhir run agar backup yang sudah ada tidak berhenti terjadwal; entri eksplisit (ON/OFF) **tidak** ditimpa (idempotent). Diubah lewat `POST /backups/schedule` (**admin**) atau toggle kolom **Berkala** di UI, ditulis via `SqliteStore::update()` (satu transaksi).
+- **Filter run terjadwal murni baca seleksi**: run `trigger=schedule` (tanpa `volumes` eksplisit) menyaring target dari store `backup` (koleksi `volumes`) **tanpa** panggilan Engine/restic tambahan.
+- **Status cache-read**: `GET /api/backups/status` membaca cache `runtime/backup/catalog.json` (`BackupCatalog`) + status run/lock — **tanpa** Engine/restic. Cache ditulis akhir run (**best-effort**) & tombol **Segarkan status** (`POST /backups/refresh`, **admin**) yang menghitung live (`targets()` + `overview()`); refresh juga memicu backfill seleksi (memutasi store `backup` — hanya menandai volume ber-snapshot, lihat di atas). Respons `{running, cached_at, status, volumes[], archived[]}`; tiap baris `volumes[]` menyertakan `scheduled` **segar** (bukan dari cache); `archived[]` (riwayat volume terhapus) **admin-only** — `[]` untuk non-admin, §8h.11; footer UI menampilkan `cached_at`.
 - **Keamanan**: refresh/schedule **admin global** (non-admin → **404**); `VOLUME_BACKUP_ENABLED=false` → refresh **422** tanpa menyentuh Engine. Status disanitasi daftar-putih (`publicStatus()` — `volumes`/`error` mentah **dibuang**) dan baris volume disaring `BackupAccess::visible()`, sehingga **cache bersama tidak bocor lintas-app**.
 - **Seleksi ≠ policy**: flag ini hanya memengaruhi run **terjadwal**; `VOLUME_BACKUP_SNAPSHOT_POLICY` tetap mengatur stop/skip, dan aksi **manual** (tombol Backup sekarang / `volumes` eksplisit) **tidak** disaring.
 
@@ -1297,7 +1299,7 @@ Image dashboard harus memuat binary `restic` (`Dockerfile`: paket `restic` dari 
 
 **Kebutuhan.** Menghapus app (mode purge) menghapus volumenya dari Engine, tetapi snapshot restic-nya tetap ada di S3. Tanpa riwayat, dashboard lupa nama volume/project/strateginya sehingga snapshot itu tak bisa dipulihkan. Fitur ini menyimpan riwayat permanen volume yang **pernah** ter-backup, menampilkannya sebagai **arsip** (khusus admin), memulihkannya ke **volume baru**, atau mengunduh dump `.sql` untuk arsip berstrategi dump.
 
-**Penyimpanan.** `database/backup.json` (gitignored) menyimpan **dua kunci** dalam satu berkas: `volumes` (seleksi berkala, `BackupSelection` §8h.10) dan `registry` (riwayat, `BackupRegistry`). Bentuk registry: `{"<nama volume>":{"project":str,"app_id":?str,"app_name":?str,"strategy":str,"first_backed_up_at":ISO,"last_backed_up_at":ISO,"last_snapshot":?str,"snapshots":int,"bytes":int}}`. `first_backed_up_at` dipertahankan sekali; `snapshots` disinkronkan dari repo restic.
+**Penyimpanan.** Store `backup` (SQLite, §8i) menyimpan **dua koleksi**: `volumes` (tabel `backup_volumes`, seleksi berkala, `BackupSelection` §8h.10) dan `registry` (tabel `backup_registry`, riwayat, `BackupRegistry`) — dahulu satu berkas `database/backup.json` dengan dua kunci. Bentuk entri registry: `{"<nama volume>":{"project":str,"app_id":?str,"app_name":?str,"strategy":str,"first_backed_up_at":ISO,"last_backed_up_at":ISO,"last_snapshot":?str,"snapshots":int,"bytes":int}}`. `first_backed_up_at` dipertahankan sekali; `snapshots` disinkronkan dari repo restic.
 
 - **Pencatatan**: tiap volume berstatus `ok` pada akhir run dicatat (`VolumeBackupService::recordRegistry()`); nama volume divalidasi **sebelum** menulis.
 - **Backfill riwayat**: `refreshCatalog()`/akhir run juga mengisi registry untuk volume ber-`snapshots > 0` yang **belum tercatat** (`VolumeBackupService::backfillRegistry()` → `BackupRegistry::backfill()`, idempotent — tak menimpa entri eksisting) — menjamin volume yang sudah ter-backup **sebelum** fitur ini ada tetap tercatat sehingga tetap dapat direstore dari tab **Arsip** walau app+volumenya dihapus. **Urutan**: dijalankan **setelah** sinkronisasi/prune agar `syncCounts()` tidak memangkas entri yang baru di-backfill; entri hasil backfill punya `last_snapshot: null`/`bytes: 0` ⇒ **Unduh SQL** baru tersedia setelah run berikutnya mencatat snapshot id (`recordRegistry()`).
@@ -1318,6 +1320,59 @@ Image dashboard harus memuat binary `restic` (`Dockerfile`: paket `restic` dari 
 
 **Config (.env):** tidak ada variabel baru (memakai `RESTIC_*`/`AWS_*`/`VOLUME_BACKUP_*` §8h/§9).
 
+## 8i. Basis Data Dashboard (SQLite) & Backup Berkala
+
+**Tujuan:** memindahkan data domain dashboard (app, user, billing, seleksi+riwayat volume) dari berkas JSON ke **satu basis data SQLite** di **named volume `rames`**, sehingga (a) mutasi lintas-tabel atomik (transaksi), (b) data tidak hilang saat `git clean`/update dashboard, dan (c) tersedia **backup berkala** + restore dari UI/CLI. Fitur ini **terpisah** dari §8g (data JSON lama) dan §8h (volume app ke S3) — jangan mencampur konfigurasi (`DB_BACKUP_*` vs `VOLUME_BACKUP_*`/`RESTIC_*`).
+
+### 8i.1 Skema & penyimpanan
+- **Satu berkas** `rames.sqlite` (`config('deploy.sqlite_file')`, default `<RAMES_DB_DIR>/rames.sqlite`) memuat semua store logis; di produksi `<RAMES_DB_DIR>` = isi named volume `rames` (mount `/var/lib/rames`). Berkas DB gitignored (`database/*.sqlite*`, §11) sehingga tidak pernah ter-commit.
+- **Store → koleksi** (`SchemaMigrations::storeDefinitions()`): `apps.apps`; `auth.users`; `billing.{users,usage,orders}`; `backup.{volumes,registry}`. Nama tabel fisik = `{store}_{koleksi}` (mis. `apps_apps`, `auth_users`, `billing_users`, `billing_usage`, `billing_orders`, `backup_volumes`, `backup_registry`) — prefiks store mencegah tabrakan koleksi bernama sama (`users` di `auth` vs `billing`).
+- **Kolom** tiap tabel: `id` (PK), `ord` (urutan list), `data` (dokumen JSON = **sumber kebenaran**), `updated_at`, plus kolom **turunan terindeks** dari dot-path (mis. `apps`: `name`, `owner_id`, `status`, `source`, `subdomain`; `auth`: `username`, `role`, `email`). Kolom turunan hanya indeks bantu kueri; tipe JSON asli tetap di `data`.
+- **Versi skema** di tabel `schema_migrations` (`version`, `applied_at`); migrasi dijalankan otomatis saat koneksi pertama (`SchemaMigrations::migrate()`, idempoten multi-proses lewat `BEGIN IMMEDIATE`).
+- **PRAGMA** koneksi: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5000`. Semua mutasi lewat transaksi `BEGIN IMMEDIATE` yang re-entrant per berkas (`SqliteDatabase::transaction()`).
+- **API tidak berubah**: `SqliteStore` menyediakan `path()/read()/write()/update()` identik `JsonStore`, sehingga `AppStore` (store `apps`), `UserStore` (`auth`), `BillingStore` (`billing`, bentuk `{version,users,usage,orders}` dipertahankan), `BackupSelection`/`BackupRegistry` (`backup`) tidak berubah dari sisi pemakai.
+
+### 8i.2 Cache runtime TETAP JSON
+Bukan data domain (tidak ada di SQLite): `runtime/update/check.json` (`UpdateState`), state jaringan Adminer, `runtime/backup/catalog.json` (`BackupCatalog`), `runtime/backup/status.json` + `runtime/backup/runs/*.json` (`BackupReport`), dan `runtime/db-backup/state.json` (`DbBackup::state()`) tetap berkas JSON lewat `JsonStore`. Konfigurasi `database_path` (`keys/`, `env/`, `restic/password`) **tidak berubah** — hanya lokasi SQLite yang punya knob baru.
+
+### 8i.3 Impor otomatis data lama + rollback
+- **Sekali**: saat koneksi DB pertama, bila `DB_IMPORT_LEGACY_JSON=true` dan flag `kv.legacy_imported_at` belum ada, `JsonImporter` menyalin `database/{apps,auth,billing,backup}.json` ke store SQLite (satu transaksi per store; store yang **sudah** berisi baris **tidak** ditimpa). Berkas JSON lama **tidak** dihapus (bukti/migrasi balik).
+- **Idempoten**: flag `legacy_imported_at` mencegah impor ulang; `php cli/db.php import-json [--force]` untuk memaksa. Kegagalan impor otomatis **tidak** mematikan worker (dicatat ke `runtime/logs/storage/`), bisa diulang manual.
+- **Rollback ke JSON**: `php cli/db.php export-json [--dir=<dir>]` menulis balik 4 berkas JSON (`JsonImporter::exportToJson()`).
+
+### 8i.4 Backup berkala + retensi
+- **Proses timer** `db-backup` (`config/process.php`, count 1): tick 300 s; `DbBackup::isDue()` (fitur aktif + jam `DB_BACKUP_HOUR` terlewati + belum ada run/snapshot hari ini) → `run('scheduled')`. Snapshot = `VACUUM INTO {db_backup_dir}/rames-YYYYmmdd-HHMMSS.sqlite`.
+- **Mutex `flock` non-blocking** (`<backup_dir>/.lock`): backup/restore yang tumpang tindih **dilewati** (`skipped=busy`), bukan error.
+- **Retensi** meniru `restic forget`: pertahankan snapshot terbaru per hari (`DB_BACKUP_KEEP_DAILY`), per pekan ISO (`…_WEEKLY`), per bulan (`…_MONTHLY`); snapshot terbaru selalu dipertahankan; nilai `0` → tingkat itu **diabaikan** (bila semua tingkat `0`, hanya snapshot terbaru yang tersisa). Safety snapshot `pre-restore-*` **tidak** ikut retensi.
+- **Restore defensif** (`DbBackup::restore()`), semua validasi **sebelum** efek samping: nama = basename & di dalam direktori backup (`realpath` prefix) → `PRAGMA integrity_check` → tabel inti wajib ada (`apps_apps`, `auth_users`, `billing_users`) → safety snapshot `pre-restore-*` → ganti berkas atomik (copy→rename) → buang sidecar WAL/SHM lama → `SqliteDatabase::reset()`.
+
+### 8i.5 UI & API (halaman `/backups`)
+Kartu **"Database dashboard (SQLite)"** (**admin-only**): path/ukuran DB, snapshot terakhir, jumlah + total, retensi, status terjadwal, error terakhir / busy, tombol **Backup sekarang**/**Prune sekarang**, daftar 10 snapshot + **Unduh** + **Restore** (wajib mengetik `RESTORE`).
+
+- `POST /backups/db/run` — snapshot manual (`run('manual')`).
+- `POST /backups/db/prune` — retensi saja.
+- `POST /backups/db/restore` — pulihkan dari snapshot (butuh `confirm=RESTORE`).
+- `GET /backups/db/download?file=…` — unduh snapshot (`Content-Disposition: attachment`, `nosniff`).
+
+Semua route **admin-only** — non-admin → **404** (bukan 403).
+
+### 8i.6 CLI
+`php cli/db.php status | migrate | import-json [--force] | export-json [--dir=…] | integrity | backup [--reason=] | list | prune | restore <berkas> --yes`.
+
+### 8i.7 Volume dashboard dikecualikan dari backup volume (§8h)
+`docker-compose.yml` memberi named volume `rames` (mount `/var/lib/rames`) label **`rames.role=dashboard-db`**. Volume itu juga ber-label `com.docker.compose.project`, sehingga lolos filter §8h — padahal ia **bukan** volume app. Bila ikut menjadi target backup, kebijakan snapshot `stop` akan menghentikan container dashboard (proses yang menjalankan backup) → run gagal / dashboard mati. Karena itu `VolumeTargetMap::isDashboardVolume()` **membuang** volume ini dari target backup/restore/schedule **dan** `VolumeController` membuangnya dari daftar `/volumes` + peta purge.
+
+### 8i.8 Runbook deploy/upgrade (WAJIB)
+1. **Recreate kontainer** (`docker compose up -d --build`) agar named volume `rames` + env `RAMES_DB_*`/`DB_BACKUP_*` berlaku. `command:` compose menjalankan **`php cli/db.php migrate && php cli/db.php import-json`** sebelum `php start.php start` — tanpa `|| true` (fail-fast: bila gagal, kontainer exit non-zero dan server **tidak** start dengan skema/DB yang belum siap).
+2. **Verifikasi**: `docker exec rames-webman php cli/db.php status` (berkas, migrasi, jumlah baris, backup terakhir) dan `docker exec rames-webman php cli/db.php integrity`.
+3. **Restart kontainer** (`php start.php restart -d`) saat **proses** `db-backup` baru pertama kali di-deploy — proses baru tidak ter-load oleh `reload` (pola sama dengan §8h.7).
+4. **Setelah restore snapshot**: `php start.php reload` — worker lama masih memegang handle PDO ke inode lama; UI hanya menampilkan peringatan, tidak me-reload.
+5. **Rollback ke JSON** (bila perlu): `php cli/db.php export-json` lalu jalankan versi lama. **Pulihkan snapshot** DB: `php cli/db.php restore <berkas> --yes` (atau tombol **Restore**; safety snapshot `pre-restore-*` dibuat lebih dulu).
+
+**Config (.env):** §9 (`RAMES_DB_*`, `DB_BACKUP_*`, `DB_IMPORT_LEGACY_JSON`).
+
+**Pengujian:** `tests/SqliteDatabaseTest.php`, `tests/SqliteStoreTest.php`, `tests/DomainStoreSqliteTest.php`, `tests/JsonImporterTest.php`, `tests/LegacyAutoImportTest.php`, `tests/SqliteConcurrencyTest.php`, `tests/DbBackupTest.php`, `tests/DbBackupUiTest.php`.
+
 ## 9. Environment Variables (`.env`)
 
 ```
@@ -1332,8 +1387,16 @@ NGINX_RELOAD_STATUS_FILE=/app/nginx-status/last-reload.json  # ditulis watcher, 
 LOGIN_MAX_ATTEMPTS=5        # rate limiting login (§8f)
 LOGIN_LOCKOUT_MINUTES=15    # durasi lockout setelah percobaan gagal
 SITES_PER_PAGE=20           # pagination daftar app (§8e)
-BACKUP_ENABLED=true         # backup otomatis data & config (§8g)
-BACKUP_RETENTION=20         # jumlah file backup yang dipertahankan per jenis
+# Basis data SQLite dashboard (named volume `rames`) + backup berkala (§8i).
+RAMES_DB_DIR=/var/lib/rames                # direktori DB (isi named volume `rames`)
+# RAMES_DB_FILE=                            # berkas DB (kosong = <RAMES_DB_DIR>/rames.sqlite)
+RAMES_DB_BACKUP_DIR=/var/lib/rames/backup  # direktori snapshot backup DB
+DB_BACKUP_ENABLED=true                      # false = matikan backup DB terjadwal
+DB_BACKUP_HOUR=3                            # jam snapshot harian (0-23, waktu container)
+DB_BACKUP_KEEP_DAILY=7                      # retensi harian (0 = tingkat diabaikan)
+DB_BACKUP_KEEP_WEEKLY=4                     # retensi pekanan (ISO)
+DB_BACKUP_KEEP_MONTHLY=3                    # retensi bulanan
+DB_IMPORT_LEGACY_JSON=true                  # impor SEKALI database/*.json lama ke SQLite
 HOST_PROC_PATH=/proc        # sumber metrik "total VM" (§8d; ubah bila host pakai lxcfs)
 MONITOR_STATS_TIMEOUT=20    # timeout satu siklus stats container (detik)
 MONITOR_POLL_MS=7000        # interval polling metrik host di /monitor (ms, 0 = mati)
@@ -1419,12 +1482,11 @@ BILLING_DUITKU_STATUS_MAX_PER_TICK=20    # maksimum order yang dicek statusnya p
 ```
 /dashboard
 ├── app/                      # source Webman
-├── database/
-│   ├── auth.json
-│   ├── apps.json
-│   ├── backup.json           # seleksi berkala (volumes) + riwayat volume (registry) — §8h (gitignored)
-│   ├── billing.json          # saldo/ledger user + meteran usage + order top-up — §7.12 (gitignored, terpisah dari apps.json)
-│   ├── backups/              # backup otomatis data & config (§8g)
+├── database/                 # tetap: keys/env/restic + berkas JSON lama (impor sekali, §8i.3)
+│   ├── apps.json             # warisan JSON (TIDAK dihapus; diimpor sekali ke SQLite, §8i.3)
+│   ├── auth.json             # warisan JSON (idem)
+│   ├── backup.json           # warisan JSON (idem)
+│   ├── billing.json          # warisan JSON (idem)
 │   ├── restic/
 │   │   └── password          # passphrase restic (chmod 0600, gitignored) — §8h
 │   └── keys/                 # deploy key SSH per app (private 0600) + known_hosts
@@ -1438,6 +1500,7 @@ BILLING_DUITKU_STATUS_MAX_PER_TICK=20    # maksimum order yang dicek statusnya p
 ├── runtime/
 │   ├── backup/               # state backup volume (§8h, gitignored): status.json, runs/, run.lock,
 │   │                         #   staging/ (dump logis), restore/ (kerja restore), tmp/ (env kredensial)
+│   ├── db-backup/            # state backup DB SQLite (§8i, gitignored): state.json
 │   ├── files-transfer/       # berkas temp transfer file manager (§7.9, gitignored): staging unduh/unggah/
 │   │                         #   ekstrak, dibersihkan Workerman\Timer + prune()
 │   └── logs/files/           # audit operasi file manager, satu berkas per hari (§7.9)
@@ -1448,6 +1511,10 @@ BILLING_DUITKU_STATUS_MAX_PER_TICK=20    # maksimum order yang dicek statusnya p
 ├── .env
 ├── docker-compose.yml        # compose untuk stack dashboard saja (nginx tidak ikut di-compose)
 └── SPECS.md
+
+# Named volume Docker (di luar direktori dashboard) — §8i:
+rames                        # named volume DB dashboard: rames.sqlite + snapshot backup
+                             #   (mount /var/lib/rames; label `rames.role=dashboard-db`)
 
 # Di host (di luar direktori dashboard, dikelola install.sh):
 /etc/nginx/sites-available/{name}.conf   # digenerate dashboard, dimount sbg volume
@@ -1465,9 +1532,9 @@ BILLING_DUITKU_STATUS_MAX_PER_TICK=20    # maksimum order yang dicek statusnya p
 - **Rate limiting pada login** (§8f): batasi percobaan per IP+username, lockout sementara bila melewati ambang — memperlambat brute-force pada satu-satunya endpoint publik
 - Semua input user (nama app, repo URL, branch, port) disanitasi sebelum dipakai dalam perintah shell — **hindari command injection** (gunakan `escapeshellarg()`, jangan concatenate string mentah ke `exec()`)
 - Validasi format port (integer, dalam range yang wajar) sebelum ditulis ke `docker-compose.override.yml`
-- File JSON (`apps.json`, `auth.json`) ditulis dengan file locking (`flock`) untuk menghindari race condition saat ada dua request bersamaan
+- Data domain (`apps`/`auth`/`billing`/`backup`) disimpan di **SQLite** (named volume `rames`) — mutasi atomik lewat transaksi `BEGIN IMMEDIATE` (`SqliteStore::update()`), sehingga tidak ada penulisan parsial; berkas DB gitignored (`database/*.sqlite*`) dan **tidak** pernah ter-commit. Cache runtime JSON tetap dipakai `JsonStore` (`flock` + salinan `.bak`)
 - Dashboard container yang mount `docker.sock` adalah titik sensitif — akses ke dashboard **harus** selalu di balik autentikasi, tidak boleh ada endpoint yang expose eksekusi shell tanpa lolos middleware auth
-- **Backup otomatis** `apps.json`/`auth.json` + config Nginx sebelum overwrite (§8g) — file `.bak` ber-timestamp dengan rotasi `BACKUP_RETENTION`, agar ada jejak jika perlu rollback manual
+- **Backup data dashboard** (§8i): snapshot `VACUUM INTO` berkala (`DB_BACKUP_*`) + `pre-restore-*` sebelum restore; `restore()` defensif (basename+`realpath`, `integrity_check`, tabel inti wajib) — semua **admin-only** (non-admin → **404**). Nama berkas/route nyata disanitasi; bukan salinan `.bak` per berkas lagi (§8g)
 - **Backup volume (§8h):** ability `backup` = operator, `restore` = owner (destruktif) — satu pintu `AppAccess` (`BackupAccess`), penolakan **404**, volume yatim hanya admin. Kredensial S3 hanya lewat **env-file sementara 0600** (`--env-file`) dan passphrase restic lewat **`--password-file`** (file di-mount `:ro`) — **tidak pernah** di argv/`ps`, log, atau JSON. Nama volume & id snapshot divalidasi regex sebelum masuk argv helper; semua spawn berbentuk array + `bypass_shell` + `SigchldGuard`. Snapshot filesystem **hanya** sah saat container berhenti (`VolumeStateGuard`), tanpa jalur paksa dari UI
 - Direktori Nginx host yang di-mount ke dashboard container dibatasi sesempit mungkin (hanya `sites-available/`, bukan seluruh `/etc/nginx`), agar dashboard tidak bisa menimpa `nginx.conf` utama atau config app lain di luar mekanisme yang disediakan
 - Watcher service di host dijalankan dengan user yang punya izin reload Nginx (lewat `sudoers` khusus untuk `nginx -s reload` saja) — bukan root penuh, dan tidak menerima input dari dashboard secara langsung (dashboard cuma menulis file, bukan mengirim perintah)
@@ -1485,9 +1552,9 @@ BILLING_DUITKU_STATUS_MAX_PER_TICK=20    # maksimum order yang dicek statusnya p
 
 - Ekstrak `DeployerInterface` implementation menjadi agent HTTP terpisah untuk dukungan multi-server
 - Role & permission antar user (mis. admin vs. member dengan akses app terbatas)
-- Migrasi dari JSON file ke SQLite/RDBMS jika jumlah app/user bertambah signifikan
+- Migrasi dari JSON file ke SQLite/RDBMS jika jumlah app/user bertambah signifikan — **sudah dilakukan** (§8i: data domain di SQLite dalam named volume `rames`); sisa: cache runtime JSON (§8i.2) tetap berkas
 - Rootless Podman sebagai pengganti Docker socket untuk mengurangi risiko root-escape
 - Log viewer streaming penuh (SSE) & buffer historis — polling tail sudah masuk Phase 1 (§8c)
-- **Snippet Nginx mentah per app (Lapis B)** — sengaja di luar lingkup §8.2a: hanya rute **terstruktur** (path + target) yang didukung agar dashboard tetap bisa memvalidasi & membatasi sebelum menulis config; `include`/`server`/`listen`/`server_name` dari user **dilarang**. Guard rollback juga belum mencakup jalur `applyNginxConfig()` langsung (`setDomain`/`removeDomain`/`cli/ssl.php`, §8.2a G3). Belum ada **lock per-app** untuk penyimpanan rute yang bersamaan (§8.2a G5) — saat ini hanya `JsonStore::update()` yang terkunci sehingga urutan snapshot→persist→reload→rollback tetap dapat balapan (*lost update*).
+- **Snippet Nginx mentah per app (Lapis B)** — sengaja di luar lingkup §8.2a: hanya rute **terstruktur** (path + target) yang didukung agar dashboard tetap bisa memvalidasi & membatasi sebelum menulis config; `include`/`server`/`listen`/`server_name` dari user **dilarang**. Guard rollback juga belum mencakup jalur `applyNginxConfig()` langsung (`setDomain`/`removeDomain`/`cli/ssl.php`, §8.2a G3). Belum ada **lock per-app** untuk penyimpanan rute yang bersamaan (§8.2a G5) — saat ini hanya `SqliteStore::update()` yang terkunci sehingga urutan snapshot→persist→reload→rollback tetap dapat balapan (*lost update*).
 - Monitoring resource penuh (metrik historis, graf, alerting) — ringkasan per-container sudah masuk Phase 1 (§8d)
 - **Kredit & penagihan (§7.12):** refund/void top-up, rate limiting khusus top-up, dan **rekonsiliasi tagihan berbasis riwayat Docker** (`StartedAt`) untuk menutup *under-count* saat dashboard mati (saat ini meteran tick inkremental; §7.12 batasan)

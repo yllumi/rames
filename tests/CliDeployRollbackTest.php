@@ -5,17 +5,18 @@ namespace Tests;
 
 use app\library\Support\ProcessRunner;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SqliteFixture;
 
 /**
  * Test end-to-end cli/deploy.php mode rollback dengan fake deployer
  * (tanpa daemon Docker) — verifikasi:
  *   - dispatch argumen (appId, mode, ref)
- *   - persistensi status + deploy_history ke apps.json
+ *   - persistensi status + deploy_history ke store `apps` (SQLite)
  *   - jalur error (status app = error)
  *   - ref wajib untuk mode rollback
  *
  * Worker dijalankan sebagai subproses dengan env override agar tidak menyentuh
- * database/ & direktori produksi (DATABASE_PATH, APPS_PATH, dst).
+ * data & direktori produksi (DATABASE_PATH, RAMES_DB_DIR, APPS_PATH, dst).
  */
 class CliDeployRollbackTest extends TestCase
 {
@@ -34,6 +35,7 @@ class CliDeployRollbackTest extends TestCase
         $this->ref = 'a' . str_repeat('0', 39); // SHA-1 40 hex
         $this->env = [
             'DATABASE_PATH' => $this->workDir . '/database',
+            'RAMES_DB_DIR' => $this->workDir . '/database',
             'APPS_PATH' => $this->workDir . '/apps',
             'NGINX_CONF_PATH' => $this->workDir . '/nginx',
             'NGINX_ENABLED_PATH' => $this->workDir . '/nginx',
@@ -42,7 +44,7 @@ class CliDeployRollbackTest extends TestCase
             'DEPLOYER_CLASS' => FakeCliDeployer::class,
         ];
 
-        file_put_contents($this->workDir . '/database/apps.json', json_encode([
+        SqliteFixture::apps($this->db(), [
             [
                 'id' => 'app-1',
                 'name' => 'myapp',
@@ -56,12 +58,30 @@ class CliDeployRollbackTest extends TestCase
                 'containers' => [],
                 'deploy_history' => [],
             ],
-        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        ]);
     }
 
     protected function tearDown(): void
     {
         GitTestFixture::removeDir($this->workDir);
+    }
+
+    /**
+     * Berkas basis data SQLite temp untuk store `apps` milik subproses.
+     */
+    private function db(): string
+    {
+        return $this->workDir . '/database/rames.sqlite';
+    }
+
+    /**
+     * Isi store `apps` setelah worker dijalankan.
+     *
+     * @return array<int,array>
+     */
+    private function storedApps(): array
+    {
+        return SqliteFixture::readAll($this->db(), 'apps');
     }
 
     public function testRollbackModePersistsStatusAndHistory(): void
@@ -75,8 +95,7 @@ class CliDeployRollbackTest extends TestCase
 
         $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr'] . 'stdout: ' . $result['stdout']);
 
-        $apps = json_decode((string) file_get_contents($this->workDir . '/database/apps.json'), true);
-        $app = $apps[0];
+        $app = $this->storedApps()[0];
         $this->assertSame('running', $app['status']);
         $this->assertCount(1, $app['deploy_history']);
         $this->assertSame($this->ref, $app['deploy_history'][0]['sha']);
@@ -98,7 +117,7 @@ class CliDeployRollbackTest extends TestCase
 
         $this->assertSame(1, $result['code']);
 
-        $apps = json_decode((string) file_get_contents($this->workDir . '/database/apps.json'), true);
+        $apps = $this->storedApps();
         $this->assertSame('error', $apps[0]['status']);
         $this->assertStringContainsString('fake deployer gagal (test)', (string) $apps[0]['error']);
     }

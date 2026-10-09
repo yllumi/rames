@@ -18,6 +18,7 @@ use app\library\Docker\DockerComposeRunner;
 use app\library\Storage\AppStore;
 use app\library\Support\ProcessRunner;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SqliteFixture;
 use RuntimeException;
 
 /**
@@ -207,7 +208,7 @@ class VolumeBackupCredentialHygieneTest extends TestCase
     private function makeService(CredHygieneRecordingRunner $runner): VolumeBackupService
     {
         $docker = new CredHygieneFakeDockerClient();
-        $apps = new AppStore($this->tmp . '/apps.json');
+        $apps = new AppStore($this->tmp . '/apps.sqlite');
 
         return new VolumeBackupService(
             $docker,
@@ -233,7 +234,7 @@ class VolumeBackupCredentialHygieneTest extends TestCase
             $this->credentials(),
             // Isolasi larangan #15: seleksi (backfill) tidak boleh menyentuh
             // `database/backup.json` nyata — arahkan ke path temp tes.
-            selection: new BackupSelection($this->tmp . '/backup.json'),
+            selection: new BackupSelection($this->tmp . '/backup.sqlite'),
         );
     }
 
@@ -366,14 +367,11 @@ class VolumeBackupCredentialHygieneTest extends TestCase
 
     public function testRunCleansEnvFileAndNeverLeaksCredentialsToReportOrArgv(): void
     {
-        file_put_contents(
-            $this->tmp . '/apps.json',
-            json_encode([[
-                'id' => 'app1',
-                'name' => 'tonidata',
-                'compose_files' => ['docker-compose.yml'],
-            ]], JSON_PRETTY_PRINT)
-        );
+        SqliteFixture::apps($this->tmp . '/apps.sqlite', [[
+            'id' => 'app1',
+            'name' => 'tonidata',
+            'compose_files' => ['docker-compose.yml'],
+        ]]);
 
         $docker = new CredHygieneFakeDockerClient(
             [['Name' => 'tonidata_data', 'Labels' => [VolumeTargetMap::LABEL_PROJECT => 'tonidata']]],
@@ -384,7 +382,7 @@ class VolumeBackupCredentialHygieneTest extends TestCase
                 'Labels' => [VolumeTargetMap::LABEL_PROJECT => 'tonidata'],
             ]]
         );
-        $apps = new AppStore($this->tmp . '/apps.json');
+        $apps = new AppStore($this->tmp . '/apps.sqlite');
         $guard = new VolumeStateGuard(
             $docker,
             new CredHygieneFakeComposeRunner(),
@@ -414,7 +412,7 @@ class VolumeBackupCredentialHygieneTest extends TestCase
             $this->credentials(),
             // Isolasi larangan #15: seleksi (backfill) tidak boleh menyentuh
             // `database/backup.json` nyata — arahkan ke path temp tes.
-            selection: new BackupSelection($this->tmp . '/backup.json'),
+            selection: new BackupSelection($this->tmp . '/backup.sqlite'),
         );
 
         $run = $service->run(['trigger' => 'manual', 'volumes' => ['tonidata_data']]);

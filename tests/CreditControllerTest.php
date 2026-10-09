@@ -14,6 +14,7 @@ use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 use ReflectionProperty;
 use support\Request;
+use Tests\Support\SqliteFixture;
 use Webman\Config;
 
 /**
@@ -50,16 +51,16 @@ class CreditControllerTest extends TestCase
         $this->configState = $this->snapshotConfigState();
         $this->useConfig();
 
-        file_put_contents($this->tmp . '/auth.json', (string) json_encode([
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::users($db, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'budi', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
             ['id' => 'u3', 'username' => 'citra', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
-        ]));
+        ]);
+        SqliteFixture::apps($db, []);
 
-        file_put_contents($this->tmp . '/apps.json', "[]\n");
-
-        $this->billing = new BillingStore($this->tmp . '/billing.json');
-        $this->users = new UserStore($this->tmp . '/auth.json');
+        $this->billing = new BillingStore($db);
+        $this->users = new UserStore($db);
         $this->accounts = new CreditAccount($this->billing, $this->users);
     }
 
@@ -390,7 +391,7 @@ class CreditControllerTest extends TestCase
         $controller = new FakeCreditController(
             $this->billing,
             $this->users,
-            new AppStore($this->tmp . '/apps.json'),
+            new AppStore($this->tmp . '/rames.sqlite'),
             null,
             $invoicer
         );
@@ -428,6 +429,8 @@ class CreditControllerTest extends TestCase
         file_put_contents(
             $this->tmp . '/config/deploy.php',
             '<?php return ' . var_export(array_merge([
+                'sqlite_file' => $this->tmp . '/rames.sqlite',
+                'database_path' => $this->tmp,
                 'billing_enabled' => true,
                 'billing_topup_enabled' => false,
                 'billing_topup_idr_per_credit' => 10.0,

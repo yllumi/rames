@@ -10,7 +10,7 @@ use RuntimeException;
 /**
  * Operasi saldo kredit (baca & tulis ledger) di atas `BillingStore`.
  *
- * Seluruh mutasi terjadi dalam SATU `JsonStore::update()` (atomik) — entri
+ * Seluruh mutasi terjadi dalam SATU `SqliteStore::update()` (satu transaksi, atomik) — entri
  * ledger, saldo baru, dan `updated_at` ditulis bersamaan sehingga tidak ada
  * penulisan parsial. Uang/kredit selalu dibulatkan 2 desimal saat disimpan.
  *
@@ -143,7 +143,7 @@ class CreditAccount
     /**
      * Terapkan potongan ke struktur billing.json yang **sudah dibuka** pemanggil
      * (tidak membuka transaksi sendiri). Dipakai `Invoicer` agar potong + reset
-     * periode berada dalam SATU `JsonStore::update()` (idempoten); pemakaian
+     * periode berada dalam SATU `SqliteStore::update()` (idempoten); pemakaian
      * biasa lewat `charge()`.
      *
      * @param array<string,mixed> $data data billing.json (by reference)

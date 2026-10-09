@@ -47,6 +47,18 @@ services:
       ADMINER_PROXY_TIMEOUT: "${ADMINER_PROXY_TIMEOUT:-30}"
       ADMINER_PROXY_MAX_BYTES: "${ADMINER_PROXY_MAX_BYTES:-67108864}"
       ADMINER_PREFIX_BASE: "${ADMINER_PREFIX_BASE:-/database}"
+      # Database dashboard (SQLite) + snapshot backup, disimpan di named volume
+      # `rames-data` (nama nyata di host: `rames`) yang dimount ke /var/lib/rames.
+      # CATATAN: DATABASE_PATH (database/keys, database/env, database/restic) TIDAK
+      # diubah — ketiganya tetap di dalam repo (bind ${PWD}), bukan di volume ini.
+      RAMES_DB_DIR: "${RAMES_DB_DIR:-/var/lib/rames}"
+      RAMES_DB_BACKUP_DIR: "${RAMES_DB_BACKUP_DIR:-/var/lib/rames/backup}"
+      DB_BACKUP_ENABLED: "${DB_BACKUP_ENABLED:-true}"
+      DB_BACKUP_HOUR: "${DB_BACKUP_HOUR:-3}"
+      DB_BACKUP_KEEP_DAILY: "${DB_BACKUP_KEEP_DAILY:-7}"
+      DB_BACKUP_KEEP_WEEKLY: "${DB_BACKUP_KEEP_WEEKLY:-4}"
+      DB_BACKUP_KEEP_MONTHLY: "${DB_BACKUP_KEEP_MONTHLY:-3}"
+      DB_IMPORT_LEGACY_JSON: "${DB_IMPORT_LEGACY_JSON:-true}"
       # Backup volume harian ke S3 via restic (PLAN_VOLUME_BACKUP.md).
       # Namespace env VOLUME_BACKUP_*/RESTIC_*/AWS_* — JANGAN pakai BACKUP_*
       # (itu milik backup database/*.json + config Nginx, SPECS §8g — terpisah).
@@ -74,6 +86,10 @@ services:
       # ke path yang valid di HOST. Jika dimount di /app, path bind jadi
       # "/app/apps/..." yang tidak dikenal daemon host.
       - "${PWD}:${PWD}"
+      # Berkas DB SQLite dashboard + snapshot backup-nya, DI LUAR bind ${PWD}:${PWD}
+      # agar tidak hilang saat `git clean` / update dashboard, dan tidak tumpang
+      # tindih dengan database/keys|env|restic (yang tetap berada di repo).
+      - "rames-data:/var/lib/rames"
       # Docker socket agar dashboard bisa mengeksekusi docker compose (Phase 1 known-risk)
       - "/var/run/docker.sock:/var/run/docker.sock"
       # Direktori config Nginx host di-mount ke dashboard container (dashboard hanya menulis file)
@@ -94,4 +110,18 @@ services:
     # Instal dependensi Composer otomatis jika vendor/ belum ada (mis. clone baru
     # di host tanpa vendor). Karena bind mount ${PWD}:${PWD}, hasil install langsung
     # tersimpan di direktori host dan reusable untuk restart berikutnya.
-    command: ["sh", "-c", "if [ ! -d vendor ]; then composer install --no-dev --optimize-autoloader; fi && php start.php start"]
+    # Lalu migrasi skema SQLite + impor sekali data lama (database/*.json) sebelum
+    # server start. Tanpa `|| true`: bila salah satu langkah gagal, && menghentikan
+    # rantai dan kontainer exit non-zero (fail-fast) — server TIDAK pernah start
+    # dengan skema/DB yang belum siap.
+    command: ["sh", "-c", "if [ ! -d vendor ]; then composer install --no-dev --optimize-autoloader; fi && php cli/db.php migrate && php cli/db.php import-json && php start.php start"]
+
+# Named volume database dashboard (SQLite + snapshot backup).
+# `name: rames` → nama nyata di host = `rames` (bukan rames_rames-data), sehingga
+# stabil lintas `docker compose down` dan mudah di-backup/dipindah.
+volumes:
+  rames-data:
+    name: rames
+    labels:
+      # Penanda volume DB dashboard — dikecualikan dari fitur backup volume app (§8h)
+      rames.role: dashboard-db

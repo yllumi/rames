@@ -25,7 +25,7 @@ class TopUpOrderTest extends TestCase
     {
         $this->tmp = sys_get_temp_dir() . '/topuporder_' . getmypid() . '_' . bin2hex(random_bytes(4));
         mkdir($this->tmp, 0777, true);
-        $this->path = $this->tmp . '/billing.json';
+        $this->path = $this->tmp . '/rames.sqlite';
         $this->store = new BillingStore($this->path);
         $this->orders = new TopUpOrder($this->store);
     }

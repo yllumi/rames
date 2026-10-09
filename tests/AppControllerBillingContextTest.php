@@ -10,6 +10,7 @@ use app\library\Billing\BillingStore;
 use app\library\Billing\CreditAccount;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
+use Tests\Support\SqliteFixture;
 
 /**
  * Unit test konteks billing **baca-saja** di AppController (misi Frontend UI #8):
@@ -18,9 +19,9 @@ use ReflectionMethod;
  *  - `billingEstimateFor()` — estimasi tab "Sumber Daya" dari limit app,
  *  - audit statik view: kartu limit digerbang `canManage` (bukan `is_admin()`).
  *
- * Tanpa HTTP, tanpa Docker, tanpa menyentuh `database/*.json` nyata — store
- * memakai path temp unik. `billingContext()` menerima `$user` eksplisit supaya
- * tidak perlu session.
+ * Tanpa HTTP, tanpa Docker, tanpa menyentuh data runtime nyata — store
+ * memakai berkas SQLite temp unik. `billingContext()` menerima `$user` eksplisit
+ * supaya tidak perlu session.
  */
 class AppControllerBillingContextTest extends TestCase
 {
@@ -35,14 +36,15 @@ class AppControllerBillingContextTest extends TestCase
         $this->tmp = sys_get_temp_dir() . '/rames-billing-ctx-' . getmypid() . '-' . bin2hex(random_bytes(5));
         mkdir($this->tmp, 0777, true);
 
-        file_put_contents($this->tmp . '/auth.json', json_encode([
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::users($db, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
-        ], JSON_UNESCAPED_SLASHES));
+        ]);
 
         $this->account = new CreditAccount(
-            new BillingStore($this->tmp . '/billing.json'),
-            new UserStore($this->tmp . '/auth.json')
+            new BillingStore($db),
+            new UserStore($db)
         );
     }
 

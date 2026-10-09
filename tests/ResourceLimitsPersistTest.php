@@ -19,7 +19,7 @@ use Symfony\Component\Yaml\Yaml;
  *
  *  - sukses ⇒ file override tertulis + `limits`/`compose_files` tersimpan;
  *  - penolakan (service tak dikenal / nilai invalid) ⇒ **tanpa** penulisan
- *    parsial, file tidak dibuat, `apps.json` byte-identik;
+ *    parsial, file tidak dibuat, entri app di store `apps` tidak berubah;
  *  - mengosongkan ⇒ file terhapus, `limits` = null, entri limits dibuang —
  *    termasuk saat base compose sedang tidak terbaca (V3: jalur kosong tidak
  *    mem-parse base compose, tetapi validasi nilai tetap dijalankan lebih dulu);
@@ -65,7 +65,7 @@ class ResourceLimitsPersistTest extends TestCase
             image: mysql:8
         YAML);
 
-        $this->store = new AppStore($this->tmp . '/apps.json');
+        $this->store = new AppStore($this->dbPath());
         $this->store->create([
             'id' => self::APP_ID,
             'name' => 'demo',
@@ -121,9 +121,22 @@ class ResourceLimitsPersistTest extends TestCase
         return ResourceLimits::persist($this->store, $app, $dir, $posted);
     }
 
-    private function appsJsonPath(): string
+    /**
+     * Berkas basis data SQLite temp untuk store `apps`.
+     */
+    private function dbPath(): string
     {
-        return $this->tmp . '/apps.json';
+        return $this->tmp . '/rames.sqlite';
+    }
+
+    /**
+     * Potret entri app di store (untuk membuktikan tidak ada mutasi). SQLite
+     * bermode WAL membuat perbandingan berkas (md5/mtime) tidak lagi sahih,
+     * jadi perbandingan dilakukan pada isi store — sumber kebenarannya.
+     */
+    private function appSnapshot(): string
+    {
+        return (string) json_encode($this->store->find(self::APP_ID));
     }
 
     private function overridePath(): string
@@ -214,7 +227,7 @@ class ResourceLimitsPersistTest extends TestCase
 
     public function testPersistMenolakServiceTidakDikenalTanpaMengubahState(): void
     {
-        $before = md5_file($this->appsJsonPath());
+        $before = $this->appSnapshot();
         $this->assertIsString($before);
 
         try {
@@ -225,7 +238,7 @@ class ResourceLimitsPersistTest extends TestCase
         }
 
         $this->assertFileDoesNotExist($this->overridePath());
-        $this->assertSame($before, md5_file($this->appsJsonPath()));
+        $this->assertSame($before, $this->appSnapshot());
     }
 
     // ==================================================================
@@ -238,7 +251,7 @@ class ResourceLimitsPersistTest extends TestCase
      */
     public function testPersistMenolakNilaiTidakValid(array $posted): void
     {
-        $before = md5_file($this->appsJsonPath());
+        $before = $this->appSnapshot();
         $this->assertIsString($before);
 
         try {
@@ -249,7 +262,7 @@ class ResourceLimitsPersistTest extends TestCase
         }
 
         $this->assertFileDoesNotExist($this->overridePath());
-        $this->assertSame($before, md5_file($this->appsJsonPath()));
+        $this->assertSame($before, $this->appSnapshot());
     }
 
     /**
@@ -270,7 +283,7 @@ class ResourceLimitsPersistTest extends TestCase
 
     public function testPersistMenolakSeluruhInputSaatAdaServiceTidakDikenal(): void
     {
-        $before = md5_file($this->appsJsonPath());
+        $before = $this->appSnapshot();
         $this->assertIsString($before);
 
         try {
@@ -285,7 +298,7 @@ class ResourceLimitsPersistTest extends TestCase
 
         // Tanpa penulisan parsial: file tidak dibuat & state tidak berubah.
         $this->assertFileDoesNotExist($this->overridePath());
-        $this->assertSame($before, md5_file($this->appsJsonPath()));
+        $this->assertSame($before, $this->appSnapshot());
         $this->assertArrayNotHasKey('limits', $this->storedApp());
     }
 
@@ -376,7 +389,7 @@ class ResourceLimitsPersistTest extends TestCase
      */
     public function testPersistBatasAktifTanpaBaseComposeTetapFailFast(): void
     {
-        $before = md5_file($this->appsJsonPath());
+        $before = $this->appSnapshot();
         $this->assertIsString($before);
 
         try {
@@ -387,7 +400,7 @@ class ResourceLimitsPersistTest extends TestCase
         }
 
         $this->assertFileDoesNotExist($this->noBaseOverridePath());
-        $this->assertSame($before, md5_file($this->appsJsonPath()));
+        $this->assertSame($before, $this->appSnapshot());
     }
 
     /**
@@ -401,7 +414,7 @@ class ResourceLimitsPersistTest extends TestCase
         array $posted,
         string $expectedMessage
     ): void {
-        $before = md5_file($this->appsJsonPath());
+        $before = $this->appSnapshot();
         $this->assertIsString($before);
 
         try {
@@ -413,7 +426,7 @@ class ResourceLimitsPersistTest extends TestCase
         }
 
         $this->assertFileDoesNotExist($this->noBaseOverridePath());
-        $this->assertSame($before, md5_file($this->appsJsonPath()));
+        $this->assertSame($before, $this->appSnapshot());
     }
 
     /**
@@ -439,7 +452,7 @@ class ResourceLimitsPersistTest extends TestCase
      */
     public function testPersistMenolakPayloadSkalarTanpaMengubahState(): void
     {
-        $before = md5_file($this->appsJsonPath());
+        $before = $this->appSnapshot();
         $this->assertIsString($before);
 
         try {
@@ -451,7 +464,7 @@ class ResourceLimitsPersistTest extends TestCase
         }
 
         $this->assertFileDoesNotExist($this->overridePath());
-        $this->assertSame($before, md5_file($this->appsJsonPath()));
+        $this->assertSame($before, $this->appSnapshot());
         $this->assertArrayNotHasKey('limits', $this->storedApp());
     }
 
@@ -474,7 +487,7 @@ class ResourceLimitsPersistTest extends TestCase
         // Prasyarat: base YAML valid & service "0" dikenal sebagai service.
         $this->assertSame(['0', 'web'], ResourceLimits::services($this->dir, ['docker-compose.yml']));
 
-        $before = md5_file($this->appsJsonPath());
+        $before = $this->appSnapshot();
         $this->assertIsString($before);
 
         try {
@@ -485,7 +498,7 @@ class ResourceLimitsPersistTest extends TestCase
         }
 
         $this->assertFileDoesNotExist($this->overridePath());
-        $this->assertSame($before, md5_file($this->appsJsonPath()));
+        $this->assertSame($before, $this->appSnapshot());
         $this->assertArrayNotHasKey('limits', $this->storedApp());
     }
 
@@ -509,7 +522,7 @@ class ResourceLimitsPersistTest extends TestCase
 
         $this->assertSame($firstOrder, $stored['compose_files']);
         $this->assertSame($firstFile, (string) file_get_contents($this->overridePath()));
-        $this->assertIsArray(json_decode((string) file_get_contents($this->appsJsonPath()), true));
+        $this->assertIsArray($this->store->find(self::APP_ID));
         $this->assertSame([
             'web' => ['cpus' => 1.5, 'memory_mb' => 512],
             'db' => ['cpus' => null, 'memory_mb' => 256],

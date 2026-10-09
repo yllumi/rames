@@ -37,7 +37,7 @@ class AppStopperTest extends TestCase
         $this->configState = $this->snapshotConfigState();
         $this->useConfig();
 
-        $this->apps = new AppStore($this->tmp . '/apps.json');
+        $this->apps = new AppStore($this->tmp . '/rames.sqlite');
     }
 
     protected function tearDown(): void

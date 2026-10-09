@@ -14,6 +14,10 @@
 /database/*.json
 /database/*.bak
 /database/*.tmp
+# database SQLite (dipakai bila RAMES_DB_DIR tidak diarahkan ke volume `rames`)
+/database/*.sqlite
+/database/*.sqlite-wal
+/database/*.sqlite-shm
 /database/keys/
 /database/env/
 # passphrase restic (backup volume ke S3) — rahasia, jangan pernah di-commit

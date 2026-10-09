@@ -268,7 +268,7 @@ class VolumeRestoreDeleteStaleTest extends TestCase
             new VolumeStateGuard(
                 $docker,
                 new RestoreDeleteFakeComposeRunner(),
-                new AppStore($this->tmp . '/apps.json'),
+                new AppStore($this->tmp . '/apps.sqlite'),
                 $this->tmp . '/apps',
                 new EnvManager($this->tmp . '/env-app'),
                 new RestoreDeleteFakeDbDetector($isDb),

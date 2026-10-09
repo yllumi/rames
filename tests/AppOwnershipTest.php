@@ -9,10 +9,13 @@ use app\library\Auth\UserStore;
 use app\library\Storage\AppStore;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Tests\Support\SqliteFixture;
+use Tests\Support\StoreDbFiles;
 
 /**
- * Test kepemilikan/sharing app (apps.json) & role user (auth.json),
- * termasuk migrasi data lama yang belum punya owner/role.
+ * Test kepemilikan/sharing app (store `apps`) & role user (store `auth`) di
+ * basis data SQLite temp, termasuk migrasi data lama yang belum punya
+ * owner/role. Tidak menyentuh data runtime nyata.
  */
 class AppOwnershipTest extends TestCase
 {
@@ -22,18 +25,14 @@ class AppOwnershipTest extends TestCase
     protected function setUp(): void
     {
         $suffix = bin2hex(random_bytes(4));
-        $this->appsFile = sys_get_temp_dir() . '/rames-own-apps-' . $suffix . '.json';
-        $this->authFile = sys_get_temp_dir() . '/rames-own-auth-' . $suffix . '.json';
+        $this->appsFile = sys_get_temp_dir() . '/rames-own-apps-' . $suffix . '.sqlite';
+        $this->authFile = sys_get_temp_dir() . '/rames-own-auth-' . $suffix . '.sqlite';
     }
 
     protected function tearDown(): void
     {
         foreach ([$this->appsFile, $this->authFile] as $f) {
-            foreach ([$f, $f . '.bak'] as $path) {
-                if (is_file($path)) {
-                    @unlink($path);
-                }
-            }
+            StoreDbFiles::remove($f);
         }
     }
 
@@ -72,10 +71,10 @@ class AppOwnershipTest extends TestCase
 
     public function testLegacyAuthFileWithoutRoleTreatsFirstUserAsAdmin(): void
     {
-        file_put_contents($this->authFile, json_encode([
+        SqliteFixture::users($this->authFile, [
             ['id' => 'u1', 'username' => 'lama', 'password_hash' => password_hash('secret123', PASSWORD_BCRYPT)],
             ['id' => 'u2', 'username' => 'kedua', 'password_hash' => password_hash('secret123', PASSWORD_BCRYPT)],
-        ], JSON_PRETTY_PRINT));
+        ]);
 
         $users = $this->users();
 
@@ -205,10 +204,10 @@ class AppOwnershipTest extends TestCase
 
     public function testOwnershipMigratorAssignsToFirstAdmin(): void
     {
-        file_put_contents($this->authFile, json_encode([
+        SqliteFixture::users($this->authFile, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => date('c')],
             ['id' => 'u2', 'username' => 'budi', 'password_hash' => 'x', 'role' => 'member', 'created_at' => date('c')],
-        ], JSON_PRETTY_PRINT));
+        ]);
 
         $store = $this->store();
         $app = $store->create(['name' => 'lama']);

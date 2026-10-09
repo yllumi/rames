@@ -3,12 +3,16 @@ declare(strict_types=1);
 
 namespace app\library\Auth;
 
-use app\library\Storage\JsonStore;
+use app\library\Storage\SchemaMigrations;
+use app\library\Storage\SqliteStore;
 use InvalidArgumentException;
 use RuntimeException;
 
 /**
- * Penyimpanan user (database/auth.json).
+ * Penyimpanan user — store logis `auth` di basis data SQLite
+ * (`config('deploy.sqlite_file')`, dahulu `database/auth.json`). API publik
+ * tidak berubah; `$filePath` konstruktor = berkas .sqlite (dapat di-override
+ * saat tes).
  *
  * Struktur: id, username, password_hash, role (admin|member), created_at,
  * email (opsional — prasyarat top-up Duitku, lihat SPECS §7.12).
@@ -17,19 +21,27 @@ use RuntimeException;
  * Field `email` **tanpa migrasi**: entri lama yang belum punya `email` tetap
  * valid (`emailOf()` mengembalikan string kosong).
  *
- * Kepemilikan app (owner/member) diatur terpisah di database/apps.json —
- * lihat app\library\Auth\AppAccess.
+ * Kepemilikan app (owner/member) diatur di store `apps` pada basis data SQLite
+ * yang sama — lihat app\library\Auth\AppAccess.
  */
 class UserStore
 {
     public const ROLE_ADMIN = 'admin';
     public const ROLE_MEMBER = 'member';
 
-    private JsonStore $store;
+    private SqliteStore $store;
 
     public function __construct(?string $filePath = null)
     {
-        $this->store = new JsonStore($filePath ?? (config('deploy.database_path') . '/auth.json'));
+        $this->store = new SqliteStore('auth', SchemaMigrations::storeDefinitions()['auth'], $filePath);
+    }
+
+    /**
+     * Path berkas basis data .sqlite (dahulu path `auth.json`).
+     */
+    public function path(): string
+    {
+        return $this->store->path();
     }
 
     /**

@@ -7,15 +7,17 @@ use app\library\Backup\BackupRegistry;
 use app\library\Backup\BackupSelection;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Tests\Support\SqliteFixture;
 
 /**
  * Test `BackupRegistry` — riwayat volume yang pernah ter-backup, disimpan di
- * kunci `registry` pada berkas yang sama dengan seleksi (`database/backup.json`).
+ * koleksi `registry` pada store `backup` yang sama dengan seleksi
+ * (basis data SQLite temp).
  *
  * Kontrak: `upsertMany()` mempertahankan `first_backed_up_at` & nilai lama yang
  * tak disuplai; `syncCounts()` menyegarkan `snapshots` **dan** membuang entri
- * dengan count `0` (keputusan 3b). Registry dan seleksi berbagi berkas —
- * menulis salah satu **tidak** merusak kunci milik yang lain. Path temp
+ * dengan count `0` (keputusan 3b). Registry dan seleksi berbagi store —
+ * menulis salah satu **tidak** merusak koleksi milik yang lain. Path temp
  * (larangan #15: tanpa menyentuh data runtime nyata).
  */
 class BackupRegistryTest extends TestCase
@@ -27,7 +29,7 @@ class BackupRegistryTest extends TestCase
     {
         $this->tmp = sys_get_temp_dir() . '/backupreg_' . bin2hex(random_bytes(4));
         mkdir($this->tmp, 0777, true);
-        $this->path = $this->tmp . '/backup.json';
+        $this->path = $this->tmp . '/rames.sqlite';
     }
 
     protected function tearDown(): void
@@ -50,7 +52,7 @@ class BackupRegistryTest extends TestCase
         @rmdir($path);
     }
 
-    public function testMissingFileReadsEmpty(): void
+    public function testEmptyStoreReadsEmpty(): void
     {
         $this->assertSame([], (new BackupRegistry($this->path))->read());
     }
@@ -101,7 +103,7 @@ class BackupRegistryTest extends TestCase
     {
         $registry = new BackupRegistry($this->path);
         $registry->upsertMany([]);
-        $this->assertFileDoesNotExist($this->path, 'tanpa entri valid → tanpa tulis');
+        $this->assertSame(0, SqliteFixture::count($this->path, 'backup', 'registry'), 'tanpa entri valid → tanpa baris');
     }
 
     public function testUpsertRejectsInvalidVolumeName(): void
@@ -201,8 +203,8 @@ class BackupRegistryTest extends TestCase
     }
 
     /**
-     * Backfill hanya menyentuh kunci `registry` — kunci `volumes` milik seleksi
-     * dibiarkan utuh.
+     * Backfill hanya menyentuh koleksi `registry` — koleksi `volumes` milik
+     * seleksi dibiarkan utuh.
      */
     public function testBackfillDoesNotTouchVolumesKey(): void
     {
@@ -212,10 +214,10 @@ class BackupRegistryTest extends TestCase
         $registry = new BackupRegistry($this->path);
         $registry->backfill(['some_data' => ['project' => 'some', 'strategy' => 'snapshot', 'snapshots' => 1]]);
 
-        $this->assertTrue((new BackupSelection($this->path))->isScheduled('some_data'), 'kunci volumes tidak terganggu');
+        $this->assertTrue((new BackupSelection($this->path))->isScheduled('some_data'), 'koleksi volumes tidak terganggu');
         $this->assertArrayHasKey('some_data', $registry->read());
 
-        $data = json_decode((string) file_get_contents($this->path), true);
+        $data = SqliteFixture::readAll($this->path, 'backup');
         $this->assertArrayHasKey('volumes', $data);
         $this->assertArrayHasKey('registry', $data);
     }
@@ -241,7 +243,7 @@ class BackupRegistryTest extends TestCase
     {
         $registry = new BackupRegistry($this->path);
         $registry->backfill([]);
-        $this->assertFileDoesNotExist($this->path, 'tanpa entri valid → tanpa tulis');
+        $this->assertSame(0, SqliteFixture::count($this->path, 'backup', 'registry'), 'tanpa entri valid → tanpa baris');
     }
 
     public function testSyncCountsUpdatesAndPrunesZero(): void
@@ -333,11 +335,11 @@ class BackupRegistryTest extends TestCase
     }
 
     /**
-     * Koeksistensi: registry & seleksi berbagi berkas yang sama, tetapi menulis
-     * salah satu **tidak** menghapus kunci milik yang lain (masing-masing hanya
-     * menyentuh kuncinya).
+     * Koeksistensi: registry & seleksi berbagi store yang sama, tetapi menulis
+     * salah satu **tidak** menghapus koleksi milik yang lain (masing-masing
+     * hanya menyentuh koleksinya).
      */
-    public function testCoexistsWithSelectionOnSameFile(): void
+    public function testCoexistsWithSelectionOnSameStore(): void
     {
         $selection = new BackupSelection($this->path);
         $selection->setScheduled('tonidata_data', true, 'u1');
@@ -349,16 +351,16 @@ class BackupRegistryTest extends TestCase
 
         // Seleksi tetap utuh setelah registry menulis.
         $reloadedSelection = new BackupSelection($this->path);
-        $this->assertTrue($reloadedSelection->isScheduled('tonidata_data'), 'registry menulis tanpa mengganggu kunci volumes');
+        $this->assertTrue($reloadedSelection->isScheduled('tonidata_data'), 'registry menulis tanpa mengganggu koleksi volumes');
 
         // Registry tetap utuh setelah seleksi menulis lagi.
         $selection->setScheduled('waha_data', true, 'u1');
         $reloadedRegistry = new BackupRegistry($this->path);
         $read = $reloadedRegistry->read();
-        $this->assertArrayHasKey('tonidata_data', $read, 'seleksi menulis tanpa mengganggu kunci registry');
+        $this->assertArrayHasKey('tonidata_data', $read, 'seleksi menulis tanpa mengganggu koleksi registry');
 
-        // Berkas memuat kedua kunci.
-        $data = json_decode((string) file_get_contents($this->path), true);
+        // Store memuat kedua koleksi.
+        $data = SqliteFixture::readAll($this->path, 'backup');
         $this->assertArrayHasKey('volumes', $data);
         $this->assertArrayHasKey('registry', $data);
     }

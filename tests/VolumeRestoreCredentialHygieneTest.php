@@ -264,7 +264,7 @@ class VolumeRestoreCredentialHygieneTest extends TestCase
             'State' => 'exited',
             'Labels' => [VolumeTargetMap::LABEL_PROJECT => 'tonidata'],
         ]]);
-        $apps = new AppStore($this->tmp . '/apps.json');
+        $apps = new AppStore($this->tmp . '/apps.sqlite');
 
         return new VolumeRestoreService(
             $docker,

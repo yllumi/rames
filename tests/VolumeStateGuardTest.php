@@ -11,6 +11,7 @@ use app\library\Docker\DockerComposeRunner;
 use app\library\Storage\AppStore;
 use app\library\Support\ProcessRunner;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SqliteFixture;
 use RuntimeException;
 
 /**
@@ -81,7 +82,8 @@ class VolumeGuardFakeComposeRunner extends DockerComposeRunner
  * (PLAN_VOLUME_BACKUP.md §2, §5.3, §7).
  *
  * Tanpa Engine/Docker nyata: DockerClient & DockerComposeRunner di-fake, dan
- * apps.json ditulis ke direktori temp (bukan data runtime nyata — larangan #15).
+ * store `apps` (SQLite) ditulis ke direktori temp (bukan data runtime nyata —
+ * larangan #15).
  */
 class VolumeStateGuardTest extends TestCase
 {
@@ -92,14 +94,11 @@ class VolumeStateGuardTest extends TestCase
     {
         $this->tmp = sys_get_temp_dir() . '/volguard_' . bin2hex(random_bytes(4));
         mkdir($this->tmp . '/apps', 0777, true);
-        file_put_contents(
-            $this->tmp . '/apps.json',
-            json_encode([[
-                'id' => 'app1',
-                'name' => 'tonidata',
-                'compose_files' => ['docker-compose.yml'],
-            ]], JSON_PRETTY_PRINT)
-        );
+        SqliteFixture::apps($this->tmp . '/apps.sqlite', [[
+            'id' => 'app1',
+            'name' => 'tonidata',
+            'compose_files' => ['docker-compose.yml'],
+        ]]);
         $this->compose = new VolumeGuardFakeComposeRunner();
     }
 
@@ -116,7 +115,7 @@ class VolumeStateGuardTest extends TestCase
         return new VolumeStateGuard(
             new VolumeGuardFakeDockerClient($containers),
             $this->compose,
-            new AppStore($this->tmp . '/apps.json'),
+            new AppStore($this->tmp . '/apps.sqlite'),
             $this->tmp . '/apps',
             new EnvManager($this->tmp . '/env'),
             new VolumeGuardFakeDbDetector(),

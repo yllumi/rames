@@ -5,6 +5,7 @@ namespace Tests;
 
 use app\library\Support\ProcessRunner;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SqliteFixture;
 
 /**
  * Test gerbang kredit (pertahanan berlapis) di `cli/deploy.php` — worker harus
@@ -12,7 +13,7 @@ use PHPUnit\Framework\TestCase;
  * admin / billing mati / owner tak ditemukan tetap dilewati.
  *
  * Dijalankan sebagai subproses dengan env override (path temp) sehingga tidak
- * menyentuh `database/*.json` nyata & tidak memakai Docker (FakeCliDeployer).
+ * menyentuh data nyata & tidak memakai Docker (FakeCliDeployer).
  */
 class CliDeployBillingGateTest extends TestCase
 {
@@ -31,13 +32,14 @@ class CliDeployBillingGateTest extends TestCase
         }
 
         // Owner member (saldo awal 0) + admin bebas.
-        file_put_contents($this->workDir . '/database/auth.json', json_encode([
+        SqliteFixture::users($this->db(), [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
-        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        ]);
 
         $this->env = [
             'DATABASE_PATH' => $this->workDir . '/database',
+            'RAMES_DB_DIR' => $this->workDir . '/database',
             'APPS_PATH' => $this->workDir . '/apps',
             'NGINX_CONF_PATH' => $this->workDir . '/nginx',
             'NGINX_ENABLED_PATH' => $this->workDir . '/nginx',
@@ -60,7 +62,7 @@ class CliDeployBillingGateTest extends TestCase
      */
     private function writeApp(?string $ownerId, array $limits = ['web' => ['cpus' => 1.0, 'memory_mb' => 1024]]): void
     {
-        file_put_contents($this->workDir . '/database/apps.json', json_encode([
+        SqliteFixture::apps($this->db(), [
             [
                 'id' => self::APP_ID,
                 'name' => 'billapp',
@@ -76,17 +78,22 @@ class CliDeployBillingGateTest extends TestCase
                 'containers' => [],
                 'deploy_history' => [],
             ],
-        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        ]);
     }
 
     private function writeBalance(string $userId, float $balance): void
     {
-        file_put_contents($this->workDir . '/database/billing.json', json_encode([
-            'version' => 1,
+        SqliteFixture::billing($this->db(), [
             'users' => [$userId => ['balance' => $balance, 'updated_at' => '', 'ledger' => []]],
-            'usage' => [],
-            'orders' => [],
-        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        ]);
+    }
+
+    /**
+     * Berkas basis data SQLite temp (store `apps`/`auth`/`billing`) subproses.
+     */
+    private function db(): string
+    {
+        return $this->workDir . '/database/rames.sqlite';
     }
 
     private function runApply(array $envExtra = []): array
@@ -101,7 +108,7 @@ class CliDeployBillingGateTest extends TestCase
 
     private function storedApp(): array
     {
-        $apps = json_decode((string) file_get_contents($this->workDir . '/database/apps.json'), true);
+        $apps = SqliteFixture::readAll($this->db(), 'apps');
 
         return $apps[0];
     }

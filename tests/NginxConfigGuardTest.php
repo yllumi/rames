@@ -7,6 +7,7 @@ use app\library\Nginx\NginxConfigGuard;
 use app\library\Nginx\NginxReloader;
 use app\library\Storage\AppStore;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\StoreDbFiles;
 use RuntimeException;
 use Throwable;
 
@@ -116,16 +117,12 @@ class NginxConfigGuardTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->file = sys_get_temp_dir() . '/rames-guard-apps-' . bin2hex(random_bytes(4)) . '.json';
+        $this->file = sys_get_temp_dir() . '/rames-guard-apps-' . bin2hex(random_bytes(4)) . '.sqlite';
     }
 
     protected function tearDown(): void
     {
-        foreach ([$this->file, $this->file . '.bak'] as $f) {
-            if (is_file($f)) {
-                @unlink($f);
-            }
-        }
+        StoreDbFiles::remove($this->file);
     }
 
     /**

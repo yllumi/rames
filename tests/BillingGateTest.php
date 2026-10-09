@@ -10,10 +10,12 @@ use app\library\Billing\CreditAccount;
 use app\library\Billing\InsufficientCredits;
 use PHPUnit\Framework\TestCase;
 use support\Request;
+use Tests\Support\SqliteFixture;
 
 /**
  * Test BillingGate — gerbang kredit (lewati admin/billing mati; blokir saldo
- * kurang) + bentuk respons InsufficientCredits. Path temp; tanpa data runtime.
+ * kurang) + bentuk respons InsufficientCredits. Store di berkas SQLite temp;
+ * tanpa data runtime.
  */
 class BillingGateTest extends TestCase
 {
@@ -29,14 +31,15 @@ class BillingGateTest extends TestCase
         $this->tmp = sys_get_temp_dir() . '/billinggate_' . bin2hex(random_bytes(4));
         mkdir($this->tmp, 0777, true);
 
-        file_put_contents($this->tmp . '/auth.json', json_encode([
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::users($db, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
-        ]));
+        ]);
 
         $this->account = new CreditAccount(
-            new BillingStore($this->tmp . '/billing.json'),
-            new UserStore($this->tmp . '/auth.json')
+            new BillingStore($db),
+            new UserStore($db)
         );
     }
 

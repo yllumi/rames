@@ -6,9 +6,10 @@ namespace Tests;
 use app\library\Storage\AppStore;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Tests\Support\StoreDbFiles;
 
 /**
- * Test AppStore (persistensi apps.json) — termasuk deploy_history.
+ * Test AppStore (persistensi store `apps` di SQLite) — termasuk deploy_history.
  */
 class AppStoreTest extends TestCase
 {
@@ -16,12 +17,12 @@ class AppStoreTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->file = sys_get_temp_dir() . '/rames-apps-' . bin2hex(random_bytes(4)) . '.json';
+        $this->file = sys_get_temp_dir() . '/rames-apps-' . bin2hex(random_bytes(4)) . '.sqlite';
     }
 
     protected function tearDown(): void
     {
-        foreach ([$this->file, $this->file . '.bak'] as $f) {
+        foreach (StoreDbFiles::of($this->file) as $f) {
             if (is_file($f)) {
                 @unlink($f);
             }

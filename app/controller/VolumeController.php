@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Auth\AppAccess;
+use app\library\Backup\VolumeTargetMap;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
 use app\library\Docker\VolumeUsage;
@@ -79,6 +80,9 @@ class VolumeController
 
         $rows = [];
         foreach ($volumes as $v) {
+            if (VolumeTargetMap::isDashboardVolume($v)) {
+                continue; // volume DB dashboard, bukan volume app (lihat VolumeTargetMap)
+            }
             $labels = $v['Labels'] ?? [];
             $project = (string) ($labels['com.docker.compose.project'] ?? '');
             if ($project === '') {
@@ -147,6 +151,9 @@ class VolumeController
         // peta nama volume → project
         $volumeProject = [];
         foreach ($volumes as $v) {
+            if (VolumeTargetMap::isDashboardVolume($v)) {
+                continue; // volume DB dashboard tidak boleh masuk daftar purge
+            }
             $labels = $v['Labels'] ?? [];
             $p = (string) ($labels['com.docker.compose.project'] ?? '');
             if ($p !== '') {

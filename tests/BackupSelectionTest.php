@@ -6,14 +6,16 @@ namespace Tests;
 use app\library\Backup\BackupSelection;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Tests\Support\SqliteFixture;
 
 /**
  * Test `BackupSelection` — flag seleksi backup berkala per volume, disimpan di
- * berkas terpisah dari `apps.json` (path temp; tanpa menyentuh data runtime).
+ * koleksi `volumes` pada store `backup` (basis data SQLite temp; tanpa
+ * menyentuh data runtime).
  *
  * Kontrak: entri absen ⇒ **default OFF** (opt-in); set eksplisit ON/OFF
- * dipersistensikan lewat `JsonStore`. `backfill()` menyalakan volume yang sudah
- * punya snapshot tanpa menimpa entri eksplisit.
+ * dipersistensikan lewat `SqliteStore`. `backfill()` menyalakan volume yang
+ * sudah punya snapshot tanpa menimpa entri eksplisit.
  */
 class BackupSelectionTest extends TestCase
 {
@@ -24,7 +26,7 @@ class BackupSelectionTest extends TestCase
     {
         $this->tmp = sys_get_temp_dir() . '/backupsel_' . bin2hex(random_bytes(4));
         mkdir($this->tmp, 0777, true);
-        $this->path = $this->tmp . '/backup.json';
+        $this->path = $this->tmp . '/rames.sqlite';
     }
 
     protected function tearDown(): void
@@ -47,6 +49,19 @@ class BackupSelectionTest extends TestCase
         @rmdir($path);
     }
 
+    /**
+     * Koleksi `volumes` tersimpan (isi store `backup`).
+     *
+     * @return array<string,array<string,mixed>>
+     */
+    private function stored(): array
+    {
+        $data = SqliteFixture::readAll($this->path, 'backup');
+        $volumes = $data['volumes'] ?? [];
+
+        return is_array($volumes) ? $volumes : [];
+    }
+
     public function testAbsentEntryDefaultsToNotScheduled(): void
     {
         $selection = new BackupSelection($this->path);
@@ -63,14 +78,13 @@ class BackupSelectionTest extends TestCase
         $this->assertFalse($selection->isScheduled('tonidata_data'));
         $this->assertSame(['tonidata_data' => false], $selection->explicit());
 
-        // Instance baru membaca berkas yang sama (persistensi lintas-instance).
+        // Instance baru membaca store yang sama (persistensi lintas-instance).
         $reloaded = new BackupSelection($this->path);
         $this->assertFalse($reloaded->isScheduled('tonidata_data'));
 
-        $data = json_decode((string) file_get_contents($this->path), true);
-        $this->assertSame(1, $data['version']);
-        $this->assertSame('u1', $data['volumes']['tonidata_data']['updated_by']);
-        $this->assertArrayHasKey('updated_at', $data['volumes']['tonidata_data']);
+        $stored = $this->stored();
+        $this->assertSame('u1', $stored['tonidata_data']['updated_by']);
+        $this->assertArrayHasKey('updated_at', $stored['tonidata_data']);
     }
 
     public function testSetScheduledTrueIsExplicit(): void
@@ -91,25 +105,23 @@ class BackupSelectionTest extends TestCase
     }
 
     /**
-     * `isScheduled()` dipanggil per baris volume — berkas harus dibaca SEKALI
+     * `isScheduled()` dipanggil per baris volume — store harus dibaca SEKALI
      * per instance, bukan tiap panggilan.
      */
-    public function testMemoizesFileReadPerInstance(): void
+    public function testMemoizesStoreReadPerInstance(): void
     {
-        file_put_contents($this->path, json_encode([
-            'version' => 1,
+        SqliteFixture::backup($this->path, [
             'volumes' => ['tonidata_data' => ['scheduled' => false]],
-        ]));
+        ]);
 
         $selection = new BackupSelection($this->path);
         $this->assertFalse($selection->isScheduled('tonidata_data'));
 
-        // Ubah berkas di belakang instance. Bila memo bekerja, panggilan
+        // Ubah store di belakang instance. Bila memo bekerja, panggilan
         // berikutnya TIDAK membaca ulang ⇒ tetap memakai nilai lama.
-        file_put_contents($this->path, json_encode([
-            'version' => 1,
+        SqliteFixture::backup($this->path, [
             'volumes' => ['tonidata_data' => ['scheduled' => true]],
-        ]));
+        ]);
 
         $this->assertFalse($selection->isScheduled('tonidata_data'), 'memo: tidak baca ulang');
         $this->assertSame(['tonidata_data' => false], $selection->explicit(), 'explicit() ikut memo');
@@ -142,10 +154,9 @@ class BackupSelectionTest extends TestCase
         $this->assertTrue($selection->isScheduled('waha_data'));
         $this->assertSame(['tonidata_data' => true, 'waha_data' => true], $selection->explicit());
 
-        $data = json_decode((string) file_get_contents($this->path), true);
-        $this->assertSame(1, $data['version']);
-        $this->assertSame('system', $data['volumes']['tonidata_data']['updated_by']);
-        $this->assertArrayHasKey('updated_at', $data['volumes']['tonidata_data']);
+        $data = $this->stored();
+        $this->assertSame('system', $data['tonidata_data']['updated_by']);
+        $this->assertArrayHasKey('updated_at', $data['tonidata_data']);
     }
 
     public function testBackfillDoesNotOverwriteExplicitEntries(): void
@@ -159,27 +170,27 @@ class BackupSelectionTest extends TestCase
         $this->assertFalse($selection->isScheduled('tonidata_data'), 'entri eksplisit OFF dipertahankan');
         $this->assertSame(['tonidata_data' => false, 'waha_data' => true], $selection->explicit());
 
-        $data = json_decode((string) file_get_contents($this->path), true);
-        $this->assertSame('u1', $data['volumes']['tonidata_data']['updated_by'], 'tidak diubah sistem');
+        $data = $this->stored();
+        $this->assertSame('u1', $data['tonidata_data']['updated_by'], 'tidak diubah sistem');
     }
 
     public function testBackfillIsIdempotent(): void
     {
         $selection = new BackupSelection($this->path);
         $selection->backfill(['tonidata_data']);
-        $first = json_decode((string) file_get_contents($this->path), true);
+        $first = $this->stored();
 
         $selection->backfill(['tonidata_data']);
-        $second = json_decode((string) file_get_contents($this->path), true);
+        $second = $this->stored();
 
-        $this->assertSame($first, $second, 'backfill kedua tidak mengubah berkas');
+        $this->assertSame($first, $second, 'backfill kedua tidak mengubah store');
     }
 
     public function testBackfillIgnoresEmptyAndRejectsInvalidName(): void
     {
         $selection = new BackupSelection($this->path);
         $selection->backfill(['']);
-        $this->assertFileDoesNotExist($this->path, 'nama kosong diabaikan (tanpa tulis)');
+        $this->assertSame([], $this->stored(), 'nama kosong diabaikan (tanpa tulis)');
 
         $this->expectException(RuntimeException::class);
         $selection->backfill(['../evil']);

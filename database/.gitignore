@@ -1,4 +1,7 @@
 *.json
 *.bak
 *.tmp
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 !.gitignore

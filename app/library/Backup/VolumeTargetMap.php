@@ -39,6 +39,38 @@ final class VolumeTargetMap
     public const LABEL_PROJECT = 'com.docker.compose.project';
 
     /**
+     * Label penanda volume database dashboard. `docker-compose.yml` memberi
+     * named volume `rames` (mount `/var/lib/rames`) label `rames.role=dashboard-db`.
+     *
+     * Volume itu **ikut** ber-label compose (`com.docker.compose.project=rames`)
+     * sehingga lolos filter label di atas — padahal ia bukan volume app.
+     * Bila ikut menjadi target backup, run berkala berkebijakan snapshot `stop`
+     * + `require_stopped` akan menghentikan container dashboard (proses yang
+     * menjalankan backup itu sendiri) → run gagal / dashboard mati. Karena itu
+     * volume ber-label ini **dikecualikan permanen** dari target
+     * backup/restore/schedule (dan dari daftar/purge volume di `/volumes`).
+     */
+    public const DASHBOARD_VOLUME_LABEL_KEY = 'rames.role';
+    public const DASHBOARD_VOLUME_LABEL_VALUE = 'dashboard-db';
+
+    /**
+     * Apakah entri volume Engine ini volume database dashboard (yang harus
+     * dikecualikan). Bekerja pada bentuk respons `GET /volumes`:
+     * `Labels` = map label → nilai (bukan list).
+     *
+     * @param array<string,mixed> $volume entri `DockerClient::listVolumes()`
+     */
+    public static function isDashboardVolume(array $volume): bool
+    {
+        $labels = $volume['Labels'] ?? null;
+        if (!is_array($labels)) {
+            return false;
+        }
+
+        return (string) ($labels[self::DASHBOARD_VOLUME_LABEL_KEY] ?? '') === self::DASHBOARD_VOLUME_LABEL_VALUE;
+    }
+
+    /**
      * Bangun daftar target backup dari daftar volume Engine + daftar app.
      *
      * @param array<int,array> $volumes keluaran `DockerClient::listVolumes()` (respons `GET /volumes`)
@@ -54,6 +86,11 @@ final class VolumeTargetMap
         foreach ($volumes as $volume) {
             $name = (string) ($volume['Name'] ?? '');
             if ($name === '' || isset($seen[$name])) {
+                continue;
+            }
+
+            if (self::isDashboardVolume($volume)) {
+                // Volume DB dashboard bukan volume app — dikecualikan (lihat konstanta).
                 continue;
             }
 

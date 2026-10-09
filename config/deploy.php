@@ -31,6 +31,11 @@ $billingFloat = static function (string $name, float $default): float {
     return $value === false || trim($value) === '' ? $default : (float) $value;
 };
 
+// Lokasi basis data SQLite (fondasi migrasi JSON → SQLite). `database_path`
+// tetap dipakai untuk keys/env/restic, jadi tidak diubah.
+$sqliteDir = getenv('RAMES_DB_DIR') ?: (base_path() . '/database');
+$sqliteFile = getenv('RAMES_DB_FILE') ?: ($sqliteDir . '/rames.sqlite');
+
 return [
     // Domain dasar; subdomain app = {name}.{app_domain}
     'app_domain' => getenv('APP_DOMAIN') ?: 'example.com',
@@ -61,8 +66,24 @@ return [
     'nginx_bin' => getenv('NGINX_BIN') ?: '/usr/sbin/nginx',
     'nginx_reload_image' => getenv('NGINX_RELOAD_IMAGE') ?: 'alpine',
 
-    // Direktori penyimpanan JSON (auth.json, apps.json)
+    // Direktori data non-DB: SSH key app (`keys/`), managed env (`env/`),
+    // passphrase restic (`restic/`) — data domain kini di SQLite (`sqlite_*`).
     'database_path' => getenv('DATABASE_PATH') ?: (base_path() . '/database'),
+
+    // ---- Basis data SQLite (fondasi migrasi JSON → SQLite) ----
+    // Direktori & berkas .sqlite. `database_path` JANGAN diubah (dipakai
+    // keys/env/restic); lokasi SQLite punya knob sendiri.
+    'sqlite_dir' => $sqliteDir,
+    'sqlite_file' => $sqliteFile,
+    // Backup berkala basis data SQLite.
+    'db_backup_dir' => getenv('RAMES_DB_BACKUP_DIR') ?: (dirname($sqliteFile) . '/backup'),
+    'db_backup_enabled' => $billingBool('DB_BACKUP_ENABLED', true),
+    'db_backup_hour' => $billingInt('DB_BACKUP_HOUR', 3),
+    'db_backup_keep_daily' => $billingInt('DB_BACKUP_KEEP_DAILY', 7),
+    'db_backup_keep_weekly' => $billingInt('DB_BACKUP_KEEP_WEEKLY', 4),
+    'db_backup_keep_monthly' => $billingInt('DB_BACKUP_KEEP_MONTHLY', 3),
+    // Impor sekali dari berkas JSON lama saat basis data SQLite baru dibuat.
+    'db_import_legacy_json' => $billingBool('DB_IMPORT_LEGACY_JSON', true),
 
     // Direktori pasangan kunci SSH (deploy key per app) + known_hosts
     'ssh_keys_path' => getenv('SSH_KEYS_PATH') ?: (base_path() . '/database/keys'),

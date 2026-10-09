@@ -15,6 +15,7 @@ use GuzzleHttp\Client;
 use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
 use support\Request;
+use Tests\Support\SqliteFixture;
 use Webman\Config;
 
 /**
@@ -49,13 +50,14 @@ class PaymentCallbackTest extends TestCase
         $this->configState = $this->snapshotConfigState();
         $this->useConfig([]);
 
-        file_put_contents($this->tmp . '/auth.json', (string) json_encode([
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::users($db, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => '', 'email' => 'admin@example.com'],
             ['id' => 'u2', 'username' => 'budi', 'password_hash' => 'x', 'role' => 'member', 'created_at' => '', 'email' => 'budi@example.com'],
-        ]));
+        ]);
 
-        $this->billing = new BillingStore($this->tmp . '/billing.json');
-        $this->users = new UserStore($this->tmp . '/auth.json');
+        $this->billing = new BillingStore($db);
+        $this->users = new UserStore($db);
         $this->accounts = new CreditAccount($this->billing, $this->users);
     }
 
@@ -350,6 +352,8 @@ class PaymentCallbackTest extends TestCase
         file_put_contents(
             $this->tmp . '/config/deploy.php',
             '<?php return ' . var_export(array_merge([
+                'sqlite_file' => $this->tmp . '/rames.sqlite',
+                'database_path' => $this->tmp,
                 'billing_enabled' => true,
                 'billing_topup_enabled' => true,
                 'billing_topup_idr_per_credit' => 10.0,

@@ -18,6 +18,7 @@ use app\library\Docker\DockerComposeRunner;
 use app\library\Storage\AppStore;
 use app\library\Support\ProcessRunner;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SqliteFixture;
 use RuntimeException;
 
 /**
@@ -161,10 +162,10 @@ class VolumeBackupScheduleFilterTest extends TestCase
         $this->tmp = sys_get_temp_dir() . '/volsched_' . bin2hex(random_bytes(4));
         mkdir($this->tmp . '/apps', 0777, true);
         file_put_contents($this->tmp . '/password', "passphrase\n");
-        file_put_contents($this->tmp . '/apps.json', json_encode([
+        SqliteFixture::apps($this->tmp . '/apps.sqlite', [
             ['id' => 'app1', 'name' => 'tonidata', 'compose_files' => ['docker-compose.yml']],
             ['id' => 'app2', 'name' => 'waha', 'compose_files' => ['docker-compose.yml']],
-        ], JSON_PRETTY_PRINT));
+        ]);
     }
 
     protected function tearDown(): void
@@ -192,8 +193,17 @@ class VolumeBackupScheduleFilterTest extends TestCase
         $docker = new VolumeScheduleFakeDockerClient([
             ['Name' => 'tonidata_data', 'Labels' => [VolumeTargetMap::LABEL_PROJECT => 'tonidata']],
             ['Name' => 'waha_data', 'Labels' => [VolumeTargetMap::LABEL_PROJECT => 'waha']],
+            // Volume DB dashboard: ber-label compose + penanda role → wajib
+            // dikecualikan dari target (tidak muncul di hasil run/catalog).
+            [
+                'Name' => 'rames',
+                'Labels' => [
+                    VolumeTargetMap::LABEL_PROJECT => 'rames',
+                    VolumeTargetMap::DASHBOARD_VOLUME_LABEL_KEY => VolumeTargetMap::DASHBOARD_VOLUME_LABEL_VALUE,
+                ],
+            ],
         ]);
-        $apps = new AppStore($this->tmp . '/apps.json');
+        $apps = new AppStore($this->tmp . '/apps.sqlite');
         $guard = new VolumeStateGuard(
             $docker,
             new VolumeScheduleFakeComposeRunner(),
@@ -230,7 +240,7 @@ class VolumeBackupScheduleFilterTest extends TestCase
 
     public function testScheduleRunOnlyProcessesScheduledVolumes(): void
     {
-        $selection = new BackupSelection($this->tmp . '/selection.json');
+        $selection = new BackupSelection($this->tmp . '/selection.sqlite');
         $selection->setScheduled('waha_data', true); // tonidata_data tanpa entri → default OFF
 
         $run = $this->makeService($selection)->run(['trigger' => 'schedule', 'volumes' => null]);
@@ -242,7 +252,7 @@ class VolumeBackupScheduleFilterTest extends TestCase
 
     public function testScheduleRunSkipsExplicitlyDisabledVolume(): void
     {
-        $selection = new BackupSelection($this->tmp . '/selection.json');
+        $selection = new BackupSelection($this->tmp . '/selection.sqlite');
         $selection->setScheduled('tonidata_data', true);
         $selection->setScheduled('waha_data', false);
 
@@ -254,7 +264,7 @@ class VolumeBackupScheduleFilterTest extends TestCase
 
     public function testExplicitVolumesAreProcessedEvenWithoutEntry(): void
     {
-        $selection = new BackupSelection($this->tmp . '/selection.json');
+        $selection = new BackupSelection($this->tmp . '/selection.sqlite');
 
         $run = $this->makeService($selection)->run(['trigger' => 'manual', 'volumes' => ['tonidata_data']]);
 
@@ -263,10 +273,23 @@ class VolumeBackupScheduleFilterTest extends TestCase
         $this->assertSame(1, $run['totals']['ok']);
     }
 
+    public function testDashboardVolumeIsExcludedFromTargets(): void
+    {
+        $selection = new BackupSelection($this->tmp . '/selection.sqlite');
+        // Bahkan bila (keliru) dijadwalkan, volume DB dashboard tidak pernah jadi target.
+        $selection->setScheduled('rames', true);
+
+        $service = $this->makeService($selection);
+        $this->assertSame(['tonidata_data', 'waha_data'], VolumeTargetMap::names($service->targets()));
+
+        $run = $service->run(['trigger' => 'schedule', 'volumes' => null]);
+        $this->assertSame(0, $run['totals']['volumes'], 'volume dashboard tidak pernah diproses');
+    }
+
     public function testCatalogReadAndRunningProbeDoNotTouchEngine(): void
     {
         $docker = new VolumeScheduleThrowingDockerClient();
-        $apps = new AppStore($this->tmp . '/apps.json');
+        $apps = new AppStore($this->tmp . '/apps.sqlite');
         $service = new VolumeBackupService(
             $docker,
             $apps,
@@ -289,7 +312,7 @@ class VolumeBackupScheduleFilterTest extends TestCase
             $this->tmp . '/env-creds',
             3600,
             [],
-            new BackupSelection($this->tmp . '/selection.json'),
+            new BackupSelection($this->tmp . '/selection.sqlite'),
             new BackupCatalog($this->tmp . '/catalog.json'),
         );
 

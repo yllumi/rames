@@ -3,16 +3,17 @@ declare(strict_types=1);
 
 namespace app\library\Backup;
 
-use app\library\Storage\JsonStore;
+use app\library\Storage\SchemaMigrations;
+use app\library\Storage\SqliteStore;
 
 /**
- * Flag seleksi backup berkala **per volume** (opt-in), disimpan di berkas
- * terpisah dari `apps.json` (`database/backup.json`, gitignored) agar skema
- * `apps.json` tidak berubah (PLAN_VOLUME_BACKUP.md).
+ * Flag seleksi backup berkala **per volume** (opt-in), disimpan pada store
+ * logis `backup` — koleksi `volumes` di basis data SQLite
+ * (`config('deploy.sqlite_file')`, dahulu `database/backup.json`), agar skema
+ * store `apps` tidak berubah (PLAN_VOLUME_BACKUP.md).
  *
- * Bentuk berkas:
- *   {"version":1,"volumes":{"<nama>":{
- *       "scheduled":bool,"updated_at":"<ISO>","updated_by":"<userId>"}}}
+ * Bentuk data (per volume):
+ *   {"scheduled":bool,"updated_at":"<ISO>","updated_by":"<userId>"}
  *
  * Default **OFF** (opt-in): volume tanpa entri / tanpa kunci `scheduled`
  * dianggap **tidak** terjadwal, sehingga volume baru harus dinyalakan secara
@@ -20,45 +21,53 @@ use app\library\Storage\JsonStore;
  * di-backfill otomatis ke ON (lihat `backfill()`) agar backup yang sudah ada
  * tidak berhenti terjadwal tanpa disengaja.
  *
- * Tanpa cache lintas-request (worker Webman persistent): isi berkas dimemoize
+ * Tanpa cache lintas-request (worker Webman persistent): isi store dimemoize
  * **per instance** saja (instance dibuat per request/run), bukan di properti
- * global/controller. Mutasi lewat `JsonStore::update()` (atomik + `flock` +
- * backup `.bak`). Instance dengan `$path` di konstruktor agar path dapat
- * di-override saat tes (pola `UserStore`).
+ * global/controller. Mutasi lewat `SqliteStore::update()` (satu transaksi).
+ * Instance dengan `$path` di konstruktor agar path dapat di-override saat tes
+ * (pola `UserStore`).
  */
 final class BackupSelection
 {
-    private JsonStore $store;
+    private SqliteStore $store;
 
     /**
-     * Memo isi berkas — dibaca sekali per instance lalu dipakai ulang.
+     * Memo isi store — dibaca sekali per instance lalu dipakai ulang.
      *
      * `isScheduled()` dipanggil **per baris volume** (mis. `withScheduled()`
-     * atau run berkala), sehingga tanpa memo berkas dibaca N kali per request.
+     * atau run berkala), sehingga tanpa memo store dibaca N kali per request.
      * Instance dibuat per request/run (`new BackupSelection()`), jadi memo tidak
      * pernah bertahan lintas-request pada worker Webman persistent.
      *
-     * `null` = belum dibaca; `[]` (berkas kosong) tetap memo valid.
+     * `null` = belum dibaca; `[]` (store kosong) tetap memo valid.
      *
      * @var array<string,mixed>|null
      */
     private ?array $memo = null;
 
     /**
-     * @param string|null $path path berkas seleksi; null = `database/backup.json`
+     * @param string|null $path path berkas .sqlite store `backup`;
+     *                          null = {@see self::defaultPath()}
+     *                          (`config('deploy.sqlite_file')`)
      */
     public function __construct(?string $path = null)
     {
-        $this->store = new JsonStore($path ?? self::defaultPath());
+        $this->store = new SqliteStore(
+            'backup',
+            SchemaMigrations::storeDefinitions()['backup'],
+            $path ?? self::defaultPath()
+        );
     }
 
     /**
-     * Path default: `config('deploy.database_path') . '/backup.json'`.
+     * Path default berkas basis data .sqlite: `config('deploy.sqlite_file')`.
+     *
+     * Nama dipertahankan agar pemakai lama (`VolumeBackupService`, tes) tidak
+     * berubah; nilainya kini berkas DB, bukan `database/backup.json`.
      */
     public static function defaultPath(): string
     {
-        $dir = rtrim((string) config('deploy.database_path', base_path() . '/database'), '/');
-        return $dir . '/backup.json';
+        return (string) config('deploy.sqlite_file', base_path() . '/database/rames.sqlite');
     }
 
     public function path(): string
@@ -83,7 +92,8 @@ final class BackupSelection
     }
 
     /**
-     * Isi berkas seleksi — dibaca sekali lalu dimemoize per instance.
+     * Isi store seleksi (koleksi `volumes`) — dibaca sekali lalu dimemoize per
+     * instance.
      *
      * @return array<string,mixed>
      */
@@ -128,7 +138,7 @@ final class BackupSelection
      * Untuk setiap nama yang **belum punya entri eksplisit**, tulis
      * `{"scheduled":true,"updated_at":"<ISO>","updated_by":"system"}`.
      * Entri eksplisit (ON maupun OFF) **tidak** ditimpa ⇒ idempotent. Semua nama
-     * ditulis dalam **satu** `JsonStore::update`; nama divalidasi fail-fast
+     * ditulis dalam **satu** `SqliteStore::update`; nama divalidasi fail-fast
      * SEBELUM menulis apa pun.
      *
      * @param array<int,string> $volumeNames

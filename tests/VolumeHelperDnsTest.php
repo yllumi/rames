@@ -219,7 +219,7 @@ class VolumeHelperDnsTest extends TestCase
 
     private function makeBackupService(DockerClient $docker, ProcessRunner $runner): VolumeBackupService
     {
-        $apps = new AppStore($this->tmp . '/apps.json');
+        $apps = new AppStore($this->tmp . '/apps.sqlite');
         $guard = new VolumeStateGuard(
             $docker,
             new HelperDnsFakeComposeRunner(),
@@ -244,9 +244,9 @@ class VolumeHelperDnsTest extends TestCase
             $this->tmp . '/env',
             3600,
             [],
-            // Isolasi larangan #15: seleksi tidak boleh menyentuh
-            // `database/backup.json` nyata — arahkan ke path temp tes.
-            selection: new BackupSelection($this->tmp . '/backup.json'),
+            // Isolasi larangan #15: seleksi tidak boleh menyentuh store nyata —
+            // arahkan ke berkas SQLite temp tes.
+            selection: new BackupSelection($this->tmp . '/backup.sqlite'),
         );
     }
 
@@ -255,7 +255,7 @@ class VolumeHelperDnsTest extends TestCase
         $guard = new VolumeStateGuard(
             $docker,
             new HelperDnsFakeComposeRunner(),
-            new AppStore($this->tmp . '/apps.json'),
+            new AppStore($this->tmp . '/apps.sqlite'),
             $this->tmp . '/apps',
             new EnvManager($this->tmp . '/env-app'),
             new HelperDnsFakeDbDetector(),

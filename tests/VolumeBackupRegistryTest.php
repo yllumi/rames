@@ -19,6 +19,7 @@ use app\library\Docker\DockerComposeRunner;
 use app\library\Storage\AppStore;
 use app\library\Support\ProcessRunner;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SqliteFixture;
 use RuntimeException;
 
 /**
@@ -148,11 +149,11 @@ class VolumeBackupRegistryTest extends TestCase
         $this->tmp = sys_get_temp_dir() . '/volreg_' . bin2hex(random_bytes(4));
         mkdir($this->tmp . '/apps', 0777, true);
         file_put_contents($this->tmp . '/password', "passphrase\n");
-        file_put_contents($this->tmp . '/apps.json', json_encode([
+        SqliteFixture::apps($this->tmp . '/apps.sqlite', [
             ['id' => 'app1', 'name' => 'tonidata', 'compose_files' => ['docker-compose.yml']],
-        ], JSON_PRETTY_PRINT));
+        ]);
 
-        $this->registryPath = $this->tmp . '/backup.json';
+        $this->registryPath = $this->tmp . '/registry.sqlite';
         $this->catalogPath = $this->tmp . '/catalog.json';
     }
 
@@ -201,7 +202,7 @@ class VolumeBackupRegistryTest extends TestCase
         $docker = new VolumeRegistryFakeDockerClient([
             ['Name' => 'tonidata_data', 'Labels' => [VolumeTargetMap::LABEL_PROJECT => 'tonidata']],
         ]);
-        $apps = new AppStore($this->tmp . '/apps.json');
+        $apps = new AppStore($this->tmp . '/apps.sqlite');
         $guard = new VolumeStateGuard(
             $docker,
             new VolumeRegistryFakeComposeRunner(),
@@ -226,7 +227,7 @@ class VolumeBackupRegistryTest extends TestCase
             $this->tmp . '/env-creds',
             3600,
             [],
-            new BackupSelection($this->tmp . '/selection.json'),
+            new BackupSelection($this->tmp . '/selection.sqlite'),
             $catalog,
             $registry,
         );

@@ -10,10 +10,12 @@ use app\library\Billing\Invoicer;
 use app\library\Storage\AppStore;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SqliteFixture;
 
 /**
  * Test Invoicer — penagihan periode (idempoten), rincian item, pruning app
- * hilang, dan kebijakan stop. Path temp; tanpa Docker & tanpa data runtime.
+ * hilang, dan kebijakan stop. Store di berkas SQLite temp; tanpa Docker & tanpa
+ * data runtime.
  */
 class InvoicerTest extends TestCase
 {
@@ -27,14 +29,15 @@ class InvoicerTest extends TestCase
         $this->tmp = sys_get_temp_dir() . '/invoicer_' . bin2hex(random_bytes(4));
         mkdir($this->tmp, 0777, true);
 
-        file_put_contents($this->tmp . '/auth.json', json_encode([
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::users($db, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
-        ]));
+        ]);
 
-        $this->apps = new AppStore($this->tmp . '/apps.json');
-        $this->billing = new BillingStore($this->tmp . '/billing.json');
-        $this->users = new UserStore($this->tmp . '/auth.json');
+        $this->apps = new AppStore($db);
+        $this->billing = new BillingStore($db);
+        $this->users = new UserStore($db);
     }
 
     protected function tearDown(): void

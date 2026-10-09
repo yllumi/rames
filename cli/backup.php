@@ -134,7 +134,7 @@ if ($mode === 'restore-archived') {
         VolumeStateGuard::assertVolumeName($targetName);
         ResticRunner::assertSnapshotId($snapshot);
 
-        // Entri registry (database/backup.json) memiliki `project` asal — dipakai
+        // Entri registry (store `backup` di SQLite) memiliki `project` asal — dipakai
         // sebagai label volume target & konteks log.
         $entry = (new BackupRegistry())->read()[$volume] ?? null;
 

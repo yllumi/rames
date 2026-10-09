@@ -82,7 +82,7 @@ class VolumeBackupService
      * @param string|null $envDir direktori env-file kredensial per-run; null = `<runtime>/backup/tmp`
      * @param int $staleEnvMaxAge umur (detik) env-file yatim sebelum dibersihkan best-effort
      * @param array<string,string>|null $credentialEnv override nilai env kredensial (uji); null = config
-     * @param BackupSelection|null $selection seleksi volume run berkala (default: `database/backup.json`)
+     * @param BackupSelection|null $selection seleksi volume run berkala (default: store `backup` di SQLite)
      * @param BackupCatalog|null $catalog cache ringkasan (default: `<report dir>/catalog.json`)
      * @param BackupRegistry|null $registry riwayat volume ter-backup (default: path sama dengan seleksi)
      */
@@ -129,9 +129,9 @@ class VolumeBackupService
         // Default cache ikut direktori laporan (runtime/backup) agar tes dengan
         // `BackupReport($tmp)` otomatis terisolasi — tanpa menyentuh runtime nyata.
         $this->catalog = $catalog ?? new BackupCatalog($this->report->dir() . '/catalog.json');
-        // Registry berbagi berkas dengan seleksi (`database/backup.json`) — turunkan
+        // Registry berbagi store dengan seleksi (store `backup` di SQLite) — turunkan
         // path dari instans seleksi agar override temp pada tes ikut terisolasi
-        // (larangan #15: jangan menyentuh `database/backup.json` nyata).
+        // (larangan #15: jangan menyentuh store `backup`/DB nyata saat tes).
         $this->registry = $registry ?? new BackupRegistry($this->selection->path());
     }
 
@@ -433,7 +433,7 @@ class VolumeBackupService
         } elseif ($trigger === 'schedule') {
             // Run berkala (timer) memilih volume lewat seleksi per-volume
             // (default OFF/opt-in; volume yang sudah punya snapshot di-backfill
-            // otomatis ke ON). Murni baca `database/backup.json` — tanpa
+            // otomatis ke ON). Murni baca store `backup` — tanpa
             // panggilan Engine/restic tambahan. Daftar volume eksplisit (manual)
             // TIDAK disaring; pemanggil sudah memilih.
             $targets = array_values(array_filter(

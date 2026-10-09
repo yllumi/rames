@@ -8,6 +8,8 @@ $active = 'backups';
 $enabled = $enabled ?? true;
 $policy = (string) ($policy ?? 'stop');
 $isAdmin = $isAdmin ?? is_admin();
+// Data kartu "Database dashboard (SQLite)" (null untuk non-admin / bila tak ada).
+$db = $db ?? null;
 
 $policyLabel = $policy === 'skip'
     ? 'manual saja — volume non-DB tidak dijadwalkan otomatis'
@@ -180,6 +182,174 @@ $breadcrumbs = [
       </div>
     <?php endif; ?>
   </div><!-- /.tab-content -->
+
+  <?php if (is_array($db) && $db !== []): ?>
+    <?php
+      // Kartu admin-only: status/unduh/restore DB dashboard (SQLite).
+      // Hanya perhitungan format tampilan di sini — tanpa logika bisnis.
+      $dbFmt = static function (int $bytes): string {
+          $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+          $value = (float) $bytes;
+          $unit = 0;
+          while ($value >= 1024 && $unit < count($units) - 1) {
+              $value /= 1024;
+              $unit++;
+          }
+          return ($unit === 0 ? (string) (int) $value : number_format($value, 1)) . ' ' . $units[$unit];
+      };
+      $dbState = is_array($db['state'] ?? null) ? $db['state'] : [];
+      $dbSnapshots = is_array($db['snapshots'] ?? null) ? $db['snapshots'] : [];
+      $dbRecent = array_slice($dbSnapshots, 0, 10);
+      $dbKeep = is_array($db['keep'] ?? null) ? $db['keep'] : [];
+      $dbAvailable = (bool) ($db['available'] ?? false);
+      $dbHour = (int) ($db['hour'] ?? 0);
+    ?>
+    <div class="card mt-3" id="db-backup">
+      <div class="card-header bg-white py-2 d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+          <strong>Database dashboard (SQLite)</strong>
+          <span class="text-muted small d-block">
+            Basis data dashboard disimpan di named volume <span class="mono">rames</span>
+            (<span class="mono">/var/lib/rames</span>); snapshot berkala harian pukul
+            <span class="mono"><?= e((string) $dbHour) ?>:00</span>.
+          </span>
+        </div>
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <form method="post" action="/backups/db/run" class="m-0">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-primary btn-sm">Backup sekarang</button>
+          </form>
+          <form method="post" action="/backups/db/prune" class="m-0">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-outline-secondary btn-sm">Prune sekarang</button>
+          </form>
+        </div>
+      </div>
+      <div class="card-body">
+        <?php if (!$dbAvailable): ?>
+          <div class="alert alert-danger py-2 small" role="alert">
+            <strong>Status database tidak terbaca.</strong>
+            <?php if (!empty($db['error'])): ?><span class="mono"><?= e((string) $db['error']) ?></span><?php endif; ?>
+          </div>
+        <?php endif; ?>
+
+        <?php if (!empty($dbState['error'])): ?>
+          <div class="alert alert-danger py-2 small" role="alert">
+            <strong>Error terakhir:</strong> <span class="mono"><?= e((string) $dbState['error']) ?></span>
+          </div>
+        <?php endif; ?>
+
+        <?php if ((string) ($dbState['last_skip_reason'] ?? '') === 'busy'): ?>
+          <div class="alert alert-warning py-2 small" role="alert">
+            Snapshot terakhir <strong>dilewati</strong>: backup lain sedang berjalan (busy).
+          </div>
+        <?php endif; ?>
+
+        <dl class="row small mb-0">
+          <dt class="col-sm-3">Path DB</dt>
+          <dd class="col-sm-9 mono text-break"><?= e((string) ($db['path'] ?? '')) ?></dd>
+
+          <dt class="col-sm-3">Ukuran DB</dt>
+          <dd class="col-sm-9"><?= e($dbFmt((int) ($db['db_bytes'] ?? 0))) ?></dd>
+
+          <dt class="col-sm-3">Snapshot terakhir</dt>
+          <dd class="col-sm-9">
+            <?php if (!empty($db['latest']) && is_array($db['latest'])): ?>
+              <span class="mono"><?= e((string) ($db['latest']['file'] ?? '')) ?></span>
+              — <?= e((string) ($db['latest']['at'] ?? '')) ?>
+              (<?= e($dbFmt((int) ($db['latest']['bytes'] ?? 0))) ?>)
+            <?php else: ?>
+              <span class="text-muted">Belum ada snapshot.</span>
+            <?php endif; ?>
+          </dd>
+
+          <dt class="col-sm-3">Jumlah snapshot</dt>
+          <dd class="col-sm-9">
+            <?= e((string) (int) ($db['count'] ?? 0)) ?> snapshot · total
+            <?= e($dbFmt((int) ($db['total_bytes'] ?? 0))) ?>
+          </dd>
+
+          <dt class="col-sm-3">Kebijakan retensi</dt>
+          <dd class="col-sm-9">
+            daily <span class="mono"><?= e((string) (int) ($dbKeep['daily'] ?? 0)) ?></span>,
+            weekly <span class="mono"><?= e((string) (int) ($dbKeep['weekly'] ?? 0)) ?></span>,
+            monthly <span class="mono"><?= e((string) (int) ($dbKeep['monthly'] ?? 0)) ?></span>
+          </dd>
+
+          <dt class="col-sm-3">Status terjadwal</dt>
+          <dd class="col-sm-9">
+            <?php if (!empty($db['enabled'])): ?>
+              <span class="badge text-bg-success">aktif</span> — harian pukul
+              <span class="mono"><?= e((string) $dbHour) ?>:00</span>
+              (<?= !empty($db['due']) ? 'menunggu jadwal hari ini' : 'sudah berjalan hari ini' ?>)
+            <?php else: ?>
+              <span class="badge text-bg-secondary">tidak aktif</span> — penjadwalan harian dimatikan
+            <?php endif; ?>
+          </dd>
+
+          <?php if (!empty($dbState['last_restore_from'])): ?>
+            <dt class="col-sm-3">Restore terakhir</dt>
+            <dd class="col-sm-9">
+              <span class="mono"><?= e((string) $dbState['last_restore_from']) ?></span>
+              — <?= e((string) ($dbState['last_restore_at'] ?? '')) ?>
+            </dd>
+          <?php endif; ?>
+        </dl>
+      </div>
+
+      <div class="card-body border-top pt-3">
+        <h6 class="mb-2">
+          Snapshot terbaru <span class="text-muted small">(<?= e((string) count($dbRecent)) ?> dari
+          <?= e((string) (int) ($db['count'] ?? 0)) ?>)</span>
+        </h6>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Berkas</th>
+                <th>Waktu</th>
+                <th class="text-end">Ukuran</th>
+                <th class="text-end">Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php if ($dbRecent === []): ?>
+                <tr><td colspan="4" class="text-muted small">Belum ada snapshot.</td></tr>
+              <?php else: ?>
+                <?php foreach ($dbRecent as $dbRow): ?>
+                  <?php if (!is_array($dbRow)) { continue; } ?>
+                  <?php $dbName = (string) ($dbRow['file'] ?? ''); ?>
+                  <tr>
+                    <td class="mono small text-break"><?= e($dbName) ?></td>
+                    <td class="small"><?= e((string) ($dbRow['at'] ?? '')) ?></td>
+                    <td class="text-end small"><?= e($dbFmt((int) ($dbRow['bytes'] ?? 0))) ?></td>
+                    <td class="text-end">
+                      <a class="btn btn-outline-secondary btn-sm"
+                         href="/backups/db/download?file=<?= e(rawurlencode($dbName)) ?>">Unduh</a>
+                      <form method="post" action="/backups/db/restore"
+                            class="d-inline-flex align-items-center gap-1 ms-1">
+                        <?= csrf_field() ?>
+                        <input type="hidden" name="file" value="<?= e($dbName) ?>">
+                        <input type="text" name="confirm" class="form-control form-control-sm"
+                               style="width:7rem" placeholder="RESTORE" required
+                               autocomplete="off" autocapitalize="off" spellcheck="false">
+                        <button type="submit" class="btn btn-danger btn-sm">Restore</button>
+                      </form>
+                    </td>
+                  </tr>
+                <?php endforeach; ?>
+              <?php endif; ?>
+            </tbody>
+          </table>
+        </div>
+        <p class="form-text small mb-0 mt-2">
+          <strong>Restore bersifat destruktif:</strong> DB saat ini ditimpa oleh snapshot (safety
+          snapshot dibuat lebih dulu). Ketik <span class="mono">RESTORE</span> untuk konfirmasi, lalu
+          jalankan <span class="mono">php start.php reload</span> agar worker memakai DB baru.
+        </p>
+      </div>
+    </div>
+  <?php endif; ?>
 </div>
 
 <!-- Modal detail snapshot (read-only) -->

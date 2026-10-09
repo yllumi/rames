@@ -23,7 +23,7 @@ class BackupControllerScheduledTest extends TestCase
     {
         $this->tmp = sys_get_temp_dir() . '/backupctl_' . bin2hex(random_bytes(4));
         mkdir($this->tmp, 0777, true);
-        $this->path = $this->tmp . '/backup.json';
+        $this->path = $this->tmp . '/rames.sqlite';
     }
 
     protected function tearDown(): void

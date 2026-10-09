@@ -8,18 +8,33 @@ use InvalidArgumentException;
 use RuntimeException;
 
 /**
- * Penyimpanan app (database/apps.json). Struktur app mengikuti SPECS.md §7.1,
- * ditambah kepemilikan: `owner_id` + `members` (map userId → {role, ...}).
+ * Penyimpanan app — store logis `apps` di basis data SQLite
+ * (`config('deploy.sqlite_file')`, dahulu `database/apps.json`). Struktur app
+ * mengikuti SPECS.md §7.1, ditambah kepemilikan: `owner_id` + `members`
+ * (map userId → {role, ...}).
+ *
+ * API publik (read/write/update + seluruh method domain) tidak berubah — hanya
+ * lapisan penyimpanannya yang kini {@see SqliteStore}. `$filePath` di
+ * konstruktor = **berkas .sqlite** (pola sama dengan `UserStore`/`BillingStore`)
+ * agar path dapat di-override saat tes.
  *
  * Pemeriksaan hak akses TIDAK dilakukan di sini — gunakan AppAccess.
  */
 class AppStore
 {
-    private JsonStore $store;
+    private SqliteStore $store;
 
     public function __construct(?string $filePath = null)
     {
-        $this->store = new JsonStore($filePath ?? (config('deploy.database_path') . '/apps.json'));
+        $this->store = new SqliteStore('apps', SchemaMigrations::storeDefinitions()['apps'], $filePath);
+    }
+
+    /**
+     * Path berkas basis data .sqlite (dahulu path `apps.json`).
+     */
+    public function path(): string
+    {
+        return $this->store->path();
     }
 
     /**

@@ -331,7 +331,7 @@ class VolumeArchiveActionsTest extends TestCase
         $guard = new VolumeStateGuard(
             $docker,
             null,
-            new AppStore($this->tmp . '/apps.json'),
+            new AppStore($this->tmp . '/apps.sqlite'),
             $this->tmp . '/apps',
             new EnvManager($this->tmp . '/env-app'),
             new ArchiveActionsFakeDbDetector(),

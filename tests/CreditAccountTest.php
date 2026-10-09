@@ -9,10 +9,12 @@ use app\library\Billing\CreditAccount;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Tests\Support\SqliteFixture;
 
 /**
  * Test CreditAccount — saldo, deposit/adjust, potongan, dan ledger.
- * Semua store memakai path temp (tanpa menyentuh data runtime nyata).
+ * Semua store memakai berkas basis data SQLite temp (tanpa menyentuh data
+ * runtime nyata).
  */
 class CreditAccountTest extends TestCase
 {
@@ -25,13 +27,14 @@ class CreditAccountTest extends TestCase
         $this->tmp = sys_get_temp_dir() . '/creditacct_' . bin2hex(random_bytes(4));
         mkdir($this->tmp, 0777, true);
 
-        file_put_contents($this->tmp . '/auth.json', json_encode([
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::users($db, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
-        ]));
+        ]);
 
-        $this->billing = new BillingStore($this->tmp . '/billing.json');
-        $this->account = new CreditAccount($this->billing, new UserStore($this->tmp . '/auth.json'));
+        $this->billing = new BillingStore($db);
+        $this->account = new CreditAccount($this->billing, new UserStore($db));
     }
 
     protected function tearDown(): void

@@ -17,6 +17,7 @@ use app\library\Docker\DockerComposeRunner;
 use app\library\Storage\AppStore;
 use app\library\Support\ProcessRunner;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SqliteFixture;
 
 /**
  * Fake DockerClient — volume ber-label compose + container non-DB `running`.
@@ -105,14 +106,11 @@ class VolumeBackupSkipPolicyTest extends TestCase
     {
         $this->tmp = sys_get_temp_dir() . '/volskip_' . bin2hex(random_bytes(4));
         mkdir($this->tmp . '/apps', 0777, true);
-        file_put_contents(
-            $this->tmp . '/apps.json',
-            json_encode([[
-                'id' => 'app1',
-                'name' => 'tonidata',
-                'compose_files' => ['docker-compose.yml'],
-            ]], JSON_PRETTY_PRINT)
-        );
+        SqliteFixture::apps($this->tmp . '/apps.sqlite', [[
+            'id' => 'app1',
+            'name' => 'tonidata',
+            'compose_files' => ['docker-compose.yml'],
+        ]]);
         $this->compose = new VolumeSkipFakeComposeRunner();
     }
 
@@ -148,7 +146,7 @@ class VolumeBackupSkipPolicyTest extends TestCase
             ]]
         );
 
-        $apps = new AppStore($this->tmp . '/apps.json');
+        $apps = new AppStore($this->tmp . '/apps.sqlite');
         $guard = new VolumeStateGuard(
             $docker,
             $this->compose,
@@ -172,7 +170,7 @@ class VolumeBackupSkipPolicyTest extends TestCase
             'skip',
             // Isolasi larangan #15: seleksi (backfill) tidak boleh menyentuh
             // `database/backup.json` nyata — arahkan ke path temp tes.
-            selection: new BackupSelection($this->tmp . '/backup.json'),
+            selection: new BackupSelection($this->tmp . '/backup.sqlite'),
         );
 
         $run = $service->run(['trigger' => 'manual', 'volumes' => ['tonidata_data']]);

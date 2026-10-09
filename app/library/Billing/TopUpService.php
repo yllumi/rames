@@ -312,7 +312,7 @@ class TopUpService
      * (`BILLING_TOPUP_IDR_PER_CREDIT`) bisa berubah setelah order dibuat,
      * sehingga padanan rupiah entri lama tidak boleh ditebak dari kurs saat ini.
      * Entri sengaja ditulis inline agar transisi order + saldo + ledger berada
-     * dalam satu `JsonStore::update()` (§5.7 #3); `CreditAccount` tidak
+     * dalam satu `SqliteStore::update()` (§5.7 #3); `CreditAccount` tidak
      * mengekspos helper `applyDeposit(&$data)`.
      *
      * @param array<string,mixed> $data
