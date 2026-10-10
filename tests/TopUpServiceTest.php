@@ -457,6 +457,102 @@ class TopUpServiceTest extends TestCase
         $this->assertSame($callsAfterStart, $handler->count(), 'throttle mencegah panggilan jaringan');
     }
 
+    /**
+     * `$force = true` = pemicu user sekali-jalan: 60 s (jelas di bawah 900 s)
+     * tetap melakukan cek otoritatif nyata ke gateway.
+     */
+    public function testReconcileForceChecksGatewayBelowNormalThrottle(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        $service = $this->service($handler);
+        $order = $this->pendingOrder($service, $handler);
+        $orderId = (string) $order['id'];
+        $callsAfterStart = $handler->count();
+
+        $now = date('c');
+        $orders = new \app\library\Billing\TopUpOrder($this->billing);
+        $orders->touchChecked($orderId, date('c', strtotime($now) - 60));
+
+        $handler->reply(200, ['statusCode' => '01']);
+        $result = $service->reconcile($orderId, $now, true);
+
+        $this->assertTrue($result['checked'], 'force menembus throttle normal 900 s');
+        $this->assertFalse($result['changed']);
+        $this->assertSame('pending', $result['status']);
+        $this->assertSame($callsAfterStart + 1, $handler->count());
+    }
+
+    /**
+     * `$force = true` tetap tunduk floor 15 s: refresh beruntun tidak memanggil
+     * gateway (anti hit-rate Duitku).
+     */
+    public function testReconcileForceStillHonorsForcedFloor(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        $service = $this->service($handler);
+        $order = $this->pendingOrder($service, $handler);
+        $orderId = (string) $order['id'];
+        $callsAfterStart = $handler->count();
+
+        $now = date('c');
+        $orders = new \app\library\Billing\TopUpOrder($this->billing);
+        $orders->touchChecked($orderId, date('c', strtotime($now) - 5));
+
+        // Tanpa reply diantrikan: bila gateway terpanggil, handler akan melempar.
+        $result = $service->reconcile($orderId, $now, true);
+
+        $this->assertFalse($result['checked'], 'floor 15 s menahan refresh beruntun');
+        $this->assertFalse($result['changed']);
+        $this->assertSame($callsAfterStart, $handler->count(), 'tidak ada panggilan gateway');
+    }
+
+    /**
+     * Floor `$force` mengikuti config `BILLING_DUITKU_FORCED_MIN_INTERVAL`: dengan
+     * floor 2 s, cek 5 s lalu sudah boleh menembus (default 15 s akan menahannya).
+     */
+    public function testReconcileForceHonorsConfiguredFloor(): void
+    {
+        $this->useConfig(['billing_duitku_forced_min_interval' => 2]);
+
+        $handler = new FakeDuitkuHandler();
+        $service = $this->service($handler);
+        $order = $this->pendingOrder($service, $handler);
+        $orderId = (string) $order['id'];
+        $callsAfterStart = $handler->count();
+
+        $now = date('c');
+        $orders = new \app\library\Billing\TopUpOrder($this->billing);
+        $orders->touchChecked($orderId, date('c', strtotime($now) - 5));
+
+        $handler->reply(200, ['statusCode' => '01']);
+        $result = $service->reconcile($orderId, $now, true);
+
+        $this->assertTrue($result['checked'], 'floor 2 s mengizinkan cek 5 s lalu');
+        $this->assertFalse($result['changed']);
+        $this->assertSame($callsAfterStart + 1, $handler->count());
+    }
+
+    /**
+     * Regresi: tanpa `$force`, throttle config 900 s tetap dihormati.
+     */
+    public function testReconcileWithoutForceHonorsConfiguredThrottle(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        $service = $this->service($handler);
+        $order = $this->pendingOrder($service, $handler);
+        $orderId = (string) $order['id'];
+        $callsAfterStart = $handler->count();
+
+        $now = date('c');
+        $orders = new \app\library\Billing\TopUpOrder($this->billing);
+        $orders->touchChecked($orderId, date('c', strtotime($now) - 60));
+
+        $result = $service->reconcile($orderId, $now);
+
+        $this->assertFalse($result['checked']);
+        $this->assertSame($callsAfterStart, $handler->count(), '60 s < 900 s ditahan tanpa force');
+    }
+
     public function testReconcilePendingAndCanceled(): void
     {
         $handler = new FakeDuitkuHandler();
@@ -488,6 +584,44 @@ class TopUpServiceTest extends TestCase
         $this->assertFalse($result['checked']);
         $this->assertFalse($result['changed']);
         $this->assertSame('pending', $result['status']);
+    }
+
+    /**
+     * Kegagalan gateway tetap memperbarui `last_check_at` (touch di `finally`)
+     * sehingga floor/throttle berlaku juga selama outage: percobaan kedua 5 s
+     * kemudian tidak memanggil gateway lagi.
+     */
+    public function testReconcileNetworkErrorTouchesCheckedAndThrottles(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        $service = $this->service($handler);
+        $order = $this->pendingOrder($service, $handler);
+        $orderId = (string) $order['id'];
+        $callsAfterStart = $handler->count();
+
+        $orders = new \app\library\Billing\TopUpOrder($this->billing);
+        $before = (string) ($orders->find($orderId)['last_check_at'] ?? '');
+
+        $now = date('c');
+        $handler->fail(new ConnectException('timeout', new Request('POST', 'https://sandbox.duitku.com')));
+        $first = $service->reconcile($orderId, $now, true);
+
+        $this->assertFalse($first['checked']);
+        $this->assertFalse($first['changed']);
+        $this->assertSame($callsAfterStart + 1, $handler->count(), 'gateway tetap dicoba sekali');
+
+        $after = (string) ($orders->find($orderId)['last_check_at'] ?? '');
+        $this->assertNotSame($before, $after, 'kegagalan gateway tetap menyentuh last_check_at');
+        $this->assertSame($now, $after);
+
+        // 5 s < floor 15 s: percobaan kedua tertahan (tanpa respons diantrikan,
+        // handler akan melempar bila tetap terpanggil).
+        $later = date('c', strtotime($now) + 5);
+        $second = $service->reconcile($orderId, $later, true);
+
+        $this->assertFalse($second['checked']);
+        $this->assertFalse($second['changed']);
+        $this->assertSame($callsAfterStart + 1, $handler->count(), 'throttle berlaku saat outage gateway');
     }
 
     public function testReconcileUnknownOrderThrows(): void

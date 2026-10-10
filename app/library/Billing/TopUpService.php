@@ -22,6 +22,17 @@ use RuntimeException;
  */
 class TopUpService
 {
+    /**
+     * Floor throttle **default** saat `$force = true` (detik): satu pemicu dari
+     * user boleh menembus throttle normal 900 s, tetapi refresh beruntun tetap
+     * tertahan floor ini demi menjaga hit-rate API Duitku (±1 jam blokir bila
+     * dilewati — §7.12). Operator dapat menaik-/menurun-kannya lewat env
+     * `BILLING_DUITKU_FORCED_MIN_INTERVAL` (`deploy.billing_duitku_forced_min_interval`,
+     * mis. deployment dengan banyak admin atau uji beban) dan nilainya selalu
+     * dijaga `max(1, …)` agar throttle tidak pernah hilang total.
+     */
+    public const FORCED_MIN_INTERVAL = 15;
+
     private CreditAccount $accounts;
     private DuitkuClient $client;
     private UserStore $users;
@@ -220,9 +231,22 @@ class TopUpService
      * kredit (idempoten, jalur sama dengan callback); `02` → failed. Error
      * jaringan/HTTP ditelan (kembalikan `checked=false`) agar tidak mematikan worker.
      *
+     * `last_check_at` diperbarui pada **setiap percobaan** panggilan gateway —
+     * termasuk saat gagal (`DuitkuError`) — sehingga floor/throttle tetap berlaku
+     * selama outage gateway (klien yang me-refresh berulang tidak menghujani
+     * `transactionStatus`).
+     *
+     * `$force` **hanya** untuk pemicu user sekali-jalan (return handler gateway /
+     * tombol "Cek status"), **bukan** polling: throttle normal diturunkan ke floor
+     * `FORCED_MIN_INTERVAL` (default 15 s, override env
+     * `BILLING_DUITKU_FORCED_MIN_INTERVAL`) agar satu aksi user melakukan cek
+     * otoritatif nyata, sementara refresh beruntun tetap tertahan demi hit-rate
+     * Duitku. Floor dijaga `max(1, …)` agar tidak berarti "tanpa floor".
+     * Throttle **tidak** dihapus; bila config `<= 0` tetap tanpa throttle.
+     *
      * @return array order terbaru + `{checked:bool, changed:bool}`
      */
-    public function reconcile(string $orderId, ?string $now = null): array
+    public function reconcile(string $orderId, ?string $now = null, bool $force = false): array
     {
         $now = $now !== null && trim($now) !== '' ? $now : date('c');
 
@@ -237,6 +261,13 @@ class TopUpService
         }
 
         $minInterval = (int) config('deploy.billing_duitku_status_min_interval', 900);
+        if ($force && $minInterval > 0) {
+            // Pemicu user: turunkan ke floor (default 15 s, dapat dikonfigurasi) —
+            // bukan menghapus throttle. `max(1, …)` mencegah floor 0/negatif yang
+            // berarti "tanpa floor sama sekali".
+            $floor = max(1, (int) config('deploy.billing_duitku_forced_min_interval', self::FORCED_MIN_INTERVAL));
+            $minInterval = min($minInterval, $floor);
+        }
         $lastCheck = (string) ($order['last_check_at'] ?? '');
         if ($minInterval > 0 && $lastCheck !== '') {
             $lastTs = strtotime($lastCheck);
@@ -249,10 +280,13 @@ class TopUpService
         try {
             $response = $this->client->transactionStatus($orderId);
         } catch (DuitkuError) {
+            // Kegagalan jaringan/HTTP ditelan agar worker tidak mati; `last_check_at`
+            // tetap diperbarui di `finally` sehingga throttle berlaku saat outage.
             return $order + ['checked' => false, 'changed' => false];
+        } finally {
+            // Setiap percobaan panggilan gateway dicatat — termasuk saat gagal.
+            $this->orders->touchChecked($orderId, $now);
         }
-
-        $this->orders->touchChecked($orderId, $now);
 
         $statusCode = (string) ($response['statusCode'] ?? '');
         $changed = false;

@@ -77,15 +77,24 @@ class CreditController
      */
     public function index(Request $request): Response
     {
-        return view('credits/index', $this->viewData(null));
+        return $this->renderView('credits/index', $this->viewData(null));
     }
 
     /**
      * `GET /credits/topup/return` — status order milik user login.
      *
-     * `resultCode`/status dari query **tidak dipercaya**; kebenaran berasal dari
-     * state order tersimpan (opsional di-refresh sekali lewat `reconcile()`,
-     * yang sudah membatasi frekuensi). Order user lain / tidak ada ⇒ 404.
+     * Nama parameter order id ada **dua** sumber: tombol "Cek status" internal
+     * memakai `?order=<id>`, sedangkan redirect browser dari Duitku memakai
+     * `?merchantOrderId=<id>` (Duitku menambahkan sendiri `merchantOrderId`,
+     * `resultCode`, dan `reference` ke `returnUrl`). Prioritas `order` demi
+     * kompatibilitas tombol; jika kosong, jatuh ke `merchantOrderId`.
+     *
+     * `resultCode`/`reference` dari query **tidak dipercaya** sebagai bukti
+     * pembayaran — keduanya berasal dari browser dan bisa dipalsukan. Parameter
+     * redirect hanya dipakai sebagai **pemicu** satu kali cek otoritatif ke
+     * gateway (`reconcile(..., force: true)`); kebenaran akhir tetap dari respons
+     * `transactionStatus`. Order user lain / tidak ada ⇒ 404 (anti-IDOR). Input
+     * non-skalar (`merchantOrderId[]=…`) diperlakukan kosong ⇒ tetap 404.
      */
     public function topupReturn(Request $request): Response
     {
@@ -94,7 +103,10 @@ class CreditController
             return $this->notFound();
         }
 
-        $orderId = trim((string) $request->get('order', ''));
+        $orderId = trim($this->getScalar($request, 'order'));
+        if ($orderId === '') {
+            $orderId = trim($this->getScalar($request, 'merchantOrderId'));
+        }
         if ($orderId === '') {
             return $this->notFound();
         }
@@ -108,16 +120,33 @@ class CreditController
             return $this->notFound();
         }
 
+        // Bukti datang dari gateway (bukan kunjungan langsung) hanya bila redirect
+        // menyertakan `resultCode`; dipakai untuk memilih pesan flash, bukan untuk
+        // menyimpulkan settle/gagal.
+        $redirectResult = trim($this->getScalar($request, 'resultCode'));
+
         if (($order['status'] ?? '') === 'pending') {
             try {
-                // Kelasnya sudah membatasi frekuensi (BILLING_DUITKU_STATUS_MIN_INTERVAL).
-                $order = $this->topups()->reconcile($orderId);
+                // Pemicu dari user ⇒ cek otoritatif nyata (floor 15 s di kelasnya),
+                // bukan menunggu throttle worker 900 s.
+                $order = $this->topups()->reconcile($orderId, null, true);
             } catch (Throwable) {
                 // Biarkan state terakhir yang terbaca dipakai untuk render.
             }
         }
 
-        return view('credits/index', $this->viewData($order));
+        if ($redirectResult !== '') {
+            $status = (string) ($order['status'] ?? '');
+            if ($status === 'paid') {
+                $this->flash('success', 'Top-up berhasil — saldo kredit Anda sudah ditambahkan.');
+            } elseif ($status === 'failed' || $status === 'expired') {
+                $this->flash('error', 'Pembayaran tidak berhasil atau kedaluwarsa. Silakan coba top-up lagi.');
+            } else {
+                $this->flash('info', 'Pembayaran belum terkonfirmasi gateway. Saldo akan diperbarui otomatis begitu konfirmasi diterima.');
+            }
+        }
+
+        return $this->renderView('credits/index', $this->viewData($order));
     }
 
     // ==================================================================
@@ -354,6 +383,18 @@ class CreditController
     }
 
     /**
+     * Nilai query string yang dijamin skalar — varian GET dari `postScalar()`.
+     * `merchantOrderId[]=…` (array) diperlakukan sebagai kosong, bukan memicu
+     * `Array to string conversion` (yang akan menjadi error 500).
+     */
+    private function getScalar(Request $request, string $key, string $default = ''): string
+    {
+        $value = $request->get($key, $default);
+
+        return is_scalar($value) ? (string) $value : '';
+    }
+
+    /**
      * Seluruh variabel view `credits/index` (dipakai `index()` & `topupReturn()`).
      *
      * Semua pembacaan dibungkus `try/catch` supaya halaman **tidak pernah** 500
@@ -419,6 +460,26 @@ class CreditController
             }
         }
 
+        // Diagnostik konfigurasi Duitku — **hanya admin** dan **tanpa jaringan**
+        // (getter lokal). Bila klien tidak bisa dibangun (config cacat), jangan
+        // sampai halaman 500: pakai nilai kosong. Klien disimpan di variabel
+        // lokal agar seam tidak dipanggil berulang.
+        $topupWarnings = [];
+        $topupCallbackUrl = '';
+        $topupReturnUrl = '';
+        if ($admin) {
+            try {
+                $client = $this->duitku();
+                $topupWarnings = $client->configurationWarnings();
+                $topupCallbackUrl = $client->callbackUrl();
+                $topupReturnUrl = $client->returnUrl();
+            } catch (Throwable) {
+                $topupWarnings = [];
+                $topupCallbackUrl = '';
+                $topupReturnUrl = '';
+            }
+        }
+
         return [
             'enabled' => (bool) config('deploy.billing_enabled', true),
             'isAdmin' => $admin,
@@ -434,6 +495,9 @@ class CreditController
             'names' => $names,
             'topupEnabled' => $this->topupConfigured(),
             'topupIssues' => $admin ? $this->topupIssues() : [],
+            'topupWarnings' => $topupWarnings,
+            'topupCallbackUrl' => $topupCallbackUrl,
+            'topupReturnUrl' => $topupReturnUrl,
             'methods' => $this->methodCodes(),
             'methodGroups' => PaymentMethodCatalog::groupedCodes($this->methodCodes()),
             'topupMin' => (int) config('deploy.billing_topup_min_idr', 10000),
@@ -502,6 +566,16 @@ class CreditController
     protected function flash(string $type, string $message): void
     {
         flash_set($type, $message);
+    }
+
+    /**
+     * Render view (seam pengujian: `view()` butuh konteks HTTP).
+     *
+     * @param array<string,mixed> $vars
+     */
+    protected function renderView(string $template, array $vars): Response
+    {
+        return view($template, $vars);
     }
 
     /**

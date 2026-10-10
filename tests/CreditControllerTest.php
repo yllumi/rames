@@ -17,6 +17,7 @@ use ReflectionProperty;
 use support\Request;
 use Tests\Support\SqliteFixture;
 use Webman\Config;
+use Webman\Http\Response;
 
 /**
  * Test mediator `CreditController` (SPECS.md §7.12, plan §5.4/§5.7).
@@ -226,6 +227,132 @@ class CreditControllerTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // (c-bis) topupReturn via merchantOrderId Duitku
+    // ------------------------------------------------------------------
+
+    /**
+     * Redirect Duitku memakai `merchantOrderId` (bukan `order`). Kunjungan harus
+     * 200 (bukan 404) dan memicu satu cek otoritatif yang menyettle order.
+     */
+    public function testTopupReturnWithDuitkuMerchantOrderIdSettlesPaidOrder(): void
+    {
+        $orders = new TopUpOrder($this->billing);
+        $order = $orders->create('u2', 50000, 'BC');
+        $client = $this->statusClient([
+            'statusCode' => '00',
+            'reference' => 'DS3626826P5K8M0VYD48D4Z5',
+            'amount' => '50000',
+        ]);
+        $controller = $this->controller(self::MEMBER, null, $client);
+
+        $response = $controller->topupReturn($this->get(
+            '/credits/topup/return?merchantOrderId=' . $order['id']
+            . '&resultCode=00&reference=DS3626826P5K8M0VYD48D4Z5'
+        ));
+
+        $this->assertSame(200, $response->getStatusCode(), 'redirect Duitku tidak boleh 404');
+        $this->assertSame('credits/index', $controller->rendered['template'] ?? null);
+        $this->assertSame(1, $client->statusCalls, 'pemicu user melakukan tepat satu cek otoritatif');
+        $this->assertSame(5000.0, $this->accounts->balance('u2'), 'order settled → saldo bertambah');
+        $this->assertSame('paid', (string) ($orders->find($order['id'])['status'] ?? ''));
+        $this->assertCount(1, $controller->flashes);
+        $this->assertSame('success', $controller->flashes[0]['type']);
+    }
+
+    /**
+     * Tombol "Cek status" internal memakai `?order=`; perilaku ini dipertahankan.
+     */
+    public function testTopupReturnWithLegacyOrderParamStillSettles(): void
+    {
+        $orders = new TopUpOrder($this->billing);
+        $order = $orders->create('u2', 50000, 'BC');
+        $client = $this->statusClient(['statusCode' => '00', 'reference' => 'REF-1']);
+        $controller = $this->controller(self::MEMBER, null, $client);
+
+        $response = $controller->topupReturn($this->get('/credits/topup/return?order=' . $order['id']));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame(5000.0, $this->accounts->balance('u2'));
+        $this->assertSame([], $controller->flashes, 'tanpa resultCode tidak ada flash redirect');
+    }
+
+    /**
+     * `merchantOrderId` milik user lain tetap anti-IDOR → 404 tanpa panggilan gateway.
+     */
+    public function testTopupReturnMerchantOrderIdOfOtherUserReturns404(): void
+    {
+        $orders = new TopUpOrder($this->billing);
+        $order = $orders->create('u2', 50000, 'BC');
+        $client = $this->statusClient(['statusCode' => '00']);
+        $controller = $this->controller(self::OTHER, null, $client);
+
+        $response = $controller->topupReturn($this->get(
+            '/credits/topup/return?merchantOrderId=' . $order['id'] . '&resultCode=00'
+        ));
+
+        $this->assertSame(404, $response->getStatusCode());
+        $this->assertSame(0, $client->statusCalls, '404 tidak boleh menyentuh gateway');
+        $this->assertSame(0.0, $this->accounts->balance('u2'));
+    }
+
+    /**
+     * `merchantOrderId[]=…` (non-skalar) diperlakukan kosong → 404, bukan 500.
+     */
+    public function testTopupReturnArrayValuedMerchantOrderIdReturns404Not500(): void
+    {
+        $controller = $this->controller(self::MEMBER, null, $this->statusClient(['statusCode' => '00']));
+
+        $response = $controller->topupReturn($this->get(
+            '/credits/topup/return?merchantOrderId[]=RM-x&resultCode=00'
+        ));
+
+        $this->assertSame(404, $response->getStatusCode());
+    }
+
+    /**
+     * Gateway masih `pending` → order tetap pending, saldo tak berubah, flash info.
+     */
+    public function testTopupReturnGatewayPendingKeepsOrderAndFlashesInfo(): void
+    {
+        $orders = new TopUpOrder($this->billing);
+        $order = $orders->create('u2', 50000, 'BC');
+        $client = $this->statusClient(['statusCode' => '01']);
+        $controller = $this->controller(self::MEMBER, null, $client);
+
+        $response = $controller->topupReturn($this->get(
+            '/credits/topup/return?merchantOrderId=' . $order['id'] . '&resultCode=00'
+        ));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame(1, $client->statusCalls);
+        $this->assertSame('pending', (string) ($orders->find($order['id'])['status'] ?? ''));
+        $this->assertSame(0.0, $this->accounts->balance('u2'));
+        $this->assertCount(1, $controller->flashes);
+        $this->assertSame('info', $controller->flashes[0]['type']);
+    }
+
+    /**
+     * `resultCode=01` di URL **bukan** bukti gagal: bila gateway masih pending,
+     * order tidak boleh ditandai failed dan tidak ada mutasi.
+     */
+    public function testTopupReturnFailureResultCodeCannotMarkOrderFailed(): void
+    {
+        $orders = new TopUpOrder($this->billing);
+        $order = $orders->create('u2', 50000, 'BC');
+        $client = $this->statusClient(['statusCode' => '01']);
+        $controller = $this->controller(self::MEMBER, null, $client);
+
+        $response = $controller->topupReturn($this->get(
+            '/credits/topup/return?merchantOrderId=' . $order['id'] . '&resultCode=01&reference=DS-FAKE'
+        ));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame('pending', (string) ($orders->find($order['id'])['status'] ?? ''));
+        $this->assertSame(0.0, $this->accounts->balance('u2'));
+        $this->assertSame([], $this->accounts->ledger('u2'));
+    }
+
+    // ------------------------------------------------------------------
     // (d) topup saat fitur mati → 404
     // ------------------------------------------------------------------
 
@@ -341,6 +468,73 @@ class CreditControllerTest extends TestCase
         $issues = $method->invoke($controller);
 
         return $issues;
+    }
+
+    // ------------------------------------------------------------------
+    // Diagnostik peringatan top-up (advisori, admin-only)
+    // ------------------------------------------------------------------
+
+    public function testViewPayloadExposesTopupDiagnosticsForAdmin(): void
+    {
+        $client = new FakeCatalogDuitkuClient([
+            'merchant_code' => 'DS12345',
+            'api_key' => 'secret-key',
+            'callback_url' => 'https://6rwpb6wd-8123.asse.devtunnels.ms/payments/duitku/callback',
+            'return_url' => '',
+            'methods' => 'BC,VA,QR',
+            'runtime_path' => $this->tmp . '/runtime',
+        ]);
+
+        $vars = $this->viewData($this->controller(self::ADMIN, null, $client));
+
+        self::assertArrayHasKey('topupWarnings', $vars);
+        self::assertArrayHasKey('topupCallbackUrl', $vars);
+        self::assertArrayHasKey('topupReturnUrl', $vars);
+        self::assertCount(1, $vars['topupWarnings']);
+        self::assertStringContainsString('devtunnels.ms', $vars['topupWarnings'][0]);
+        self::assertSame(
+            'https://6rwpb6wd-8123.asse.devtunnels.ms/payments/duitku/callback',
+            $vars['topupCallbackUrl']
+        );
+        self::assertSame(
+            'https://6rwpb6wd-8123.asse.devtunnels.ms/credits/topup/return',
+            $vars['topupReturnUrl']
+        );
+        // API key tidak pernah bocor ke payload view.
+        self::assertStringNotContainsString('secret-key', (string) json_encode($vars));
+    }
+
+    public function testViewPayloadHidesTopupDiagnosticsFromMember(): void
+    {
+        $client = new FakeCatalogDuitkuClient([
+            'merchant_code' => 'DS12345',
+            'api_key' => 'secret-key',
+            'callback_url' => 'https://6rwpb6wd-8123.asse.devtunnels.ms/payments/duitku/callback',
+            'return_url' => '',
+            'methods' => 'BC,VA,QR',
+            'runtime_path' => $this->tmp . '/runtime',
+        ]);
+
+        $vars = $this->viewData($this->controller(self::MEMBER, null, $client));
+
+        self::assertSame([], $vars['topupWarnings']);
+        self::assertSame('', $vars['topupCallbackUrl']);
+        self::assertSame('', $vars['topupReturnUrl']);
+        self::assertStringNotContainsString('secret-key', (string) json_encode($vars));
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function viewData(CreditController $controller): array
+    {
+        $method = new ReflectionMethod(CreditController::class, 'viewData');
+        $method->setAccessible(true);
+
+        /** @var array<string,mixed> $vars */
+        $vars = $method->invoke($controller, null);
+
+        return $vars;
     }
 
     public function testSetEmailRejectsInvalidAddress(): void
@@ -531,6 +725,28 @@ class CreditControllerTest extends TestCase
         return $client;
     }
 
+    /**
+     * Klien Duitku seam dengan `transactionStatus()` (dan hitungan panggilan)
+     * di-inject — membuktikan cek otoritatif tanpa jaringan.
+     *
+     * @param array<string,mixed> $status respons `transactionStatus` tiruan
+     */
+    private function statusClient(array $status): FakeStatusDuitkuClient
+    {
+        $client = new FakeStatusDuitkuClient([
+            'merchant_code' => 'DS12345',
+            'api_key' => 'secret-key',
+            'callback_url' => 'https://dashboard.test/payments/duitku/callback',
+            'return_url' => 'https://dashboard.test/credits/topup/return',
+            'methods' => 'BC,BT,I1,M2,VA,OV,DA,SA,LF,LA,SP,NQ,SQ,IR,FT,ZZ',
+            'method_ttl' => 3600,
+            'runtime_path' => $this->tmp . '/runtime',
+        ]);
+        $client->status = $status;
+
+        return $client;
+    }
+
     private function controller(?array $user, ?Invoicer $invoicer = null, ?DuitkuClient $duitku = null): FakeCreditController
     {
         $controller = new FakeCreditController(
@@ -643,6 +859,9 @@ class FakeCreditController extends CreditController
     /** @var array<int,array{type:string,message:string}> */
     public array $flashes = [];
 
+    /** @var array{template:string,vars:array}|null */
+    public ?array $rendered = null;
+
     protected function currentUser(): ?array
     {
         return $this->user;
@@ -651,6 +870,37 @@ class FakeCreditController extends CreditController
     protected function flash(string $type, string $message): void
     {
         $this->flashes[] = ['type' => $type, 'message' => $message];
+    }
+
+    /**
+     * Tangkap payload view (bukan dirender) karena `view()` butuh konteks HTTP.
+     *
+     * @param array<string,mixed> $vars
+     */
+    protected function renderView(string $template, array $vars): Response
+    {
+        $this->rendered = ['template' => $template, 'vars' => $vars];
+
+        return new Response(200, [], 'rendered');
+    }
+}
+
+/**
+ * Klien Duitku seam: `transactionStatus()` mengembalikan respons tetap dan
+ * menghitung panggilan, sehingga alur return/reconcile teruji tanpa jaringan.
+ */
+class FakeStatusDuitkuClient extends DuitkuClient
+{
+    /** @var array<string,mixed> */
+    public array $status = [];
+
+    public int $statusCalls = 0;
+
+    public function transactionStatus(string $merchantOrderId): array
+    {
+        $this->statusCalls++;
+
+        return $this->status;
     }
 }
 

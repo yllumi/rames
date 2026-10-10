@@ -294,5 +294,9 @@ return [
     'billing_duitku_timeout' => min(30, max(1, $billingInt('BILLING_DUITKU_TIMEOUT', 15))),
     // Jeda minimum cek transactionStatus per order (hindari hit-rate block ±1 jam).
     'billing_duitku_status_min_interval' => $billingInt('BILLING_DUITKU_STATUS_MIN_INTERVAL', 900),
+    // Floor throttle saat pemicu user (`force`: return handler/tombol "Cek status")
+    // menembus jeda di atas (detik). Dijaga ≥1 oleh TopUpService agar throttle
+    // tidak pernah hilang total.
+    'billing_duitku_forced_min_interval' => $billingInt('BILLING_DUITKU_FORCED_MIN_INTERVAL', 15),
     'billing_duitku_status_max_per_tick' => $billingInt('BILLING_DUITKU_STATUS_MAX_PER_TICK', 20),
 ];

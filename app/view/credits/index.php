@@ -18,6 +18,11 @@ $balances = is_array($balances ?? null) ? $balances : [];
 $names = is_array($names ?? null) ? $names : [];
 $topupEnabled = (bool) ($topupEnabled ?? false);
 $topupIssues = array_values(array_filter((array) ($topupIssues ?? []), 'is_string'));
+// Diagnostik callback Duitku — hanya diisi controller untuk admin (member menerima [] / '').
+// `topupWarnings` = advisori non-blocking; `topupIssues` di atas tetap alasan top-up nonaktif.
+$topupWarnings = array_values(array_filter((array) ($topupWarnings ?? []), 'is_string'));
+$topupCallbackUrl = (string) ($topupCallbackUrl ?? '');
+$topupReturnUrl = (string) ($topupReturnUrl ?? '');
 $methods = is_array($methods ?? null) ? $methods : [];
 // Grup metode (Virtual Account/E-Wallet/QRIS/Retail/Lainnya) dari controller;
 // bila absen (mis. smoke render), view jatuh ke daftar datar $methods.
@@ -257,6 +262,36 @@ $breadcrumbs = [
 <?php if ($isAdmin): ?>
   <hr class="my-4">
   <h2 class="h5 mb-3">Admin</h2>
+
+  <?php if ($topupWarnings !== []): ?>
+    <div class="alert alert-warning" role="alert">
+      <strong>Konfigurasi callback pembayaran perlu diperiksa.</strong>
+      Top-up tetap bisa dipakai, tetapi konfirmasi pembayaran dari Duitku mungkin tidak sampai
+      (order bisa tetap berstatus menunggu walau pembayaran berhasil).
+      <ul class="mb-0 mt-2">
+        <?php foreach ($topupWarnings as $warning): ?>
+          <li><span class="mono"><?= e($warning) ?></span></li>
+        <?php endforeach; ?>
+      </ul>
+    </div>
+  <?php endif; ?>
+
+  <?php if ($topupCallbackUrl !== ''): ?>
+    <div class="alert alert-secondary py-2 small" role="alert">
+      <div class="fw-semibold mb-1">URL yang harus didaftarkan</div>
+      <div>URL callback (juga daftarkan di dashboard Duitku):
+        <span class="mono text-break"><?= e($topupCallbackUrl) ?></span></div>
+      <?php if ($topupReturnUrl !== ''): ?>
+        <div>URL kembali setelah pembayaran:
+          <span class="mono text-break"><?= e($topupReturnUrl) ?></span></div>
+      <?php endif; ?>
+      <div class="form-text mb-0 mt-2">
+        Callback hanya diterima di route <span class="mono">POST /payments/duitku/callback</span> dan
+        <strong>tidak</strong> di path lain (mis. <span class="mono">/callback</span>). Host URL wajib
+        dapat dijangkau publik <strong>tanpa</strong> autentikasi (hindari tunnel ber-auth).
+      </div>
+    </div>
+  <?php endif; ?>
 
   <?php if (!$topupEnabled): ?>
     <div class="alert alert-info" role="alert">

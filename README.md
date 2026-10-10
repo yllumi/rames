@@ -296,13 +296,14 @@ docker exec rames-webman php cli/db.php export-json --dir=/tmp # ke direktori la
 | `BILLING_DUITKU_MODE` | `sandbox` | `sandbox` / `production` → base URL Duitku (kredensial terpisah) |
 | `BILLING_DUITKU_MERCHANT_CODE` | — | Merchant/project code Duitku (bukan secret) |
 | `BILLING_DUITKU_API_KEY` | — | **RAHASIA** (HMAC-SHA256 key) — jangan commit/log/tampilkan |
-| `BILLING_DUITKU_CALLBACK_URL` | — | URL callback **https absolut** yang dipanggil Duitku |
+| `BILLING_DUITKU_CALLBACK_URL` | — | URL callback **https absolut** yang dipanggil Duitku — **wajib publik tanpa autentikasi** (bukan tunnel ber-auth) + path persis `/payments/duitku/callback`, **dan** URL yang sama didaftarkan di dashboard Duitku; URL ditanam per order saat inquiry (ubah `.env` ⇒ perlu order baru + container recreate) |
 | `BILLING_DUITKU_RETURN_URL` | — | Opsional; kosong ⇒ diturunkan dari origin callback URL + `/credits/topup/return` |
 | `BILLING_DUITKU_ALLOW_HTTP` | `false` | `true` = izinkan callback `http://` — **khusus uji lokal**; produksi wajib https |
 | `BILLING_DUITKU_METHOD_TTL` | `3600` | Cache daftar metode pembayaran (detik) |
 | `BILLING_DUITKU_METHODS` | allowlist kanal | Fallback statis bila daftar metode online gagal (kanal kredit/paylater & account-link selalu dikecualikan) |
 | `BILLING_DUITKU_TIMEOUT` | `15` | Timeout HTTP ke Duitku (detik; di-cap ≤30) |
 | `BILLING_DUITKU_STATUS_MIN_INTERVAL` | `900` | Jeda minimum cek `transactionStatus` per order (detik; hindari blokir hit-rate) |
+| `BILLING_DUITKU_FORCED_MIN_INTERVAL` | `15` | Floor jeda cek status saat pemicu user/halaman return (detik; efektif ≥1; throttle normal worker tetap `BILLING_DUITKU_STATUS_MIN_INTERVAL`) |
 | `BILLING_DUITKU_STATUS_MAX_PER_TICK` | `20` | Maksimum order yang dicek statusnya per tick meteran |
 
 ## Struktur Direktori (Ringkas)

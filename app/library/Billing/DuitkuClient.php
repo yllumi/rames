@@ -38,6 +38,13 @@ class DuitkuClient
     private const PATH_STATUS = '/transactionStatus';
     private const PATH_METHODS = '/paymentmethod/getpaymentmethod';
 
+    /** Satu-satunya route yang menerima callback Duitku (`config/route.php`). */
+    private const CALLBACK_PATH = '/payments/duitku/callback';
+    /** Halaman status top-up yang menjadi tujuan `return_url` default. */
+    private const RETURN_PATH = '/credits/topup/return';
+    /** Sufiks host tunnel pengembangan ber-autentikasi (Dev Tunnels). */
+    private const DEV_TUNNEL_SUFFIX = '.devtunnels.ms';
+
     private const CACHE_FILE = 'duitku-methods.json';
 
     private Client $client;
@@ -48,6 +55,12 @@ class DuitkuClient
     private string $apiKey;
     private string $callbackUrl;
     private string $returnUrl;
+    /**
+     * Apakah `return_url` berasal dari config eksplisit (bukan hasil derive).
+     * Set-only-per-instance; hanya dipakai `configurationWarnings()` untuk tahu
+     * apakah jalur return URL layak diperingatkan. Bukan cache lintas-request.
+     */
+    private bool $returnUrlFromConfig = false;
     private int $timeout;
     private int $methodTtl;
     private string $runtimePath;
@@ -85,6 +98,7 @@ class DuitkuClient
         $this->apiKey = (string) ($merged['api_key'] ?? '');
         $this->callbackUrl = trim((string) ($merged['callback_url'] ?? ''));
         $this->returnUrl = trim((string) ($merged['return_url'] ?? ''));
+        $this->returnUrlFromConfig = $this->returnUrl !== '';
         if ($this->returnUrl === '') {
             // `BILLING_DUITKU_RETURN_URL` kosong = turunkan dari callback URL
             // (origin dashboard + halaman status top-up). Tanpa ini, kredensial
@@ -149,6 +163,44 @@ class DuitkuClient
         }
 
         return $issues;
+    }
+
+    /**
+     * Peringatan konfigurasi **advisori** untuk diagnostik admin di `/credits`.
+     *
+     * Penting: method ini **tidak** memengaruhi `isConfigured()` /
+     * `configurationIssues()` — top-up tetap boleh berjalan walau ada peringatan.
+     * Yang dideteksi:
+     *  - path callback bukan satu-satunya route penerima callback (mis. URL yang
+     *    didaftarkan di dashboard Duitku berakhiran `/callback` ⇒ callback hilang);
+     *  - host callback berupa tunnel pengembangan ber-autentikasi
+     *    (`*.devtunnels.ms`) ⇒ Duitku menerima `401` dari tunnel, bukan aplikasi;
+     *  - `return_url` eksplisit yang salah jalur ⇒ pengguna mendarat di 404.
+     *
+     * Urutan keluaran deterministik: path callback → tunnel → path return.
+     * Tidak pernah menyertakan API key/kredensial. Getter `callbackUrl()` /
+     * `returnUrl()` dipakai pemanggil untuk menampilkan URL (tanpa I/O).
+     *
+     * @return array<int,string>
+     */
+    public function configurationWarnings(): array
+    {
+        $warnings = [];
+
+        if (parse_url($this->callbackUrl, PHP_URL_PATH) !== self::CALLBACK_PATH) {
+            $warnings[] = 'Path URL callback bukan `/payments/duitku/callback` — satu-satunya route yang menerima callback. Perbaiki `BILLING_DUITKU_CALLBACK_URL` **dan** URL yang didaftarkan di dashboard Duitku.';
+        }
+
+        $host = parse_url($this->callbackUrl, PHP_URL_HOST);
+        if (is_string($host) && str_ends_with(strtolower($host), self::DEV_TUNNEL_SUFFIX)) {
+            $warnings[] = 'Host callback adalah tunnel pengembangan (`*.devtunnels.ms`) yang biasanya menuntut autentikasi; Duitku akan menerima `401` dan callback tidak pernah sampai. Jadikan akses tunnel **Public**, atau pakai URL publik tanpa autentikasi.';
+        }
+
+        if ($this->returnUrlFromConfig && parse_url($this->returnUrl, PHP_URL_PATH) !== self::RETURN_PATH) {
+            $warnings[] = 'Path URL kembali bukan `/credits/topup/return`; setelah pembayaran pengguna akan mendarat di halaman 404. Kosongkan `BILLING_DUITKU_RETURN_URL` agar diturunkan otomatis.';
+        }
+
+        return $warnings;
     }
 
     /**

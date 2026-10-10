@@ -168,6 +168,87 @@ class DuitkuClientTest extends TestCase
         $this->assertStringContainsString('kembali', implode(' ', $badReturn->configurationIssues()));
     }
 
+    public function testConfigurationWarningsAreEmptyForCleanConfig(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        // Path callback benar, bukan tunnel, return URL hasil derive.
+        $client = $this->client($handler, $this->spec(['return_url' => '']));
+
+        $this->assertSame([], $client->configurationWarnings());
+    }
+
+    public function testConfigurationWarningsFlagWrongCallbackPath(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        $client = $this->client($handler, $this->spec([
+            'callback_url' => 'https://dashboard.test/callback',
+            'return_url' => '',
+        ]));
+
+        $warnings = $client->configurationWarnings();
+        $this->assertCount(1, $warnings);
+        $this->assertStringContainsString('/payments/duitku/callback', $warnings[0]);
+    }
+
+    public function testConfigurationWarningsFlagDevTunnelHost(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        $client = $this->client($handler, $this->spec([
+            'callback_url' => 'https://6rwpb6wd-8123.asse.devtunnels.ms/payments/duitku/callback',
+            'return_url' => '',
+        ]));
+
+        $warnings = $client->configurationWarnings();
+        $this->assertCount(1, $warnings);
+        $this->assertStringContainsString('devtunnels.ms', $warnings[0]);
+        $this->assertStringContainsString('401', $warnings[0]);
+        // Tidak memblokir: path callback benar ⇒ config tetap dianggap siap.
+        $this->assertTrue($client->isConfigured());
+    }
+
+    public function testConfigurationWarningsFlagExplicitReturnUrlWithWrongPath(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        $client = $this->client($handler, $this->spec([
+            'return_url' => 'https://dashboard.test/terima-kasih',
+        ]));
+
+        $warnings = $client->configurationWarnings();
+        $this->assertCount(1, $warnings);
+        $this->assertStringContainsString('/credits/topup/return', $warnings[0]);
+    }
+
+    public function testConfigurationWarningsSilentForDerivedReturnUrl(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        // return_url kosong ⇒ diturunkan; TIDAK boleh memicu peringatan return.
+        $client = $this->client($handler, $this->spec(['return_url' => '']));
+
+        $this->assertSame('/credits/topup/return', (string) parse_url($client->returnUrl(), PHP_URL_PATH));
+        $this->assertSame([], $client->configurationWarnings());
+    }
+
+    public function testConfigurationWarningsDoNotAffectIssuesOrConfigured(): void
+    {
+        $handler = new FakeDuitkuHandler();
+        // Path callback salah (⇒ 1 peringatan) tetapi config masih https & lengkap.
+        $client = $this->client($handler, $this->spec([
+            'callback_url' => 'https://dashboard.test/callback',
+            'return_url' => '',
+        ]));
+
+        $issuesBefore = $client->configurationIssues();
+        $configuredBefore = $client->isConfigured();
+
+        $warnings = $client->configurationWarnings();
+
+        $this->assertNotEmpty($warnings, 'prasyarat: ada peringatan advisori');
+        $this->assertSame($issuesBefore, $client->configurationIssues());
+        $this->assertSame($configuredBefore, $client->isConfigured());
+        $this->assertSame([], $client->configurationIssues());
+        $this->assertTrue($client->isConfigured());
+    }
+
     public function testInquiryPostsSignedJsonWithoutSecrets(): void
     {
         $handler = new FakeDuitkuHandler();
