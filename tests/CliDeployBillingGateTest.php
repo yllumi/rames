@@ -31,10 +31,12 @@ class CliDeployBillingGateTest extends TestCase
             mkdir($this->workDir . '/' . $dir, 0777, true);
         }
 
-        // Owner member (saldo awal 0) + admin bebas.
+        // Owner member (saldo awal 0) + admin bebas + member kedua (uji langkah
+        // dua subjek: aktor ≠ owner).
         SqliteFixture::users($this->db(), [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
+            ['id' => 'u3', 'username' => 'member-2', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
         ]);
 
         $this->env = [
@@ -83,9 +85,22 @@ class CliDeployBillingGateTest extends TestCase
 
     private function writeBalance(string $userId, float $balance): void
     {
-        SqliteFixture::billing($this->db(), [
-            'users' => [$userId => ['balance' => $balance, 'updated_at' => '', 'ledger' => []]],
-        ]);
+        $this->writeBalances([$userId => $balance]);
+    }
+
+    /**
+     * Tulis saldo beberapa user sekaligus (uji dua subjek: aktor & owner).
+     *
+     * @param array<string,float> $balances
+     */
+    private function writeBalances(array $balances): void
+    {
+        $users = [];
+        foreach ($balances as $id => $balance) {
+            $users[(string) $id] = ['balance' => $balance, 'updated_at' => '', 'ledger' => []];
+        }
+
+        SqliteFixture::billing($this->db(), ['users' => $users]);
     }
 
     /**
@@ -96,10 +111,17 @@ class CliDeployBillingGateTest extends TestCase
         return $this->workDir . '/database/rames.sqlite';
     }
 
-    private function runApply(array $envExtra = []): array
+    private function runApply(array $envExtra = [], string $actorId = ''): array
     {
+        $argv = [PHP_BINARY, $this->root . '/cli/deploy.php', self::APP_ID, 'apply'];
+        if ($actorId !== '') {
+            // Posisi argv: [3]=ref (kosong untuk non-rollback), [4]=aktor.
+            $argv[] = '';
+            $argv[] = $actorId;
+        }
+
         return (new ProcessRunner())->run(
-            [PHP_BINARY, $this->root . '/cli/deploy.php', self::APP_ID, 'apply'],
+            $argv,
             $this->root,
             60,
             $envExtra === [] ? $this->env : array_merge($this->env, $envExtra)
@@ -151,6 +173,67 @@ class CliDeployBillingGateTest extends TestCase
         $this->assertSame('running', $this->storedApp()['status']);
     }
 
+    /**
+     * Aktor admin (argv[4]) + owner member saldo 0 ⇒ worker **tidak** memblokir
+     * kredit — gerbang dilewati karena aktor exempt, selaras dengan controller
+     * (kebijakan "admin bebas deploy tanpa kredit"). Dibedakan tegas dari blokir
+     * kredit: exit 0, status `running`, dan **tidak ada** `BILLING:` di log.
+     */
+    public function testAdminActorIsNotBlockedOnMemberOwnedApp(): void
+    {
+        $result = $this->runApply([], 'u1');
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr'] . 'stdout: ' . $result['stdout']);
+        $this->assertSame('running', $this->storedApp()['status']);
+        $this->assertStringNotContainsString('BILLING:', $this->logContents());
+    }
+
+    /**
+     * Tanpa aktor (argv[4] kosong) + owner member saldo 0 ⇒ tetap diblokir
+     * (regresi perilaku lama untuk pemanggil yang belum mengirim aktor).
+     */
+    public function testMissingActorStillBlocksMemberOwnerWithoutCredits(): void
+    {
+        $result = $this->runApply();
+
+        $this->assertSame(1, $result['code'], 'stderr: ' . $result['stderr'] . 'stdout: ' . $result['stdout']);
+        $app = $this->storedApp();
+        $this->assertSame('error', $app['status']);
+        $this->assertStringContainsString('Saldo kredit', (string) $app['message']);
+        $this->assertStringContainsString('BILLING:', $this->logContents());
+    }
+
+    /** Owner admin + aktor member ⇒ app milik admin bebas kredit untuk siapa pun. */
+    public function testMemberActorIsNotBlockedOnAdminOwnedApp(): void
+    {
+        $this->writeApp('u1');
+
+        $result = $this->runApply([], 'u2');
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr'] . 'stdout: ' . $result['stdout']);
+        $this->assertSame('running', $this->storedApp()['status']);
+        $this->assertStringNotContainsString('BILLING:', $this->logContents());
+    }
+
+    /**
+     * Aktor **admin legacy tanpa field `role`** (bentuk data nyata: user pertama
+     * `{id,username,password_hash,created_at}`) + owner member saldo 0 ⇒ tidak
+     * diblokir — resolusi role lewat `UserStore::isAdmin()`.
+     */
+    public function testLegacyAdminActorWithoutRoleIsNotBlocked(): void
+    {
+        SqliteFixture::users($this->db(), [
+            ['id' => 'legacy-admin', 'username' => 'admin', 'password_hash' => 'x', 'created_at' => ''],
+            ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'created_at' => ''],
+        ]);
+
+        $result = $this->runApply([], 'legacy-admin');
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr'] . 'stdout: ' . $result['stdout']);
+        $this->assertSame('running', $this->storedApp()['status']);
+        $this->assertStringNotContainsString('BILLING:', $this->logContents());
+    }
+
     public function testAdminOwnerIsExemptEvenWithZeroBalance(): void
     {
         $this->writeApp('u1');
@@ -159,6 +242,58 @@ class CliDeployBillingGateTest extends TestCase
 
         $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr'] . 'stdout: ' . $result['stdout']);
         $this->assertSame('running', $this->storedApp()['status']);
+    }
+
+    // ------------------------------------------------------------------
+    // Paritas dua subjek (aktor lalu pembayar/owner) dengan controller
+    // `AppController::billingAssertCanStart()`.
+    // ------------------------------------------------------------------
+
+    /**
+     * Asimetri yang diperbaiki verifikator: aktor **member saldo 0** + owner
+     * **member bersaldo** ⇒ worker wajib **DIBLOKIR** (controller menilai aktor
+     * lebih dulu). Owner kaya bukan alasan membiarkan aktor member tanpa saldo.
+     */
+    public function testMemberActorWithoutCreditsIsBlockedEvenWhenOwnerIsRich(): void
+    {
+        $this->writeApp('u2');            // owner kaya
+        $this->writeBalances(['u2' => 200000.0]);
+
+        $result = $this->runApply([], 'u3'); // aktor member saldo 0
+
+        $this->assertSame(1, $result['code'], 'stderr: ' . $result['stderr'] . 'stdout: ' . $result['stdout']);
+        $app = $this->storedApp();
+        $this->assertSame('error', $app['status']);
+        $this->assertStringContainsString('Saldo kredit', (string) $app['message']);
+        $this->assertStringContainsString('BILLING:', $this->logContents());
+    }
+
+    /** Aktor member bersaldo + owner member bersaldo ⇒ lolos (kedua subjek aman). */
+    public function testRichMemberActorAndRichOwnerAreAllowed(): void
+    {
+        $this->writeApp('u2');
+        $this->writeBalances(['u2' => 200000.0, 'u3' => 200000.0]);
+
+        $result = $this->runApply([], 'u3');
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr'] . 'stdout: ' . $result['stdout']);
+        $this->assertSame('running', $this->storedApp()['status']);
+        $this->assertStringNotContainsString('BILLING:', $this->logContents());
+    }
+
+    /**
+     * Aktor member saldo 0 + owner **tak diketahui** (`ghost`) ⇒ diblokir
+     * (owner tak diketahui jatuh ke aktor, selaras `billingPayerFor()` controller).
+     */
+    public function testMemberActorWithoutCreditsIsBlockedWhenOwnerUnknown(): void
+    {
+        $this->writeApp('ghost');
+
+        $result = $this->runApply([], 'u2');
+
+        $this->assertSame(1, $result['code'], 'stderr: ' . $result['stderr'] . 'stdout: ' . $result['stdout']);
+        $this->assertSame('error', $this->storedApp()['status']);
+        $this->assertStringContainsString('BILLING:', $this->logContents());
     }
 
     public function testBillingDisabledSkipsTheGate(): void

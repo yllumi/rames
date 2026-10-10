@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * Background worker deploy app.
  *
- *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply] [ref]
+ *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply] [ref] [actorId]
  *
  * Dipanggil detached oleh AppController (pcntl_fork + pcntl_exec) supaya request
  * HTTP tidak terblokir oleh operasi build yang lama. Pipeline:
@@ -56,16 +56,38 @@ if (!is_dir($logDir)) {
 $logFile = $logDir . '/' . $appId . '.log';
 file_put_contents($logFile, '[' . date('c') . "] start mode={$mode}\n", FILE_APPEND);
 
-// Gerbang kredit (pertahanan berlapis) — jalankan SEBELUM compose/dispatcher:
-// bila saldo pemilik (member) kurang, app ditandai error & worker keluar
-// non-zero tanpa menyentuh Docker. Billing mati / owner admin / owner tak
-// ditemukan ⇒ dilewati (jangan mengunci app). Catatan: findPublicById
-// me-resolve role (migrasi lazy user pertama = admin) agar admin legacy tetap
-// bebas, sama seperti jalur HTTP. InsufficientCredits = blokir fungsional.
+// Gerbang kredit (pertahanan berlapis) — jalankan SEBELUM compose/dispatcher.
+// Aturan SAMA dengan controller (AppController::billingAssertCanStart()) — DUA
+// subjek berurutan, agar controller & worker tidak berbeda putusan:
+//   - aktor admin (argv[4]) ATAU owner admin ⇒ tidak pernah diblokir kredit;
+//   - (4) aktor dinilai lebih dulu (bila ada) — member tanpa saldo diblokir di
+//     sini walau ownernya kaya; tanpa aktor (pemanggil lama) ⇒ owner saja;
+//   - (5) pembayar/owner dinilai bila berbeda dari aktor — app yang dibagikan
+//     tetap ditagih ke ownernya; owner tak diketahui ⇒ jatuh ke aktor (selaras
+//     `billingPayerFor()`), dan tanpa aktor maupun owner ⇒ dilewati (jangan
+//     mengunci app).
+// Saldo kurang ⇒ app ditandai error & worker keluar non-zero tanpa menyentuh
+// Docker. `findPublicById` me-resolve role (migrasi lazy user pertama = admin)
+// agar admin legacy tetap bebas, sama seperti jalur HTTP. InsufficientCredits =
+// blokir fungsional (bukan otorisasi — itu urusan AppAccess/AuthMiddleware).
 try {
+    $actorId = trim((string) ($argv[4] ?? ''));
     $ownerId = (string) ($app['owner_id'] ?? '');
-    $owner = $ownerId === '' ? null : (new UserStore())->findPublicById($ownerId);
-    (new BillingGate())->assertCanStart($app, $owner);
+    $users = new UserStore();
+    $gate = new BillingGate(null, null, $users);
+    $owner = $ownerId === '' ? null : $users->findPublicById($ownerId);
+    $actor = $actorId === '' ? null : $users->findPublicById($actorId);
+
+    $exempt = static fn (?array $u): bool => $u !== null && $gate->isExempt($u);
+
+    if (!$exempt($actor) && !$exempt($owner)) {
+        // (4) Aktor dinilai lebih dulu (bila ada); tanpa aktor ⇒ owner saja.
+        $gate->assertCanStart($app, $actor ?? $owner);
+        // (5) Pembayar/owner bila berbeda dari aktor.
+        if ($owner !== null && $actor !== null && (string) $actor['id'] !== (string) $owner['id']) {
+            $gate->assertCanStart($app, $owner);
+        }
+    }
 } catch (InsufficientCredits $e) {
     $msg = $e->getMessage();
     file_put_contents($logFile, '[' . date('c') . "] BILLING: {$msg}\n", FILE_APPEND);

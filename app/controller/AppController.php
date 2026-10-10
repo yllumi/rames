@@ -225,7 +225,10 @@ class AppController
                 app_can('limits', $app),
                 $savedLimits
             ),
-            'billingEstimate' => $this->billingEstimateFor($savedLimits, current_user()),
+            'billingEstimate' => $this->billingEstimateFor(
+                $savedLimits,
+                $this->billingPayerFor($app, current_user())
+            ),
         ]);
     }
 
@@ -1035,7 +1038,7 @@ class AppController
 
         $app = (new AppStore())->create($appData);
 
-        $spawned = $this->spawnWorker($app['id'], 'deploy');
+        $spawned = $this->spawnWorker($app['id'], 'deploy', null, $this->currentActorId());
         if (!$spawned) {
             (new AppStore())->update($app['id'], function (array &$s): void {
                 $s['status'] = 'error';
@@ -1111,7 +1114,7 @@ class AppController
             $s['error'] = null;
         });
 
-        if (!$this->spawnWorker($id, 'rebuild')) {
+        if (!$this->spawnWorker($id, 'rebuild', null, $this->currentActorId())) {
             $store->update($id, function (array &$s): void {
                 $s['status'] = 'error';
                 $s['stage'] = null;
@@ -1202,7 +1205,7 @@ class AppController
             $s['error'] = null;
         });
 
-        if (!$this->spawnWorker($id, 'rollback', $fullRef)) {
+        if (!$this->spawnWorker($id, 'rollback', $fullRef, $this->currentActorId())) {
             $store->update($id, function (array &$s): void {
                 $s['status'] = 'error';
                 $s['stage'] = null;
@@ -2368,7 +2371,7 @@ class AppController
                 $s['error'] = null;
             });
 
-            if (!$this->spawnWorker($id, 'apply')) {
+            if (!$this->spawnWorker($id, 'apply', null, $this->currentActorId())) {
                 $store->update($id, function (array &$s): void {
                     $s['status'] = 'error';
                     $s['stage'] = null;
@@ -2521,17 +2524,28 @@ class AppController
      */
     private function billingAssertCanCreate(array $limits, ?array $user, ?BillingGate $gate = null): void
     {
-        ($gate ?? new BillingGate())->assertCanCreate($limits, $user);
+        $gate ??= new BillingGate();
+
+        // Aktor bebas tagihan (admin) tidak pernah diblokir kredit — eksplisit,
+        // meski `BillingGate` juga sudah mengecualikannya.
+        if ($gate->isExempt($user)) {
+            return;
+        }
+
+        $gate->assertCanCreate($limits, $user);
     }
 
     /**
      * Gerbang kredit untuk app yang **sudah ada** (rebuild/rollback/start/simpan
      * compose/env/network/nama/limits) — limit dibaca dari field `limits` app.
      *
-     * Yang dinilai adalah saldo **penanggung biaya** (`billingPayerFor()`), bukan
-     * aktor: app yang dibagikan tetap ditagih ke ownernya, sama seperti penilaian
-     * ulang di worker `cli/deploy.php` (agar controller & worker tidak berbeda
-     * putusan).
+     * Urutan keputusan (kebijakan produk: admin bebas kredit & app milik admin
+     * tidak dibatasi kredit siapa pun):
+     *  1. aktor admin ⇒ **tidak pernah** diblokir kredit;
+     *  2. app milik user bebas tagihan (admin) ⇒ bebas untuk siapa pun;
+     *  3. aktor member wajib punya saldo;
+     *  4. penanggung biaya (owner) yang berbeda dari aktor tetap dinilai —
+     *     konsisten dengan penilaian ulang di worker `cli/deploy.php`.
      *
      * @throws InsufficientCredits
      */
@@ -2543,16 +2557,27 @@ class AppController
             return;
         }
 
-        $gate ??= new BillingGate();
+        $gate ??= new BillingGate(null, null, $users);
 
-        // (1) Aktor — siapa pun yang menekan tombol tetap harus punya kredit bila
-        //     ia member. Menutup escape: owner dipindahkan ke user admin (bebas)
-        //     sementara operator member-nya tetap mengoperasikan app tanpa saldo.
+        // (1) Aktor admin bebas kredit — tidak pernah diblokir, bahkan untuk app
+        //     milik member yang saldonya kurang.
+        if ($gate->isExempt($user)) {
+            return;
+        }
+
+        $payer = $this->billingPayerFor($app, $user, $users);
+
+        // (2) App milik user bebas tagihan (admin) ⇒ bebas untuk siapa pun,
+        //     tanpa memandang saldo aktor.
+        if ($payer !== null && $gate->isExempt($payer)) {
+            return;
+        }
+
+        // (3) Aktor member wajib punya kredit.
         $gate->assertCanStart($app, $user);
 
-        // (2) Penanggung biaya (owner) — app yang dibagikan tetap ditagih ke
+        // (4) Penanggung biaya (owner) — app yang dibagikan tetap ditagih ke
         //     ownernya, selaras dengan penilaian ulang di worker.
-        $payer = $this->billingPayerFor($app, $user, $users);
         if ($payer !== null && (string) ($payer['id'] ?? '') !== (string) ($user['id'] ?? '')) {
             $gate->assertCanStart($app, $payer);
         }
@@ -2600,12 +2625,13 @@ class AppController
 
     /**
      * Apakah user tunduk pada plafon & basis limit billing (member login)?
-     * Admin gratis dan user null (tanpa konteks login) dikecualikan — konsisten
-     * dengan aturan lama `is_admin()`.
+     * Admin gratis dan user null (tanpa konteks login) dikecualikan — resolusi
+     * role memakai `BillingGate::roleIsExempt()` (role legacy tanpa field `role`
+     * di-resolve lewat `UserStore`), bukan `$user['role']` mentah.
      */
-    private function isBillingMember(?array $user): bool
+    private function isBillingMember(?array $user, ?UserStore $users = null): bool
     {
-        return $user !== null && ($user['role'] ?? '') !== UserStore::ROLE_ADMIN;
+        return $user !== null && !BillingGate::roleIsExempt($user, $users);
     }
 
     /**
@@ -2707,10 +2733,16 @@ class AppController
      * Estimasi kredit **baca-saja** untuk tab "Sumber Daya" di halaman detail —
      * dihitung dari `ResourceLimits::of($app)` (satu sumber aturan limit).
      *
+     * `$payer` adalah **penanggung biaya app** (pemilik), **bukan** penonton:
+     * `applies` mengikuti apakah pemilik app benar-benar ditagih. App milik admin
+     * (bebas tagihan) ⇒ `applies === false` untuk siapa pun penontonnya; app milik
+     * member ⇒ `applies === true`. Pemanggil menyerahkan hasil
+     * `billingPayerFor($app, current_user())` (satu pembacaan per render).
+     *
      * @param array<int|string,mixed> $limits
      * @return array{enabled:bool,applies:bool,estimate_hourly:float,estimate_month:float,days:int,hourly_text:string,month_text:string,format:array{hourly:string,month:string}}
      */
-    private function billingEstimateFor(array $limits, ?array $user): array
+    private function billingEstimateFor(array $limits, ?array $payer = null): array
     {
         $enabled = (bool) config('deploy.billing_enabled', true);
         $days = (int) config('deploy.billing_min_deposit_days', 30);
@@ -2720,7 +2752,7 @@ class AppController
 
         return [
             'enabled' => $enabled,
-            'applies' => $this->isBillingMember($user),
+            'applies' => $this->isBillingMember($payer),
             'estimate_hourly' => $hourly,
             'estimate_month' => $month,
             'days' => $days,
@@ -3092,7 +3124,19 @@ class AppController
      *     proc_get_status/proc_close di dalam worker tetap membaca exit code
      *     proses anaknya (git/docker) dengan benar.
      */
-    private function spawnWorker(string $appId, string $mode, ?string $arg = null): bool
+    /**
+     * Id user yang sedang login ('' bila tak ada konteks login). Dipakai untuk
+     * meneruskan identitas aktor ke worker deploy (argv[4]) supaya controller &
+     * worker memakai pengecualian kredit yang sama (admin bebas kredit).
+     */
+    private function currentActorId(): string
+    {
+        $user = current_user();
+
+        return $user === null ? '' : (string) ($user['id'] ?? '');
+    }
+
+    private function spawnWorker(string $appId, string $mode, ?string $arg = null, ?string $actorId = null): bool
     {
         $logDir = runtime_path('logs/deploy');
         if (!is_dir($logDir)) {
@@ -3103,6 +3147,19 @@ class AppController
         $command = [PHP_BINARY, base_path('cli/deploy.php'), $appId, $mode];
         if ($arg !== null && $arg !== '') {
             $command[] = $arg;
+        }
+
+        // Argumen posisi ke-5 worker (argv[4]) = id aktor yang menekan tombol.
+        // Slot argv[3] (`ref`) selalu diisi (string kosong bila bukan rollback)
+        // agar posisi argumen stabil. Worker memakai aktor untuk pengecualian
+        // kredit (admin bebas) yang sama dengan controller — tanpa ini admin
+        // bisa lolos di controller tetapi ditolak worker (app jadi `error`).
+        $actorId = trim((string) $actorId);
+        if ($actorId !== '') {
+            if (count($command) < 5) {
+                $command[] = '';
+            }
+            $command[] = $actorId;
         }
 
         // Otomatis-reap anak saat selesai supaya tidak menumpuk zombie.

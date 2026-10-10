@@ -42,6 +42,9 @@ class AppControllerBillingGateTest extends TestCase
         SqliteFixture::users($db, [
             ['id' => 'u1', 'username' => 'admin', 'password_hash' => 'x', 'role' => 'admin', 'created_at' => ''],
             ['id' => 'u2', 'username' => 'member', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
+            // u3 = member pemilik app lain (untuk menguji langkah (4): penanggung
+            // biaya dinilai walau aktornya member bersaldo cukup).
+            ['id' => 'u3', 'username' => 'member-lain', 'password_hash' => 'x', 'role' => 'member', 'created_at' => ''],
         ]);
 
         $this->account = new CreditAccount(
@@ -279,20 +282,65 @@ class AppControllerBillingGateTest extends TestCase
     }
 
     // ------------------------------------------------------------------
-    // Penutupan escape: transfer kepemilikan ke admin tidak membebaskan member
+    // Kebijakan produk (permintaan user): admin bebas kredit & app milik admin
+    // tidak dibatasi kredit siapa pun. Urutan keputusan billingAssertCanStart():
+    // (1) aktor admin ⇒ lolos; (2) app milik admin ⇒ lolos untuk siapa pun;
+    // (3) aktor member wajib saldo; (4) penanggung biaya (owner) tetap dinilai.
     // ------------------------------------------------------------------
 
     /**
-     * Escape (temuan verifier N1): owner dipindah ke user **admin** (bebas
-     * tagihan) sementara operator member-nya tidak punya saldo. Gerbang wajib
-     * tetap menolak aktor member — bukan hanya menilai owner.
+     * (1) Aktor admin **tidak pernah** diblokir kredit — bahkan untuk app milik
+     * member yang saldonya nol. (Sebelum perubahan kebijakan ini, langkah
+     * penilaian penanggung biaya membuat admin ikut ditolak.)
      */
-    public function testMemberActorIsBlockedEvenWhenOwnerIsAdmin(): void
+    public function testAdminActorIsNotBlockedOnMemberOwnedAppWithoutBalance(): void
+    {
+        $app = ['id' => 'a1', 'owner_id' => 'u2', 'limits' => ['web' => ['cpus' => 1.0, 'memory_mb' => 512]]];
+        $users = new UserStore($this->tmp . '/rames.sqlite');
+
+        // Saldo u2 = 0 (tanpa deposit) ⇒ dulu melempar InsufficientCredits.
+        $this->invoke('billingAssertCanStart', [$app, self::ADMIN, $this->gate(), $users]);
+
+        self::assertTrue(true, 'aktor admin bebas kredit walau app milik member tanpa saldo');
+    }
+
+    /**
+     * (2) App milik admin ⇒ bebas untuk **siapa pun**; operator member tanpa saldo
+     * pun tidak diblokir. Kebijakan baru ini menggantikan penutupan escape lama
+     * "member actor is blocked even when owner is admin" (lihat laporan).
+     */
+    public function testMemberActorIsNotBlockedOnAdminOwnedApp(): void
     {
         $app = ['id' => 'a1', 'owner_id' => 'u1', 'limits' => ['web' => ['cpus' => 1.0, 'memory_mb' => 512]]];
+        $users = new UserStore($this->tmp . '/rames.sqlite');
+
+        $this->invoke('billingAssertCanStart', [$app, self::MEMBER, $this->gate(), $users]);
+
+        self::assertTrue(true, 'app milik admin bebas kredit untuk siapa pun');
+    }
+
+    /** (3) Aktor member pada app miliknya sendiri dengan saldo nol ⇒ tetap diblokir. */
+    public function testMemberActorIsBlockedOnOwnAppWithoutBalance(): void
+    {
+        $app = ['id' => 'a1', 'owner_id' => 'u2', 'limits' => ['web' => ['cpus' => 1.0, 'memory_mb' => 512]]];
+        $users = new UserStore($this->tmp . '/rames.sqlite');
 
         $this->expectException(InsufficientCredits::class);
-        $this->invoke('billingAssertCanStart', [$app, self::MEMBER, $this->gate()]);
+        $this->invoke('billingAssertCanStart', [$app, self::MEMBER, $this->gate(), $users]);
+    }
+
+    /**
+     * (4) Operator member bersaldo cukup pada app milik member lain yang saldonya
+     * kurang ⇒ tetap diblokir — penanggung biaya tetap dinilai (bukan regresi).
+     */
+    public function testMemberOperatorWithBalanceIsBlockedWhenOwnerLacksBalance(): void
+    {
+        $app = ['id' => 'a1', 'owner_id' => 'u3', 'limits' => ['web' => ['cpus' => 1.0, 'memory_mb' => 512]]];
+        $users = new UserStore($this->tmp . '/rames.sqlite');
+        $this->account->deposit('u2', 100000.0, 'u1', 'topup'); // aktor u2 cukup
+
+        $this->expectException(InsufficientCredits::class);
+        $this->invoke('billingAssertCanStart', [$app, self::MEMBER, $this->gate(), $users]);
     }
 
     public function testMemberActorWithBalanceCanOperateAdminOwnedApp(): void
@@ -307,16 +355,28 @@ class AppControllerBillingGateTest extends TestCase
     }
 
     /**
-     * Biaya ditanggung owner: admin yang mengoperasikan app milik member tanpa
-     * saldo tetap ditolak (konsisten dengan worker `cli/deploy.php`).
+     * Admin legacy tanpa field `role` (bentuk data nyata: user pertama
+     * `{id,username,password_hash,created_at}`) ⇒ bukan billing member, karena
+     * `isBillingMember()` memakai role hasil resolusi `UserStore`, bukan
+     * `$user['role']` mentah.
      */
-    public function testOwnerBalanceIsRequiredForAdminActorToo(): void
+    public function testLegacyAdminWithoutRoleFieldIsNotBillingMember(): void
     {
-        $app = ['id' => 'a1', 'owner_id' => 'u2', 'limits' => []];
-        $users = new UserStore($this->tmp . '/rames.sqlite');
+        $db = $this->tmp . '/legacy.sqlite';
+        SqliteFixture::users($db, [
+            ['id' => 'legacy-admin', 'username' => 'admin', 'password_hash' => 'x', 'created_at' => ''],
+            ['id' => 'legacy-member', 'username' => 'member', 'password_hash' => 'x', 'created_at' => ''],
+        ]);
+        $users = new UserStore($db);
 
-        $this->expectException(InsufficientCredits::class);
-        $this->invoke('billingAssertCanStart', [$app, self::ADMIN, $this->gate(), $users]);
+        $legacyAdmin = ['id' => 'legacy-admin', 'username' => 'admin'];
+        $legacyMember = ['id' => 'legacy-member', 'username' => 'member'];
+
+        self::assertFalse(
+            (bool) $this->invoke('isBillingMember', [$legacyAdmin, $users]),
+            'admin legacy tanpa role tidak boleh dianggap member'
+        );
+        self::assertTrue((bool) $this->invoke('isBillingMember', [$legacyMember, $users]));
     }
 
     /**

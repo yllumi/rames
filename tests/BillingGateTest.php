@@ -72,6 +72,38 @@ class BillingGateTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testIsExemptUsesResolvedRole(): void
+    {
+        $gate = $this->gate();
+
+        $this->assertTrue($gate->isExempt(self::ADMIN));
+        $this->assertFalse($gate->isExempt(self::MEMBER));
+        $this->assertFalse($gate->isExempt(null), 'tanpa konteks user bukan pengecualian di sini');
+    }
+
+    /**
+     * Admin legacy tanpa field `role` (bentuk data nyata: user pertama
+     * `{id,username,password_hash,created_at}`) ⇒ `isExempt()` true lewat
+     * resolusi `UserStore`, dan gate tidak melempar walau saldo 0.
+     */
+    public function testLegacyAdminWithoutRoleFieldIsExempt(): void
+    {
+        $db = $this->tmp . '/legacy.sqlite';
+        SqliteFixture::users($db, [
+            ['id' => 'legacy-admin', 'username' => 'admin', 'password_hash' => 'x', 'created_at' => ''],
+            ['id' => 'legacy-member', 'username' => 'member', 'password_hash' => 'x', 'created_at' => ''],
+        ]);
+
+        $users = new UserStore($db);
+        $legacyAdmin = ['id' => 'legacy-admin', 'username' => 'admin'];
+        $gate = new BillingGate($this->account, self::RATES, $users);
+
+        $this->assertTrue($gate->isExempt($legacyAdmin));
+        $this->assertFalse($gate->isExempt(['id' => 'legacy-member', 'username' => 'member']));
+        $gate->assertCanCreate([], $legacyAdmin);
+        $this->assertTrue(true, 'admin legacy tanpa role tidak diblokir kredit');
+    }
+
     public function testNullUserIsNotBlockedHere(): void
     {
         $this->gate()->assertCanCreate([], null);

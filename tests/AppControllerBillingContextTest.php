@@ -141,6 +141,7 @@ class AppControllerBillingContextTest extends TestCase
     {
         $limits = ['web' => ['cpus' => 1.0, 'memory_mb' => 1024]];
 
+        // Argumen kedua = **penanggung biaya app** (pemilik), bukan penonton.
         $member = $this->invoke('billingEstimateFor', [$limits, self::MEMBER]);
         $this->assertTrue($member['enabled']);
         $this->assertTrue($member['applies']);
@@ -154,6 +155,31 @@ class AppControllerBillingContextTest extends TestCase
         $admin = $this->invoke('billingEstimateFor', [$limits, self::ADMIN]);
         $this->assertFalse($admin['applies']);
         $this->assertSame(86400.0, $admin['estimate_month']); // angka tetap dihitung (read-only info)
+    }
+
+    /**
+     * Kontrak C: `applies` di tab "Sumber Daya" mengikuti **pemilik app**
+     * (penanggung biaya), bukan penonton. Pemanggil menyerahkan hasil
+     * `billingPayerFor($app, current_user())` — app milik admin tetap bebas
+     * kredit bagi penonton mana pun; app milik member tetap ditagih.
+     */
+    public function testEstimateAppliesFollowsAppOwnerNotViewer(): void
+    {
+        $users = new UserStore($this->tmp . '/rames.sqlite');
+        $limits = ['web' => ['cpus' => 1.0, 'memory_mb' => 1024]];
+
+        $adminOwned = ['id' => 'a1', 'owner_id' => 'u1', 'limits' => $limits];
+        $memberOwned = ['id' => 'a2', 'owner_id' => 'u2', 'limits' => $limits];
+
+        // Penonton member melihat app milik admin ⇒ bebas tagihan ⇒ applies false.
+        $payer = $this->invoke('billingPayerFor', [$adminOwned, self::MEMBER, $users]);
+        $adminView = $this->invoke('billingEstimateFor', [$limits, $payer]);
+        $this->assertFalse($adminView['applies'], 'app milik admin bebas ⇒ applies false untuk penonton mana pun');
+
+        // Penonton admin melihat app milik member ⇒ tetap ditagih ⇒ applies true.
+        $payer2 = $this->invoke('billingPayerFor', [$memberOwned, self::ADMIN, $users]);
+        $memberView = $this->invoke('billingEstimateFor', [$limits, $payer2]);
+        $this->assertTrue($memberView['applies'], 'app milik member ⇒ applies true apa pun penontonnya');
     }
 
     public function testEstimateForEmptyLimitsFallsBackToDefaultUnit(): void
