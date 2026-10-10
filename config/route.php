@@ -27,6 +27,7 @@ use app\controller\DatabaseController;
 use app\controller\FileController;
 use app\controller\HealthController;
 use app\controller\PaymentController;
+use app\controller\ProfileController;
 use app\controller\SslController;
 use app\controller\TerminalController;
 use app\controller\UpdateController;
@@ -236,6 +237,17 @@ Route::post('/users/{id}/password', [UserController::class, 'changePassword']);
 Route::post('/users/{id}/role', [UserController::class, 'changeRole']);
 // Email member (dipakai untuk top-up Duitku) — admin set/hapus dari halaman Users.
 Route::post('/users/{id}/email', [UserController::class, 'setEmail']);
+
+/*
+|--------------------------------------------------------------------------
+| Profil self-service (semua user login)
+|--------------------------------------------------------------------------
+| `/profile` = halaman profil diri sendiri + ubah email (pindahan form email
+| dari `/credits`). `POST /profile/email` hanya mengubah email user login
+| (anti-IDOR: `id`/`user_id` dari request diabaikan).
+*/
+Route::get('/profile', [ProfileController::class, 'index']);
+Route::post('/profile/email', [ProfileController::class, 'setEmail']);
 
 /*
 |--------------------------------------------------------------------------

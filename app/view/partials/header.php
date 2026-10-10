@@ -32,6 +32,7 @@ $__navIcons = [
     'config' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
     'credits' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>',
     'users' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    'profile' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
 ];
 // Ikon burger dipakai tombol lipat (desktop) & buka drawer (mobile).
 $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>';
@@ -69,6 +70,9 @@ $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke=
         <li class="nav-item">
           <?php $__credit = current_credit_balance(); ?>
           <a class="nav-link <?= ($active ?? '') === 'credits' ? 'active' : '' ?>" href="/credits" data-label="Kredit" aria-label="Kredit"<?= ($active ?? '') === 'credits' ? ' aria-current="page"' : '' ?>><span class="nav-ico" aria-hidden="true"><?= $__navIcons['credits'] ?></span><span class="nav-label">Kredit</span><?php if ($__credit !== null): ?><span class="badge text-bg-success ms-1" title="Saldo kredit Anda"><?= e(format_credits($__credit, 0)) ?></span><?php endif; ?></a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link <?= ($active ?? '') === 'profile' ? 'active' : '' ?>" href="/profile" data-label="Profil" aria-label="Profil"<?= ($active ?? '') === 'profile' ? ' aria-current="page"' : '' ?>><span class="nav-ico" aria-hidden="true"><?= $__navIcons['profile'] ?></span><span class="nav-label">Profil</span></a>
         </li>
         <?php if (is_admin()): ?>
         <li class="nav-item">

@@ -149,7 +149,7 @@
           <?= csrf_field() ?>
           <div class="mb-2">
             <label class="form-label" for="editEmail">Email (top-up kredit)</label>
-            <input type="email" class="form-control" id="editEmail" name="email" maxlength="254" autocomplete="email">
+            <input type="email" class="form-control" id="editEmail" name="email" maxlength="50" autocomplete="email">
             <div class="form-text">
               Kosongkan lalu simpan untuk menghapus email. Email wajib untuk top-up mandiri via payment gateway.
             </div>

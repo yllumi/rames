@@ -106,10 +106,13 @@ $breadcrumbs = [
             <br>Kurs: Rp<?= e($kursLabel($idrPerCredit)) ?> = 1 kredit
           <?php endif; ?>
         </div>
-        <?php if ($topupEnabled): ?>
-          <a class="btn btn-primary btn-sm" href="#topup-form">Top-up online</a>
-        <?php else: ?>
+        <?php if (!$topupEnabled): ?>
           <span class="text-muted small">Top-up online tidak tersedia — hubungi admin untuk deposit.</span>
+        <?php elseif (trim($email) === ''): ?>
+          <span class="text-muted small">Top-up online butuh email gateway.
+            <a href="/profile">Lengkapi email di halaman Profil</a>.</span>
+        <?php else: ?>
+          <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#topupModal">Top-up online</button>
         <?php endif; ?>
       </div>
     </div>
@@ -241,72 +244,12 @@ $breadcrumbs = [
   </div>
 </div>
 
-<?php if ($topupEnabled): ?>
-  <div class="card mb-4" id="topup-form">
-    <div class="card-header bg-white py-2 fw-semibold">Top-up online</div>
-    <div class="card-body">
-      <?php if (trim($email) === ''): ?>
-        <div class="alert alert-warning py-2 small" role="alert">
-          <strong>Email belum diisi.</strong> Top-up memerlukan email (dipakai gateway pembayaran).
-          Isi email pada form di bawah sebelum melanjutkan.
-        </div>
-      <?php endif; ?>
-      <form method="post" action="/credits/topup" id="credits-topup" class="row g-3"
-            data-methods-url="/api/credits/methods"
-            data-min="<?= e((string) $topupMin) ?>"
-            data-max="<?= e((string) $topupMax) ?>"
-            data-per-credit="<?= e((string) $idrPerCredit) ?>">
-        <?= csrf_field() ?>
-        <div class="col-md-6">
-          <label class="form-label" for="topup-amount">Nominal (Rp)</label>
-          <input type="number" class="form-control" name="amount_idr" id="topup-amount"
-                 min="<?= e((string) $topupMin) ?>" max="<?= e((string) $topupMax) ?>" step="1000"
-                 value="<?= e((string) $topupMin) ?>" required>
-          <div class="form-text">
-            Minimum Rp<?= e(number_format($topupMin, 0, ',', '.')) ?><?php if ($topupMax > 0): ?>,
-            maksimum Rp<?= e(number_format($topupMax, 0, ',', '.')) ?><?php endif; ?>.
-            <strong>Kurs: Rp<?= e($kursLabel(max($idrPerCredit, 0.01))) ?> = 1 kredit.</strong>
-            Perkiraan kredit: <span id="topup-credits"><?= e(format_credits($topupMin / max($idrPerCredit, 0.01))) ?></span>.
-          </div>
-        </div>
-        <div class="col-md-6">
-          <label class="form-label" for="topup-method">Metode pembayaran</label>
-          <select class="form-select" name="method" id="topup-method" required>
-            <?php if ($methods === []): ?>
-              <option value="" disabled selected>Memuat metode …</option>
-            <?php else: ?>
-              <?php foreach ($methods as $code): ?>
-                <option value="<?= e($code) ?>"><?= e($code) ?></option>
-              <?php endforeach; ?>
-            <?php endif; ?>
-          </select>
-          <div class="form-text" id="topup-method-hint">Daftar metode dimuat dari gateway saat halaman dibuka.</div>
-        </div>
-        <div class="col-12">
-          <button type="submit" class="btn btn-primary btn-sm"<?= trim($email) === '' ? ' disabled' : '' ?>>Lanjut ke pembayaran</button>
-        </div>
-      </form>
-    </div>
+<?php if (trim($email) === ''): ?>
+  <div class="alert alert-warning py-2 small d-flex flex-wrap align-items-center gap-2" role="alert">
+    <span><strong>Email belum diisi.</strong> Email dipakai untuk notifikasi &amp; wajib untuk top-up kredit.</span>
+    <a class="alert-link" href="/profile">Lengkapi email di halaman Profil</a>
   </div>
 <?php endif; ?>
-
-<div class="card mb-4">
-  <div class="card-header bg-white py-2 fw-semibold">Email notifikasi</div>
-  <div class="card-body">
-    <form method="post" action="/credits/email" class="row g-3">
-      <?= csrf_field() ?>
-      <div class="col-md-8">
-        <label class="form-label" for="credits-email">Email Anda</label>
-        <input type="email" class="form-control" name="email" id="credits-email"
-               value="<?= e($email) ?>" maxlength="50" autocomplete="email" placeholder="nama@contoh.com">
-        <div class="form-text">Wajib untuk top-up online. Kosongkan lalu simpan untuk menghapus email.</div>
-      </div>
-      <div class="col-md-4 d-flex align-items-end">
-        <button type="submit" class="btn btn-outline-primary btn-sm">Simpan email</button>
-      </div>
-    </form>
-  </div>
-</div>
 
 <?php if ($isAdmin): ?>
   <hr class="my-4">
@@ -438,5 +381,59 @@ $breadcrumbs = [
   </div>
 <?php endif; ?>
 
-<script src="/js/credits.js?v=1"></script>
+<?php if ($topupEnabled): ?>
+  <!-- Top-up online sebagai modal, dipicu tombol di kartu saldo.
+       Form tetap `id="credits-topup"` + atribut data-* agar public/js/credits.js
+       dan uji CSRF (tests/CsrfExemptPaymentCallbackTest.php) tidak berubah. -->
+  <div class="modal fade" id="topupModal" tabindex="-1" aria-labelledby="topupModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="topupModalLabel">Top-up online</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+        </div>
+        <div class="modal-body">
+          <form method="post" action="/credits/topup" id="credits-topup" class="row g-3"
+                data-methods-url="/api/credits/methods"
+                data-min="<?= e((string) $topupMin) ?>"
+                data-max="<?= e((string) $topupMax) ?>"
+                data-per-credit="<?= e((string) $idrPerCredit) ?>">
+            <?= csrf_field() ?>
+            <div class="col-md-6">
+              <label class="form-label" for="topup-amount">Nominal (Rp)</label>
+              <input type="number" class="form-control" name="amount_idr" id="topup-amount"
+                     min="<?= e((string) $topupMin) ?>" max="<?= e((string) $topupMax) ?>" step="1000"
+                     value="<?= e((string) $topupMin) ?>" required>
+              <div class="form-text">
+                Minimum Rp<?= e(number_format($topupMin, 0, ',', '.')) ?><?php if ($topupMax > 0): ?>,
+                maksimum Rp<?= e(number_format($topupMax, 0, ',', '.')) ?><?php endif; ?>.
+                <strong>Kurs: Rp<?= e($kursLabel(max($idrPerCredit, 0.01))) ?> = 1 kredit.</strong>
+                Perkiraan kredit: <span id="topup-credits"><?= e(format_credits($topupMin / max($idrPerCredit, 0.01))) ?></span>.
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label" for="topup-method">Metode pembayaran</label>
+              <select class="form-select" name="method" id="topup-method" required>
+                <?php if ($methods === []): ?>
+                  <option value="" disabled selected>Memuat metode …</option>
+                <?php else: ?>
+                  <?php foreach ($methods as $code): ?>
+                    <option value="<?= e($code) ?>"><?= e($code) ?></option>
+                  <?php endforeach; ?>
+                <?php endif; ?>
+              </select>
+              <div class="form-text" id="topup-method-hint">Daftar metode dimuat dari gateway saat modal dibuka.</div>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+          <button type="submit" form="credits-topup" class="btn btn-primary"<?= trim($email) === '' ? ' disabled' : '' ?>>Lanjut ke pembayaran</button>
+        </div>
+      </div>
+    </div>
+  </div>
+<?php endif; ?>
+
+<script src="/js/credits.js?v=3"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

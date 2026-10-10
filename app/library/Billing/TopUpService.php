@@ -373,7 +373,7 @@ class TopUpService
         $email = trim((string) ($user['email'] ?? ''));
         if ($email === '' || strlen($email) > 50 || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
             throw new RuntimeException(
-                'Email user belum diisi dengan benar. Lengkapi email di halaman pengguna sebelum melakukan top-up.'
+                'Email user belum diisi dengan benar. Lengkapi email di halaman Profil sebelum melakukan top-up.'
             );
         }
 
