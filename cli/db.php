@@ -33,11 +33,14 @@ require __DIR__ . '/../support/bootstrap.php';
 
 /** @var callable(string):void $out */
 $out = static function (string $line): void {
-    fwrite(STDOUT, $line . PHP_EOL);
+    // `@`: pipe yang ditutup lebih awal (mis. `php cli/db.php status | head`)
+    // memunculkan E_WARNING "Broken pipe" yang oleh bootstrap Webman diubah
+    // menjadi ErrorException — itu bukan kegagalan perintah.
+    @fwrite(STDOUT, $line . PHP_EOL);
 };
 /** @var callable(string):void $err */
 $err = static function (string $line): void {
-    fwrite(STDERR, $line . PHP_EOL);
+    @fwrite(STDERR, $line . PHP_EOL);
 };
 
 $usage = <<<TXT
@@ -132,6 +135,14 @@ switch ($mode) {
         $existedBefore = is_file($file);
         $pdo = $db->pdo();
         $out('file           : ' . $file);
+        if (str_starts_with($file, rtrim(base_path(), '/') . '/')) {
+            // JEBAKAN deploy: kontainer lama (env/volume belum diperbarui) memakai
+            // default `base_path()/database` → DB hidup di dalam direktori repo,
+            // BUKAN di named volume `rames`. Perubahan data di sini akan tertinggal
+            // saat kontainer di-recreate (volume kosong → impor ulang JSON lama).
+            $out('WARNING        : DB berada di dalam direktori repo (RAMES_DB_DIR tidak diset).');
+            $out('                 Jalankan `docker compose up -d` (recreate) agar DB memakai named volume `rames`.');
+        }
         $out('exists         : ' . (is_file($file)
             ? 'yes' . ($existedBefore ? '' : ' (dibuat oleh perintah ini)')
             : 'no'));
