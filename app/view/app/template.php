@@ -146,7 +146,9 @@ $breadcrumbs = [
       }
   }
   $limitsRepo = is_array($limitsCtx['repo'] ?? null) ? $limitsCtx['repo'] : [];
-  $limitsMinMemory = \app\library\Deploy\ResourceLimits::MIN_MEMORY_MB;
+  // Plafon skala slider (dari controller). Aman bila konteks absen: pakai default.
+  $limitsScaleMaxCpus = (float) (($limitsScaleMax ?? [])['cpus'] ?? 4.0);
+  $limitsScaleMaxMemory = (int) (($limitsScaleMax ?? [])['memory_mb'] ?? 8192);
   $limitsCanManage = (bool) ($limitsCtx['canManage'] ?? false);
   // Konteks billing baca-saja (estimasi & saldo) — penegak tetap Pricing/BillingGate.
   $billingCtx = is_array($billing ?? null) ? $billing : [];
@@ -161,15 +163,18 @@ $breadcrumbs = [
       <h2 class="h6 mb-1">Batas Sumber Daya (opsional)</h2>
       <?php if ($billingMember): ?>
       <p class="text-muted small mb-3">
-        Pilih CPU &amp; memori app ini. Kosongkan untuk memakai nilai default
+        Pilih CPU &amp; memori per service dengan penggeser. Posisi paling kiri = nilai default akun
         (<span class="mono"><?= e((string) ($billingDefaults['cpus'] ?? '')) ?> core</span> /
         <span class="mono"><?= e((string) ($billingDefaults['memory_mb'] ?? '')) ?> MB</span> per service).
+        Skala CPU: 0.5 core lalu naik 1 core (0.5 · 1 · 2 · 3 …); memori: 512 MB lalu naik 1 GB (512 · 1024 · 2048 …).
         Plafon: maksimum <span class="mono"><?= e((string) ($billingCaps['cpus'] ?? '')) ?> core</span> &amp;
         <span class="mono"><?= e((string) ($billingCaps['memory_mb'] ?? '')) ?> MB</span> per service.
       </p>
       <?php else: ?>
       <p class="text-muted small mb-3">
-        Kosongkan = ikut pengaturan compose repo / tanpa batas. Hanya admin dapat mengubah.
+        Geser paling kiri = ikut pengaturan compose repo / tanpa batas.
+        Skala CPU: 0.5 core lalu naik 1 core (0.5 · 1 · 2 · 3 …); memori: 512 MB lalu naik 1 GB (512 · 1024 · 2048 …),
+        batas atas = kapasitas host. Hanya admin dapat mengubah.
       </p>
       <?php endif; ?>
       <div class="table-responsive">
@@ -192,26 +197,69 @@ $breadcrumbs = [
             <tr>
               <td><span class="mono"><?= e($limitsService) ?></span></td>
               <td>
-                <input type="number" step="0.1" min="0"<?= $billingMember ? ' max="' . e((string) ($billingCaps['cpus'] ?? '')) . '"' : '' ?> class="form-control form-control-sm" style="max-width:160px;"
-                       id="limit-cpus-<?= e($limitsId) ?>"
-                       name="limits[<?= e($limitsService) ?>][cpus]"
-                       value="<?= $cpuRepo !== null ? e((string) $cpuRepo) : '' ?>"
-                       placeholder="<?= $cpuRepo !== null ? e((string) $cpuRepo) : 'tanpa batas' ?>">
-                <?php if ($cpuRepo !== null): ?><div class="form-text">nilai dari compose repo</div><?php endif; ?>
+                <?php
+                  // Slider: nilai nyata disimpan di input hidden bernama `limits[...]` oleh
+                  // public/js/limits-scale.js; posisi 0 = tanpa batas / default akun.
+                  $cpuScale = \app\library\Deploy\ResourceLimits::cpuScale($limitsScaleMaxCpus, $cpuRepo === null ? null : (float) $cpuRepo);
+                  // Prefill di luar skala (mis. > plafon / nilai tak sah) jatuh ke posisi
+                  // "tanpa batas / default" agar posisi slider, label, dan nilai kirim konsisten.
+                  $cpuValue = $cpuScale['value'];
+                  $cpuUnset = $billingMember
+                      ? 'default (' . (string) ($billingDefaults['cpus'] ?? '') . ' core)'
+                      : 'tanpa batas';
+                ?>
+                <div class="limit-slider" data-limit-group style="max-width:220px;">
+                  <input type="range" class="form-range" min="0" max="<?= count($cpuScale['stops']) - 1 ?>" step="1"
+                         value="<?= $cpuScale['index'] ?>"
+                         id="limit-cpus-<?= e($limitsId) ?>-slider"
+                         data-limit-slider
+                         data-limit-target="limit-cpus-<?= e($limitsId) ?>"
+                         data-limit-stops="<?= e((string) json_encode($cpuScale['stops'])) ?>"
+                         data-limit-unit="core"
+                         data-limit-unset="<?= e($cpuUnset) ?>"
+                         aria-label="CPU (core) service <?= e($limitsService) ?>">
+                  <input type="hidden" id="limit-cpus-<?= e($limitsId) ?>"
+                         name="limits[<?= e($limitsService) ?>][cpus]"
+                         value="<?= $cpuValue !== null ? e((string) $cpuValue) : '' ?>">
+                  <div class="form-text mb-0"><span class="mono" data-limit-display><?= $cpuValue !== null ? e((string) $cpuValue) . ' core' : e($cpuUnset) ?></span></div>
+                  <?php if ($cpuValue !== null && $cpuRepo !== null): ?>
+                  <div class="form-text mb-0" data-limit-repo-note>nilai dari compose repo</div>
+                  <?php endif; ?>
+                </div>
               </td>
               <td>
-                <input type="number" step="1" min="<?= e((string) $limitsMinMemory) ?>"<?= $billingMember ? ' max="' . e((string) ($billingCaps['memory_mb'] ?? '')) . '"' : '' ?> class="form-control form-control-sm" style="max-width:160px;"
-                       id="limit-memory-<?= e($limitsId) ?>"
-                       name="limits[<?= e($limitsService) ?>][memory_mb]"
-                       value="<?= $memRepo !== null ? e((string) $memRepo) : '' ?>"
-                       placeholder="<?= $memRepo !== null ? e((string) $memRepo) : 'tanpa batas' ?>">
-                <?php if ($memRepo !== null): ?><div class="form-text">nilai dari compose repo</div><?php endif; ?>
+                <?php
+                  $memScale = \app\library\Deploy\ResourceLimits::memoryScale($limitsScaleMaxMemory, $memRepo === null ? null : (int) $memRepo);
+                  $memValue = $memScale['value'];
+                  $memUnset = $billingMember
+                      ? 'default (' . (string) ($billingDefaults['memory_mb'] ?? '') . ' MB)'
+                      : 'tanpa batas';
+                ?>
+                <div class="limit-slider" data-limit-group style="max-width:220px;">
+                  <input type="range" class="form-range" min="0" max="<?= count($memScale['stops']) - 1 ?>" step="1"
+                         value="<?= $memScale['index'] ?>"
+                         id="limit-memory-<?= e($limitsId) ?>-slider"
+                         data-limit-slider
+                         data-limit-target="limit-memory-<?= e($limitsId) ?>"
+                         data-limit-stops="<?= e((string) json_encode($memScale['stops'])) ?>"
+                         data-limit-unit="MB"
+                         data-limit-unset="<?= e($memUnset) ?>"
+                         aria-label="Memori (MB) service <?= e($limitsService) ?>">
+                  <input type="hidden" id="limit-memory-<?= e($limitsId) ?>"
+                         name="limits[<?= e($limitsService) ?>][memory_mb]"
+                         value="<?= $memValue !== null ? e((string) $memValue) : '' ?>">
+                  <div class="form-text mb-0"><span class="mono" data-limit-display><?= $memValue !== null ? e((string) $memValue) . ' MB' : e($memUnset) ?></span></div>
+                  <?php if ($memValue !== null && $memRepo !== null): ?>
+                  <div class="form-text mb-0" data-limit-repo-note>nilai dari compose repo</div>
+                  <?php endif; ?>
+                </div>
               </td>
             </tr>
             <?php endforeach; ?>
           </tbody>
         </table>
       </div>
+      <script src="/js/limits-scale.js?v=1"></script>
       <?php if ($billingMember): ?>
       <div class="border rounded p-3 mt-3" id="limit-estimate"
            data-cpu-rate="<?= e((string) ($billingRates['cpu'] ?? '')) ?>"

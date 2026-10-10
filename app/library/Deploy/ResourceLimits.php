@@ -68,10 +68,22 @@ final class ResourceLimits
     /** Batas maksimum CPU (jumlah core). */
     public const MAX_CPUS = 1024.0;
 
+    /** Titik skala pertama slider CPU (core); langkah berikutnya kelipatan SCALE_CPU_STEP. */
+    public const SCALE_CPU_START = 0.5;
+    /** Langkah skala slider CPU (core) setelah titik pertama. */
+    public const SCALE_CPU_STEP = 1.0;
+    /** Titik skala pertama slider memori (MB); langkah berikutnya kelipatan SCALE_MEMORY_STEP_MB. */
+    public const SCALE_MEMORY_START_MB = 512;
+    /** Langkah skala slider memori (MB) setelah titik pertama (1 GB). */
+    public const SCALE_MEMORY_STEP_MB = 1024;
+
     public const FAMILY_LEGACY = 'legacy';
     public const FAMILY_MODERN = 'modern';
 
     private const BYTES_PER_MB = 1048576;
+
+    /** Toleransi perbandingan titik skala CPU (float) agar `1` (int) = `1.0`. */
+    private const SCALE_EPSILON = 1e-9;
 
     // ==================================================================
     // Normalisasi & validasi input user
@@ -206,6 +218,156 @@ final class ResourceLimits
             }
         }
         return false;
+    }
+
+    // ==================================================================
+    // Skala slider form create (CPU & memori)
+    // ==================================================================
+
+    /**
+     * Skala slider CPU untuk form create: `[null, 0.5, 1, 2, 3, …]`.
+     *
+     * `null` di indeks 0 = posisi "tanpa batas / default akun" (sama artinya dengan
+     * input kosong yang sudah didukung `normalize()`). Titik pertama selalu
+     * `SCALE_CPU_START`, sisanya `SCALE_CPU_STEP` core kelipatan selama `<= $maxCpus`.
+     * Nilai `$current` yang **tidak persis** di titik skala (mis. 1.5 dari compose
+     * repo) disisipkan supaya tidak berubah diam-diam saat form disimpan.
+     *
+     * Nilai di luar jangkauan skala (`<= 0` atau `> $maxCpus`) **tidak** disisipkan
+     * dan dikembalikan sebagai `value = null`: skala berhenti di `$maxCpus` sehingga
+     * plafon tetap terjaga di sisi klien, dan form jatuh ke posisi "tanpa batas /
+     * default" (server tetap penegak terakhir).
+     *
+     * @return array{stops:list<float|null>,index:int,value:?float} `index`/`value` =
+     *         posisi & nilai kirim untuk `$current` (`0`/`null` bila kosong/tidak sah)
+     */
+    public static function cpuScale(float $maxCpus, float|int|null $current = null): array
+    {
+        $stops = [null, self::SCALE_CPU_START];
+        for ($cpus = self::SCALE_CPU_STEP; $cpus <= $maxCpus; $cpus += self::SCALE_CPU_STEP) {
+            $stops[] = (float) $cpus;
+        }
+
+        $current = self::validScaleValue($current);
+        if ($current === null || $current > $maxCpus) {
+            return ['stops' => $stops, 'index' => 0, 'value' => null];
+        }
+
+        $index = self::insertFloatStop($stops, $current);
+
+        return ['stops' => $stops, 'index' => $index, 'value' => $stops[$index]];
+    }
+
+    /**
+     * Skala slider memori (MB) untuk form create: `[null, 512, 1024, 2048, …]`.
+     * Aturan sama dengan `cpuScale()`: `null` = tanpa batas/default, titik pertama
+     * `SCALE_MEMORY_START_MB`, sisanya `SCALE_MEMORY_STEP_MB` (1 GB) kelipatan
+     * selama `<= $maxMemoryMb`, nilai `$current` di luar titik skala disisipkan.
+     *
+     * Sama seperti `cpuScale()`: nilai di luar jangkauan (`< MIN_MEMORY_MB` atau
+     * `> $maxMemoryMb`) tidak disisipkan & `value = null` (posisi "tanpa batas").
+     *
+     * @return array{stops:list<int|null>,index:int,value:?int}
+     */
+    public static function memoryScale(int $maxMemoryMb, int|float|null $current = null): array
+    {
+        $stops = [null, self::SCALE_MEMORY_START_MB];
+        for ($mb = self::SCALE_MEMORY_STEP_MB; $mb <= $maxMemoryMb; $mb += self::SCALE_MEMORY_STEP_MB) {
+            $stops[] = $mb;
+        }
+
+        $raw = self::validScaleValue($current);
+        $mb = $raw === null ? null : (int) $raw;
+        if ($mb === null || $mb < self::MIN_MEMORY_MB || $mb > $maxMemoryMb) {
+            return ['stops' => $stops, 'index' => 0, 'value' => null];
+        }
+
+        $index = self::insertIntStop($stops, $mb);
+
+        return ['stops' => $stops, 'index' => $index, 'value' => $stops[$index]];
+    }
+
+    /**
+     * Nilai `$current` yang boleh disisipkan ke skala: numerik & **> 0**.
+     * `null`/non-numerik/`bool`/`NaN`/`INF`/`<= 0` → `null` (tidak disisipkan).
+     */
+    private static function validScaleValue(int|float|null $current): ?float
+    {
+        if ($current === null) {
+            return null;
+        }
+        $value = (float) $current;
+
+        return ($value > 0.0 && is_finite($value)) ? $value : null;
+    }
+
+    /**
+     * Sisipkan stop CPU (float) pada posisi menaik, `null` tetap di depan;
+     * kembalikan indeksnya. Nilai yang sudah ada (longgar-setara, mis. `1` = `1.0`)
+     * tidak diduplikasi.
+     *
+     * @param list<float|null> $stops
+     */
+    private static function insertFloatStop(array &$stops, float $value): int
+    {
+        foreach ($stops as $i => $stop) {
+            if ($stop !== null && abs($stop - $value) < self::SCALE_EPSILON) {
+                return $i;
+            }
+        }
+
+        $stops[] = $value;
+        self::sortStops($stops);
+
+        foreach ($stops as $i => $stop) {
+            if ($stop !== null && abs($stop - $value) < self::SCALE_EPSILON) {
+                return $i;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Sisipkan stop memori (int) pada posisi menaik, `null` tetap di depan;
+     * kembalikan indeksnya. Nilai yang sudah ada tidak diduplikasi.
+     *
+     * @param list<int|null> $stops
+     */
+    private static function insertIntStop(array &$stops, int $value): int
+    {
+        foreach ($stops as $i => $stop) {
+            if ($stop === $value) {
+                return $i;
+            }
+        }
+
+        $stops[] = $value;
+        self::sortStops($stops);
+
+        foreach ($stops as $i => $stop) {
+            if ($stop === $value) {
+                return $i;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Urutkan stop menaik dengan `null` selalu di depan (posisi "tanpa batas").
+     *
+     * @param list<float|int|null> $stops
+     */
+    private static function sortStops(array &$stops): void
+    {
+        usort($stops, static function ($a, $b): int {
+            if ($a === null) {
+                return $b === null ? 0 : -1;
+            }
+            if ($b === null) {
+                return 1;
+            }
+            return $a <=> $b;
+        });
     }
 
     /**

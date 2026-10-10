@@ -31,6 +31,7 @@ use app\library\Nginx\NginxRoutes;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use app\library\Support\Markdown;
+use app\library\System\HostUsage;
 use app\library\Template\TemplateCatalog;
 use RuntimeException;
 use support\Request;
@@ -523,6 +524,7 @@ class AppController
                 $this->defaultLimitsFor(array_map('strval', array_keys((array) ($template['services'] ?? [])))),
                 current_user()
             ),
+            'limitsScaleMax' => $this->limitsScaleMax(),
         ]);
     }
 
@@ -616,6 +618,7 @@ class AppController
                         : $postedLimits,
                     current_user()
                 ),
+                'limitsScaleMax' => $this->limitsScaleMax(),
             ]);
         }
 
@@ -705,6 +708,7 @@ class AppController
                 'form_name' => $name,
                 'form_env' => $envInput,
                 'form_error' => $e->getMessage(),
+                'limitsScaleMax' => $this->limitsScaleMax(),
             ]);
         }
 
@@ -847,6 +851,7 @@ class AppController
                 $this->defaultLimitsFor(array_map('strval', array_keys((array) ($pending['services'] ?? [])))),
                 current_user()
             ),
+            'limitsScaleMax' => $this->limitsScaleMax(),
         ]);
     }
 
@@ -2658,6 +2663,41 @@ class AppController
         }
 
         return $limits;
+    }
+
+    /**
+     * Batas atas skala slider batas CPU/memori (form create) untuk pengguna ini:
+     * member → plafon billing; admin/bukan member → kapasitas host (limit di atas
+     * kapasitas host tidak bermakna). Kapasitas host tak terbaca → plafon config.
+     *
+     * Murni hitung (tanpa efek samping); `$procPath` opsional agar bisa diuji
+     * tanpa `/proc` nyata — pola sama dengan `billingContext()`.
+     *
+     * @return array{cpus:float,memory_mb:int}
+     */
+    private function limitsScaleMax(?array $user = null, ?string $procPath = null): array
+    {
+        $user ??= current_user();
+
+        $capCpus = (float) config('deploy.billing_max_cpus', 4.0);
+        $capMemoryMb = (int) config('deploy.billing_max_memory_mb', 8192);
+
+        if ($this->isBillingMember($user)) {
+            return ['cpus' => $capCpus, 'memory_mb' => $capMemoryMb];
+        }
+
+        $procPath ??= (string) config('deploy.host_proc_path', '/proc');
+
+        $hostCpus = HostUsage::cpuCount($procPath);
+        $cpus = $hostCpus !== null && $hostCpus > 0 ? (float) $hostCpus : $capCpus;
+
+        $hostMemory = HostUsage::memory($procPath);
+        $totalBytes = $hostMemory['total'] ?? 0;
+        $memoryMb = $totalBytes > 0
+            ? (int) (floor($totalBytes / 1048576 / 1024) * 1024)
+            : $capMemoryMb;
+
+        return ['cpus' => $cpus, 'memory_mb' => $memoryMb];
     }
 
     /**

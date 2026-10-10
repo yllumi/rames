@@ -208,7 +208,20 @@ class AppControllerBillingContextTest extends TestCase
             );
             $this->assertStringContainsString('id="limit-estimate"', $src, $rel . ': panel estimasi hilang');
             $this->assertStringContainsString("\$billingCtx['member']", $src, $rel . ': panel estimasi wajib khusus member');
-            $this->assertStringContainsString('max="', $src, $rel . ': plafon sebagai max input hilang');
+            // Input number + atribut `max=` diganti slider (type=range): plafon kini
+            // menjadi batas atas **skala slider** — dikirim controller sebagai
+            // `limitsScaleMax` dan dipakai view bersama skala stop `data-limit-stops`.
+            // Assertion lama pada `max="` (indeks stop, bukan plafon) tak bermakna lagi.
+            $this->assertStringContainsString(
+                'limitsScaleMax',
+                $src,
+                $rel . ': batas atas skala slider dari controller hilang'
+            );
+            $this->assertStringContainsString(
+                'data-limit-stops',
+                $src,
+                $rel . ': skala stop slider (data-limit-stops) hilang'
+            );
         }
     }
 }

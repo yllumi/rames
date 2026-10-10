@@ -190,4 +190,51 @@ class AppControllerLimitsTest extends TestCase
         $this->assertSame(['web' => ['cpus' => 1.5, 'memory_mb' => 512]], $result);
         $this->assertSame([], $this->invoke('prefillLimits', [[]]));
     }
+
+    /**
+     * Batas atas skala slider untuk member = plafon billing (nilai config, bukan
+     * kapasitas host) — dibandingkan lewat `config()` agar tidak men-hard-code env.
+     */
+    public function testLimitsScaleMaxMemberMemakaiPlafonBilling(): void
+    {
+        $result = $this->invoke('limitsScaleMax', [
+            ['id' => 'u1', 'username' => 'm', 'role' => 'member'],
+        ]);
+
+        $this->assertSame((float) config('deploy.billing_max_cpus', 4.0), $result['cpus']);
+        $this->assertSame((int) config('deploy.billing_max_memory_mb', 8192), $result['memory_mb']);
+    }
+
+    /**
+     * Admin/bukan member → kapasitas host: 3 core + memori dibulatkan ke bawah
+     * ke kelipatan 1 GB (4 GiB ⇒ 4096 MB). Memakai `/proc` palsu di temp.
+     */
+    public function testLimitsScaleMaxNonMemberMemakaiKapasitasHost(): void
+    {
+        file_put_contents($this->tmp . '/cpuinfo', "processor : 0\nprocessor : 1\nprocessor : 2\n");
+        file_put_contents($this->tmp . '/meminfo', "MemTotal:        4194304 kB\nMemFree: 102400 kB\n");
+
+        $result = $this->invoke('limitsScaleMax', [
+            ['id' => 'a1', 'username' => 'admin', 'role' => 'admin'],
+            $this->tmp,
+        ]);
+
+        $this->assertSame(3.0, $result['cpus']);
+        $this->assertSame(4096, $result['memory_mb']);
+    }
+
+    /**
+     * `/proc` tak terbaca → fallback plafon config tanpa melempar (render view
+     * tidak boleh gagal karena metrik host opsional).
+     */
+    public function testLimitsScaleMaxNonMemberFallbackSaatProcTidakAda(): void
+    {
+        $result = $this->invoke('limitsScaleMax', [
+            ['id' => 'a1', 'username' => 'admin', 'role' => 'admin'],
+            $this->tmp . '/proc-tidak-ada',
+        ]);
+
+        $this->assertSame((float) config('deploy.billing_max_cpus', 4.0), $result['cpus']);
+        $this->assertSame((int) config('deploy.billing_max_memory_mb', 8192), $result['memory_mb']);
+    }
 }

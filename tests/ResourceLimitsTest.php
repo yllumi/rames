@@ -922,4 +922,153 @@ class ResourceLimitsTest extends TestCase
         $this->assertSame(2.0, $entry['cpus']);
         $this->assertArrayNotHasKey('deploy', $entry);
     }
+
+    // ==================================================================
+    // Skala slider form create (cpuScale / memoryScale) — murni statik
+    // ==================================================================
+
+    public function testCpuScaleDasar(): void
+    {
+        $result = ResourceLimits::cpuScale(4.0);
+
+        $this->assertSame([null, 0.5, 1.0, 2.0, 3.0, 4.0], $result['stops']);
+        $this->assertSame(0, $result['index'], 'current null ⇒ posisi "tanpa batas" di indeks 0');
+        $this->assertNull($result['value'], 'current null ⇒ tak ada nilai kirim');
+        $this->assertIsFloat($result['stops'][2], 'stop CPU wajib float walau bernilai bulat');
+    }
+
+    public function testCpuScaleBatasBawahSelaluMemuatTitikPertama(): void
+    {
+        $this->assertSame([null, 0.5], ResourceLimits::cpuScale(0.5)['stops']);
+        // maxCpus di bawah titik pertama tetap menyertakan 0.5 (minimal 2 stop).
+        $this->assertSame([null, 0.5], ResourceLimits::cpuScale(0.1)['stops']);
+    }
+
+    public function testCpuScaleMenyisipkanNilaiOffGrid(): void
+    {
+        $result = ResourceLimits::cpuScale(4.0, 1.5);
+
+        $this->assertSame([null, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0], $result['stops']);
+        $this->assertSame(1.5, $result['stops'][$result['index']]);
+        $this->assertSame(3, $result['index']);
+        $this->assertSame(1.5, $result['value'], 'nilai off-grid dalam jangkauan tetap dipakai apa adanya');
+    }
+
+    /**
+     * Prefill di atas plafon TIDAK memperluas skala (plafon tetap batas atas slider
+     * di sisi klien) — form jatuh ke posisi "tanpa batas/default" dan server tetap
+     * penegak terakhir lewat `Pricing::assertWithinCaps()`.
+     */
+    public function testCpuScaleMenolakNilaiDiAtasBatas(): void
+    {
+        $result = ResourceLimits::cpuScale(4.0, 8.0);
+
+        $this->assertSame([null, 0.5, 1.0, 2.0, 3.0, 4.0], $result['stops']);
+        $this->assertSame(0, $result['index']);
+        $this->assertNull($result['value']);
+        $this->assertNotContains(8.0, $result['stops'], 'skala tidak boleh melampaui plafon');
+    }
+
+    public function testMemoryScaleMenolakNilaiDiAtasBatas(): void
+    {
+        $result = ResourceLimits::memoryScale(8192, 16384);
+
+        $this->assertSame(0, $result['index']);
+        $this->assertNull($result['value']);
+        $this->assertNotContains(16384, $result['stops']);
+        $this->assertSame(8192, $result['stops'][count($result['stops']) - 1], 'stop terakhir = batas atas');
+    }
+
+    public function testCpuScaleTidakMenduplikasiIntSebagaiFloat(): void
+    {
+        // `$current` int 1 harus dianggap sama dengan stop float 1.0 — jangan dobel.
+        $result = ResourceLimits::cpuScale(4.0, 1);
+
+        $this->assertSame([null, 0.5, 1.0, 2.0, 3.0, 4.0], $result['stops']);
+        $this->assertSame(1.0, $result['stops'][$result['index']]);
+        $this->assertSame(2, $result['index']);
+        $this->assertSame(1.0, $result['value']);
+    }
+
+    /**
+     * @dataProvider nilaiTakSah
+     */
+    public function testCpuScaleMengabaikanNilaiTakSah(?int $current): void
+    {
+        $result = ResourceLimits::cpuScale(4.0, $current);
+
+        $this->assertSame([null, 0.5, 1.0, 2.0, 3.0, 4.0], $result['stops']);
+        $this->assertSame(0, $result['index']);
+        $this->assertNull($result['value']);
+    }
+
+    /**
+     * @dataProvider nilaiTakSah
+     */
+    public function testMemoryScaleMengabaikanNilaiTakSah(?int $current): void
+    {
+        $expected = [null, 512];
+        for ($mb = 1024; $mb <= 8192; $mb += 1024) {
+            $expected[] = $mb;
+        }
+        $result = ResourceLimits::memoryScale(8192, $current);
+
+        $this->assertSame($expected, $result['stops']);
+        $this->assertSame(0, $result['index']);
+        $this->assertNull($result['value']);
+    }
+
+    /**
+     * @return array<string,array{0:?int}>
+     */
+    public static function nilaiTakSah(): array
+    {
+        return ['nol' => [0], 'negatif' => [-1], 'null' => [null]];
+    }
+
+    public function testMemoryScaleDasar(): void
+    {
+        $expected = [null, 512];
+        for ($mb = 1024; $mb <= 8192; $mb += 1024) {
+            $expected[] = $mb;
+        }
+        $result = ResourceLimits::memoryScale(8192);
+
+        $this->assertSame($expected, $result['stops']);
+        $this->assertSame(0, $result['index']);
+        $this->assertIsInt($result['stops'][1], 'stop memori wajib int (MB)');
+    }
+
+    public function testMemoryScaleBatasBawahSelaluMemuatTitikPertama(): void
+    {
+        $this->assertSame([null, 512, 1024], ResourceLimits::memoryScale(1024)['stops']);
+        $this->assertSame([null, 512], ResourceLimits::memoryScale(100)['stops']);
+    }
+
+    public function testMemoryScaleMenyisipkanNilaiOffGrid(): void
+    {
+        $result = ResourceLimits::memoryScale(8192, 256);
+
+        $this->assertContains(256, $result['stops'], 'nilai off-grid wajib disisipkan');
+        $this->assertSame(256, $result['stops'][$result['index']]);
+        // Disisipkan menaik setelah null, sebelum titik pertama 512.
+        $this->assertSame(1, $result['index']);
+        $this->assertSame(256, $result['value']);
+    }
+
+    public function testMemoryScaleMengabaikanNilaiDiBawahMinimum(): void
+    {
+        // Di bawah MIN_MEMORY_MB: tak masuk daftar, index tetap 0.
+        $result = ResourceLimits::memoryScale(8192, ResourceLimits::MIN_MEMORY_MB - 1);
+
+        $this->assertSame(0, $result['index']);
+        $this->assertNotContains(ResourceLimits::MIN_MEMORY_MB - 1, $result['stops']);
+        $this->assertNull($result['value'], 'nilai di bawah minimum ⇒ posisi "tanpa batas"');
+    }
+
+    public function testMemoryScaleTidakMenduplikasiNilaiYangSudahAda(): void
+    {
+        $this->assertSame(1, ResourceLimits::memoryScale(8192, 512)['index']);
+        $this->assertSame(2, ResourceLimits::memoryScale(8192, 1024.0)['index']);
+    }
 }
