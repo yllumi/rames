@@ -18,6 +18,13 @@ RUN apk add --no-cache git openssh-client openssh-keygen docker-cli docker-cli-c
 RUN docker-php-ext-install -j$(nproc) pdo pdo_mysql pcntl curl mbstring \
   && docker-php-ext-enable opcache pcntl
 
+# Driver SQLite WAJIB: seluruh data domain dashboard disimpan di `rames.sqlite`
+# (SPECS §8i). Pada base image resmi `pdo_sqlite`/`sqlite3` sudah ter-kompilasi
+# di dalam PHP (tidak ada `.so` terpisah, sehingga `docker-php-ext-enable`
+# tidak berlaku) — dinyatakan eksplisit di sini supaya build GAGAL cepat bila
+# base image kelak tidak lagi menyertakannya.
+RUN php -m | grep -qix 'pdo_sqlite' || (echo "pdo_sqlite tidak tersedia di image PHP" >&2; exit 1)
+
 # Batas unggah PHP efektif untuk file manager container. `upload_max_filesize`
 # = 64M adalah batas NYATA per berkas (sama dengan batas klien). `post_max_size`
 # = 68M memberi HEADROOM untuk overhead multipart (boundary/field), sehingga
