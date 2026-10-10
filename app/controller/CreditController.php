@@ -11,6 +11,7 @@ use app\library\Billing\BillingStore;
 use app\library\Billing\CreditAccount;
 use app\library\Billing\DuitkuClient;
 use app\library\Billing\Invoicer;
+use app\library\Billing\PaymentMethodCatalog;
 use app\library\Billing\TopUpOrder;
 use app\library\Billing\TopUpService;
 use app\library\Billing\UsageMeter;
@@ -295,18 +296,38 @@ class CreditController
         }
 
         try {
-            $raw = $this->duitku()->paymentMethods((int) $request->get('amount', 0));
-            $data = [];
+            // Seam klien disimpan di variabel lokal (bukan dipanggil berkali-kali)
+            // agar filter defense-in-depth memakai instance yang sama.
+            $client = $this->duitku();
+            $raw = $client->paymentMethods((int) $request->get('amount', 0));
+            $items = [];
             foreach ($raw as $method) {
                 if (!is_array($method)) {
                     continue;
                 }
-                $data[] = [
-                    'code' => (string) ($method['code'] ?? ''),
+                $code = (string) ($method['code'] ?? '');
+                // Defense-in-depth (temuan LOW #3): andai `paymentMethods()` tidak
+                // menyaring (mis. klien fake/regresi), kanal ter-exclude tidak boleh
+                // tampil di UI. `isAllowedMethod()` murni lokal — tanpa jaringan.
+                if (!$client->isAllowedMethod($code)) {
+                    continue;
+                }
+                $items[] = [
+                    'code' => $code,
                     'name' => (string) ($method['name'] ?? ''),
                     'image' => (string) ($method['image'] ?? ''),
                     'fee' => (int) ($method['fee'] ?? 0),
                 ];
+            }
+
+            // Kategori diturunkan lokal (gateway tidak mengirim kategori) lalu
+            // diurutkan per grup kanonik. JS cukup membangun `<optgroup>` dengan
+            // mengikuti urutan kemunculan `data` — tanpa tabel kode→grup sendiri.
+            $data = [];
+            foreach (PaymentMethodCatalog::grouped(PaymentMethodCatalog::decorate($items)) as $group) {
+                foreach ($group['items'] as $item) {
+                    $data[] = $item;
+                }
             }
 
             return json(['code' => 0, 'data' => $data]);
@@ -414,6 +435,7 @@ class CreditController
             'topupEnabled' => $this->topupConfigured(),
             'topupIssues' => $admin ? $this->topupIssues() : [],
             'methods' => $this->methodCodes(),
+            'methodGroups' => PaymentMethodCatalog::groupedCodes($this->methodCodes()),
             'topupMin' => (int) config('deploy.billing_topup_min_idr', 10000),
             'topupMax' => (int) config('deploy.billing_topup_max_idr', 5000000),
             'idrPerCredit' => (float) config('deploy.billing_topup_idr_per_credit', 1.0),

@@ -7,6 +7,7 @@ use app\controller\CreditController;
 use app\library\Auth\UserStore;
 use app\library\Billing\BillingStore;
 use app\library\Billing\CreditAccount;
+use app\library\Billing\DuitkuClient;
 use app\library\Billing\Invoicer;
 use app\library\Billing\TopUpOrder;
 use app\library\Storage\AppStore;
@@ -383,16 +384,160 @@ class CreditControllerTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // (g) /api/credits/methods → group + urutan kanonik
+    // ------------------------------------------------------------------
+
+    public function testMethodsJsonAddsGroupAndOrdersByCanonicalGroup(): void
+    {
+        $client = $this->duitkuClient([
+            ['code' => 'BC', 'name' => 'BCA Virtual Account', 'image' => 'bc.png', 'fee' => 4000],
+            ['code' => 'OV', 'name' => 'OVO', 'image' => 'ovo.png', 'fee' => 0],
+            ['code' => 'ZZ', 'name' => 'Misterius', 'image' => '', 'fee' => 0],
+            ['code' => 'VA', 'name' => 'Virtual Account', 'image' => 'va.png', 'fee' => 0],
+            ['code' => 'NQ', 'name' => 'QRIS', 'image' => 'nq.png', 'fee' => 0],
+            ['code' => 'IR', 'name' => 'Indomaret', 'image' => 'ir.png', 'fee' => 0],
+        ]);
+        $this->useConfig(['billing_topup_enabled' => true]);
+        $controller = $this->controller(self::MEMBER, null, $client);
+
+        $response = $controller->methods($this->get('/api/credits/methods?amount=50000'));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $payload = json_decode($response->rawBody(), true);
+        $this->assertSame(0, $payload['code']);
+        $this->assertSame(
+            ['BC', 'VA', 'OV', 'NQ', 'IR', 'ZZ'],
+            array_column($payload['data'], 'code'),
+            'urut per grup kanonik (stabil di dalam grup)'
+        );
+        $this->assertSame(
+            ['Virtual Account', 'Virtual Account', 'E-Wallet', 'QRIS', 'Retail', 'Lainnya'],
+            array_column($payload['data'], 'group')
+        );
+        // Key lain tidak berubah.
+        $this->assertSame('BCA Virtual Account', $payload['data'][0]['name']);
+        $this->assertSame('bc.png', $payload['data'][0]['image']);
+        $this->assertSame(4000, $payload['data'][0]['fee']);
+    }
+
+    // ------------------------------------------------------------------
+    // (g2) defense-in-depth: kanal di luar allowlist tak pernah tampil
+    // ------------------------------------------------------------------
+
+    public function testMethodsDropsCodesOutsideAllowlistEvenFromUnfilteredClient(): void
+    {
+        // Klien fake sengaja mengembalikan kanal di luar allowlist (`QQ`) dan
+        // kanal hard-exclude (`VC`) — controller wajib menyaringnya sendiri.
+        $client = $this->duitkuClient([
+            ['code' => 'BC', 'name' => 'BCA VA', 'image' => '', 'fee' => 4000],
+            ['code' => 'QQ', 'name' => 'Kanal Terlarang', 'image' => '', 'fee' => 0],
+            ['code' => 'VC', 'name' => 'Virtual Card', 'image' => '', 'fee' => 0],
+            ['code' => 'FT', 'name' => 'RETAIL', 'image' => '', 'fee' => 0],
+            ['code' => 'SP', 'name' => 'SHOPEEPAY QRIS', 'image' => '', 'fee' => 0],
+        ]);
+        $this->useConfig(['billing_topup_enabled' => true]);
+        $controller = $this->controller(self::MEMBER, null, $client);
+
+        $response = $controller->methods($this->get('/api/credits/methods?amount=50000'));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $payload = json_decode($response->rawBody(), true);
+        $this->assertSame(0, $payload['code']);
+
+        $codes = array_column($payload['data'], 'code');
+        $this->assertNotContains('QQ', $codes, 'kode di luar allowlist tidak boleh muncul');
+        $this->assertNotContains('VC', $codes, 'kode hard-exclude tidak boleh muncul');
+        // Kode allowlist tetap muncul lengkap dengan `group` (urut kanonik).
+        $this->assertSame(['BC', 'SP', 'FT'], $codes);
+        $this->assertSame(['Virtual Account', 'QRIS', 'Retail'], array_column($payload['data'], 'group'));
+    }
+
+    // ------------------------------------------------------------------
+    // (h) payload view → methodGroups (+ methods lama tetap ada)
+    // ------------------------------------------------------------------
+
+    public function testViewMethodGroupsForDefaultAllowlist(): void
+    {
+        $default = 'BC,BT,I1,M2,VA,B1,DM,BV,BR,NC,A1,AG,S1,FT,IR,OV,DA,SA,LF,LA,SP,NQ,SQ';
+        $this->useConfig([
+            'billing_topup_enabled' => true,
+            'billing_duitku_methods' => $default,
+        ]);
+        $controller = $this->controller(self::MEMBER, null, $this->duitkuClient([], $default));
+
+        $method = new ReflectionMethod(CreditController::class, 'viewData');
+        $method->setAccessible(true);
+        /** @var array<string,mixed> $vars */
+        $vars = $method->invoke($controller, null);
+
+        $this->assertSame([
+            ['label' => 'Virtual Account', 'codes' => ['BC', 'BT', 'I1', 'M2', 'VA', 'B1', 'DM', 'BV', 'BR', 'NC', 'A1', 'AG', 'S1']],
+            ['label' => 'E-Wallet', 'codes' => ['OV', 'DA', 'SA', 'LF', 'LA']],
+            ['label' => 'QRIS', 'codes' => ['SP', 'NQ', 'SQ']],
+            ['label' => 'Retail', 'codes' => ['FT', 'IR']],
+        ], $vars['methodGroups'], 'allowlist default: FT Retail, SP QRIS, Lainnya kosong');
+    }
+
+    public function testViewPayloadIncludesMethodGroupsAndLegacyMethods(): void
+    {
+        $this->useConfig([
+            'billing_topup_enabled' => true,
+            'billing_duitku_methods' => 'BC,BT,I1,VA,OV,DA,NQ,SQ,IR,FT',
+        ]);
+        $controller = $this->controller(self::MEMBER, null, $this->duitkuClient([]));
+
+        $method = new ReflectionMethod(CreditController::class, 'viewData');
+        $method->setAccessible(true);
+        /** @var array<string,mixed> $vars */
+        $vars = $method->invoke($controller, null);
+
+        $this->assertSame(
+            ['BC', 'BT', 'I1', 'VA', 'OV', 'DA', 'NQ', 'SQ', 'IR', 'FT'],
+            $vars['methods'],
+            'kompatibilitas mundur: methods (kode datar) tetap ada'
+        );
+        $this->assertSame([
+            ['label' => 'Virtual Account', 'codes' => ['BC', 'BT', 'I1', 'VA']],
+            ['label' => 'E-Wallet', 'codes' => ['OV', 'DA']],
+            ['label' => 'QRIS', 'codes' => ['NQ', 'SQ']],
+            ['label' => 'Retail', 'codes' => ['IR', 'FT']],
+        ], $vars['methodGroups'], 'FT kini Retail (bukan Lainnya); grup Lainnya kosong');
+    }
+
+    // ------------------------------------------------------------------
     // Helper
     // ------------------------------------------------------------------
 
-    private function controller(?array $user, ?Invoicer $invoicer = null): FakeCreditController
+    /**
+     * Klien Duitku nyata (agar `isAllowedMethod()`/`isConfigured()` bekerja)
+     * dengan katalog di-inject — tanpa jaringan.
+     *
+     * @param array<int,array<string,mixed>> $catalog
+     * @param string|null $methods allowlist kode (default: daftar fake bawaan)
+     */
+    private function duitkuClient(array $catalog, ?string $methods = null): FakeCatalogDuitkuClient
+    {
+        $client = new FakeCatalogDuitkuClient([
+            'merchant_code' => 'DS12345',
+            'api_key' => 'secret-key',
+            'callback_url' => 'https://dashboard.test/payments/duitku/callback',
+            'return_url' => 'https://dashboard.test/credits/topup/return',
+            'methods' => $methods ?? 'BC,BT,I1,M2,VA,OV,DA,SA,LF,LA,SP,NQ,SQ,IR,FT,ZZ',
+            'method_ttl' => 3600,
+            'runtime_path' => $this->tmp . '/runtime',
+        ]);
+        $client->catalog = $catalog;
+
+        return $client;
+    }
+
+    private function controller(?array $user, ?Invoicer $invoicer = null, ?DuitkuClient $duitku = null): FakeCreditController
     {
         $controller = new FakeCreditController(
             $this->billing,
             $this->users,
             new AppStore($this->tmp . '/rames.sqlite'),
-            null,
+            $duitku,
             $invoicer
         );
         $controller->user = $user;
@@ -506,6 +651,21 @@ class FakeCreditController extends CreditController
     protected function flash(string $type, string $message): void
     {
         $this->flashes[] = ['type' => $type, 'message' => $message];
+    }
+}
+
+/**
+ * Klien Duitku seam: `paymentMethods()` diganti katalog tetap (tanpa jaringan),
+ * sementara allowlist/isConfigured bawaan tetap dipakai `methodCodes()`.
+ */
+class FakeCatalogDuitkuClient extends DuitkuClient
+{
+    /** @var array<int,array<string,mixed>> */
+    public array $catalog = [];
+
+    public function paymentMethods(int $amount): array
+    {
+        return $this->catalog;
     }
 }
 

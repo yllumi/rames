@@ -19,6 +19,9 @@ $names = is_array($names ?? null) ? $names : [];
 $topupEnabled = (bool) ($topupEnabled ?? false);
 $topupIssues = array_values(array_filter((array) ($topupIssues ?? []), 'is_string'));
 $methods = is_array($methods ?? null) ? $methods : [];
+// Grup metode (Virtual Account/E-Wallet/QRIS/Retail/Lainnya) dari controller;
+// bila absen (mis. smoke render), view jatuh ke daftar datar $methods.
+$methodGroups = is_array($methodGroups ?? null) ? $methodGroups : [];
 $topupMin = (int) ($topupMin ?? 10000);
 $topupMax = (int) ($topupMax ?? 5000000);
 $idrPerCredit = (float) ($idrPerCredit ?? 1.0);
@@ -414,7 +417,31 @@ $breadcrumbs = [
             <div class="col-md-6">
               <label class="form-label" for="topup-method">Metode pembayaran</label>
               <select class="form-select" name="method" id="topup-method" required>
-                <?php if ($methods === []): ?>
+                <?php if ($methodGroups !== []): ?>
+                  <?php foreach ($methodGroups as $methodGroup): ?>
+                    <?php
+                    // Sanitasi bentuk: grup tanpa kode tidak dirender sama sekali.
+                    $groupLabel = '';
+                    $groupCodes = [];
+                    if (is_array($methodGroup)) {
+                        $groupLabel = (string) ($methodGroup['label'] ?? '');
+                        foreach ((array) ($methodGroup['codes'] ?? []) as $groupCode) {
+                            if (is_string($groupCode) && $groupCode !== '') {
+                                $groupCodes[] = $groupCode;
+                            }
+                        }
+                    }
+                    if ($groupCodes === []) {
+                        continue;
+                    }
+                    ?>
+                    <optgroup label="<?= e($groupLabel) ?>">
+                      <?php foreach ($groupCodes as $groupCode): ?>
+                        <option value="<?= e($groupCode) ?>"><?= e($groupCode) ?></option>
+                      <?php endforeach; ?>
+                    </optgroup>
+                  <?php endforeach; ?>
+                <?php elseif ($methods === []): ?>
                   <option value="" disabled selected>Memuat metode …</option>
                 <?php else: ?>
                   <?php foreach ($methods as $code): ?>
@@ -435,5 +462,5 @@ $breadcrumbs = [
   </div>
 <?php endif; ?>
 
-<script src="/js/credits.js?v=3"></script>
+<script src="/js/credits.js?v=4"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

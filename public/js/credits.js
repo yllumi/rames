@@ -3,7 +3,8 @@
 // Perilaku (tanpa framework/CDN):
 //  - SATU kali fetch ke `/api/credits/methods?amount=…` saat modal top-up
 //    PERTAMA kali dibuka (`shown.bs.modal`), mengisi <select> metode dengan
-//    daftar asli dari gateway;
+//    daftar asli dari gateway, terkelompok `<optgroup>` menurut `group` dari
+//    payload (server sudah mengurutkan kanonik; JS tidak menyimpan peta kode→grup);
 //  - diulang saat nominal berubah (debounce sederhana 500 ms) karena biaya kanal
 //    bisa bergantung nominal;
 //  - bila fetch gagal / fitur mati, <select> dibiarkan memakai daftar statis dari
@@ -56,19 +57,44 @@
     creditsOut.textContent = (isNaN(value) || perCredit <= 0) ? '—' : fmtNumber(value / perCredit);
   }
 
+  // Isi <select> dari payload gateway. Opsi dikelompokkan `<optgroup>` menurut
+  // `item.group`; urutan grup = urutan kemunculan pertama di `list` (server sudah
+  // mengurutkan kanonik) sehingga tidak ada peta kode→grup/label di sini.
+  // Item tanpa `group` tetap dirender sebagai <option> tanpa label agar tidak
+  // ada metode yang hilang. Semua teks lewat esc().
   function fillMethods(list) {
     if (!Array.isArray(list) || list.length === 0) return false;
 
     var current = select.value;
-    var html = '';
+    var order = [];
+    var buckets = Object.create(null);
     for (var i = 0; i < list.length; i++) {
       var method = list[i] || {};
       var code = String(method.code || '');
       if (!code) continue;
-      var name = String(method.name || code);
-      var fee = Number(method.fee || 0);
-      var label = fee > 0 ? name + ' (biaya Rp' + fmtRupiah(fee) + ')' : name;
-      html += '<option value="' + esc(code) + '">' + esc(label) + '</option>';
+      var group = String(method.group || '');
+      if (!(group in buckets)) {
+        buckets[group] = [];
+        order.push(group);
+      }
+      buckets[group].push(method);
+    }
+
+    var html = '';
+    for (var g = 0; g < order.length; g++) {
+      var label = order[g];
+      var items = buckets[label];
+      var options = '';
+      for (var k = 0; k < items.length; k++) {
+        var itemCode = String(items[k].code || '');
+        if (!itemCode) continue;
+        var name = String(items[k].name || itemCode);
+        var fee = Number(items[k].fee || 0);
+        var text = fee > 0 ? name + ' (biaya Rp' + fmtRupiah(fee) + ')' : name;
+        options += '<option value="' + esc(itemCode) + '">' + esc(text) + '</option>';
+      }
+      if (options === '') continue;
+      html += label === '' ? options : '<optgroup label="' + esc(label) + '">' + options + '</optgroup>';
     }
     if (html === '') return false;
 
