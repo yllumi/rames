@@ -3,9 +3,13 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use app\library\Docker\DockerClient;
 use app\library\Support\ProcessRunner;
+use app\library\Update\RepoInfo;
 use app\library\Update\UpdateService;
+use app\library\Update\UpdateState;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 /**
  * Test mesin self-update (SPECS.md §7.8):
@@ -119,6 +123,152 @@ class UpdateHelperTest extends TestCase
         $this->assertContains($spec['root'] . ':' . $spec['root'], $command);
         $this->assertSame(1, count(array_filter($command, static fn (string $arg): bool => $arg === $spec['script'])));
         $this->assertSame(1, count(array_filter($command, static fn (string $arg): bool => $arg === $spec['plan'])));
+    }
+
+    // ==================================================================
+    // Network helper (egress + health-check) & konteks container dashboard
+    // ==================================================================
+
+    public function testHelperNetworkPrefersComposeDefaultOverInternalHelperNetwork(): void
+    {
+        // Dashboard juga ter-attach ke network helper Adminer `rames-helpers`
+        // (`internal: true`) dan ke network default compose. Urutan kunci
+        // `NetworkSettings.Networks` terurut abjad → "rames-helpers" lebih dulu;
+        // pemilihan TIDAK boleh mengikuti urutan itu (network internal tidak punya
+        // egress → `git fetch` gagal "Could not resolve host").
+        $chosen = UpdateService::chooseHelperNetwork(
+            ['rames-helpers', 'rames_default'],
+            ['rames-helpers' => true, 'rames_default' => false],
+            'rames'
+        );
+
+        $this->assertSame('rames_default', $chosen);
+    }
+
+    public function testHelperNetworkIgnoresAppNetworksAttachedToDashboard(): void
+    {
+        // Network DB app (di-attach dashboard saat dump/restore) tidak dipakai
+        // walau non-internal: container dashboard hasil recreate berada di network
+        // compose, dan /healthz diakses lewat nama container di network yang sama.
+        $chosen = UpdateService::chooseHelperNetwork(
+            ['aaa_default', 'rames-helpers', 'rames_default'],
+            ['aaa_default' => false, 'rames-helpers' => true, 'rames_default' => false],
+            'rames'
+        );
+
+        $this->assertSame('rames_default', $chosen);
+    }
+
+    public function testHelperNetworkSkipsInternalComposeNetwork(): void
+    {
+        $chosen = UpdateService::chooseHelperNetwork(
+            ['rames_default', 'rames_shared'],
+            ['rames_default' => true, 'rames_shared' => false],
+            'rames'
+        );
+
+        $this->assertSame('rames_shared', $chosen);
+    }
+
+    public function testHelperNetworkIsEmptyWhenEveryNetworkIsInternal(): void
+    {
+        $chosen = UpdateService::chooseHelperNetwork(
+            ['rames-helpers', 'rames_default'],
+            ['rames-helpers' => true, 'rames_default' => true],
+            'rames'
+        );
+
+        $this->assertSame('', $chosen);
+    }
+
+    public function testHelperNetworkRefusesForeignProjectNetworkWhenInternalFlagsAreKnown(): void
+    {
+        // Semua network project compose internal, tersisa network milik project
+        // lain (app). Network itu punya egress, tetapi container dashboard hasil
+        // recreate tidak ada di sana → /healthz gagal & update berakhir rollback.
+        // Lebih baik ditolak di preflight.
+        $chosen = UpdateService::chooseHelperNetwork(
+            ['rames_default', 'rames-helpers', 'sibimo_default'],
+            ['rames_default' => true, 'rames-helpers' => true, 'sibimo_default' => false],
+            'rames'
+        );
+
+        $this->assertSame('', $chosen);
+    }
+
+    public function testHelperNetworkToleratesUnknownInternalFlagAndMissingProject(): void
+    {
+        // Engine tidak menjawab saat inspect → status internal tidak diketahui:
+        // update tetap boleh dicoba, jangan memblokir karena tidak bisa memastikan.
+        $this->assertSame('rames_default', UpdateService::chooseHelperNetwork(['rames_default'], [], 'rames'));
+        $this->assertSame('app_net', UpdateService::chooseHelperNetwork(['app_net'], [], 'rames'));
+        $this->assertSame('dash_default', UpdateService::chooseHelperNetwork(['dash_default'], [], ''));
+        $this->assertSame('', UpdateService::chooseHelperNetwork([], [], 'rames'));
+    }
+
+    public function testSelfContextPicksNonInternalNetworkAndKeepsDns(): void
+    {
+        $context = $this->service($this->fakeDocker(
+            [
+                'Name' => '/rames-webman',
+                'Config' => [
+                    'Image' => 'rames-webman',
+                    'Labels' => [
+                        'com.docker.compose.project' => 'rames',
+                        'com.docker.compose.service' => 'webman',
+                    ],
+                ],
+                'HostConfig' => ['Dns' => ['8.8.8.8', '1.1.1.1']],
+                'NetworkSettings' => [
+                    'Networks' => [
+                        'rames-helpers' => ['IPAddress' => '172.20.0.2'],
+                        'rames_default' => ['IPAddress' => '172.18.0.2'],
+                    ],
+                ],
+            ],
+            ['rames-helpers' => true, 'rames_default' => false]
+        ))->selfContext();
+
+        $this->assertTrue($context['ok'], (string) $context['error']);
+        $this->assertSame('rames_default', $context['network']);
+        $this->assertSame(['8.8.8.8', '1.1.1.1'], $context['dns']);
+        $this->assertSame('rames', $context['project']);
+        $this->assertSame('webman', $context['service']);
+        $this->assertSame('http://rames-webman:8787/healthz', $this->service($this->fakeDocker(
+            [
+                'Name' => '/rames-webman',
+                'Config' => ['Image' => 'rames-webman', 'Labels' => [
+                    'com.docker.compose.project' => 'rames',
+                    'com.docker.compose.service' => 'webman',
+                ]],
+                'HostConfig' => ['Dns' => []],
+                'NetworkSettings' => ['Networks' => ['rames_default' => ['IPAddress' => '172.18.0.2']]],
+            ],
+            ['rames_default' => false]
+        ))->healthUrl($context));
+    }
+
+    public function testSelfContextFailsFastWhenOnlyInternalNetworksAreAttached(): void
+    {
+        // Tanpa network non-internal, helper tidak akan bisa `git fetch` — berhenti
+        // SEBELUM repo disentuh, dengan pesan yang menyebut sebabnya.
+        $context = $this->service($this->fakeDocker(
+            [
+                'Name' => '/rames-webman',
+                'Config' => ['Image' => 'rames-webman', 'Labels' => [
+                    'com.docker.compose.project' => 'rames',
+                    'com.docker.compose.service' => 'webman',
+                ]],
+                'HostConfig' => ['Dns' => []],
+                'NetworkSettings' => ['Networks' => ['rames-helpers' => ['IPAddress' => '172.20.0.2']]],
+            ],
+            ['rames-helpers' => true]
+        ))->selfContext();
+
+        $this->assertFalse($context['ok']);
+        $this->assertSame('', $context['network']);
+        $this->assertStringContainsString('internal', (string) $context['error']);
+        $this->assertStringContainsString('rames-helpers', (string) $context['error']);
     }
 
     // ==================================================================
@@ -241,6 +391,56 @@ class UpdateHelperTest extends TestCase
             'socket' => '/var/run/docker.sock',
             'docker_binary' => 'docker',
         ];
+    }
+
+    /**
+     * `UpdateService` dengan path temp + Engine palsu (selfContext tidak menyentuh
+     * repo/network nyata).
+     */
+    private function service(DockerClient $docker): UpdateService
+    {
+        return new UpdateService(
+            new RepoInfo($this->tmp),
+            new UpdateState($this->tmp . '/check.json', $this->tmp . '/runs'),
+            $docker
+        );
+    }
+
+    /**
+     * DockerClient palsu: hanya `inspectContainer()`/`inspectNetwork()` yang
+     * dipakai `selfContext()`. `inspectNetwork()` yang tidak dikenal melempar
+     * (meniru network yang tidak bisa di-inspect → status internal tidak diketahui).
+     *
+     * @param array<string,mixed> $inspectContainer
+     * @param array<string,bool> $internal
+     */
+    private function fakeDocker(array $inspectContainer, array $internal): DockerClient
+    {
+        return new class ($inspectContainer, $internal) extends DockerClient {
+            /**
+             * @param array<string,mixed> $inspectContainer
+             * @param array<string,bool> $internal
+             */
+            public function __construct(
+                private readonly array $inspectContainer,
+                private readonly array $internal,
+            ) {
+            }
+
+            public function inspectContainer(string $id): array
+            {
+                return $this->inspectContainer;
+            }
+
+            public function inspectNetwork(string $id): array
+            {
+                if (!array_key_exists($id, $this->internal)) {
+                    throw new RuntimeException('network tidak ditemukan: ' . $id);
+                }
+
+                return ['Name' => $id, 'Internal' => $this->internal[$id]];
+            }
+        };
     }
 
     /**

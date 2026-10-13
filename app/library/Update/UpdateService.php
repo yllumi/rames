@@ -30,6 +30,13 @@ use RuntimeException;
  * divalidasi (SHA hex, branch, path) — lihat `buildHelperCommand()`. Skrip helper
  * sendiri disalin ke `/tmp` saat start container supaya `git pull` tidak
  * menimpa berkas skrip yang sedang dieksekusi.
+ *
+ * Helper di-attach ke **network non-internal milik project compose dashboard**
+ * (biasanya `<project>_default`): ia butuh egress internet (`git fetch`,
+ * `composer install`, `docker pull`) sekaligus harus berada di network tempat
+ * container dashboard hasil recreate berada (health-check lewat nama container).
+ * Network dipilih lewat `chooseHelperNetwork()` — TIDAK boleh diambil sembarang
+ * dari `NetworkSettings.Networks` (lihat method tersebut).
  */
 final class UpdateService
 {
@@ -250,6 +257,10 @@ final class UpdateService
             'branch' => (string) $preflight['branch'],
             'project' => (string) $context['project'],
             'service' => (string) $context['service'],
+            // Dicatat di plan supaya helper bisa menuliskannya ke log: kegagalan
+            // jaringan (DNS/egress) tanpa jejak network hampir mustahil didiagnosis.
+            'network' => (string) $context['network'],
+            'dns' => array_values((array) $context['dns']),
             'old_sha' => $oldSha,
             'target_sha' => $targetSha,
             'health_url' => (string) $this->healthUrl($context),
@@ -426,7 +437,9 @@ final class UpdateService
 
         $labels = is_array($inspect['Config']['Labels'] ?? null) ? $inspect['Config']['Labels'] : [];
         $networks = is_array($inspect['NetworkSettings']['Networks'] ?? null) ? $inspect['NetworkSettings']['Networks'] : [];
-        $network = $networks === [] ? '' : (string) array_key_first($networks);
+        $attached = array_values(array_map('strval', array_keys($networks)));
+        $project = (string) ($labels['com.docker.compose.project'] ?? '');
+        $network = self::chooseHelperNetwork($attached, $this->internalNetworkFlags($attached), $project);
 
         $context = [
             'ok' => true,
@@ -434,7 +447,7 @@ final class UpdateService
             'id' => $id,
             'name' => ltrim((string) ($inspect['Name'] ?? ''), '/'),
             'image' => (string) ($inspect['Config']['Image'] ?? ''),
-            'project' => (string) ($labels['com.docker.compose.project'] ?? ''),
+            'project' => $project,
             'service' => (string) ($labels['com.docker.compose.service'] ?? ''),
             'network' => $network,
             'dns' => array_values(array_filter(array_map('strval', (array) ($inspect['HostConfig']['Dns'] ?? [])))),
@@ -456,13 +469,113 @@ final class UpdateService
             return $context;
         }
         if ($context['network'] === '') {
-            $context['error'] = 'Container dashboard tidak terhubung ke network apa pun — helper tidak bisa menghubungi endpoint /healthz.';
+            $context['error'] = $attached === []
+                ? 'Container dashboard tidak terhubung ke network apa pun — helper tidak bisa menghubungi endpoint /healthz.'
+                : 'Tidak ada network helper yang layak di antara network container dashboard (' . implode(', ', $attached) . '): '
+                    . 'helper butuh network NON-internal milik project compose dashboard (biasanya '
+                    . ($project !== '' ? $project . '_default' : '<project>_default') . '). '
+                    . 'Network `internal: true` tidak punya akses keluar (`git fetch` gagal: "Could not resolve host"), '
+                    . 'sedangkan network milik project lain tidak memuat container dashboard setelah recreate (health-check gagal).';
             $context['ok'] = false;
 
             return $context;
         }
 
         return $context;
+    }
+
+    /**
+     * Pilih network untuk helper self-update (murni — mudah diuji).
+     *
+     * Helper WAJIB berada di network yang memenuhi DUA syarat:
+     *  1. **non-internal** — network `internal: true` tidak punya route keluar,
+     *     sehingga DNS eksternal pun gagal walau `--dns` diberikan
+     *     (`fatal: … Could not resolve host: github.com`) → `git fetch gagal`.
+     *  2. **tempat container dashboard hasil recreate berada** — helper mengecek
+     *     kesehatan lewat NAMA container dashboard (`http://<name>:<port>/healthz`),
+     *     dan nama itu hanya ter-resolve di network yang sama. Container dashboard
+     *     dibuat ulang dari `docker-compose.yml`, jadi network default project
+     *     compose (`<project>_default`) adalah pilihan paling pasti.
+     *
+     * Kenapa tidak boleh `array_key_first(NetworkSettings.Networks)`: dashboard
+     * juga ter-attach ke network di luar compose — helper Adminer
+     * (`rames-helpers`, `internal: true`, di-attach permanen oleh
+     * `AdminerHelper`) dan network DB app saat dump/restore
+     * (`DbConnectionResolver`). Urutan peta itu mengikuti urutan kunci JSON
+     * (terurut abjad), dan `rames-helpers` < `rames_default`, sehingga network
+     * **internal** justru terpilih lebih dulu.
+     *
+     * Network milik project lain TIDAK dipakai sebagai pelarian: ia memang punya
+     * egress, tetapi container dashboard hasil recreate tidak ada di sana sehingga
+     * `/healthz` lewat nama container gagal → update berakhir rollback. Bila tidak
+     * ada network project compose yang non-internal, kembalikan `''` (preflight
+     * menolak dengan pesan jelas) — kecuali status internal tidak bisa dipastikan
+     * sama sekali (Engine tidak menjawab), yang memakai preferensi lama.
+     *
+     * @param array<int,string> $attached nama network yang di-attach dashboard
+     * @param array<string,bool> $internal hasil inspect network; nama yang TIDAK
+     *        ada di sini berarti statusnya belum bisa dipastikan (Engine tidak
+     *        menjawab) dan dianggap layak agar update tidak terblokir.
+     * @return string nama network terpilih, '' bila tidak ada yang layak
+     */
+    public static function chooseHelperNetwork(array $attached, array $internal, string $project): string
+    {
+        if ($attached === []) {
+            return '';
+        }
+
+        $usable = static fn (string $name): bool => ($internal[$name] ?? false) === false;
+
+        $default = $project !== '' ? $project . '_default' : '';
+        if ($default !== '' && in_array($default, $attached, true) && $usable($default)) {
+            return $default;
+        }
+
+        // Network lain milik project compose yang sama (compose dengan daftar
+        // `networks:` eksplisit / tanpa network default).
+        foreach ($attached as $name) {
+            if ($project !== '' && str_starts_with($name, $project . '_') && $usable($name)) {
+                return $name;
+            }
+        }
+
+        // Status internal tidak bisa dipastikan sama sekali (Engine tidak menjawab)
+        // → jangan menebak: pakai preferensi lama (default project, lalu yang
+        // pertama) supaya update tidak terblokir oleh keterbatasan Engine.
+        if ($internal === []) {
+            return $default !== '' && in_array($default, $attached, true) ? $default : (string) reset($attached);
+        }
+
+        // Informasi ADA dan tidak menyisakan network project compose yang
+        // non-internal → berhenti. Network milik project/app lain punya egress,
+        // tetapi TIDAK memuat container dashboard setelah recreate (health-check
+        // lewat nama container gagal) — memilihnya "supaya jalan" hanya
+        // menghasilkan update yang berakhir rollback.
+        return '';
+    }
+
+    /**
+     * Tandai network yang `internal: true` lewat Engine API (best-effort).
+     *
+     * Gagal inspect satu network → network itu TIDAK ditandai: lebih baik tetap
+     * mencoba update daripada memblokir karena Engine tidak menjawab.
+     *
+     * @param array<int,string> $names
+     * @return array<string,bool>
+     */
+    private function internalNetworkFlags(array $names): array
+    {
+        $flags = [];
+        foreach ($names as $name) {
+            try {
+                $info = $this->docker->inspectNetwork($name);
+            } catch (\Throwable) {
+                continue;
+            }
+            $flags[$name] = (bool) ($info['Internal'] ?? false);
+        }
+
+        return $flags;
     }
 
     /**

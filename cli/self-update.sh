@@ -48,6 +48,8 @@ HEALTH_TIMEOUT=$(cfg health_timeout 180)
 ROLLBACK_TIMEOUT=$(cfg rollback_timeout 180)
 LOG=$(cfg log_file)
 RUN_ID=$(cfg id)
+NETWORK=$(cfg network -)
+DNS=$(cfg dns -)
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 
@@ -67,7 +69,7 @@ on_exit() {
 }
 trap on_exit EXIT
 
-log "=== mulai: id=$RUN_ID mode=$MODE root=$ROOT branch=$BRANCH uid=$(id -u):$(id -g) ==="
+log "=== mulai: id=$RUN_ID mode=$MODE root=$ROOT branch=$BRANCH uid=$(id -u):$(id -g) network=$NETWORK dns=$DNS ==="
 rep preflight running "Memeriksa prasyarat helper…"
 
 # ----------------------------------------------------------------------
@@ -117,8 +119,8 @@ if [ "$MODE" = "rollback" ]; then
 else
   rep fetch running "Mengambil pembaruan dari origin/$BRANCH…"
   if ! git fetch --prune origin "$BRANCH" >>"$LOG" 2>&1; then
-    log "git fetch gagal"
-    rep fetch error "git fetch gagal (jaringan/DNS/URL remote?) — lihat log."
+    log "git fetch gagal (network=$NETWORK dns=$DNS — helper butuh network non-internal)"
+    rep fetch error "git fetch gagal (jaringan/DNS pada network $NETWORK?) — lihat log."
     DONE=1
     exit 1
   fi
