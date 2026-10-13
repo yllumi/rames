@@ -6,12 +6,14 @@ namespace app\controller;
 use app\library\Auth\AppAccess;
 use app\library\Auth\UserStore;
 use app\library\Billing\AppStopper;
+use app\library\Billing\BackupUsage;
 use app\library\Billing\BillingPeriod;
 use app\library\Billing\BillingStore;
 use app\library\Billing\CreditAccount;
 use app\library\Billing\DuitkuClient;
 use app\library\Billing\Invoicer;
 use app\library\Billing\PaymentMethodCatalog;
+use app\library\Billing\Pricing;
 use app\library\Billing\TopUpOrder;
 use app\library\Billing\TopUpService;
 use app\library\Billing\UsageMeter;
@@ -504,6 +506,10 @@ class CreditController
             'topupMax' => (int) config('deploy.billing_topup_max_idr', 5000000),
             'idrPerCredit' => (float) config('deploy.billing_topup_idr_per_credit', 1.0),
             'minDepositDays' => (int) config('deploy.billing_min_deposit_days', 30),
+            // Tarif & floor biaya backup (satu sumber: `Pricing`/`BackupUsage`) —
+            // dipakai catatan kaki tabel pemakaian agar view tidak hardcode angka.
+            'backupRatePerGb' => Pricing::backupMonthlyRate(),
+            'backupMinGb' => (new BackupUsage())->minGigabytes(),
             'periodLabel' => BillingPeriod::label(BillingPeriod::current()),
             'focusOrder' => $focusOrder,
         ];

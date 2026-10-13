@@ -19,6 +19,11 @@ use app\library\Storage\AppStore;
  * lalu barisnya dihapus setelah berhasil ditagih. Baris milik owner yang sudah
  * tidak ada di `auth.json` dilewati (tidak bisa ditagih) dan dibiarkan utuh.
  *
+ * Rincian `items` memakai `kind`: `compute` (CPU/RAM) dan `backup` (biaya
+ * penyimpanan snapshot, `backup_gb`/`monthly`/`amount`). Ledger tetap **satu**
+ * entri `charge` per owner/periode (rincian hanya di `items`); reset mengosongkan
+ * `credits_pending` **dan** `backup_credits_pending` sekaligus.
+ *
  * Auto-stop app (kebijakan `stop`) dijalankan lewat callback opsional
  * `$stopApps(userId, apps)` — kelas ini **tidak** menyentuh Docker/Deployer
  * agar tetap mudah diuji; pemanggil (proses scheduler) yang menyediakannya.
@@ -100,10 +105,12 @@ class Invoicer
             $app = $this->apps->find($appId);
             $limits = $app !== null ? ResourceLimits::of($app) : [];
             $seconds = (int) ($row['seconds_pending'] ?? 0);
+            $appName = (string) ($row['name'] ?? ($app['name'] ?? ''));
 
             $item = [
                 'app_id' => $appId,
-                'app_name' => (string) ($row['name'] ?? ($app['name'] ?? '')),
+                'app_name' => $appName,
+                'kind' => 'compute',
                 'hours' => round($seconds / 3600, 4),
                 'cpus' => self::effectiveCpus($limits),
                 'memory_mb' => self::effectiveMemoryMb($limits),
@@ -111,9 +118,27 @@ class Invoicer
                 'amount' => round((float) ($row['credits_pending'] ?? 0.0), 2),
             ];
 
+            $items = [$item];
+
+            // Biaya backup ditagih terpisah (satu item per app) dan hanya bila
+            // ada akumulasi > 0 pada periode ini; `backup_gb` = GB ditagih
+            // terakhir teramati.
+            $backupAmount = round((float) ($row['backup_credits_pending'] ?? 0.0), 2);
+            if ($backupAmount > 0.0) {
+                $backupGb = (float) ($row['backup_gb'] ?? 0.0);
+                $items[] = [
+                    'app_id' => $appId,
+                    'app_name' => $appName,
+                    'kind' => 'backup',
+                    'backup_gb' => $backupGb,
+                    'monthly' => Pricing::backupMonthlyEstimate($backupGb),
+                    'amount' => $backupAmount,
+                ];
+            }
+
             $key = $owner . "\0" . $period;
             $groups[$key] ??= ['user_id' => $owner, 'period' => $period, 'items' => [], 'rows' => []];
-            $groups[$key]['items'][] = $item;
+            $groups[$key]['items'] = array_merge($groups[$key]['items'], $items);
             // `delete` = app sudah hilang dari AppStore → hapus baris setelah ditagih.
             $groups[$key]['rows'][$appId] = ['delete' => $app === null];
         }
@@ -154,6 +179,8 @@ class Invoicer
                     if (is_array($usage[$appId] ?? null)) {
                         $usage[$appId]['seconds_pending'] = 0;
                         $usage[$appId]['credits_pending'] = 0.0;
+                        $usage[$appId]['backup_credits_pending'] = 0.0;
+                        // `backup_gb` dipertahankan sebagai GB terakhir teramati.
                         $usage[$appId]['period'] = $current;
                     }
                 }

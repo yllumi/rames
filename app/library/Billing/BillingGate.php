@@ -30,6 +30,9 @@ class BillingGate
     /** `$users` opsional (lazy): hanya dibaca untuk resolusi role legacy. */
     private ?UserStore $users;
 
+    /** Kalkulator GB backup — DI opsional agar dapat diuji dengan store temp. */
+    private ?BackupUsage $backup;
+
     /**
      * `$users` bersifat **opsional aditif** (BC-safe) supaya resolusi role
      * (termasuk admin legacy tanpa field `role`) dapat diuji dengan
@@ -37,14 +40,22 @@ class BillingGate
      * `UserStore` default baru dibuat **hanya saat** resolusi role benar-benar
      * dibutuhkan (role eksplisit tidak menyentuh basis data).
      *
+     * `$backup` juga opsional aditif: hanya dipakai `assertCanBackup()`; saat
+     * `null`, `BackupUsage` default (registry nyata) baru dibuat lazy.
+     *
      * @param array{cpu:float,ram:float}|array<string,float>|null $rates
      */
-    public function __construct(?CreditAccount $accounts = null, ?array $rates = null, ?UserStore $users = null)
-    {
+    public function __construct(
+        ?CreditAccount $accounts = null,
+        ?array $rates = null,
+        ?UserStore $users = null,
+        ?BackupUsage $backup = null,
+    ) {
         $this->accounts = $accounts ?? new CreditAccount();
         $this->rates = $rates ?? Pricing::rates();
         $this->days = (int) config('deploy.billing_min_deposit_days', 30);
         $this->users = $users;
+        $this->backup = $backup;
     }
 
     /**
@@ -112,6 +123,46 @@ class BillingGate
     public function assertCanStart(array $app, ?array $user): void
     {
         $this->assertCanCreate(ResourceLimits::of($app), $user);
+    }
+
+    /**
+     * Gerbang untuk menyalakan backup volume (berkala) milik app dengan
+     * pemakaian snapshot `$gb` (GB **ditagih**, sudah termasuk floor per app).
+     *
+     * Semantik sama dengan {@see assertCanCreate()}: dilewati bila billing mati,
+     * `$user` null (autentikasi bukan tanggung jawab gerbang), atau user exempt
+     * (admin). Selain itu `balance < required` ⇒ lempar `InsufficientCredits`;
+     * `required` = `BackupUsage::requiredDeposit($gb)` (estimasi satu bulan,
+     * `BILLING_MIN_DEPOSIT_DAYS`).
+     */
+    public function assertCanBackup(float $gb, ?array $user): void
+    {
+        if (!$this->isEnabled()) {
+            return;
+        }
+        if ($user === null) {
+            return;
+        }
+        if ($this->isExempt($user)) {
+            return;
+        }
+
+        $userId = (string) ($user['id'] ?? '');
+        $required = $this->backupUsage()->requiredDeposit($gb);
+        $balance = $userId === '' ? 0.0 : $this->accounts->balance($userId);
+
+        if ($balance < $required) {
+            throw new InsufficientCredits($balance, $required);
+        }
+    }
+
+    /**
+     * `BackupUsage` hidup (lazy): dibuat hanya saat `assertCanBackup()` benar-benar
+     * membutuhkannya sehingga gerbang CPU/RAM tidak menyentuh store backup.
+     */
+    private function backupUsage(): BackupUsage
+    {
+        return $this->backup ??= new BackupUsage();
     }
 
     /**

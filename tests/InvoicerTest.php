@@ -123,8 +123,10 @@ class InvoicerTest extends TestCase
         ]);
 
         $result = $this->invoicer()->runDue('2026-10-01T00:05:00+07:00');
+        $this->assertCount(1, $result[0]['items'], 'tanpa backup hanya ada item compute');
         $item = $result[0]['items'][0];
 
+        $this->assertSame('compute', $item['kind']);
         $this->assertSame($app['id'], $item['app_id']);
         $this->assertSame('detail', $item['app_name']);
         $this->assertEqualsWithDelta(1.0, $item['hours'], 0.0001);
@@ -132,6 +134,58 @@ class InvoicerTest extends TestCase
         $this->assertSame(1024, $item['memory_mb']);
         $this->assertEqualsWithDelta(120.0, $item['hourly'], 0.0001);
         $this->assertSame(120.0, $item['amount']);
+    }
+
+    /**
+     * Item backup ditagih terpisah (kind `backup`) dan **kedua** akumulator
+     * (compute + backup) direset dalam satu transaksi; ledger tetap satu entri
+     * `charge` per owner/periode.
+     */
+    public function testBackupItemChargedAndBothCountersReset(): void
+    {
+        $app = $this->runningApp('mix', 'u2', ['web' => ['cpus' => 1.0, 'memory_mb' => 1024]]);
+        $this->account()->deposit('u2', 1000.0, 'u1', 'awal');
+        $this->seedUsage($app['id'], [
+            'name' => 'mix',
+            'owner_id' => 'u2',
+            'period' => '2026-09',
+            'seconds_pending' => 3600,
+            'credits_pending' => 120.0,
+            'backup_gb' => 2.0,
+            'backup_credits_pending' => 50.5,
+            'sampled_at' => '2026-09-30T00:00:00+07:00',
+        ]);
+
+        $result = $this->invoicer()->runDue('2026-10-01T00:05:00+07:00');
+
+        // Komputasi 120 + backup 50.5.
+        $this->assertSame(170.5, $result[0]['amount']);
+        $items = $result[0]['items'];
+        $this->assertCount(2, $items);
+        $this->assertSame('compute', $items[0]['kind']);
+        $this->assertSame('backup', $items[1]['kind']);
+        $this->assertSame($app['id'], $items[1]['app_id']);
+        $this->assertSame('mix', $items[1]['app_name']);
+        $this->assertSame(2.0, $items[1]['backup_gb']);
+        $this->assertSame(2000.0, $items[1]['monthly'], 'estimasi satu bulan penuh');
+        $this->assertSame(50.5, $items[1]['amount']);
+
+        $row = $this->billing->usage()[$app['id']];
+        $this->assertSame(0, $row['seconds_pending']);
+        $this->assertSame(0.0, $row['credits_pending']);
+        $this->assertSame(0.0, $row['backup_credits_pending']);
+        $this->assertSame(2.0, $row['backup_gb'], 'GB terakhir dipertahankan sebagai observasi');
+        $this->assertSame('2026-10', $row['period']);
+
+        $ledger = $this->billing->users()['u2']['ledger'];
+        $charges = array_values(array_filter(
+            $ledger,
+            static fn (array $entry): bool => ($entry['type'] ?? '') === 'charge'
+        ));
+        $this->assertCount(1, $charges, 'ledger tetap satu entri charge');
+        $this->assertSame(-170.5, $charges[0]['amount']);
+        $this->assertSame(2, count($charges[0]['items']), 'rincian compute + backup ada di items');
+        $this->assertSame(829.5, $this->account()->balance('u2'));
     }
 
     public function testDeletedAppIsStillChargedThenRemoved(): void

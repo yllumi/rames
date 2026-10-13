@@ -105,6 +105,45 @@ final class Pricing
     }
 
     /**
+     * Tarif biaya backup volume (kredit per GB **per bulan**) dari konfigurasi
+     * dashboard; fallback 1000.0 bila kosong/0/negatif/bukan angka.
+     *
+     * Kurs top-up default 1:1 (Rp1 = 1 kredit) sehingga nilai di sini = rupiah
+     * per GB per bulan.
+     */
+    public static function backupMonthlyRate(): float
+    {
+        return self::positiveFloat(config('deploy.billing_rate_backup_per_gb_month', 1000.0), 1000.0);
+    }
+
+    /**
+     * Kredit backup untuk `$seconds` detik pemakaian `$gb` dalam periode
+     * `$daysInPeriod` hari (akrual inkremental per tick, bukan sekali per run).
+     *
+     * Rumus: `max(0,$gb) × tarif × ($seconds / (max(1,$daysInPeriod) × 86400))`.
+     * Satu bulan penuh (`$seconds = daysInPeriod × 86400`) ⇒ `gb × tarif`.
+     * Nilai **tidak** dibulatkan agar akumulasi tick tetap presisi (pembulatan
+     * 2 desimal dilakukan saat menyimpan field pending).
+     */
+    public static function backupCredits(float $gb, float $seconds, int $daysInPeriod, ?float $monthlyRate = null): float
+    {
+        $rate = self::backupRate($monthlyRate);
+        $days = max(1, $daysInPeriod);
+        $periodSeconds = $days * 86400;
+
+        return max(0.0, $gb) * $rate * (max(0.0, $seconds) / $periodSeconds);
+    }
+
+    /**
+     * Estimasi kredit satu bulan penuh untuk `$gb` = `gb × tarif`, dibulatkan
+     * 2 desimal (untuk tampilan/estimasi, bukan akrual).
+     */
+    public static function backupMonthlyEstimate(float $gb, ?float $monthlyRate = null): float
+    {
+        return round(max(0.0, $gb) * self::backupRate($monthlyRate), 2);
+    }
+
+    /**
      * Format kredit dengan 2 desimal tanpa pemisah ribuan (mis. "1234.50").
      */
     public static function format(float $credits): string
@@ -167,5 +206,13 @@ final class Pricing
         $float = (float) $value;
 
         return $float > 0 ? $float : $fallback;
+    }
+
+    /**
+     * Tarif backup efektif: nilai eksplisit bila > 0, selain itu tarif config.
+     */
+    private static function backupRate(?float $monthlyRate): float
+    {
+        return self::positiveFloat($monthlyRate ?? config('deploy.billing_rate_backup_per_gb_month', 1000.0), 1000.0);
     }
 }

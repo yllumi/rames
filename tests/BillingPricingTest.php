@@ -5,7 +5,9 @@ namespace Tests;
 
 use app\library\Billing\Pricing;
 use PHPUnit\Framework\TestCase;
+use ReflectionProperty;
 use RuntimeException;
+use Webman\Config;
 
 /**
  * Test perhitungan harga kredit (Pricing) — statik murni, tanpa I/O.
@@ -17,6 +19,66 @@ class BillingPricingTest extends TestCase
 {
     /** @var array{cpu:float,ram:float} */
     private array $rates = ['cpu' => 100.0, 'ram' => 20.0];
+
+    /** @var array<string,mixed> */
+    private array $configState = [];
+
+    private string $tmp = '';
+
+    protected function setUp(): void
+    {
+        $this->configState = $this->snapshotConfigState();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->restoreConfigState($this->configState);
+        if ($this->tmp !== '' && is_dir($this->tmp)) {
+            foreach (scandir($this->tmp) ?: [] as $entry) {
+                if ($entry !== '.' && $entry !== '..') {
+                    @unlink($this->tmp . '/' . $entry);
+                }
+            }
+            @rmdir($this->tmp);
+        }
+    }
+
+    /** Muat config temp untuk menguji pembacaan `deploy.*` (pola BillingRunnerTest). */
+    private function useConfig(array $deploy): void
+    {
+        $this->tmp = sys_get_temp_dir() . '/pricing_' . bin2hex(random_bytes(4));
+        mkdir($this->tmp . '/config', 0777, true);
+        Config::clear();
+        file_put_contents($this->tmp . '/config/app.php', "<?php return [];\n");
+        file_put_contents(
+            $this->tmp . '/config/deploy.php',
+            '<?php return ' . var_export($deploy, true) . ';' . PHP_EOL
+        );
+        Config::load($this->tmp . '/config');
+    }
+
+    /** @return array<string,mixed> */
+    private function snapshotConfigState(): array
+    {
+        $state = [];
+        foreach (['config', 'configPath', 'loaded', 'flatCache'] as $name) {
+            $prop = new ReflectionProperty(Config::class, $name);
+            $prop->setAccessible(true);
+            $state[$name] = $prop->getValue(null);
+        }
+
+        return $state;
+    }
+
+    /** @param array<string,mixed> $state */
+    private function restoreConfigState(array $state): void
+    {
+        foreach ($state as $name => $value) {
+            $prop = new ReflectionProperty(Config::class, $name);
+            $prop->setAccessible(true);
+            $prop->setValue(null, $value);
+        }
+    }
 
     public function testDefaultRatesFallback(): void
     {
@@ -77,6 +139,67 @@ class BillingPricingTest extends TestCase
         $this->assertSame('1234.50', Pricing::format(1234.5));
         $this->assertSame('-3.46', Pricing::format(-3.456));
         $this->assertSame('0.00', Pricing::format(0.0));
+    }
+
+    public function testBackupMonthlyRateDefault(): void
+    {
+        $this->assertSame(1000.0, Pricing::backupMonthlyRate());
+    }
+
+    public function testBackupMonthlyEstimate(): void
+    {
+        $this->assertSame(1000.0, Pricing::backupMonthlyEstimate(1.0));
+        $this->assertSame(1500.0, Pricing::backupMonthlyEstimate(1.5));
+        $this->assertSame(0.0, Pricing::backupMonthlyEstimate(-2.0), 'GB negatif dianggap 0');
+        $this->assertSame(500.0, Pricing::backupMonthlyEstimate(1.0, 500.0), 'tarif eksplisit');
+    }
+
+    public function testBackupCreditsFullMonthEqualsRate(): void
+    {
+        // 31 hari penuh (Oktober) ⇒ gb × tarif.
+        $this->assertEqualsWithDelta(
+            2000.0,
+            Pricing::backupCredits(2.0, 31 * 86400, 31),
+            0.0001
+        );
+        // Satu tick 300 detik dari 30 hari: 1 GB ⇒ 1000 × 300/2592000.
+        $this->assertEqualsWithDelta(
+            1000.0 * 300 / 2592000,
+            Pricing::backupCredits(1.0, 300, 30),
+            0.0001
+        );
+        $this->assertEqualsWithDelta(
+            1500.0,
+            Pricing::backupCredits(3.0, 30 * 86400, 30, 500.0),
+            0.0001,
+            'tarif eksplisit 500/GB/bulan'
+        );
+    }
+
+    public function testBackupCreditsGuardsInvalidInput(): void
+    {
+        $this->assertSame(0.0, Pricing::backupCredits(-1.0, 86400, 30), 'GB negatif ⇒ 0');
+        $this->assertSame(0.0, Pricing::backupCredits(1.0, 0.0, 30), 'tanpa detik ⇒ 0');
+        $this->assertEqualsWithDelta(
+            1000.0,
+            Pricing::backupCredits(1.0, 86400, 0),
+            0.0001,
+            'periode 0 hari diperlakukan 1 hari (tanpa pembagian nol)'
+        );
+    }
+
+    public function testBackupRateFromConfigAndFallbacks(): void
+    {
+        $this->useConfig(['billing_rate_backup_per_gb_month' => 250.0]);
+        $this->assertSame(250.0, Pricing::backupMonthlyRate());
+        $this->assertSame(500.0, Pricing::backupMonthlyEstimate(2.0));
+
+        // Nilai tidak masuk akal (0/negatif/bukan angka) ⇒ fallback 1000.
+        $this->useConfig(['billing_rate_backup_per_gb_month' => 0.0]);
+        $this->assertSame(1000.0, Pricing::backupMonthlyRate());
+
+        $this->useConfig(['billing_rate_backup_per_gb_month' => -5.0]);
+        $this->assertSame(1000.0, Pricing::backupMonthlyRate());
     }
 
     public function testAssertWithinCapsAcceptsBoundary(): void

@@ -57,7 +57,7 @@ class AdminerNetworkFakeDockerClient extends DockerClient
         return true;
     }
 
-    public function listContainers(array $filters = []): array
+    public function listContainers(array $filters = [], ?int $timeoutSeconds = null): array
     {
         $out = [];
         foreach ($this->containers as $name => $id) {

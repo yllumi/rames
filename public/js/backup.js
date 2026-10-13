@@ -6,14 +6,23 @@
 // tab tidak terlihat dan dimatikan saat halaman ditinggalkan (pagehide/
 // beforeunload), jadi tidak ada permintaan latar belakang.
 //
+// Sumber data per kolom (jangan disamaratakan di UI):
+//   - "Status container": LIVE — server menyegarkan `container_state` dari Docker
+//     Engine pada tiap polling; Engine tak terjangkau ⇒ nilai cache terakhir.
+//   - "Snapshot" / "Backup terakhir": CACHE ringkasan (`data.cached_at`) — baru
+//     akurat setelah run backup atau "Segarkan status" (admin).
+// Footer karena itu menyebut dua penanda terpisah: "status container live" dan
+// "cache ringkasan per <cached_at>".
+//
 // Kontrak yang dikonsumsi (JANGAN diubah dari sisi UI):
 //   GET  /api/backups/status                 → {code:0,data:{running,cached_at,status,volumes:[…]}}
 //   POST /backups/refresh                    (form: _token) → bentuk sama seperti status
-//   POST /backups/schedule                   (form: _token, volume, scheduled) — admin-only
+//   POST /backups/schedule                   (form: _token, volume, scheduled) — hak `backup` (owner/operator)
 //   GET  /api/backups/snapshots?volume=<n>   → {code:0,data:{volume,snapshots:[…]}}
 //   POST /backups/run                        (form: _token, volume)
 //   POST /backups/restore                    (form: _token, volume, snapshot, confirm)
-// Penolakan akses = 404; error validasi = 422; error Engine/restic = 500.
+// Penolakan akses = 404; kredit kurang saat menyalakan berkala = 402
+// (`{code:402,error}`); error validasi = 422; error Engine/restic = 500.
 (function () {
   'use strict';
 
@@ -22,6 +31,9 @@
 
   var ENABLED = page.getAttribute('data-enabled') === '1';
   var IS_ADMIN = page.getAttribute('data-is-admin') === '1';
+  var BILLING_ENABLED = page.getAttribute('data-billing-enabled') !== '0';
+  var BACKUP_RATE = Number(page.dataset.backupRate || 0);
+  var BACKUP_MIN_GB = Number(page.dataset.backupMinGb || 0);
   var INTERVAL = parseInt(page.getAttribute('data-interval'), 10);
   if (isNaN(INTERVAL) || INTERVAL < 15000) INTERVAL = 20000;
 
@@ -138,6 +150,13 @@
     function pad(n) { return (n < 10 ? '0' : '') + n; }
     return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
       ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  // Angka tarif/floor biaya backup untuk tooltip (tanpa memaksa desimal bila bulat).
+  function fmtNumber(value) {
+    var n = Number(value);
+    if (!isFinite(n)) return '0';
+    return n.toLocaleString('id-ID', { maximumFractionDigits: 2 });
   }
 
   function showError(message) {
@@ -302,23 +321,37 @@
     return html;
   }
 
-  // Kolom "Berkala": admin = toggle interaktif; non-admin = badge read-only.
-  // Default OFF bila field absen (volume yang belum pernah dibackup); server tetap
-  // sumber kebenaran dan selalu mengirim `scheduled` per baris.
+  // Kolom "Berkala": toggle interaktif hanya bila server menandai `can_schedule`
+  // (hak `backup` = owner/operator app pemilik volume; volume yatim = admin);
+  // selain itu badge read-only. Default OFF bila field absen (volume yang belum
+  // pernah dibackup). Server tetap sumber kebenaran dan selalu mengirim
+  // `scheduled` + `can_schedule` per baris.
+  function scheduleCostTitle() {
+    if (!BILLING_ENABLED) {
+      return 'Ikut backup harian (berkala).';
+    }
+
+    return 'Ikut backup harian (berkala). Biaya ' + fmtNumber(BACKUP_RATE) + ' kredit/GB/bulan, minimum '
+      + fmtNumber(BACKUP_MIN_GB) + ' GB per app.';
+  }
+
   function scheduleCell(row) {
     var scheduled = (row.scheduled === undefined || row.scheduled === null) ? false : !!row.scheduled;
     var name = esc(row.name);
-    if (IS_ADMIN) {
+    // `can_schedule` selalu dikirim server; bila absen (respons lama) jatuh ke
+    // badge read-only (bukan menganggap admin).
+    if (row.can_schedule === true) {
       return '<div class="form-check form-switch mb-0">' +
         '<input type="checkbox" class="form-check-input backup-schedule-toggle" data-volume="' + name + '"' +
         (scheduled ? ' checked' : '') +
         ' aria-label="Backup berkala untuk ' + name + '"' +
-        ' title="Ikut backup harian (berkala)">' +
+        ' title="' + esc(scheduleCostTitle()) + '">' +
         '</div>';
     }
+    var title = esc('Anda tidak berhak mengubah backup berkala volume ini');
     return scheduled
-      ? '<span class="badge text-bg-success" title="Hanya admin yang dapat mengubah">on</span>'
-      : '<span class="badge text-bg-secondary" title="Hanya admin yang dapat mengubah">off</span>';
+      ? '<span class="badge text-bg-success" title="' + title + '">on</span>'
+      : '<span class="badge text-bg-secondary" title="' + title + '">off</span>';
   }
 
   function rowHtml(row) {
@@ -629,12 +662,15 @@
     if (okCount || failCount) {
       note += ' · ' + okCount + ' ok' + (failCount ? ', ' + failCount + ' gagal' : '');
     }
+    // Kolom "Status container" dibaca live tiap polling, sedangkan Snapshot &
+    // Backup terakhir dari cache ringkasan — pisahkan kedua penandanya.
+    note += ' · status container live';
     if (data.cached_at) {
-      note += ' · data per ' + fmtTime(data.cached_at);
+      note += ' · cache ringkasan per ' + fmtTime(data.cached_at);
     } else {
       note += IS_ADMIN
-        ? ' · Belum ada data cache — klik "Segarkan status".'
-        : ' · Belum ada data cache.';
+        ? ' · Belum ada cache ringkasan — klik "Segarkan status".'
+        : ' · Belum ada cache ringkasan.';
     }
     note += ' · otomatis tiap ' + Math.round(INTERVAL / 1000) + ' detik.';
     footerEl.textContent = note;
@@ -833,8 +869,9 @@
     });
   }
 
-  // Toggle "Berkala" (delegasi — tabel di-render ulang tiap poll). Admin-only
-  // di server; checkbox dinonaktifkan selama request untuk mencegah dobel klik.
+  // Toggle "Berkala" (delegasi — tabel di-render ulang tiap poll). Otorisasi hak
+  // `backup` & gerbang kredit ditegakkan server; checkbox dinonaktifkan selama
+  // request untuk mencegah dobel klik.
   rowsEl.addEventListener('change', function (ev) {
     var target = ev.target;
     if (!target || typeof target.closest !== 'function') return;
@@ -862,8 +899,13 @@
     }).then(function (d) {
       if (!d || d.code !== 0) {
         var msg;
-        if (d && d.code === 404) {
-          msg = 'Hanya admin yang dapat mengubah pengaturan ini.';
+        if (d && d.code === 402) {
+          // Kredit kurang: pesan dari server + arahkan ke halaman kredit.
+          var need = (d.error && String(d.error).trim()) ? String(d.error).trim()
+            : 'Saldo kredit tidak mencukupi.';
+          msg = need + ' Buka /credits untuk menambah saldo.';
+        } else if (d && d.code === 404) {
+          msg = 'Anda tidak berhak mengubah backup berkala volume ini.';
         } else {
           msg = (d && d.msg) ? d.msg : 'Gagal menyimpan pengaturan berkala.';
         }

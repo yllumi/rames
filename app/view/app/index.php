@@ -43,8 +43,7 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope)
     <thead>
       <tr>
         <th>Name</th>
-        <th>Subdomain</th>
-        <th>Custom Domain</th>
+        <th>Domain</th>
         <?php if ($isAdmin ?? false): ?><th>Owner</th><?php endif; ?>
         <th>Status</th>
         <th>Containers</th>
@@ -62,11 +61,11 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope)
       ?>
       <tr>
         <td>
-          <a class="mono fw-semibold text-decoration-none" href="/apps/<?= e($__id) ?>"><?= e($app['name']) ?></a>
+          <a class="mono fw-semibold text-decoration-none me-1" href="/apps/<?= e($__id) ?>"><?= e($app['name']) ?></a>
           <?php if ($__isOwner): ?>
             <!-- <span class="badge text-bg-primary ms-1">Milik Saya</span> -->
           <?php else: ?>
-            <span class="badge text-bg-light border ms-1" title="Anda punya akses <?= e(app_role_label($__role)) ?> ke app ini">Dibagikan · <?= e(app_role_label($__role)) ?></span>
+            <span class="badge p-1 text-bg-light border" title="Anda punya akses <?= e(app_role_label($__role)) ?> ke app ini">Dibagikan · <?= e(app_role_label($__role)) ?></span>
           <?php endif; ?>
         </td>
         <td>
@@ -75,12 +74,11 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope)
           <?php else: ?>
             <span class="text-muted small" title="App tidak mem-publish port host — tidak ada vhost/subdomain">tanpa domain</span>
           <?php endif; ?>
-        </td>
-        <td>
+          <br>
           <?php $__cd = (string) ($app['custom_domain'] ?? ''); ?>
           <?php if ($__cd !== ''): ?>
             <?php $__cdSsl = (($app['custom_ssl_status'] ?? 'disabled') === 'active'); ?>
-            <a class="mono text-decoration-none text-nowrap" href="<?= $__cdSsl ? 'https' : 'http' ?>://<?= e($__cd) ?>" target="_blank" rel="noopener"><?= e($__cd) ?> ↗</a>
+            <a class="mono text-decoration-none text-nowrap fw-bold text-primary" href="<?= $__cdSsl ? 'https' : 'http' ?>://<?= e($__cd) ?>" target="_blank" rel="noopener"><?= e($__cd) ?> ↗</a>
           <?php else: ?>
             <span class="text-muted small">&mdash;</span>
           <?php endif; ?>

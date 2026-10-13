@@ -236,6 +236,12 @@ return [
     // (Rp1 = 1 kredit) sehingga angka di sini = rupiah per jam.
     'billing_rate_cpu_per_core_hour' => $billingFloat('BILLING_RATE_CPU_PER_CORE_HOUR', 100.0),
     'billing_rate_ram_per_gb_hour' => $billingFloat('BILLING_RATE_RAM_PER_GB_HOUR', 20.0),
+    // Biaya backup volume snapshot: kredit per GB **per bulan** (akrual per tick
+    // bersama CPU/RAM; basis GB = bytes snapshot terakhir di BackupRegistry).
+    'billing_rate_backup_per_gb_month' => $billingFloat('BILLING_RATE_BACKUP_PER_GB_MONTH', 1000.0),
+    // Floor minimum GB yang ditagih per app (0 = tanpa floor; app bersnapshot
+    // tetap ditagih minimal sebesar ini walau total snapshotnya < 1 GB).
+    'billing_backup_min_gb' => $billingFloat('BILLING_BACKUP_MIN_GB', 1.0),
     // Service tanpa entri `limits` dianggap memakai nilai default ini supaya
     // app tanpa limit tidak gratis (harga tetap terkalkulasi).
     'billing_default_cpus' => $billingFloat('BILLING_DEFAULT_CPUS', 0.5),

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\UserStore;
 use app\library\Backup\BackupAccess;
 use app\library\Backup\BackupRegistry;
 use app\library\Backup\BackupReport;
@@ -12,6 +13,11 @@ use app\library\Backup\ResticRunner;
 use app\library\Backup\VolumeBackupService;
 use app\library\Backup\VolumeRestoreService;
 use app\library\Backup\VolumeStateGuard;
+use app\library\Backup\VolumeTargetMap;
+use app\library\Billing\BackupUsage;
+use app\library\Billing\BillingGate;
+use app\library\Billing\InsufficientCredits;
+use app\library\Billing\Pricing;
 use app\library\Docker\DockerClient;
 use app\library\Storage\AppStore;
 use app\library\Storage\DbBackup;
@@ -28,17 +34,24 @@ use Webman\Http\Response;
  *
  * Kontrak JSON (kunci stabil — dipakai Frontend UI):
  *   GET  /api/backups/status    → {code:0,data:{running,cached_at,status,volumes:[…],archived:[…]}}
+ *     Baris `volumes[]` = **cache** (`BackupCatalog`) + **satu** panggilan Engine
+ *     read-only (`GET /containers/json?all=1`) yang hanya menyegarkan
+ *     `container_state`; Engine gagal ⇒ nilai cache dipakai (kunci JSON tetap
+ *     sama, `container_state` tetap string).
  *   GET  /api/backups/snapshots → {code:0,data:{volume,snapshots:[…]}}
  *   POST /backups/run           → {code:0,msg}
  *   POST /backups/restore       → {code:0,msg}
  *   POST /backups/refresh       → {code:0,data:{running,cached_at,status,volumes:[…],archived:[…]}} (admin)
- *   POST /backups/schedule      → {code:0,data:{volume,scheduled,explicit}} (admin)
+ *   POST /backups/schedule      → {code:0,data:{volume,scheduled,explicit,backup_gb,required}}
+ *                                 (hak `backup` = owner/operator; 402 bila kredit kurang)
  *   GET  /api/backups/archive/snapshots → {code:0,data:{volume,snapshots:[…]}} (admin)
  *   POST /backups/archive/restore       → {code:0,msg} (admin)
  *   GET  /backups/archive/sql           → unduhan berkas .sql (admin)
  *   GET  /backups/guide                 → halaman panduan setup Restic (admin)
  * Tiap baris `volumes[]` (status & refresh) menyertakan `scheduled:bool` segar
- * dari `BackupSelection` (bukan dari cache) — lihat `withScheduled()`.
+ * dari `BackupSelection` (bukan dari cache), `can_schedule:bool`
+ * (`BackupAccess::can('backup', …)` per baris), serta biaya backup
+ * (`backup_gb`, `backup_credits_month`) — lihat `withScheduled()`.
  * `archived[]` (riwayat volume yang sudah dihapus) **admin-only** (keputusan 4a):
  * non-admin selalu menerima `[]`; tiap baris diberi `restorable:bool`. Lihat
  * `archivedRows()`.
@@ -64,6 +77,12 @@ class BackupController
             // Kartu "Database dashboard (SQLite)" — admin-only (data infra);
             // non-admin menerima null sehingga kartu tidak dirender.
             'db' => $isAdmin ? $this->dbDashboard() : null,
+            // Tarif & floor biaya backup (satu sumber: `Pricing`/`BackupUsage`) —
+            // view TIDAK boleh hardcode angka; nilainya juga dikirim ke JS lewat
+            // `data-*` di `#backup-page` (tooltip & alert biaya).
+            'billingEnabled' => (bool) config('deploy.billing_enabled', true),
+            'backupRatePerGb' => Pricing::backupMonthlyRate(),
+            'backupMinGb' => (new BackupUsage())->minGigabytes(),
         ]);
     }
 
@@ -89,15 +108,21 @@ class BackupController
     }
 
     /**
-     * Ringkasan status run + volume yang boleh dilihat user (dibaca dari cache).
+     * Ringkasan status run + volume yang boleh dilihat user.
      *
-     * **Tanpa** panggilan Docker Engine/restic: baris volume diambil dari cache
-     * hasil run terakhir / tombol Segarkan. Hanya status run & lock (file) yang
-     * diprobe — murah untuk polling.
+     * Baris volume diambil dari **cache** (`BackupCatalog`: `snapshots`,
+     * `last_run_at`, `last_ok`, `last_message`, `strategy`, `orphaned`, `app_*`)
+     * dan hanya kolom `container_state` yang disegarkan **live** lewat **satu**
+     * panggilan Engine read-only (`VolumeBackupService::overlayLiveContainerStates()`
+     * → `GET /containers/json?all=1`) agar kolom itu tidak basi antara dua run /
+     * tombol Segarkan. Bila Engine tak terjangkau, baris cache dikembalikan apa
+     * adanya (tidak ada error ke user).
+     *
+     * Selain itu hanya status run & lock (file) yang diprobe — murah untuk polling.
      */
     public function status(Request $request)
     {
-        $service = new VolumeBackupService();
+        $service = $this->backupService();
 
         try {
             $catalog = $service->catalog();
@@ -107,15 +132,21 @@ class BackupController
         }
 
         $apps = (new AppStore())->all();
-        $visible = BackupAccess::visible($catalog['volumes'], $apps, current_user());
+        $user = $this->currentUser();
+        $visible = BackupAccess::visible($catalog['volumes'], $apps, $user);
         $status = self::publicStatus((new BackupReport())->readStatus());
+
+        // `container_state` LIVE: satu panggilan Engine read-only untuk seluruh
+        // baris (gagal ⇒ nilai cache dipertahankan, lihat overlay).
+        $rows = self::withScheduled($visible, null, $apps, $user);
+        $rows = $service->overlayLiveContainerStates($rows);
 
         return json(['code' => 0, 'data' => [
             'running' => $service->isRunning(),
             'cached_at' => $catalog['cached_at'],
             // `status` selalu objek (bukan array kosong) agar kunci stabil di JS.
             'status' => $status === [] ? new \stdClass() : $status,
-            'volumes' => self::withScheduled($visible),
+            'volumes' => $rows,
             'archived' => $this->archivedPayload($service),
         ]]);
     }
@@ -155,28 +186,34 @@ class BackupController
         }
 
         $apps = (new AppStore())->all();
-        $visible = BackupAccess::visible($rows, $apps, current_user());
+        $user = $this->currentUser();
+        $visible = BackupAccess::visible($rows, $apps, $user);
         $status = self::publicStatus((new BackupReport())->readStatus());
 
         return json(['code' => 0, 'data' => [
             'running' => $service->isRunning(),
             'cached_at' => $service->catalog()['cached_at'],
             'status' => $status === [] ? new \stdClass() : $status,
-            'volumes' => self::withScheduled($visible),
+            'volumes' => self::withScheduled($visible, null, $apps, $user),
             'archived' => $this->archivedPayload($service),
         ]]);
     }
 
     /**
      * Nyalakan/matikan seleksi backup berkala sebuah volume (opt-in per volume).
-     * **Hanya admin global** — bukan admin → 404 (satu pintu, konsisten).
+     *
+     * Otorisasi lewat satu pintu `BackupAccess::require('backup', …)` (owner &
+     * operator boleh; viewer/stranger ⇒ `AppAccessDenied` → **404**, bukan 403).
+     * Volume yatim tetap admin-only. Target di-resolve dari Engine (bukan dari
+     * nama container/volume yang dikirim request) — lihat `volumeTargets()`.
+     *
+     * Gerbang kredit **hanya saat menyalakan** (`scheduled=1`) dan hanya untuk
+     * pihak yang menanggung biaya (lihat `assertCanScheduleBackup()`); saldo
+     * kurang ⇒ **402** JSON (`{code:402,error}`) dan seleksi **tidak** berubah.
+     * Mematikan backup tidak pernah digerbang.
      */
     public function setScheduled(Request $request)
     {
-        if (!is_admin()) {
-            return $this->notFound();
-        }
-
         $volume = trim((string) $request->post('volume', ''));
         try {
             VolumeStateGuard::assertVolumeName($volume);
@@ -190,8 +227,39 @@ class BackupController
         }
         $scheduled = $raw === '1';
 
+        try {
+            $targets = $this->volumeTargets();
+        } catch (\Throwable $e) {
+            return json(['code' => 500, 'msg' => 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()]);
+        }
+
+        $target = $this->findTarget($targets, $volume);
+        if ($target === null) {
+            // Termasuk volume DB dashboard (§8i.7) yang bukan target backup app.
+            return $this->notFound();
+        }
+
+        $actor = $this->currentUser();
+        $appId = (string) ($target['app_id'] ?? '');
+        $app = $this->findApp((new AppStore())->all(), $appId);
+
+        // Otorisasi SEBELUM efek samping apa pun (AppAccessDenied → 404).
+        BackupAccess::require('backup', $target, $app, $actor);
+
+        $usage = new BackupUsage();
+        $gb = $usage->chargedGigabytes($appId);
+
+        if ($scheduled) {
+            try {
+                $this->assertCanScheduleBackup($gb, $app, $actor);
+            } catch (InsufficientCredits $e) {
+                // Endpoint JSON/AJAX: 402 (bukan redirect) + pesan dari gerbang.
+                return json(['code' => 402, 'error' => $e->getMessage()])->withStatus(402);
+            }
+        }
+
         $selection = new BackupSelection();
-        $actorId = (string) (current_user()['id'] ?? '');
+        $actorId = (string) ($actor['id'] ?? '');
         try {
             $selection->setScheduled($volume, $scheduled, $actorId);
         } catch (\Throwable $e) {
@@ -202,7 +270,94 @@ class BackupController
             'volume' => $volume,
             'scheduled' => $scheduled,
             'explicit' => $selection->explicit(),
+            'backup_gb' => $gb,
+            'required' => $usage->requiredDeposit($gb),
         ]]);
+    }
+
+    /**
+     * Gerbang kredit sebelum **menyalakan** backup berkala — semantik sama dengan
+     * `AppController::billingAssertCanStart()` (§7.12), urutannya:
+     *   (1) billing mati / tanpa konteks user login ⇒ tanpa gerbang;
+     *   (2) aktor bebas tagihan (admin) ⇒ tanpa gerbang;
+     *   (3) app **milik user bebas tagihan** (admin) ⇒ bebas untuk siapa pun;
+     *   (4) gerbang untuk **aktor** (`balance < required` ⇒ `InsufficientCredits`);
+     *   (5) **penanggung biaya** (owner app) yang berbeda dari aktor dinilai
+     *       **juga** — biaya diakru ke owner, jadi operator bersaldo cukup tidak
+     *       boleh menyalakan fitur berbayar pada app milik member bersaldo kurang
+     *       (pesan khusus menyebut pemilik app).
+     *
+     * `$gate`/`$users` adalah seam uji (path temp) — produksi memakai default.
+     *
+     * @throws InsufficientCredits
+     */
+    private function assertCanScheduleBackup(float $gb, ?array $app, ?array $user, ?BillingGate $gate = null, ?UserStore $users = null): void
+    {
+        $gate ??= new BillingGate(null, null, $users);
+
+        if (!$gate->isEnabled() || $user === null) {
+            return;
+        }
+
+        // (2) Aktor admin bebas kredit — tidak pernah diblokir, bahkan untuk app
+        //     milik member yang saldonya kurang.
+        if ($gate->isExempt($user)) {
+            return;
+        }
+
+        // Penanggung biaya: owner app; fallback aktor bila `owner_id` kosong
+        // (pola `AppController::billingPayerFor()`).
+        $payer = $this->billingPayerFor($app ?? [], $user, $users);
+
+        // (3) App milik user bebas tagihan (admin) ⇒ bebas kredit untuk siapa pun.
+        if ($payer !== null && $gate->isExempt($payer)) {
+            return;
+        }
+
+        // (4) Aktor wajib punya saldo.
+        $gate->assertCanBackup($gb, $user);
+
+        // (5) Owner yang berbeda dari aktor menanggung biaya akrual ⇒ saldonya
+        //     dinilai juga, dengan pesan yang menyebut pemilik app.
+        if ($payer === null || (string) ($payer['id'] ?? '') === (string) ($user['id'] ?? '')) {
+            return;
+        }
+
+        try {
+            $gate->assertCanBackup($gb, $payer);
+        } catch (InsufficientCredits $e) {
+            throw new InsufficientCredits($e->balance, $e->required, sprintf(
+                'Saldo kredit pemilik app tidak mencukupi (saldo %s, minimum %s). '
+                . 'Minta pemilik menambah kredit di halaman Kredit.',
+                Pricing::format($e->balance),
+                Pricing::format($e->required)
+            ));
+        }
+    }
+
+    /**
+     * User yang menanggung biaya backup sebuah app — **owner** app; fallback
+     * aktor bila `owner_id` kosong/tak diketahui (`AppController::billingPayerFor()`).
+     *
+     * Owner dibaca lewat `UserStore::findPublicById()` (tanpa hash sandi); store
+     * tak terbaca ⇒ jatuh ke aktor (jangan gagalkan aksi karena masalah store —
+     * `AuthMiddleware` tetap penjaga utama autentikasi).
+     */
+    private function billingPayerFor(array $app, ?array $user, ?UserStore $users = null): ?array
+    {
+        $ownerId = trim((string) ($app['owner_id'] ?? ''));
+        if ($ownerId === '') {
+            return $user;
+        }
+        if ($user !== null && (string) ($user['id'] ?? '') === $ownerId) {
+            return $user;
+        }
+
+        try {
+            return ($users ?? new UserStore())->findPublicById($ownerId) ?? $user;
+        } catch (\Throwable) {
+            return $user;
+        }
     }
 
     /**
@@ -683,21 +838,61 @@ class BackupController
     }
 
     /**
-     * Sisipkan flag `scheduled` **segar** (dari `BackupSelection`) ke tiap baris
-     * volume yang dikirim ke UI.
+     * Sisipkan flag `scheduled` **segar** (dari `BackupSelection`) + data hak &
+     * biaya backup ke tiap baris volume yang dikirim ke UI.
      *
-     * Flag sengaja **tidak** disimpan di cache `BackupCatalog` (bisa basi); ia
-     * di-merge saat merespons. Satu instans `BackupSelection` per request
-     * (variabel lokal — bukan properti controller; larangan #1).
+     * Flag `scheduled` sengaja **tidak** disimpan di cache `BackupCatalog` (bisa
+     * basi); ia di-merge saat merespons. Parameter `$apps`/`$user`/`$usage`
+     * bersifat **aditif opsional** (pemanggil lama tetap sah):
+     *   - `can_schedule` — `BackupAccess::can('backup', $row, $app, $user)` per
+     *     baris (owner & operator boleh; viewer/stranger tidak; volume yatim
+     *     hanya admin). `$user === null` ⇒ false (UI hanya lapisan kedua).
+     *   - `backup_gb` / `backup_credits_month` — biaya snapshot app baris ini
+     *     (`BackupUsage` + `Pricing`), `0.0` bila app tak ada/tak bersnapshot.
+     *     Peta GB dibaca **sekali** per pemanggilan (`chargedGigabytesByApp()`),
+     *     bukan per baris — `chargedGigabytes($appId)` per baris akan membaca
+     *     ulang seluruh `BackupRegistry` tiap baris (N+1; endpoint ini dipolling
+     *     tiap ~20 s oleh dashboard).
+     *
+     * Satu instans per request (variabel lokal — bukan properti controller).
      *
      * @param array<int,array<string,mixed>> $rows
+     * @param array<int,array> $apps daftar app (`AppStore::all()`)
      * @return array<int,array<string,mixed>>
      */
-    public static function withScheduled(array $rows, ?BackupSelection $selection = null): array
-    {
+    public static function withScheduled(
+        array $rows,
+        ?BackupSelection $selection = null,
+        array $apps = [],
+        ?array $user = null,
+        ?BackupUsage $usage = null,
+    ): array {
         $selection ??= new BackupSelection();
+        $usage ??= new BackupUsage();
+
+        $appsById = [];
+        foreach ($apps as $app) {
+            if (is_array($app) && (string) ($app['id'] ?? '') !== '') {
+                $appsById[(string) $app['id']] = $app;
+            }
+        }
+
+        // Peta GB dibaca sekali per pemanggilan, **lazy** (hanya saat ada baris)
+        // supaya registry tidak disentuh untuk daftar baris kosong.
+        $chargedGbByApp = null;
+
         foreach ($rows as $index => $row) {
+            $appId = (string) ($row['app_id'] ?? '');
+            $app = $appId !== '' ? ($appsById[$appId] ?? null) : null;
+            $chargedGbByApp ??= $usage->chargedGigabytesByApp();
+            // appId kosong/yatim tidak pernah ada di peta ⇒ `0.0` (sama dengan
+            // `BackupUsage::chargedGigabytes('')`).
+            $gb = $chargedGbByApp[$appId] ?? 0.0;
+
             $row['scheduled'] = $selection->isScheduled((string) ($row['name'] ?? ''));
+            $row['can_schedule'] = BackupAccess::can('backup', $row, $app, $user);
+            $row['backup_gb'] = $gb;
+            $row['backup_credits_month'] = Pricing::backupMonthlyEstimate($gb);
             $rows[$index] = $row;
         }
 
@@ -713,7 +908,9 @@ class BackupController
      */
     private function archivedPayload(VolumeBackupService $service): array
     {
-        if (!is_admin()) {
+        // Lewat seam `isAdmin()` (produksi identik dengan `is_admin()`) supaya
+        // `status()`/`refresh()` dapat diuji tanpa konteks session HTTP.
+        if (!$this->isAdmin()) {
             return [];
         }
 
@@ -870,6 +1067,47 @@ class BackupController
     protected function isAdmin(): bool
     {
         return is_admin();
+    }
+
+    /**
+     * User login saat ini (seam uji; default helper `current_user()`).
+     *
+     * Session Webman butuh konteks HTTP, jadi tes menyuntik user lewat seam ini
+     * (pola `CreditController`).
+     */
+    protected function currentUser(): ?array
+    {
+        return current_user();
+    }
+
+    /**
+     * Target backup (volume → app) dari Docker Engine — **satu-satunya jalur
+     * endpoint ini yang menyentuh Engine** (PLAN_VOLUME_BACKUP.md §5.3).
+     *
+     * Method `protected` (bukan `private`) supaya tes dapat meng-override-nya
+     * dengan daftar volume tiruan: menguji matriks hak & gerbang kredit tidak
+     * boleh menuntut Docker Engine nyata di lingkungan tes.
+     *
+     * @return array<int,array{name:string,project:string,app_id:?string,app_name:?string,orphaned:bool}>
+     */
+    protected function volumeTargets(): array
+    {
+        $volumes = (new DockerClient())->listVolumes(['label' => [VolumeTargetMap::LABEL_PROJECT]]);
+
+        return VolumeTargetMap::build($volumes, (new AppStore())->all());
+    }
+
+    /**
+     * Service backup untuk mediator ini (seam uji).
+     *
+     * Method `protected` (bukan `private`) supaya tes dapat meng-inject
+     * `VolumeBackupService` dengan `DockerClient` palsu — pola sama dengan
+     * `volumeTargets()`: menguji overlay `container_state` live di `status()`
+     * tidak boleh menuntut Docker Engine nyata di lingkungan tes.
+     */
+    protected function backupService(): VolumeBackupService
+    {
+        return new VolumeBackupService();
     }
 
     /**

@@ -35,7 +35,7 @@ class RestoreDeleteFakeDockerClient extends DockerClient
         return [];
     }
 
-    public function listContainers(array $filters = []): array
+    public function listContainers(array $filters = [], ?int $timeoutSeconds = null): array
     {
         return $this->containers;
     }

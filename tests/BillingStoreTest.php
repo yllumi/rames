@@ -117,4 +117,57 @@ class BillingStoreTest extends TestCase
         $this->assertSame(1, $raw['version']);
         $this->assertSame('pending', $raw['orders']['ord1']['status']);
     }
+
+    /**
+     * Akumulasi `backup_credits_pending` dinormalisasi **4 desimal** (bias
+     * pembulatan per tick tidak boleh terakumulasi jadi drift), sedangkan
+     * akumulasi CPU/RAM `credits_pending` tetap 2 desimal.
+     */
+    public function testBackupCreditsPendingKeepsFourDecimals(): void
+    {
+        SqliteFixture::billing($this->path, ['usage' => ['app1' => [
+            'period' => '2026-11',
+            'credits_pending' => 5.006,
+            'backup_credits_pending' => 0.2893518518,
+        ]]]);
+
+        $store = new BillingStore($this->path);
+        $row = $store->usage()['app1'];
+
+        $this->assertSame(0.2894, $row['backup_credits_pending'], 'akumulasi backup 4 desimal (bukan 0,29)');
+        $this->assertSame(5.01, $row['credits_pending'], 'akumulasi CPU/RAM tetap 2 desimal');
+
+        // Tetap 4 desimal setelah tulis-baca ulang (normalisasi saat tulis).
+        $store->update(function (array &$data): void {
+            $data['usage']['app1']['name'] = 'app1';
+        });
+
+        $this->assertSame(0.2894, $store->usage()['app1']['backup_credits_pending']);
+    }
+
+    /**
+     * Baris lama tanpa field backup tetap aman: normalisasi hanya men-cast
+     * kunci yang **ada**, tidak pernah menyuntik kunci baru (kompatibilitas
+     * data hasil impor versi sebelumnya).
+     */
+    public function testLegacyUsageRowWithoutBackupFieldsIsUntouched(): void
+    {
+        SqliteFixture::billing($this->path, ['usage' => ['app1' => [
+            'period' => '2026-10',
+            'seconds_pending' => 3600,
+            'credits_pending' => 60,
+        ]]]);
+
+        $store = new BillingStore($this->path);
+        $store->update(function (array &$data): void {
+            $data['usage']['app1']['name'] = 'legacy';
+        });
+
+        $row = $store->usage()['app1'];
+        $this->assertArrayNotHasKey('backup_gb', $row);
+        $this->assertArrayNotHasKey('backup_credits_pending', $row);
+        $this->assertSame(3600, $row['seconds_pending']);
+        $this->assertSame(60.0, $row['credits_pending']);
+        $this->assertSame('legacy', $row['name']);
+    }
 }

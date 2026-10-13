@@ -10,6 +10,12 @@ $policy = (string) ($policy ?? 'stop');
 $isAdmin = $isAdmin ?? is_admin();
 // Data kartu "Database dashboard (SQLite)" (null untuk non-admin / bila tak ada).
 $db = $db ?? null;
+// Tarif & floor biaya backup (dari controller; fallback hanya untuk smoke render).
+$billingEnabled = (bool) ($billingEnabled ?? true);
+$backupRatePerGb = (float) ($backupRatePerGb ?? 1000.0);
+$backupMinGb = (float) ($backupMinGb ?? 1.0);
+$backupCostLabel = number_format($backupRatePerGb, $backupRatePerGb == (int) $backupRatePerGb ? 0 : 2, ',', '.');
+$backupMinLabel = number_format($backupMinGb, $backupMinGb == (int) $backupMinGb ? 0 : 2, ',', '.');
 
 $policyLabel = $policy === 'skip'
     ? 'manual saja — volume non-DB tidak dijadwalkan otomatis'
@@ -34,7 +40,7 @@ $breadcrumbs = [
     </p>
     <p class="form-text small text-muted mb-0 mt-2">
       Kolom <strong>Berkala</strong>: volume yang belum pernah dibackup nonaktif secara default —
-      aktifkan untuk ikut backup harian.
+      aktifkan untuk ikut backup harian (volume app yang Anda kelola; ada biaya kreditnya, lihat di bawah).
     </p>
   </div>
   <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -64,11 +70,21 @@ $breadcrumbs = [
 
 <?php if (!$isAdmin): ?>
   <div class="alert alert-info py-2 small" role="alert">
-    Anda hanya melihat volume dari app yang boleh Anda akses. Aksi <strong>Backup</strong> butuh hak
-    <em>operator</em> dan <strong>Restore</strong> butuh hak <em>owner</em>. Tombol adalah lapisan kedua —
-    server tetap menolak aksi yang tidak diizinkan.
+    Anda hanya melihat volume dari app yang boleh Anda akses. <strong>Backup berkala</strong> boleh Anda
+    nyalakan sendiri bila Anda punya hak <em>operator</em> pada app pemilik volume (owner &amp; operator);
+    aksi <strong>Backup</strong> butuh hak <em>operator</em> dan <strong>Restore</strong> butuh hak
+    <em>owner</em>. Tombol adalah lapisan kedua — server tetap menolak aksi yang tidak diizinkan.
   </div>
 <?php endif; ?>
+
+<div class="alert alert-info py-2 small" role="alert">
+  <strong>Biaya backup berkala.</strong> Backup berkala dapat diaktifkan untuk app yang Anda kelola
+  (hak <em>operator</em>). Biaya <strong><?= e($backupCostLabel) ?> kredit/GB/bulan</strong>
+  (1 kredit = Rp1), dihitung dari total snapshot tersimpan app, <strong>minimum
+  <?= e($backupMinLabel) ?> GB per app</strong>; biaya diakru selama app berjalan dan ditagih bersama
+  pemakaian CPU/RAM.<?php if (!$billingEnabled): ?>
+    <span class="text-muted">(Meteran kredit nonaktif — biaya tidak ditagih.)</span><?php endif; ?>
+</div>
 
 <div id="backup-error" class="alert alert-danger d-none" role="alert"></div>
 <div id="backup-last-run" class="alert alert-secondary py-2 small d-none" role="status"></div>
@@ -76,6 +92,9 @@ $breadcrumbs = [
 <div id="backup-page"
      data-enabled="<?= $enabled ? '1' : '0' ?>"
      data-is-admin="<?= $isAdmin ? '1' : '0' ?>"
+     data-billing-enabled="<?= $billingEnabled ? '1' : '0' ?>"
+     data-backup-rate="<?= e((string) $backupRatePerGb) ?>"
+     data-backup-min-gb="<?= e((string) $backupMinGb) ?>"
      data-interval="20000">
 
   <ul class="nav nav-tabs mb-3" role="tablist">
@@ -108,9 +127,9 @@ $breadcrumbs = [
             <th>Project</th>
             <th>App</th>
             <th>Strategi</th>
-            <th>Status container</th>
-            <th>Backup terakhir</th>
-            <th class="text-end">Snapshot</th>
+            <th title="Dibaca langsung dari Docker Engine setiap pembaruan (live; bila Engine tak terjangkau, nilai cache terakhir dipakai)">Status container</th>
+            <th title="Dari cache ringkasan — nilainya baru akurat setelah run backup, atau setelah admin menekan Segarkan status">Backup terakhir</th>
+            <th class="text-end" title="Dari cache ringkasan — jumlahnya baru akurat setelah run backup, atau setelah admin menekan Segarkan status">Snapshot</th>
             <th>Berkala</th>
             <th class="text-end">Aksi</th>
           </tr>
@@ -525,5 +544,5 @@ $breadcrumbs = [
   </div>
 </div>
 
-<script src="/js/backup.js?v=11"></script>
+<script src="/js/backup.js?v=13"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

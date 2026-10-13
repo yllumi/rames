@@ -54,17 +54,31 @@ class DockerClient
     /**
      * Daftar semua container (termasuk yang berhenti) dengan filter opsional.
      *
+     * **Timeout per-request opsional** lewat argumen ke-2: nilai `> 0` dipasang
+     * ke opsi Guzzle `timeout` (dibatasi 30 dtk = aturan repo untuk klien HTTP);
+     * `null` atau `<= 0` tidak memasang opsi apa pun sehingga klien memakai
+     * timeout bawaannya (Guzzle menganggap `0` = "tanpa timeout"). Pemanggil lama
+     * (1 argumen) berperilaku persis seperti sebelumnya.
+     *
      * @param array $filters filter Docker Engine API (mis. ['label' => ['...']])
+     * @param int|null $timeoutSeconds timeout per-request dalam detik, opsional
      * @return array<int,array>
      */
-    public function listContainers(array $filters = []): array
+    public function listContainers(array $filters = [], ?int $timeoutSeconds = null): array
     {
         $query = ['all' => 1];
         if ($filters !== []) {
             $query['filters'] = json_encode($filters);
         }
+
+        $options = ['query' => $query];
+        if ($timeoutSeconds !== null && $timeoutSeconds > 0) {
+            // Batas atas 30 dtk = aturan repo untuk klien HTTP (timeout wajar).
+            $options['timeout'] = min($timeoutSeconds, 30);
+        }
+
         try {
-            $resp = $this->client->get('/containers/json', ['query' => $query]);
+            $resp = $this->client->get('/containers/json', $options);
         } catch (GuzzleException $e) {
             throw new RuntimeException('Gagal terhubung ke Docker Engine: ' . $e->getMessage(), 0, $e);
         }

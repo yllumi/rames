@@ -33,6 +33,11 @@ $idrPerCredit = (float) ($idrPerCredit ?? 1.0);
 // Kurs bisa pecahan (`BILLING_TOPUP_IDR_PER_CREDIT` float) → jangan paksa 0 desimal.
 $kursLabel = static fn (float $rate): string => number_format($rate, $rate == (int) $rate ? 0 : 2, ',', '.');
 $minDepositDays = (int) ($minDepositDays ?? 30);
+// Tarif & floor biaya backup (dari controller) — catatan kaki tabel pemakaian.
+$backupRatePerGb = (float) ($backupRatePerGb ?? 1000.0);
+$backupMinGb = (float) ($backupMinGb ?? 1.0);
+$backupCostLabel = number_format($backupRatePerGb, $backupRatePerGb == (int) $backupRatePerGb ? 0 : 2, ',', '.');
+$backupMinLabel = number_format($backupMinGb, $backupMinGb == (int) $backupMinGb ? 0 : 2, ',', '.');
 $periodLabel = (string) ($periodLabel ?? '');
 $focusOrder = is_array($focusOrder ?? null) ? $focusOrder : null;
 
@@ -139,12 +144,14 @@ $breadcrumbs = [
               <th class="text-end">Jam akrual</th>
               <th class="text-end">Kredit terakumulasi</th>
               <th class="text-end">Per jam</th>
+              <th class="text-end">Backup (GB)</th>
+              <th class="text-end">Kredit backup</th>
               <th class="text-end">Estimasi / bulan</th>
             </tr>
           </thead>
           <tbody>
             <?php if ($usage === []): ?>
-              <tr><td colspan="5" class="text-muted small">Belum ada pemakaian tercatat.</td></tr>
+              <tr><td colspan="7" class="text-muted small">Belum ada pemakaian tercatat.</td></tr>
             <?php else: ?>
               <?php foreach ($usage as $appId => $row): ?>
                 <tr>
@@ -152,6 +159,8 @@ $breadcrumbs = [
                   <td class="text-end"><?= e(number_format((float) ($row['seconds_pending'] ?? 0) / 3600, 2, ',', '.')) ?></td>
                   <td class="text-end"><?= e(format_credits((float) ($row['credits_pending'] ?? 0.0))) ?></td>
                   <td class="text-end"><?= e(format_credits((float) ($row['hourly'] ?? 0.0))) ?></td>
+                  <td class="text-end"><?= e(number_format((float) ($row['backup_gb'] ?? 0.0), 2, ',', '.')) ?></td>
+                  <td class="text-end"><?= e(format_credits((float) ($row['backup_credits'] ?? 0.0))) ?></td>
                   <td class="text-end"><?= e(format_credits((float) ($row['estimate_month'] ?? 0.0))) ?></td>
                 </tr>
               <?php endforeach; ?>
@@ -160,7 +169,10 @@ $breadcrumbs = [
         </table>
       </div>
       <div class="card-footer text-muted small">
-        Estimasi bulanan memakai tarif saat ini dan jumlah hari di periode <?= e($periodLabel) ?>.
+        Estimasi bulanan memakai tarif saat ini dan jumlah hari di periode <?= e($periodLabel) ?>
+        (sudah termasuk biaya backup). Biaya backup <strong><?= e($backupCostLabel) ?> kredit/GB/bulan</strong>,
+        minimum <strong><?= e($backupMinLabel) ?> GB per app</strong>, diakru hanya saat app berjalan
+        (dihitung dari total snapshot tersimpan).
       </div>
     </div>
   </div>

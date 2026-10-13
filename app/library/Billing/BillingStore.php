@@ -18,7 +18,8 @@ use app\library\Storage\SqliteStore;
  * `BackupSelection`) = berkas .sqlite, supaya bisa di-override saat tes.
  *
  * Normalisasi dijalankan pada setiap baca & tulis: memastikan keempat kunci
- * ada, saldo dibulatkan 2 desimal, dan ledger dipangkas ke
+ * ada, saldo dibulatkan 2 desimal, akumulasi backup
+ * (`backup_credits_pending`) dibulatkan 4 desimal, dan ledger dipangkas ke
  * `BILLING_LEDGER_KEEP` entri terakhir (nilai ≤ 0 = tanpa batas).
  */
 class BillingStore
@@ -133,6 +134,17 @@ class BillingStore
             // tipe kanonik di sini supaya kontrak "kredit = float" tetap terjaga.
             $row['seconds_pending'] = (int) ($row['seconds_pending'] ?? 0);
             $row['credits_pending'] = round((float) ($row['credits_pending'] ?? 0.0), 2);
+            // Field backup (aditif): cast hanya bila ADA — baris lama tidak
+            // dipaksa memiliki kunci baru (kompatibilitas data).
+            if (array_key_exists('backup_gb', $row)) {
+                $row['backup_gb'] = round((float) $row['backup_gb'], 4);
+            }
+            if (array_key_exists('backup_credits_pending', $row)) {
+                // Akumulasi backup dipertahankan 4 desimal (lihat `UsageMeter`)
+                // supaya bias pembulatan per tick tidak jadi drift; pembulatan
+                // uang 2 desimal dilakukan saat penagihan (`Invoicer`).
+                $row['backup_credits_pending'] = round((float) $row['backup_credits_pending'], 4);
+            }
             $usage[(string) $appId] = $row;
         }
 
@@ -171,7 +183,7 @@ class BillingStore
                 if (!is_array($item)) {
                     return $item;
                 }
-                foreach (['amount', 'hourly', 'hours', 'cpus'] as $field) {
+                foreach (['amount', 'hourly', 'hours', 'cpus', 'backup_gb', 'monthly'] as $field) {
                     if (isset($item[$field]) && is_numeric($item[$field])) {
                         $item[$field] = (float) $item[$field];
                     }

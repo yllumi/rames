@@ -4,13 +4,17 @@ declare(strict_types=1);
 namespace Tests;
 
 use app\library\Auth\UserStore;
+use app\library\Backup\BackupRegistry;
+use app\library\Billing\BackupUsage;
 use app\library\Billing\BillingGate;
 use app\library\Billing\BillingStore;
 use app\library\Billing\CreditAccount;
 use app\library\Billing\InsufficientCredits;
 use PHPUnit\Framework\TestCase;
+use ReflectionProperty;
 use support\Request;
 use Tests\Support\SqliteFixture;
+use Webman\Config;
 
 /**
  * Test BillingGate — gerbang kredit (lewati admin/billing mati; blokir saldo
@@ -25,11 +29,17 @@ class BillingGateTest extends TestCase
 
     private string $tmp;
     private CreditAccount $account;
+    private BackupUsage $backupUsage;
+
+    /** @var array<string,mixed> */
+    private array $configState = [];
 
     protected function setUp(): void
     {
         $this->tmp = sys_get_temp_dir() . '/billinggate_' . bin2hex(random_bytes(4));
         mkdir($this->tmp, 0777, true);
+
+        $this->configState = $this->snapshotConfigState();
 
         $db = $this->tmp . '/rames.sqlite';
         SqliteFixture::users($db, [
@@ -41,10 +51,12 @@ class BillingGateTest extends TestCase
             new BillingStore($db),
             new UserStore($db)
         );
+        $this->backupUsage = new BackupUsage(new BackupRegistry($db));
     }
 
     protected function tearDown(): void
     {
+        $this->restoreConfigState($this->configState);
         foreach (glob($this->tmp . '/*') ?: [] as $file) {
             @unlink($file);
         }
@@ -53,7 +65,43 @@ class BillingGateTest extends TestCase
 
     private function gate(): BillingGate
     {
-        return new BillingGate($this->account, self::RATES);
+        return new BillingGate($this->account, self::RATES, null, $this->backupUsage);
+    }
+
+    /** Muat config temp untuk menguji `billing_enabled` (pola BillingRunnerTest). */
+    private function useConfig(array $deploy): void
+    {
+        Config::clear();
+        mkdir($this->tmp . '/config', 0777, true);
+        file_put_contents($this->tmp . '/config/app.php', "<?php return [];\n");
+        file_put_contents(
+            $this->tmp . '/config/deploy.php',
+            '<?php return ' . var_export(['sqlite_file' => $this->tmp . '/rames.sqlite'] + $deploy, true) . ';' . PHP_EOL
+        );
+        Config::load($this->tmp . '/config');
+    }
+
+    /** @return array<string,mixed> */
+    private function snapshotConfigState(): array
+    {
+        $state = [];
+        foreach (['config', 'configPath', 'loaded', 'flatCache'] as $name) {
+            $prop = new ReflectionProperty(Config::class, $name);
+            $prop->setAccessible(true);
+            $state[$name] = $prop->getValue(null);
+        }
+
+        return $state;
+    }
+
+    /** @param array<string,mixed> $state */
+    private function restoreConfigState(array $state): void
+    {
+        foreach ($state as $name => $value) {
+            $prop = new ReflectionProperty(Config::class, $name);
+            $prop->setAccessible(true);
+            $prop->setValue(null, $value);
+        }
     }
 
     public function testEnabledAndRequiredForEmptyLimits(): void
@@ -146,6 +194,71 @@ class BillingGateTest extends TestCase
         } finally {
             $this->assertSame(86400.0, $this->gate()->requiredFor(['web' => ['cpus' => 1.0, 'memory_mb' => 1024]]));
         }
+    }
+
+    public function testAssertCanBackupSkipsExemptAndNullUser(): void
+    {
+        // Saldo 0 tapi admin (exempt) → tidak diblokir.
+        $this->gate()->assertCanBackup(5.0, self::ADMIN);
+        // Tanpa konteks user (belum login) → juga dilewati.
+        $this->gate()->assertCanBackup(5.0, null);
+        $this->assertTrue(true);
+    }
+
+    public function testAssertCanBackupBlocksInsufficientMember(): void
+    {
+        $this->account->deposit('u2', 500.0, 'u1', 'deposit');
+
+        try {
+            $this->gate()->assertCanBackup(2.0, self::MEMBER);
+            $this->fail('Gerbang backup seharusnya melempar InsufficientCredits');
+        } catch (InsufficientCredits $e) {
+            $this->assertSame(500.0, $e->balance);
+            $this->assertSame(2000.0, $e->required, 'required = requiredDeposit(gb) = gb × tarif × 1 bulan');
+            $this->assertSame(402, $e->getCode());
+        }
+    }
+
+    public function testAssertCanBackupPassesWithEnoughBalance(): void
+    {
+        $this->account->deposit('u2', 3000.0, 'u1', 'deposit');
+
+        $this->gate()->assertCanBackup(2.0, self::MEMBER);
+        $this->assertTrue(true);
+    }
+
+    /**
+     * `required` memakai GB yang diserahkan (sudah termasuk floor per app) —
+     * app 0,3 GB ⇒ `chargedGigabytes()` = 1 GB ⇒ deposit 1000.
+     */
+    public function testAssertCanBackupUsesChargedGbFromCaller(): void
+    {
+        $db = $this->tmp . '/rames.sqlite';
+        SqliteFixture::backup($db, [
+            'registry' => [
+                'app1_data' => ['app_id' => 'app1', 'bytes' => 322122547, 'snapshots' => 1],
+            ],
+        ]);
+        $charged = $this->backupUsage->chargedGigabytes('app1');
+        $this->assertEqualsWithDelta(1.0, $charged, 0.0001);
+
+        $this->account->deposit('u2', 999.0, 'u1', 'deposit');
+        try {
+            $this->gate()->assertCanBackup($charged, self::MEMBER);
+            $this->fail('Saldo di bawah deposit minimum seharusnya diblokir');
+        } catch (InsufficientCredits $e) {
+            $this->assertSame(1000.0, $e->required);
+        }
+    }
+
+    public function testAssertCanBackupSkippedWhenBillingDisabled(): void
+    {
+        $this->useConfig(['billing_enabled' => false]);
+
+        $gate = $this->gate();
+        $this->assertFalse($gate->isEnabled());
+        $gate->assertCanBackup(10.0, self::MEMBER);
+        $this->assertTrue(true, 'billing mati ⇒ tanpa gerbang kredit');
     }
 
     public function testInsufficientCreditsRenders402Json(): void

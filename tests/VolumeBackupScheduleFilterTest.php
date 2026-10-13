@@ -41,7 +41,7 @@ class VolumeScheduleFakeDockerClient extends DockerClient
         return $this->volumes;
     }
 
-    public function listContainers(array $filters = []): array
+    public function listContainers(array $filters = [], ?int $timeoutSeconds = null): array
     {
         return $this->containers;
     }
@@ -69,7 +69,7 @@ class VolumeScheduleThrowingDockerClient extends DockerClient
         throw new RuntimeException('Docker Engine tidak boleh disentuh di jalur cache');
     }
 
-    public function listContainers(array $filters = []): array
+    public function listContainers(array $filters = [], ?int $timeoutSeconds = null): array
     {
         throw new RuntimeException('Docker Engine tidak boleh disentuh di jalur cache');
     }

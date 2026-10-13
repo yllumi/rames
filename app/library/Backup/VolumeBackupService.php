@@ -45,6 +45,15 @@ class VolumeBackupService
      */
     private const SNAPSHOT_COUNT_TIMEOUT = 15;
 
+    /**
+     * Timeout (detik) panggilan Engine **read-only** yang menyegarkan
+     * `container_state` live pada `GET /api/backups/status` (satu panggilan
+     * `GET /containers/json?all=1` per respons). Sengaja pendek: Engine yang
+     * menggantung tidak boleh menahan polling UI — gagal/timeout ⇒ pemanggil
+     * jatuh ke nilai cache, halaman tetap jalan.
+     */
+    private const LIVE_STATE_TIMEOUT = 5;
+
     private DockerClient $docker;
     private AppStore $apps;
     private VolumeStateGuard $guard;
@@ -181,7 +190,9 @@ class VolumeBackupService
 
     /**
      * Cache baris ringkasan terakhir — **tanpa** Engine/restic (murni baca file).
-     * Dipakai `GET /api/backups/status` agar polling tidak menyentuh Docker.
+     * Dipakai `GET /api/backups/status`; polling hanya menyentuh Docker lewat
+     * **satu** panggilan read-only untuk `container_state` (`overlayLiveContainerStates()`),
+     * bukan Engine+restic penuh seperti "Segarkan" (`refreshCatalog()`).
      *
      * @return array{volumes:array<int,array<string,mixed>>,cached_at:?string}
      */
@@ -213,6 +224,125 @@ class VolumeBackupService
         $this->backfillRegistry($rows);
 
         return $rows;
+    }
+
+    /**
+     * Keadaan container **live** per volume — SATU panggilan read-only
+     * `GET /containers/json?all=1` untuk **seluruh** volume sekaligus (bukan
+     * satu panggilan per volume: `N` volume tidak boleh berarti `N` panggilan
+     * Engine pada jalur polling).
+     *
+     * Peta dibangun dari `Mounts[]` baris Engine (`Type === 'volume'` **dan**
+     * `Name` non-kosong; bind mount / mount tanpa nama diabaikan), lalu tiap
+     * volume diringkas dengan **presedensi yang sama** seperti
+     * `{@see self::containerState()}` (ada `running` ⇒ `running`; selain itu
+     * state non-kosong pertama; tanpa container ⇒ `none`) — presedensi tidak
+     * diduplikasi.
+     *
+     * Kegagalan Engine (socket hilang, timeout, respons rusak) ⇒ `null`
+     * (bukan exception): pemanggil memakai nilai cache agar halaman tetap jalan.
+     *
+     * @param int $timeoutSeconds timeout per-request panggilan Engine (detik)
+     * @return array<string,string>|null nama volume ⇒ state; `null` = Engine tak terbaca
+     */
+    public function containerStatesLive(int $timeoutSeconds = self::LIVE_STATE_TIMEOUT): ?array
+    {
+        try {
+            // Argumen ke-2 = timeout per-request (`DockerClient::listContainers()`).
+            $containers = $this->docker->listContainers([], $timeoutSeconds);
+        } catch (\Throwable $e) {
+            // Engine tak terjangkau/gagal → "tidak diketahui" (bukan error keras).
+            return null;
+        }
+
+        $byVolume = [];
+        foreach ($containers as $container) {
+            if (!is_array($container)) {
+                continue;
+            }
+
+            // Bentuk minimal yang dibaca `self::containerState()` — `State` huruf
+            // besar dari Engine dinormalkan seperti `VolumeStateGuard::containersForVolume()`.
+            $state = strtolower((string) ($container['State'] ?? ''));
+            $summary = ['state' => $state, 'running' => $state === 'running'];
+
+            foreach (self::volumeMountNames($container) as $name) {
+                $byVolume[$name][] = $summary;
+            }
+        }
+
+        $states = [];
+        foreach ($byVolume as $name => $summaries) {
+            $states[$name] = self::containerState($summaries);
+        }
+
+        return $states;
+    }
+
+    /**
+     * Tempelkan `container_state` **live** ke baris ringkasan (hasil cache).
+     *
+     * Kolom lain (`snapshots`, `last_run_at`, `last_ok`, `last_message`,
+     * `strategy`, `orphaned`, `app_*`, `scheduled`, biaya) **tidak** disentuh —
+     * hanya `container_state` yang diambil dari Engine, karena itulah satu-satunya
+     * kolom yang bisa basi antara dua run/refresh.
+     *
+     * Jalur murah: tanpa baris ⇒ **tanpa** panggilan Engine; Engine gagal ⇒ baris
+     * dikembalikan apa adanya (nilai cache dipertahankan). Kunci & urutan baris
+     * tidak berubah (`container_state` sudah ada di baris cache).
+     *
+     * @param array<int,array<string,mixed>> $rows baris ringkasan (hasil cache/`overview()`)
+     * @param int $timeoutSeconds timeout per-request panggilan Engine (detik)
+     * @return array<int,array<string,mixed>>
+     */
+    public function overlayLiveContainerStates(array $rows, int $timeoutSeconds = self::LIVE_STATE_TIMEOUT): array
+    {
+        if ($rows === []) {
+            return $rows;
+        }
+
+        $states = $this->containerStatesLive($timeoutSeconds);
+        if ($states === null) {
+            return $rows;
+        }
+
+        foreach ($rows as $index => $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = (string) ($row['name'] ?? '');
+            // Volume tanpa container hidup ⇒ `none` (sama dengan `overview()`).
+            $row['container_state'] = $states[$name] ?? 'none';
+            $rows[$index] = $row;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Nama named volume yang di-mount sebuah baris `/containers/json`.
+     *
+     * Hanya `Mounts[].Type === 'volume'` dengan `Name` non-kosong yang dihitung;
+     * bind mount (`Type === 'bind'`), tmpfs, dan mount anonymous (tanpa `Name`)
+     * diabaikan karena bukan target backup.
+     *
+     * @param array $container baris Engine (`Mounts[]`)
+     * @return array<int,string>
+     */
+    private static function volumeMountNames(array $container): array
+    {
+        $names = [];
+        foreach ((array) ($container['Mounts'] ?? []) as $mount) {
+            if (!is_array($mount) || (string) ($mount['Type'] ?? '') !== 'volume') {
+                continue;
+            }
+            $name = (string) ($mount['Name'] ?? '');
+            if ($name !== '') {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
     }
 
     /**
