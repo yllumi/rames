@@ -123,6 +123,10 @@ Route::post('/apps/{id}/owner', [AppController::class, 'transferOwner']);
 Route::get('/nginx', [NginxController::class, 'index']);
 Route::post('/nginx/reload', [NginxController::class, 'reload']);
 
+// Halaman /nginx tab Template (§7.13): tarik image template (admin-only).
+Route::post('/nginx/templates/pull', [NginxController::class, 'pullTemplates']);
+Route::get('/nginx/templates/pull/status', [NginxController::class, 'pullStatus']);
+
 // Self-update dashboard (panel di halaman /nginx) — cek, jalankan, rollback, status.
 // Mutasi hanya admin; status boleh dibaca semua user yang sudah login.
 Route::post('/api/update/check', [UpdateController::class, 'check']);

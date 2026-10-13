@@ -194,6 +194,17 @@ return [
     'update_run_dir' => getenv('UPDATE_RUN_DIR') ?: (base_path() . '/runtime/logs/update'),
 
     // ---------------------------------------------------------------------
+    // Tarik image template (SPECS.md §7.13 / halaman /nginx tab Template)
+    // ---------------------------------------------------------------------
+    // Template memakai image prebuilt (yllumi/fpm8.4-nginx, mysql:8.4, …);
+    // `docker compose up -d` default `--pull missing` TIDAK menarik ulang tag
+    // yang sudah ada di lokal, jadi tombol `docker pull` per template perlu
+    // jalur sendiri: worker `cli/pull.php` menarik tiap image satu per satu.
+    // Status/log run disimpan di direktori terpisah dari self-update.
+    'template_pull_run_dir' => getenv('TEMPLATE_PULL_RUN_DIR') ?: (base_path() . '/runtime/logs/template-pull'),
+    'template_pull_timeout' => (int) (getenv('TEMPLATE_PULL_TIMEOUT') ?: 1800), // detik PER image
+
+    // ---------------------------------------------------------------------
     // Adminer sebagai mesin halaman /database (fitur D1)
     // ---------------------------------------------------------------------
     // Helper Adminer standalone (tanpa port publik) + reverse proxy HTTP dari

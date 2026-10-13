@@ -289,3 +289,44 @@ if (!function_exists('update_badge')) {
         ];
     }
 }
+
+if (!function_exists('template_logo_map')) {
+    /**
+     * Peta slug template → ekstensi berkas logo di `public/images/templates/`.
+     *
+     * Diturunkan dari isi direktori NYATA (bukan daftar slug/ekstensi hardcode)
+     * supaya template yang mendapat logo .svg/.png/.webp langsung terdeteksi.
+     * Hanya ekstensi whitelist (case-insensitive) dengan slug aman yang diterima,
+     * dan satu berkas per slug (yang pertama ditemukan menang).
+     *
+     * Dipakai galeri create-app, judul form deploy template, dan tab **Template**
+     * halaman Config — satu sumber agar ketiganya menampilkan logo yang sama.
+     * Path default dihitung relatif berkas ini (tanpa helper framework) supaya
+     * smoke render di luar HTTP tetap dapat memakainya; `$dir` disediakan agar
+     * aturan pemetaan bisa diuji dengan direktori temp.
+     *
+     * @param string|null $dir direktori aset (default `public/images/templates`)
+     * @return array<string,string>
+     */
+    function template_logo_map(?string $dir = null): array
+    {
+        $dir ??= dirname(__DIR__) . '/public/images/templates';
+
+        $map = [];
+        foreach (glob(rtrim($dir, '/') . '/*') ?: [] as $file) {
+            $slug = pathinfo($file, PATHINFO_FILENAME);
+            $extension = pathinfo($file, PATHINFO_EXTENSION);
+            // Slug mengikuti aturan yang sama dengan `TemplateCatalog::isValidSlug()`
+            // (huruf kecil/angka, dash hanya di tengah) supaya berkas seperti
+            // `-foo.png` tidak pernah masuk peta.
+            if (in_array(strtolower($extension), ['svg', 'png', 'webp'], true)
+                && preg_match('/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/D', $slug) === 1
+                && is_file($file)
+                && !isset($map[$slug])) {
+                $map[$slug] = $extension;
+            }
+        }
+
+        return $map;
+    }
+}

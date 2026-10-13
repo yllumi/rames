@@ -57,7 +57,7 @@ Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputus
 | `database/`, `apps/`, `runtime/`, `nginx-status/` | **Data runtime** (gitignored) — lihat larangan #15/#16. |
 
 **Satu sumber kebenaran** — jangan menduplikasi logika:
-`AppAccess` (otorisasi) · `ProcessRunner`+`SigchldGuard` (eksekusi proses) · `AppPorts` (port & dedupe) · `AppContainers` (validasi nama container) · `JsonStore` (mutasi JSON) · `app_subdomain_of()` (resolusi subdomain efektif — jangan menebak dari `name`) · `SubdomainManager` (kebijakan subdomain) · `AppController::createAndDeploy()` (jalur create app) · `DeployerFactory`/`DeployerInterface` (keputusan deploy) · `EnvManager`/`NetworkManager`/`ContainerNames` (file override compose).
+`AppAccess` (otorisasi) · `ProcessRunner`+`SigchldGuard` (eksekusi proses) · `AppPorts` (port & dedupe) · `AppContainers` (validasi nama container) · `JsonStore` (mutasi JSON) · `app_subdomain_of()` (resolusi subdomain efektif — jangan menebak dari `name`) · `SubdomainManager` (kebijakan subdomain) · `AppController::createAndDeploy()` (jalur create app) · `template_logo_map()` (peta logo `public/images/templates/` → slug, dipakai galeri create-app, tab Template, & form deploy — jangan glob logo di view) · `DeployerFactory`/`DeployerInterface` (keputusan deploy) · `EnvManager`/`NetworkManager`/`ContainerNames` (file override compose).
 
 ---
 

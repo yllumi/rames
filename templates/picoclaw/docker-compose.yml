@@ -1,0 +1,90 @@
+# Template PicoClaw — asisten AI personal ultra-ringan (image prebuilt resmi).
+#
+# Aturan template Rames yang dipatuhi di sini:
+#  - Hanya SATU service, image prebuilt (tanpa `build:`), tanpa `container_name`,
+#    tanpa `name:` level atas, dan tanpa replica/`scale` > 1 — nama project &
+#    nama container dikelola dashboard (prefix otomatis = nama app).
+#  - Named volume (bukan bind mount) → tidak ada direktori host yang perlu
+#    disiapkan, dan datanya dipakai ulang bila app dibuat ulang dengan nama sama.
+#  - Hanya port Web console (18800) yang di-publish: itu satu-satunya jalur UI.
+#    Gateway (18790) sengaja TIDAK di-publish — lihat catatan di bawah.
+services:
+  picoclaw:
+    # Tag `launcher` sengaja dipilih, BUKAN `latest`:
+    #  - `latest` memakai entrypoint yang menjalankan `picoclaw onboard` lalu
+    #    LANGSUNG KELUAR pada run pertama ("First-run setup complete.") sehingga
+    #    container mati dan masuk restart-loop sebelum config terbentuk.
+    #  - `launcher` melakukan onboarding sendiri (non-interaktif) dan tetap hidup,
+    #    menyajikan Web console di 18800, serta menjalankan gateway otomatis.
+    # Versi stabil terakhir saat template ini ditulis: v0.3.1; untuk menyematkan
+    # versi, ganti tag menjadi `v0.3.1-launcher`. Tombol "Tarik image" di
+    # Config → tab Template dipakai untuk menyegarkan tag ini dari registry.
+    image: ghcr.io/sipeed/picoclaw:launcher
+    restart: unless-stopped
+
+    # Image tidak menyediakan init. Launcher adalah PID 1 yang men-spawn gateway
+    # dan subproses lain (MCP/tool), jadi init:true mencegah proses yatim/zombie
+    # dan meneruskan SIGTERM dengan rapi saat stop/restart dari dashboard.
+    init: true
+
+    ports:
+      # 18800 = Web console launcher (default; satu-satunya jalur UI).
+      # 18790 (gateway) TIDAK dipublish: di dalam container gateway diikat ke
+      # loopback dan Web console sudah mem-proksinya (termasuk WebSocket chat).
+      # Publish 18790 hanya bila benar-benar memakai channel mode webhook dari
+      # luar — dan saat itu WAJIB men-set juga PICOCLAW_GATEWAY_HOST ke 0.0.0.0
+      # supaya gateway mengikat seluruh antarmuka container.
+      - "18800:18800"
+
+    environment:
+      # Fallback `:-` dipakai supaya `docker compose up` manual (tanpa env file
+      # Rames) atau field TZ yang dikosongkan di form tetap mendapat zona wajar,
+      # bukan string kosong yang membuat log/jadwal asisten memakai UTC.
+      TZ: ${TZ:-Asia/Jakarta}
+      # HOME dipin eksplisit: kunci enkripsi kredensial disimpan di
+      # ~/.ssh/picoclaw_ed25519.key lewat resolusi home directory runtime —
+      # tanpa HOME yang pasti, path itu bisa menunjuk ke luar volume di bawah dan
+      # kredensial yang sudah dienkripsi tidak bisa didekripsi lagi.
+      HOME: /root
+      # Dipin eksplisit supaya lokasi data tidak bergantung pada nilai HOME image.
+      PICOCLAW_HOME: /root/.picoclaw
+      # Menimpa level log dari config.json (bawaan efektif: warn).
+      PICOCLAW_LOG_LEVEL: "warn"
+
+    # Hardening: container tidak butuh kapabilitas jaringan mentah, dan tidak
+    # boleh menaikkan hak akses proses lewat berkas setuid.
+    cap_drop:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - "no-new-privileges:true"
+
+    volumes:
+      # Config, workspace (sesi/memory/cron/skills), auth.json, launcher-auth.db
+      # (password Web console), launcher-config.json, dan logs/. WAJIB persisten
+      # dan ikut di-backup — tanpa ini onboarding & password terulang tiap
+      # container dibuat ulang.
+      - picoclaw-data:/root/.picoclaw
+      # Kunci enkripsi kredensial (picoclaw_ed25519.key) berada DI LUAR
+      # PICOCLAW_HOME. WAJIB persisten & ikut di-backup: bila hilang, kredensial
+      # yang tersimpan sebagai enc:// tidak bisa didekripsi lagi.
+      - picoclaw-ssh:/root/.ssh
+
+    # Image rilis TIDAK membawa HEALTHCHECK. Endpoint launcher
+    # GET /api/auth/status bersifat publik dan dipakai sebagai prober: ia
+    # mengembalikan 200 selama launcher hidup (password yang belum di-set tetap
+    # 200 dengan `initialized:false`), dan 503 hanya bila store password gagal
+    # dibuka/dibaca (fail-closed, mis. volume tidak bisa ditulis atau DB korup).
+    # `start_period` = kelonggaran boot launcher. Image berbasis alpine → `wget` busybox tersedia.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:18800/api/auth/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  # Config + workspace + sesi + password Web console.
+  picoclaw-data:
+  # Kunci enkripsi kredensial (jangan dihapus selama masih ada kredensial enc://).
+  picoclaw-ssh:

@@ -143,20 +143,9 @@ $breadcrumbs = [
 </div>
 <?php else: ?>
 <?php
-// Peta logo diturunkan sekali per render dari isi direktori nyata (bukan daftar
-// ekstensi hardcode) supaya template baru ber-logo .svg/.png/.webp langsung
-// terdeteksi. Hanya ekstensi whitelist (case-insensitive) yang diterima.
-$logoMap = [];
-foreach (glob(dirname(__DIR__, 3) . '/public/images/templates/*') ?: [] as $logoFile) {
-    $logoSlug = pathinfo($logoFile, PATHINFO_FILENAME);
-    $logoExt = pathinfo($logoFile, PATHINFO_EXTENSION);
-    if (in_array(strtolower($logoExt), ['svg', 'png', 'webp'], true)
-        && preg_match('/\A[a-z0-9-]+\z/D', $logoSlug) === 1
-        && is_file($logoFile)
-        && !isset($logoMap[$logoSlug])) {
-        $logoMap[$logoSlug] = $logoExt;
-    }
-}
+// Peta logo diturunkan sekali per render lewat helper `template_logo_map()`
+// (satu sumber, dipakai juga tab Template halaman Config & form deploy).
+$logoMap = template_logo_map();
 ?>
 <div class="template-grid">
   <?php $templateIndex = 0; foreach ($templates as $t): $modalId = 'template-detail-' . $templateIndex++; ?>

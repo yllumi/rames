@@ -1,203 +1,87 @@
-<?php $pageTitle = 'Nginx'; $active = 'nginx'; ?>
+<?php $pageTitle = 'Config'; $active = 'nginx'; ?>
 <?php
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
     ['label' => 'Config', 'href' => null],
 ];
+
+// ---------------------------------------------------------------------------
+// Halaman Config = tiga tab: **Update Rames** (self-update dashboard),
+// **Nginx** (status + reload nginx host), **Template** (katalog template app +
+// tarik image). Shell halaman (page-head + nav tab + include partial tab +
+// modal konfirmasi + skrip) ada di sini; isi tiap tab di `partials/tab-*.php`.
+//
+// Tab awal datang dari controller (`$tab`, dari query `?tab=` yang sudah
+// divalidasi whitelist di sana) supaya refresh/berbagi tautan mendarat di tab
+// yang sama; saat tab diklik, skrip di bawah memperbarui URL tanpa reload.
+// View TIDAK membaca request sendiri; fallback `update` menjaga render tanpa
+// controller (smoke) tetap utuh tanpa menduplikasi daftar tab.
+// ---------------------------------------------------------------------------
+$tab = is_string($tab ?? null) && in_array($tab, (array) ($tabs ?? []), true) ? $tab : 'update';
+
+// $templates/$pull = kontrak NginxController::index(); normalisasi defensif agar
+// partial tab tidak pernah mengakses array pada null.
+$templates = is_array($templates ?? null) ? $templates : [];
+$pull = is_array($pull ?? null) ? $pull : null;
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
 <div class="page-head mb-4">
   <div>
-    <h1 class="h3 mb-1">Nginx</h1>
+    <h1 class="h3 mb-1">Config</h1>
     <p class="text-muted mb-0">
-      Status &amp; reload <strong>Nginx host</strong> — berlaku global untuk semua app.
-      Reload dijalankan lewat helper container via Docker socket (validasi
-      <span class="mono">nginx -t</span> lalu reload tanpa downtime).
+      Konfigurasi host &amp; katalog app dalam tiga tab:
+      <strong>Update Rames</strong> — self-update dashboard,
+      <strong>Nginx</strong> — status &amp; reload <strong>Nginx host</strong> (berlaku global untuk semua
+      app; reload dijalankan lewat helper container via Docker socket — validasi
+      <span class="mono">nginx -t</span> lalu reload tanpa downtime), dan
+      <strong>Template</strong> — katalog template app siap-pakai beserta tombol tarik image
+      (<span class="mono">docker pull</span>).
     </p>
   </div>
 </div>
 
-<div class="card">
-  <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-    <h2 class="h6 mb-0">Status Reload</h2>
-    <?php if (is_admin()): ?>
-    <form method="post" action="/nginx/reload" class="d-inline">
-      <?= csrf_field() ?>
-      <button class="btn btn-outline-secondary btn-sm" title="Validasi config lalu reload nginx host">↻ Reload Nginx</button>
-    </form>
-    <?php else: ?>
-    <span class="text-muted small">Reload hanya untuk admin (berlaku untuk seluruh host).</span>
-    <?php endif; ?>
+<ul class="nav nav-tabs mb-3" id="config-tabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link<?= $tab === 'update' ? ' active' : '' ?>" id="config-tab-update" data-bs-toggle="tab"
+            data-bs-target="#pane-update" data-tab="update" type="button" role="tab"
+            aria-controls="pane-update" aria-selected="<?= $tab === 'update' ? 'true' : 'false' ?>">Update Rames<?php if (!empty($update['check']['update_available'])): ?> <span class="badge text-bg-warning">ada pembaruan</span><?php endif; ?></button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link<?= $tab === 'nginx' ? ' active' : '' ?>" id="config-tab-nginx" data-bs-toggle="tab"
+            data-bs-target="#pane-nginx" data-tab="nginx" type="button" role="tab"
+            aria-controls="pane-nginx" aria-selected="<?= $tab === 'nginx' ? 'true' : 'false' ?>">Nginx</button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link<?= $tab === 'template' ? ' active' : '' ?>" id="config-tab-template" data-bs-toggle="tab"
+            data-bs-target="#pane-template" data-tab="template" type="button" role="tab"
+            aria-controls="pane-template" aria-selected="<?= $tab === 'template' ? 'true' : 'false' ?>">Template<?php if ($templates !== []): ?> <span class="badge text-bg-secondary"><?= count($templates) ?></span><?php endif; ?></button>
+  </li>
+</ul>
+
+<div class="tab-content">
+  <div class="tab-pane fade<?= $tab === 'update' ? ' show active' : '' ?>" id="pane-update" role="tabpanel"
+       aria-labelledby="config-tab-update" tabindex="0">
+    <?php include app_path() . '/view/nginx/partials/tab-update.php'; ?>
   </div>
-  <div class="card-body">
-    <?php if ($status): ?>
-      <?php if (!empty($status['ok'])): ?>
-        <div class="alert alert-success mb-0">Reload Nginx terakhir berhasil (<?= e($status['updated_at'] ?? '?') ?>).</div>
-      <?php else: ?>
-        <div class="alert alert-danger mb-0">Reload Nginx terakhir GAGAL: <?= e($status['error'] ?? 'unknown') ?></div>
-      <?php endif; ?>
-    <?php else: ?>
-      <div class="text-muted small mb-0">Belum ada status reload. Klik <strong>Reload Nginx</strong> untuk memuat &amp; mengaktifkan config terbaru (mis. setelah deploy, set custom domain, atau aktifkan SSL).</div>
-    <?php endif; ?>
+  <div class="tab-pane fade<?= $tab === 'nginx' ? ' show active' : '' ?>" id="pane-nginx" role="tabpanel"
+       aria-labelledby="config-tab-nginx" tabindex="0">
+    <?php include app_path() . '/view/nginx/partials/tab-nginx.php'; ?>
+  </div>
+  <div class="tab-pane fade<?= $tab === 'template' ? ' show active' : '' ?>" id="pane-template" role="tabpanel"
+       aria-labelledby="config-tab-template" tabindex="0">
+    <?php include app_path() . '/view/nginx/partials/tab-templates.php'; ?>
   </div>
 </div>
 
 <?php
-// ---------------------------------------------------------------------------
-// Panel self-update dashboard (SPECS.md §7.8). Ditaruh di halaman operasional
-// host ini supaya tidak menambah menu nav baru; badge "update" di nav mengarah
-// ke sini.
-// ---------------------------------------------------------------------------
-// $update null = fitur dimatikan / panel gagal dibaca. Normalisasi dulu supaya
-// blok perhitungan di bawah tidak pernah mengakses array pada null.
-$update = is_array($update ?? null) ? $update : null;
-$run = is_array($update['run'] ?? null) ? $update['run'] : [];
-$check = is_array($update['check'] ?? null) ? $update['check'] : [];
-$pf = is_array($update['preflight'] ?? null) ? $update['preflight'] : ['ok' => false, 'errors' => [], 'warnings' => []];
-$head = is_array($update['head'] ?? null) ? $update['head'] : null;
-$shortSha = static function (?string $sha): string {
-    $sha = trim((string) $sha);
-    return $sha === '' ? '—' : substr($sha, 0, 7);
-};
-$stageLabels = [
-    'starting' => 'Menyiapkan',
-    'preflight' => 'Prasyarat',
-    'fetch' => 'Ambil versi',
-    'merge' => 'Terapkan versi',
-    'composer' => 'Dependensi Composer',
-    'build' => 'Build & recreate',
-    'health' => 'Verifikasi sehat',
-    'rolling_back' => 'Rollback',
-    'finished' => 'Selesai',
-];
-$resultBadges = [
-    'success' => ['text-bg-success', 'Berhasil'],
-    'rolled_back' => ['text-bg-warning', 'Dibatalkan (rollback otomatis)'],
-    'error' => ['text-bg-danger', 'Gagal'],
-];
-$runBadge = $resultBadges[$run['result'] ?? ''] ?? ['text-bg-info', !empty($update['running']) ? 'Berjalan…' : 'Menunggu'];
-// Rollback hanya masuk akal tepat setelah update yang berhasil.
-$rollbackSha = ($run['mode'] ?? '') === 'update' && ($run['result'] ?? null) === 'success' ? (string) ($run['old_sha'] ?? '') : '';
-$canUpdate = is_admin() && !empty($pf['ok']) && !empty($check['update_available']);
+// Modal konfirmasi update/rollback WAJIB di luar `.tab-pane`: pane non-aktif
+// ber-`display:none`, jadi modal di dalamnya tidak akan pernah tampil.
+// Variabel turunan ($check/$pf/$rollbackSha/$shortSha) disiapkan oleh
+// `partials/tab-update.php` — partial di-include dengan scope yang sama
+// (pola `app/view/app/partials/detail-setup.php`).
 ?>
-<?php if ($update): ?>
-<div class="card mt-3" id="update-panel"
-     data-running="<?= !empty($update['running']) ? '1' : '0' ?>"
-     data-run-id="<?= e((string) ($run['id'] ?? '')) ?>">
-  <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-    <h2 class="h6 mb-0">Versi Dashboard <span class="text-muted fw-normal small">(self-update)</span></h2>
-    <div class="d-flex gap-2 flex-wrap">
-      <button type="button" class="btn btn-outline-secondary btn-sm" id="update-check-btn"
-              title="Bandingkan commit lokal dengan branch di remote (git ls-remote)">⟳ Cek Pembaruan</button>
-      <?php if (is_admin()): ?>
-      <button type="button" class="btn btn-outline-danger btn-sm" id="update-rollback-btn"
-              data-sha="<?= e($shortSha($rollbackSha)) ?>"
-              <?= $rollbackSha !== '' && !empty($pf['ok']) ? '' : 'disabled' ?>
-              title="Kembalikan ke versi sebelum update terakhir">↶ Rollback<?= $rollbackSha !== '' && !empty($pf['ok']) ? ' ke ' . e($shortSha($rollbackSha)) : '' ?></button>
-      <button type="button" class="btn btn-primary btn-sm" id="update-start-btn"
-              <?= $canUpdate ? '' : 'disabled' ?>
-              title="<?= $canUpdate ? 'Pull + rebuild + recreate dashboard' : 'Tidak tersedia: belum ada pembaruan / repo tidak bersih / bukan admin' ?>">⬆ Update Sekarang</button>
-      <?php endif; ?>
-    </div>
-  </div>
-  <div class="card-body">
-    <?php if (!empty($update['failed'])): ?>
-      <div class="alert alert-danger mb-0">Gagal membaca status update: <?= e((string) $update['failed']) ?></div>
-    <?php else: ?>
-      <div class="row g-3">
-        <div class="col-lg-6">
-          <div class="small text-muted">Versi aktif</div>
-          <div class="mono"><?= e($update['branch'] !== '' ? (string) $update['branch'] : '?') ?> @ <?= e($shortSha($check['local_sha'])) ?></div>
-          <?php if ($head): ?>
-            <div class="small text-muted mt-1"><?= e((string) ($head['date'] ?? '')) ?></div>
-            <div class="small"><?= e((string) ($head['subject'] ?? '')) ?></div>
-          <?php endif; ?>
-        </div>
-        <div class="col-lg-6">
-          <div class="small text-muted">Status pembaruan</div>
-          <?php if (empty($check['checked_at'])): ?>
-            <div class="small">Belum pernah dicek — tekan <strong>Cek Pembaruan</strong>.</div>
-          <?php elseif (empty($check['ok'])): ?>
-            <div class="small text-danger">Pengecekan gagal: <?= e((string) ($check['error'] ?? 'tidak diketahui')) ?></div>
-          <?php elseif (!empty($check['update_available'])): ?>
-            <div class="small">
-              <span class="badge text-bg-warning">ada pembaruan</span>
-              remote <span class="mono"><?= e($shortSha($check['remote_sha'])) ?></span>
-              <?php if (!empty($check['compare_url'])): ?>
-                — <a href="<?= e((string) $check['compare_url']) ?>" target="_blank" rel="noopener">lihat perubahan</a>
-              <?php endif; ?>
-            </div>
-          <?php else: ?>
-            <div class="small"><span class="badge text-bg-success">terbaru</span> sudah sama dengan remote</div>
-          <?php endif; ?>
-          <div class="small text-muted mt-1">Terakhir dicek: <?= e((string) ($check['checked_at'] ?? '—')) ?></div>
-        </div>
-      </div>
-
-      <?php if (!empty($check['tracked_changes'])): ?>
-      <div class="alert alert-danger mt-3 mb-0 small">
-        <strong>Ada perubahan yang belum di-commit</strong> — update selalu ditolak selama repo kotor (update tidak boleh menimpa pekerjaan lokal):
-        <div class="mono mt-1"><?php foreach (array_slice((array) $check['tracked_changes'], 0, 10) as $changed): ?><?= e((string) $changed) ?><br><?php endforeach; ?></div>
-      </div>
-      <?php endif; ?>
-
-      <?php if (empty($pf['ok'])): ?>
-      <div class="alert alert-warning mt-3 mb-0 small">
-        <strong>Update belum bisa dijalankan:</strong>
-        <ul class="mb-0"><?php foreach ((array) $pf['errors'] as $err): ?><li><?= e((string) $err) ?></li><?php endforeach; ?></ul>
-      </div>
-      <?php endif; ?>
-      <?php if (!empty($pf['warnings'])): ?>
-      <div class="alert alert-secondary mt-3 mb-0 small">
-        <?php foreach ((array) $pf['warnings'] as $warning): ?><div><?= e((string) $warning) ?></div><?php endforeach; ?>
-      </div>
-      <?php endif; ?>
-
-      <div id="update-run-box" class="mt-3 <?= ($run['id'] ?? null) === null && empty($update['running']) ? 'd-none' : '' ?>">
-        <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
-          <div class="d-flex align-items-center gap-2">
-            <span class="badge <?= e($runBadge[0]) ?>" id="update-run-result"><?= e($runBadge[1]) ?></span>
-            <span class="small" id="update-run-message"><?= e((string) ($run['message'] ?? '')) ?></span>
-          </div>
-          <span class="small text-muted" id="update-run-stage"><?= ($run['stage'] ?? '') !== '' ? 'Tahap: ' . e($stageLabels[$run['stage']] ?? (string) $run['stage']) : '' ?></span>
-        </div>
-        <?php if (!empty($update['running'])): ?>
-        <div class="small text-muted mt-1">Update berjalan — dashboard akan terputus sebentar saat container di-recreate. Halaman ini menyambung kembali otomatis.</div>
-        <?php endif; ?>
-        <pre id="update-log" class="mono small mt-2 mb-0" style="max-height:280px;overflow:auto;background:#0b1020;color:#d7e3ff;padding:.75rem;border-radius:.5rem;"><?= e((string) ($update['log_tail'] ?? '')) ?></pre>
-      </div>
-
-      <?php if (!empty($run['started_at'])): ?>
-      <div class="small text-muted mt-2">
-        Run terakhir: <span class="mono"><?= e((string) ($run['id'] ?? '')) ?></span>
-        oleh <?= e((string) ($run['actor'] ?? '?')) ?>
-        (<?= e((string) $run['started_at']) ?><?= !empty($run['finished_at']) ? ' → ' . e((string) $run['finished_at']) : '' ?>)
-      </div>
-      <?php endif; ?>
-
-      <?php if (!empty($update['logs'])): ?>
-      <details class="mt-2">
-        <summary class="small text-muted">Riwayat log update (<?= count((array) $update['logs']) ?>)</summary>
-        <div class="small mono mt-1">
-          <?php foreach ((array) $update['logs'] as $log): ?>
-            <div><?= e((string) $log['name']) ?> <span class="text-muted">(<?= number_format(((int) $log['size']) / 1024, 1) ?> KB · <?= e((string) $log['modified_at']) ?>)</span></div>
-          <?php endforeach; ?>
-        </div>
-      </details>
-      <?php endif; ?>
-
-      <div class="small text-muted mt-3">
-        Update = <span class="mono">git pull</span> + <span class="mono">docker compose up -d --build</span> pada container dashboard,
-        dijalankan helper container terpisah (di luar lifecycle dashboard) sebagai pemilik berkas repo.
-        Bila versi baru tidak sehat dalam batas waktu, kode dikembalikan otomatis ke versi sebelumnya.
-      </div>
-    <?php endif; ?>
-  </div>
-</div>
-<div id="update-flash"></div>
-
-<?php if (is_admin() && empty($update['failed'])): ?>
+<?php if (is_admin() && !empty($update) && empty($update['failed'])): ?>
 <!-- Konfirmasi update/rollback memakai modal (bukan window.confirm), mengikuti
      pola modal hapus app di halaman detail. Tombolnya JS (bukan submit form)
      karena aksi dijalankan lewat AJAX + polling — form POST akan menggantung
@@ -264,7 +148,29 @@ $canUpdate = is_admin() && !empty($pf['ok']) && !empty($check['update_available'
 </div>
 <?php endif; ?>
 
-<script src="/js/update.js?v=2"></script>
-<?php endif; ?>
+<script src="/js/template-pull.js?v=1"></script>
+<script>
+  // Sinkronkan tab aktif dengan URL (`?tab=`) tanpa reload/permintaan server,
+  // supaya refresh & tautan yang dibagikan mendarat di tab yang sama. Tab awal
+  // sendiri sudah dirender server-side dari `?tab=`.
+  (function () {
+    'use strict';
+
+    var tabs = document.getElementById('config-tabs');
+    if (!tabs || !window.history || !window.history.replaceState) return;
+
+    tabs.addEventListener('shown.bs.tab', function (event) {
+      var name = event.target ? event.target.getAttribute('data-tab') : '';
+      // Validitas diturunkan dari pane yang benar-benar dirender server — tanpa
+      // menduplikasi daftar tab milik controller.
+      if (!name || !document.getElementById('pane-' + name)) return;
+      var url = new URL(window.location.href);
+      url.searchParams.set('tab', name);
+      try {
+        window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+      } catch (e) {}
+    });
+  })();
+</script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

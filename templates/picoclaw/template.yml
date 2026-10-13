@@ -1,0 +1,32 @@
+title: PicoClaw
+description: >-
+  PicoClaw — asisten AI personal ultra-ringan dari Sipeed: satu binary Go, RAM
+  di bawah 10 MB dan boot dalam milidetik (klaim resmi proyek, alternatif
+  ringan dari OpenClaw). Yang dijalankan di sini adalah varian launcher
+  resmi: Web console di port 18800 untuk konfigurasi model/provider, sekaligus
+  gateway chat yang dijalankan otomatis dan diproksi Web console (termasuk
+  WebSocket). Config, workspace, sesi, skills, dan kunci enkripsi kredensial
+  disimpan di volume Docker persisten sehingga bertahan saat container dibuat
+  ulang. PERINGATAN: proyek ini masih pra-1.0 — README resminya sendiri
+  memperingatkan jangan dipakai di produksi sebelum v1.0. Web console WAJIB
+  diberi password SEGERA setelah deploy: selama password belum di-set, endpoint
+  setup terbuka tanpa auth sehingga siapa pun yang bisa membuka domain app dapat
+  mengklaimnya (lihat Panduan).
+category: AI/Asisten
+icon: "🦐"
+docs_url: https://docs.picoclaw.io/docs/docker/
+
+# Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke
+# service (tanpa disimpan di repo). Kosong = pakai `default`; `generate: secret`
+# berarti nilai acak dibuat otomatis bila dikosongkan.
+env:
+  - key: TZ
+    label: Timezone
+    help: >-
+      Zona waktu container. Memengaruhi jadwal cron/reminder asisten dan
+      stempel waktu log.
+    default: Asia/Jakarta
+
+primary:
+  service: picoclaw
+  port: 18800

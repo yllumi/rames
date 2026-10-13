@@ -20,7 +20,12 @@ $breadcrumbs = [
 <div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <div>
     <h1 class="h3 mb-1">
-      <?php if (($template['icon'] ?? '') !== ''): ?><span class="me-1"><?= e($template['icon']) ?></span><?php endif; ?>
+      <?php $logoExtension = template_logo_map()[$template['slug'] ?? ''] ?? ''; ?>
+      <?php if ($logoExtension !== ''): ?>
+      <img class="template-logo-inline me-1" src="/images/templates/<?= e((string) $template['slug']) ?>.<?= e($logoExtension) ?>" alt="">
+      <?php elseif (($template['icon'] ?? '') !== ''): ?>
+      <span class="me-1"><?= e($template['icon']) ?></span>
+      <?php endif; ?>
       <?= e($template['title']) ?>
     </h1>
     <p class="text-muted small mb-0">

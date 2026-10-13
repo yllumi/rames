@@ -144,7 +144,7 @@ final class TemplateCatalog
     /**
      * Baca + validasi satu template.
      *
-     * @return array{slug:string,dir:string,title:string,description:string,category:string,icon:string,docs_url:string,image:string,env:array<int,array>,files:array<int,string>,guide:string,primary:array{service:string,port:int},ports:array<int,int>,compose:string,services:array<string,array>,valid:bool,error:?string}
+     * @return array{slug:string,dir:string,title:string,description:string,category:string,icon:string,docs_url:string,image:string,env:array<int,array>,files:array<int,string>,guide:string,primary:array{service:string,port:int},ports:array<int,int>,compose:string,services:array<string,array{image:string,build?:mixed,internal_port:?int,host_port:?int,ports:array<int,array{host:?int,container:int,protocol:string}>}>,valid:bool,error:?string}
      */
     private function read(string $slug): array
     {
@@ -189,7 +189,11 @@ final class TemplateCatalog
             $services = is_array($data['services'] ?? null) ? $data['services'] : [];
             $this->assertNoManagedKeys($services, $data);
 
-            $template['services'] = ComposeSource::parseContent($compose);
+            // Hasil ComposeParser hanya memuat port; referensi image/build
+            // ditempelkan di sini supaya `images()` bisa membacanya dari
+            // `services` (TANPA regex atas isi compose — beberapa template punya
+            // baris komentar ber-`image:` yang tidak boleh ikut terbaca).
+            $template['services'] = self::withImageRefs(ComposeSource::parseContent($compose), $services);
             $template['primary'] = $this->resolvePrimaryFrom($template['services'], $manifest['primary'] ?? null);
             $template['env'] = $this->readEnv($manifest['env'] ?? null, $compose);
             $template['files'] = $this->readFiles($dir, $manifest['files'] ?? null);
@@ -551,6 +555,66 @@ final class TemplateCatalog
         }
 
         return '';
+    }
+
+    /**
+     * Referensi image tiap service template, berurutan sesuai urutan service dan
+     * tanpa duplikat — dipakai tombol `docker pull` di halaman Config
+     * (`/nginx` tab Template, SPECS.md §7.13) untuk menarik ulang SEMUA image
+     * template sekaligus (mis. `yllumi/fpm8.4-nginx` + `mysql:8.4`).
+     *
+     * Sumber datanya `$template['services']` (hasil parse YAML), **bukan** regex
+     * atas isi compose: beberapa template memuat baris komentar ber-`image:`
+     * (mis. contoh pin digest) yang tidak boleh dianggap image nyata. Service
+     * yang dideklarasikan `build:` dilewati (image-nya dibangun sendiri, tidak
+     * ada di registry), begitu juga service tanpa `image`.
+     *
+     * @param array<string,mixed> $template hasil `all()`/`find()`
+     * @return array<int,string>
+     */
+    public static function images(array $template): array
+    {
+        $images = [];
+        foreach ((array) ($template['services'] ?? []) as $service) {
+            if (!is_array($service)) {
+                continue;
+            }
+            if (isset($service['build']) && $service['build'] !== null && $service['build'] !== '' && $service['build'] !== []) {
+                continue;
+            }
+            $image = trim((string) ($service['image'] ?? ''));
+            if ($image === '' || in_array($image, $images, true)) {
+                continue;
+            }
+            $images[] = $image;
+        }
+
+        return $images;
+    }
+
+    /**
+     * Tempelkan `image` (dan penanda `build` bila ada) dari map service hasil
+     * YAML ke map service hasil `ComposeParser` — key tetap sama, jadi pemakai
+     * lama (`array_keys`) tidak terpengaruh.
+     *
+     * @param array<string,array>  $parsed hasil `ComposeSource::parseContent()`
+     * @param array<string,mixed>  $raw    bagian `services` YAML mentah
+     * @return array<string,array>
+     */
+    private static function withImageRefs(array $parsed, array $raw): array
+    {
+        foreach ($parsed as $name => $service) {
+            $config = $raw[$name] ?? null;
+            if (!is_array($config) || !is_array($service)) {
+                continue;
+            }
+            $parsed[$name]['image'] = trim((string) ($config['image'] ?? ''));
+            if (isset($config['build'])) {
+                $parsed[$name]['build'] = $config['build'];
+            }
+        }
+
+        return $parsed;
     }
 
     // ==================================================================
