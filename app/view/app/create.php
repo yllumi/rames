@@ -171,7 +171,12 @@ $logoMap = template_logo_map();
       <div class="modal-header">
         <div class="me-3">
           <h2 class="modal-title h5 mb-1" id="<?= e($modalId) ?>-title">
-            <span class="me-1" aria-hidden="true"><?= ($t['icon'] ?? '') !== '' ? e($t['icon']) : '◈' ?></span><?= e($t['title']) ?>
+            <?php $modalSlug = is_string($t['slug'] ?? null) ? $t['slug'] : ''; $modalLogoExtension = preg_match('/\A[a-z0-9-]+\z/D', $modalSlug) === 1 ? ($logoMap[$modalSlug] ?? '') : ''; ?>
+            <?php if ($modalLogoExtension !== ''): ?>
+            <img class="template-logo-inline me-1" src="/images/templates/<?= e($modalSlug) ?>.<?= e($modalLogoExtension) ?>" alt="">
+            <?php else: ?>
+            <span class="me-1" aria-hidden="true"><?= ($t['icon'] ?? '') !== '' ? e($t['icon']) : '◈' ?></span>
+            <?php endif ?><?= e($t['title']) ?>
           </h2>
           <span class="badge text-bg-secondary"><?= e($t['category']) ?></span>
         </div>

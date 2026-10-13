@@ -86,7 +86,7 @@ Sampaikan format singkat: **Apa yang berubah → File → Cara verifikasi → Ri
 - **DILARANG** menyentuh data runtime nyata saat menguji (`database/apps.json`, `database/auth.json`, `apps/`) — gunakan path temp.
 
 ## Prinsip Kerja
-1. **Satu sumber kebenaran**: otorisasi hanya lewat `AppAccess`; port hanya lewat `AppPorts`; create app hanya lewat `AppController::createAndDeploy()`; `template_logo_map()` (peta logo `public/images/templates/` → slug, dipakai galeri create-app, tab Template, & form deploy — jangan glob logo di view); keputusan deploy hanya lewat `DeployerInterface`.
+1. **Satu sumber kebenaran**: otorisasi hanya lewat `AppAccess`; port hanya lewat `AppPorts`; create app hanya lewat `AppController::createAndDeploy()`; `template_logo_map()` (peta logo `public/images/templates/` → slug, dipakai galeri create-app — tile + judul modal detail —, tab Template, & form deploy — jangan glob logo di view); keputusan deploy hanya lewat `DeployerInterface`.
 2. **Jangan duplikasi logika** yang sudah ada di `app/library/`.
 3. **Fail-fast dengan pesan jelas** sebelum efek samping.
 4. **Dokumentasi ikut berubah**: fitur/perilaku baru wajib tercermin di `ARCHITECTURE.md`/`SPECS.md` (tugaskan `rames-assure`).
