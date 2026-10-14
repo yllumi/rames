@@ -29,6 +29,14 @@ use Workerman\Timer;
 if (!defined('BASE_PATH')) {
     define('BASE_PATH', dirname(__DIR__));
 }
+// `MonitorController`/`FileController` memakai helper global (`is_admin()`,
+// `app_can()`) yang hanya ada bila `app/functions.php` dimuat (di suite penuh
+// dimuat oleh berkas uji lain, jadi urutannya tidak dijamin). Muat eksplisit di
+// sini (pola `AppNginxServerOpsTest`) supaya berkas ini juga hijau saat
+// dijalankan **sendirian** (`phpunit tests/FileMonitorServerProxyTest.php`).
+if (!function_exists('is_admin')) {
+    require_once dirname(__DIR__) . '/app/functions.php';
+}
 
 /**
  * Handler Guzzle tiruan (tanpa jaringan): merekam method/path/query/header/body

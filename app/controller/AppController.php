@@ -71,10 +71,36 @@ class AppController
         $store = new AppStore();
         $user = current_user();
         $userId = (string) ($user['id'] ?? '');
+        $isAdmin = is_admin($user);
 
         // Hanya app milik sendiri / yang dibagikan ke user ini. Admin melihat
         // semua app (dengan label owner).
         $visible = AppAccess::visible($store->all(), $user);
+
+        // Multi-server: peta `id server → nama` untuk kolom **Server** dan
+        // pilihan filter server. Peta dibaca **sekali** (bukan per baris) dari
+        // registry server. Non-admin hanya mengenal server yang menaungi app yang
+        // boleh ia lihat — daftar server lain tidak pernah dikirim ke UI
+        // (keputusan §9.3), jadi menyembunyikan pemilih bukan satu-satunya pengaman.
+        $serverNames = $this->serverNameMapFor($visible);
+        $serverOptions = $isAdmin ? $this->serverFilterOptions($user, $store->all()) : [];
+
+        // Filter `?server=<id>` (query string aman — id server, bukan rahasia).
+        // Hanya berlaku untuk server yang boleh dilihat user; id asing diabaikan
+        // (bukan oracle keberadaan server).
+        $serverFilter = trim((string) $request->get('server', ''));
+        $allowedServers = array_fill_keys(array_keys($serverNames), true);
+        foreach ($serverOptions as $option) {
+            $allowedServers[(string) ($option['id'] ?? '')] = true;
+        }
+        if ($serverFilter === '' || !isset($allowedServers[$serverFilter])) {
+            $serverFilter = '';
+        } else {
+            $visible = array_values(array_filter(
+                $visible,
+                static fn (array $a): bool => AppStore::serverIdOf($a) === $serverFilter
+            ));
+        }
 
         $roles = [];
         $owned = [];
@@ -107,21 +133,124 @@ class AppController
         });
 
         // `apps.json.subdomain` menyimpan label (boleh kosong); view memakai
-        // `$app['subdomain']` sebagai FQDN → kirim FQDN efektif.
+        // `$app['subdomain']` sebagai FQDN → kirim FQDN efektif. Asal server
+        // (nama + kind, bukan id mentah) juga dikirim agar view tidak menebak.
         foreach ($apps as &$app) {
             $app['subdomain'] = app_subdomain_of($app);
+            $serverId = AppStore::serverIdOf($app);
+            $app['server_name'] = $serverNames[$serverId] ?? $serverId;
+            $app['server_kind'] = $serverId === ServerStore::LOCAL_ID ? 'local' : 'agent';
         }
         unset($app);
 
-        return view('app/index', [
+        return $this->renderView('app/index', [
             'apps' => $apps,
             'roles' => $roles,
             'ownedIds' => $owned,
             'scope' => $scope,
             'counts' => ['mine' => count($mine), 'shared' => count($shared), 'all' => count($visible)],
-            'isAdmin' => is_admin($user),
-            'ownerNames' => is_admin($user) ? user_names() : [],
+            'isAdmin' => $isAdmin,
+            'ownerNames' => $isAdmin ? user_names() : [],
+            'serverNames' => $serverNames,
+            'serverOptions' => $serverOptions,
+            'serverFilter' => $serverFilter,
         ]);
+    }
+
+    /**
+     * Peta `id server → nama` untuk **kolom Server** daftar app.
+     *
+     * Dipanggil dengan app yang sudah disaring `AppAccess::visible()` sehingga
+     * untuk non-admin hanya memuat server yang menaungi app yang boleh ia lihat
+     * (tidak ada daftar server lain). Registry dibaca **sekali** per request —
+     * bukan satu pembacaan per baris app (hindari N+1).
+     *
+     * Registry tak terbaca ⇒ peta kosong; view memakai id server sebagai
+     * fallback tampilan (tidak pernah menggagalkan halaman).
+     *
+     * @param array<int,array> $apps app yang boleh dilihat user
+     * @return array<string,string>
+     */
+    private function serverNameMapFor(array $apps): array
+    {
+        $ids = [];
+        foreach ($apps as $app) {
+            if (is_array($app)) {
+                $ids[AppStore::serverIdOf($app)] = true;
+            }
+        }
+        if ($ids === []) {
+            return [];
+        }
+
+        $names = [];
+        try {
+            $servers = $this->serverResolver()->all();
+        } catch (\Throwable $e) {
+            return $names;
+        }
+
+        foreach ($servers as $server) {
+            if (!is_array($server)) {
+                continue;
+            }
+            $id = (string) ($server['id'] ?? '');
+            if ($id === '' || !isset($ids[$id])) {
+                continue;
+            }
+            $name = trim((string) ($server['name'] ?? ''));
+            $names[$id] = $name !== '' ? $name : $id;
+        }
+
+        return $names;
+    }
+
+    /**
+     * Pilihan **filter server** untuk admin — satu pintu
+     * `ServerAccess::visibleServers()` (admin ⇒ semua server). Hanya `id`/`name`
+     * yang keluar (tanpa token/PEM/base_url).
+     *
+     * @param array<int,array> $apps semua app (sumber keputusan visibilitas)
+     * @return array<int,array{id:string,name:string}>
+     */
+    private function serverFilterOptions(?array $user, array $apps): array
+    {
+        try {
+            $servers = ServerAccess::visibleServers($this->serverResolver()->all(), $user, $apps);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        $options = [];
+        foreach ($servers as $server) {
+            if (!is_array($server)) {
+                continue;
+            }
+            $id = (string) ($server['id'] ?? '');
+            if ($id === '') {
+                continue;
+            }
+            $name = trim((string) ($server['name'] ?? ''));
+            $options[] = ['id' => $id, 'name' => $name !== '' ? $name : $id];
+        }
+
+        return $options;
+    }
+
+    /** Registry server (seam uji: path store temp). */
+    protected function serverResolver(): ServerResolver
+    {
+        return new ServerResolver();
+    }
+
+    /**
+     * Render view (seam uji — `view()` butuh konteks HTTP).
+     *
+     * @param array<string,mixed> $vars
+     */
+    protected function renderView(string $template, array $vars): \Webman\Http\Response
+    {
+        return view($template, $vars);
     }
 
     public function detail(Request $request, string $id)

@@ -4,9 +4,12 @@
 <?php
 $__scope = $scope ?? 'all';
 $__counts = $counts ?? ['mine' => 0, 'shared' => 0, 'all' => 0];
-$__tab = static function (string $key, string $label, int $count) use ($__scope): string {
+$__serverFilter = (string) ($serverFilter ?? '');
+$__serverOptions = $serverOptions ?? [];
+$__suffix = $__serverFilter !== '' ? '&server=' . rawurlencode($__serverFilter) : '';
+$__tab = static function (string $key, string $label, int $count) use ($__scope, $__suffix): string {
     $cls = $__scope === $key ? 'nav-link active' : 'nav-link';
-    return '<li class="nav-item"><a class="' . $cls . '" href="/apps?scope=' . e($key) . '">'
+    return '<li class="nav-item"><a class="' . $cls . '" href="/apps?scope=' . e($key) . e($__suffix) . '">'
         . e($label) . ' <span class="badge text-bg-secondary">' . $count . '</span></a></li>';
 };
 ?>
@@ -16,7 +19,22 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope)
     <h1 class="h3 mb-1">Apps</h1>
     <p class="text-muted mb-0">Kelola project Docker yang di-deploy dari repo Git.</p>
   </div>
-  <a class="btn btn-primary" href="/apps/create">+ Create App</a>
+  <div class="d-flex flex-wrap align-items-center gap-2">
+    <?php if ($__serverOptions !== []): ?>
+      <form class="d-flex align-items-center gap-2" method="get" action="/apps">
+        <input type="hidden" name="scope" value="<?= e($__scope) ?>">
+        <label class="text-muted small mb-0" for="server-filter">Server</label>
+        <select class="form-select form-select-sm" id="server-filter" name="server">
+          <option value="">Semua server</option>
+          <?php foreach ($__serverOptions as $__option): ?>
+            <option value="<?= e($__option['id']) ?>"<?= $__serverFilter === (string) $__option['id'] ? ' selected' : '' ?>><?= e($__option['name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+        <button class="btn btn-outline-secondary btn-sm" type="submit">Filter</button>
+      </form>
+    <?php endif; ?>
+    <a class="btn btn-primary" href="/apps/create">+ Create App</a>
+  </div>
 </div>
 
 <ul class="nav nav-pills mb-3">
@@ -28,7 +46,9 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope)
 <?php if (empty($apps)): ?>
   <div class="card empty">
     <div class="empty-icon">◈</div>
-    <?php if ($__scope === 'shared'): ?>
+    <?php if ($__serverFilter !== ''): ?>
+      <p class="text-muted mb-0">Tidak ada app di server yang dipilih. Pilih <strong>Semua server</strong> untuk melihat semuanya.</p>
+    <?php elseif ($__scope === 'shared'): ?>
       <p class="text-muted mb-0">Belum ada app yang dibagikan ke Anda. Minta pemilik app menambahkan Anda di tab <strong>Akses</strong>.</p>
     <?php elseif ($__scope === 'mine'): ?>
       <p class="text-muted mb-0">Anda belum memiliki app. Klik <strong>Create App</strong> untuk deploy project dari repo Git.</p>
@@ -43,6 +63,7 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope)
     <thead>
       <tr>
         <th>Name</th>
+        <th>Server</th>
         <th>Domain</th>
         <?php if ($isAdmin ?? false): ?><th>Owner</th><?php endif; ?>
         <th>Status</th>
@@ -58,6 +79,9 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope)
         $__isOwner = (bool) (($ownedIds ?? [])[$__id] ?? false);
         $__role = (string) (($roles ?? [])[$__id] ?? '');
         $__ownerName = (string) (($ownerNames ?? [])[(string) ($app['owner_id'] ?? '')] ?? '');
+        // Asal server (multi-server): nama server, bukan `server_id` mentah.
+        $__serverKind = (string) ($app['server_kind'] ?? 'local');
+        $__serverName = trim((string) ($app['server_name'] ?? ''));
       ?>
       <tr>
         <td>
@@ -66,6 +90,14 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope)
             <!-- <span class="badge text-bg-primary ms-1">Milik Saya</span> -->
           <?php else: ?>
             <span class="badge p-1 text-bg-light border" title="Anda punya akses <?= e(app_role_label($__role)) ?> ke app ini">Dibagikan · <?= e(app_role_label($__role)) ?></span>
+          <?php endif; ?>
+        </td>
+        <td class="small">
+          <?php if ($__serverKind === 'agent'): ?>
+            <span class="badge badge-deploying" title="App berjalan di server agent, bukan di host dashboard">agent</span>
+            <span class="mono d-block"><?= e($__serverName) ?></span>
+          <?php else: ?>
+            <span class="text-muted" title="App berjalan di host dashboard (server lokal)">lokal</span>
           <?php endif; ?>
         </td>
         <td>

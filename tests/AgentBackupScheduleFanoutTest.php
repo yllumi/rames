@@ -71,7 +71,7 @@ class AgentBackupScheduleFanoutTest extends TestCase
     // (2) pemicu berkala mendispatch job ke server yang benar
     // ==================================================================
 
-    public function testScheduledRunDispatchesAgentVolumeToItsOwnServer(): void
+    public function testScheduledRunDispatchesAgentVolumeAndStaysSucceededWhenLocalHostIsUnreadable(): void
     {
         $this->seedSelection();
 
@@ -87,11 +87,45 @@ class AgentBackupScheduleFanoutTest extends TestCase
             'volume terjadwal server agent wajib dikirim sebagai job ke server itu (trigger schedule)'
         );
 
-        // Socket Docker sengaja mati: jalur lokal gagal jujur (tanpa restic lokal,
-        // tanpa sukses palsu) — itulah buktinya tidak ada pekerjaan agent yang
-        // "jatuh" ke host control plane.
-        $this->assertSame(1, $result['code'], 'jalur lokal tanpa Engine harus gagal jujur');
-        $this->assertStringContainsString('run GAGAL', (string) $result['stderr']);
+        // Socket Docker sengaja mati ⇒ jalur lokal di host ini tidak bisa berjalan.
+        // Job agent **sudah sukses**: exit code mengikuti hasil nyata per server,
+        // jadi run ini tidak boleh ditandai gagal (cron menandai backup server
+        // agent berhasil sebagai gagal = bug yang diperbaiki). Kegagalan jalur
+        // lokal tetap dilaporkan jujur di stderr/log.
+        $this->assertSame(0, $result['code'], 'job agent sukses ⇒ exit 0; stderr: ' . $result['stderr']);
+        $this->assertStringContainsString('server=lokal', (string) $result['stderr'], 'kegagalan jalur lokal tetap disebut');
+    }
+
+    public function testAgentFailureKeepsExitNonZeroAndNamesVolumeAndServer(): void
+    {
+        $this->seedSelection();
+
+        $result = $this->runCli(['run'], [
+            'RAMES_BACKUP_DISPATCHER_CLASS' => FakeBackupDispatcher::class,
+            'FAKE_BACKUP_DISPATCH_LOG' => $this->tmp . '/dispatch-fail.log',
+            'FAKE_BACKUP_DISPATCH_FAIL' => '1',
+        ]);
+
+        $this->assertSame(1, $result['code'], 'kegagalan nyata tidak boleh ditelan');
+        $this->assertStringContainsString('volume=demo_data', (string) $result['stderr'], 'identitas volume yang gagal');
+        $this->assertStringContainsString('server=' . self::AGENT, (string) $result['stderr'], 'identitas server yang gagal');
+    }
+
+    public function testLocalOnlyFailureStaysNonZeroWhenNothingSucceeded(): void
+    {
+        // Hanya volume lokal yang terjadwal: tidak ada job agent yang bisa
+        // menyelamatkan exit code — jalur lokal yang gagal = kegagalan nyata.
+        (new BackupSelection($this->tmp . '/rames.sqlite'))->setScheduled('localhost_data', true, 'u1');
+
+        $dispatchLog = $this->tmp . '/dispatch-lokal.log';
+        $result = $this->runCli(['run'], [
+            'RAMES_BACKUP_DISPATCHER_CLASS' => FakeBackupDispatcher::class,
+            'FAKE_BACKUP_DISPATCH_LOG' => $dispatchLog,
+        ]);
+
+        $this->assertSame(1, $result['code'], 'tanpa satu pun sukses ⇒ exit non-nol; stderr: ' . $result['stderr']);
+        $this->assertFileDoesNotExist($dispatchLog, 'volume lokal tidak boleh dikirim ke server agent');
+        $this->assertStringContainsString('server=lokal', (string) $result['stderr']);
     }
 
     public function testManualRunOfOneVolumeNeverFansOutToOtherServers(): void

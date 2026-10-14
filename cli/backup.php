@@ -200,8 +200,15 @@ if ($mode === 'run') {
     //
     // Hanya berlaku untuk run berkala TANPA daftar volume eksplisit: pemanggilan
     // manual (`run <volume> manual`) tetap memakai jalur yang diminta.
+    //
+    // Exit code = **hasil nyata per volume/server** (bukan status satu host):
+    // sukses job agent tetap sukses walaupun Engine lokal mati, dan sebaliknya
+    // kegagalan agent tidak pernah disembunyikan oleh jalur lokal (dan sebaliknya)
+    // — supaya cron tidak menandai backup yang berhasil sebagai gagal, dan tidak
+    // juga melaporkan sukses untuk pekerjaan yang benar-benar gagal.
     // -----------------------------------------------------------------------
     $agentFailures = 0;
+    $agentOk = 0;
     if ($volume === '' && $trigger === 'schedule') {
         $scheduled = (new BackupSelection())->scheduledByServer();
         foreach ($scheduled as $scheduledServerId => $names) {
@@ -214,11 +221,12 @@ if ($mode === 'run') {
                 try {
                     $cliLog("run (agent {$serverId}) mulai volume={$name} trigger=schedule");
                     $result = $dispatcher->runBackup($serverId, (string) $name, 'schedule', $projectLog);
+                    $agentOk++;
                     $cliLog("run (agent {$serverId}) selesai volume={$name}: " . (string) ($result['message'] ?? 'ok'));
                 } catch (\Throwable $e) {
                     $agentFailures++;
                     $cliLog("run (agent {$serverId}) GAGAL volume={$name}: " . $e->getMessage());
-                    fwrite(STDERR, "run (agent {$serverId}) GAGAL volume={$name}: " . $e->getMessage() . PHP_EOL);
+                    fwrite(STDERR, "gagal: volume={$name} server={$serverId} — " . $e->getMessage() . PHP_EOL);
                 }
             }
         }
@@ -250,12 +258,36 @@ if ($mode === 'run') {
             (int) ($summary['totals']['skipped'] ?? 0)
         ));
         $localFailed = (int) ($summary['totals']['failed'] ?? 0);
+        if ($localFailed > 0) {
+            // Identitas kegagalan nyata di server lokal (volume + server) supaya
+            // operator/cron tahu apa yang harus diulang.
+            foreach ((array) ($summary['volumes'] ?? []) as $row) {
+                if (!is_array($row) || (string) ($row['status'] ?? '') === 'ok' || (string) ($row['status'] ?? '') === 'skipped') {
+                    continue;
+                }
+                fwrite(STDERR, sprintf(
+                    "gagal: volume=%s server=lokal project=%s%s\n",
+                    (string) ($row['name'] ?? '?'),
+                    (string) ($row['project'] ?? '?'),
+                    ($row['error'] ?? null) !== null ? ' — ' . (string) $row['error'] : ''
+                ));
+            }
+        }
         exit(($localFailed === 0 && $agentFailures === 0) ? 0 : 1);
     } catch (\Throwable $e) {
-        // Jalur lokal gagal (mis. lock dipegang run lain): pekerjaan server agent
-        // di atas **sudah** dikirim — jangan mengulang/membatalkannya di sini.
-        $cliLog('run GAGAL: ' . $e->getMessage());
-        fwrite(STDERR, 'run GAGAL: ' . $e->getMessage() . PHP_EOL);
+        // Jalur lokal gagal (mis. Engine lokal mati, atau lock dipegang run lain):
+        // pekerjaan server agent di atas **sudah** selesai dan tidak diulang.
+        // Exit code mengikuti hasil nyata: bila ada job agent yang sukses dan
+        // tidak ada kegagalan agent, run ini **tidak** dianggap gagal hanya
+        // karena host lokal tidak terbaca (cron jangan menandai backup server
+        // agent gagal). Bila tidak ada pekerjaan agent yang berhasil, ini
+        // kegagalan nyata ⇒ exit non-nol.
+        $cliLog('run lokal GAGAL (agent ok=' . $agentOk . ', gagal=' . $agentFailures . '): ' . $e->getMessage());
+        fwrite(STDERR, 'gagal: server=lokal — ' . $e->getMessage() . PHP_EOL);
+        if ($agentOk > 0 && $agentFailures === 0) {
+            fwrite(STDERR, 'catatan: ' . $agentOk . ' job backup server agent sudah sukses; exit code mengikuti hasil itu.' . PHP_EOL);
+            exit(0);
+        }
         exit(1);
     }
 }

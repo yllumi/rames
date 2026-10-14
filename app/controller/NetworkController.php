@@ -37,6 +37,8 @@ use support\Request;
  * (`ServerAccess::visibleServers()`); server lain **ditolak 404** lewat
  * `AppAccessDenied` (bukan 403, bukan fallback diam-diam ke server lokal) supaya
  * keberadaan server itu tidak bocor — lihat `requestedServer()`/`assertServerVisible()`.
+ * Id server **tak dikenal** diperlakukan sama (404, tanpa pesan pembeda, untuk
+ * daftar maupun mutasi) supaya tidak ada oracle keberadaan server.
  * Penyembunyian pemilih server di view hanya lapisan kedua, bukan pengaman.
  *
  * Proteksi hapus network (berlapis, di controller BUKAN hanya di UI):
@@ -66,11 +68,12 @@ class NetworkController
             $server = $this->requestedServer($request);
             $agent = $server !== null ? $this->agentFor($server) : null;
         } catch (AppAccessDenied $e) {
-            throw $e; // server di luar jangkauan user ⇒ 404 (jangan ditelan jadi pesan halaman)
+            throw $e; // server di luar jangkauan user / tak dikenal ⇒ 404 (jangan ditelan jadi pesan halaman)
         } catch (\Throwable $e) {
-            // Server tak dikenal / konfigurasi agent cacat: **jangan** diam-diam
-            // menampilkan network server lokal (itu server yang salah) — tampilkan
-            // galatnya dan daftar kosong.
+            // Server **terlihat** tapi konfigurasi agentnya cacat: **jangan**
+            // diam-diam menampilkan network server lokal (itu server yang salah)
+            // — tampilkan galatnya dan daftar kosong. (Id tak dikenal tidak
+            // sampai ke sini: `requestedServer()` sudah melempar 404.)
             $engineError = $e->getMessage();
             $scopeFailed = true;
         }
@@ -646,18 +649,21 @@ class NetworkController
     /**
      * Server yang dipilih halaman/aksi: `null` = server lokal (perilaku lama).
      *
-     * `server` kosong ⇒ lokal. Id tak dikenal / konfigurasi agent cacat ⇒
-     * **melempar** (tidak pernah diam-diam jatuh ke server lokal — plan §3
-     * butir 4). Server yang tidak boleh diakses user ⇒ `AppAccessDenied` (**404**,
-     * keputusan §9.3): non-admin hanya boleh memakai server yang menaungi app
-     * yang boleh ia lihat; server milik orang lain tidak pernah dilayani.
+     * `server` kosong ⇒ lokal. Id tak dikenal diperlakukan **sama** dengan
+     * "tidak berhak" ⇒ `AppAccessDenied` (**404**, keputusan §9.3/§12): kalau
+     * id yang ADA-tapi-bukan-milik-user menjawab 404 sementara id tak dikenal
+     * menjawab 200 dengan pesan "Server tidak dikenal", selisih itu sendiri
+     * adalah oracle keberadaan server. Karena itu id tak dikenal **tidak pernah**
+     * jatuh ke server lokal (plan §3 butir 4) dan **tidak pernah** dirender
+     * sebagai halaman/pesan yang membedakannya — termasuk untuk admin (pilihan
+     * server di luar registry = pilihan tidak sah).
      *
      * `?server=local` bukan pemilihan server (hasilnya sama dengan tanpa
      * parameter: cakupan server lokal yang tetap disaring per app) sehingga tetap
      * boleh untuk semua user yang login.
      *
      * @return array<string,mixed>|null
-     * @throws AppAccessDenied server di luar jangkauan user
+     * @throws AppAccessDenied server tak dikenal / di luar jangkauan user
      */
     private function requestedServer(Request $request, bool $post = false): ?array
     {
@@ -666,7 +672,14 @@ class NetworkController
             return null;
         }
 
-        $server = $this->serverResolver()->resolve($id);
+        try {
+            $server = $this->serverResolver()->resolve($id);
+        } catch (\Throwable) {
+            // Id tak dikenal / registry server tak terbaca ⇒ fail-closed 404,
+            // identik dengan "server milik orang lain" (tanpa pesan pembeda).
+            throw new AppAccessDenied(ServerAccess::ABILITY_SELECT);
+        }
+
         if (ServerResolver::isLocal($server)) {
             return null;
         }

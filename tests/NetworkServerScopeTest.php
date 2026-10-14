@@ -302,12 +302,107 @@ final class NetworkServerScopeTest extends TestCase
         $docker->explode = true; // daftar lokal TIDAK boleh ditampilkan sebagai pengganti
 
         $controller = $this->controller($handler, $docker);
-        $controller->index($this->get('/networks?server=srv-hilang'));
 
-        $this->assertSame([], $controller->rendered[0]['vars']['rows'], 'server tak dikenal ⇒ daftar kosong (fail-closed)');
-        $this->assertStringContainsString('Server tidak dikenal', (string) $controller->rendered[0]['vars']['engineError']);
-        $this->assertSame([], $docker->listed);
+        try {
+            $controller->index($this->get('/networks?server=srv-hilang'));
+            $this->fail('server tak dikenal wajib ditolak (404), bukan dirender 200 + pesan pembeda');
+        } catch (AppAccessDenied $e) {
+            $this->assertSame(404, $e->getCode(), 'tak dikenal ⇒ 404, bukan 200 dan bukan 403');
+            $this->assertSame(ServerAccess::ABILITY_SELECT, $e->ability, 'alasan sama dengan "server bukan milik Anda"');
+        }
+
+        $this->assertSame([], $controller->rendered, 'tidak ada halaman (beserta pesan "Server tidak dikenal") yang dirender');
+        $this->assertSame([], $controller->flashes, 'tidak ada pesan pembeda di flash');
+        $this->assertSame([], $docker->listed, 'daemon lokal tidak dipakai sebagai pengganti');
         $this->assertSame(0, $handler->count());
+    }
+
+    /**
+     * **Oracle keberadaan server (keputusan §12)**: id tak dikenal wajib
+     * **identik** dengan id yang ada-tapi-bukan-milik-user — kelas pengecualian,
+     * kode, ability, dan pesan. Selisih 200/404 di antara keduanya memberi tahu
+     * penyerang id mana yang benar-benar ada di registry.
+     *
+     * @return array<string,array{0:?array}>
+     */
+    public static function adminAndMemberUsers(): array
+    {
+        return [
+            'admin' => [null],
+            'member' => [['id' => 'u-member', 'username' => 'budi', 'role' => 'member']],
+        ];
+    }
+
+    /**
+     * Daftar **dan** semua mutasi (`create`/`connect`/`disconnect`/`delete`)
+     * menolak id tak dikenal dengan 404 sebelum efek samping apa pun — untuk
+     * admin maupun non-admin.
+     *
+     * @dataProvider adminAndMemberUsers
+     */
+    public function testUnknownServerIdIsDeniedLikeAForbiddenServerOnListAndMutations(?array $user): void
+    {
+        $handler = new NetworkScopeFakeHandler();
+        $docker = new NetworkScopeLocalDocker();
+        $docker->networks = [['Id' => 'n', 'Name' => 'lokal', 'Driver' => 'bridge', 'Scope' => 'local', 'Containers' => []]];
+        $docker->explode = true; // server lokal (= pengganti yang dihindari) tidak boleh dipakai
+
+        $controller = $this->controller($handler, $docker, $user);
+
+        $calls = [
+            'index' => fn () => $controller->index($this->get('/networks?server=srv-hilang')),
+            'detail' => fn () => $controller->detail($this->get('/networks/net-1?server=srv-hilang'), 'net-1'),
+            'create' => fn () => $controller->create($this->post('/networks/create', 'server=srv-hilang&name=baru')),
+            'connect' => fn () => $controller->connect($this->post('/networks/net-1/connect', 'server=srv-hilang&container=demo-db-1'), 'net-1'),
+            'disconnect' => fn () => $controller->disconnect($this->post('/networks/net-1/disconnect', 'server=srv-hilang&container=demo-db-1'), 'net-1'),
+            'delete' => fn () => $controller->delete($this->post('/networks/net-1/delete', 'server=srv-hilang'), 'net-1'),
+        ];
+
+        foreach ($calls as $action => $call) {
+            try {
+                $call();
+                $this->fail("{$action}: id server tak dikenal wajib 404 (bukan 200 dengan pesan pembeda)");
+            } catch (AppAccessDenied $e) {
+                $this->assertSame(404, $e->getCode(), "{$action}: 404 — bukan 403, bukan 200");
+                $this->assertSame(ServerAccess::ABILITY_SELECT, $e->ability, "{$action}: alasan sama seperti server milik orang lain");
+            }
+        }
+
+        $this->assertSame([], $controller->rendered, 'tidak ada halaman untuk server tak dikenal');
+        $this->assertSame([], $controller->flashes, 'tidak ada pesan yang membedakan tak dikenal dari tidak berhak');
+        $this->assertSame(0, $handler->count(), 'tidak ada operasi agent/daemon di server itu');
+        $this->assertSame([], $docker->listed, 'daemon lokal tidak dibaca');
+        $this->assertSame([], $docker->removed, 'tidak ada penghapusan network');
+    }
+
+    /** Tak dikenal vs bukan milik Anda: penolakan yang tak bisa dibedakan non-admin. */
+    public function testUnknownIdAndForeignIdAreIndistinguishableForNonAdmin(): void
+    {
+        $seen = [];
+
+        foreach (['srv-agent-2', 'srv-hilang'] as $id) {
+            $controller = $this->controller(
+                new NetworkScopeFakeHandler(),
+                new NetworkScopeLocalDocker(),
+                $this->member(),
+                [],
+                'oracle-' . $id
+            );
+
+            try {
+                $controller->index($this->get('/networks?server=' . $id));
+                $this->fail("{$id}: wajib ditolak 404");
+            } catch (AppAccessDenied $e) {
+                $seen[$id] = [$e->getCode(), $e->ability, $e->getMessage()];
+            }
+        }
+
+        $this->assertNotEmpty($seen);
+        $this->assertSame(
+            $seen['srv-agent-2'],
+            $seen['srv-hilang'],
+            'id tak dikenal ≡ id milik orang lain (tanpa selisih yang bisa jadi oracle)'
+        );
     }
 
     // ==================================================================
