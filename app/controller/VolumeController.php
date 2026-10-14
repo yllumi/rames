@@ -31,8 +31,13 @@ use Webman\Http\Response;
  *  - server agent tak terjangkau ⇒ hanya baris server itu yang hilang + satu
  *    pesan peringatan; halaman & server lain tetap tampil;
  *  - volume server **lokal** dibaca dari Engine host ini (perilaku lama), volume
- *    server **agent** dibaca dari server itu (`GET /volumes?project=…`) dan
- *    tidak pernah dihapus dari host ini (`purge()` fail-fast).
+ *    server **agent** dibaca dari server itu **per server**
+ *    (`GET /backups/volumes`, bukan per project) supaya volume **yatim** server
+ *    agent ikut terlihat — jalur per project hanya bisa menyebut project yang
+ *    masih ada di `apps.json`;
+ *  - volume server agent **tidak pernah** dihapus dari host ini: `purge()`
+ *    menolaknya eksplisit (fail-fast) dan melaporkan yatim agent yang belum bisa
+ *    dibersihkan dari dashboard, bukan melewatinya diam-diam.
  */
 class VolumeController
 {
@@ -103,13 +108,6 @@ class VolumeController
         $activeProjects = $this->activeProjectNames($apps);
         $accessibleProjects = $this->accessibleProjectNames($apps);
 
-        $allProjectNames = [];
-        foreach ($activeProjects as $names) {
-            foreach ($names as $name => $_) {
-                $allProjectNames[$name] = true;
-            }
-        }
-
         $rows = [];
         $engineError = null;
         $serverErrors = [];
@@ -154,55 +152,35 @@ class VolumeController
             $engineError = 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage();
         }
 
-        // ---- server agent: dibaca dari server itu, bukan dari host ini ----
+        // ---- server agent: dibaca **per server** dari server itu ----
         if ($includeAgents) {
-            foreach ($this->visibleAgentServers() as $server) {
-                $serverId = (string) ($server['id'] ?? '');
-                $label = $this->serverLabel($server);
-                // Admin: semua app di server itu. Non-admin: hanya app yang boleh ia
-                // lihat ⇒ server tanpa app terlihat tidak dihubungi sama sekali.
-                $projects = array_keys($isAdmin
-                    ? ($activeProjects[$serverId] ?? [])
-                    : ($accessibleProjects[$serverId] ?? []));
-                if ($projects === []) {
+            $collected = $this->collectAgentVolumes($activeProjects, $accessibleProjects, $isAdmin);
+            foreach ($collected['errors'] as $error) {
+                $serverErrors[] = $error;
+            }
+
+            foreach ($collected['volumes'] as $volume) {
+                // Non-admin: hanya project app yang boleh ia lihat — yatim
+                // (project sudah tidak ada) & app user lain disembunyikan, sama
+                // dengan jalur lokal.
+                if (!$isAdmin && !isset($accessibleProjects[$volume['server_id']][$volume['project']])) {
                     continue;
                 }
 
-                try {
-                    $agent = $this->agentDeployerForServer($server);
-                } catch (\Throwable $e) {
-                    $serverErrors[] = 'Server "' . $label . '": ' . $this->agentErrorMessage($server, $e);
-                    continue;
-                }
-                if ($agent === null) {
-                    continue; // bukan server agent (mis. baris lokal) — bukan jalur ini
-                }
-
-                foreach ($projects as $project) {
-                    try {
-                        $names = $agent->getProjectVolumes($project);
-                    } catch (\Throwable $e) {
-                        // Server tak terjangkau: satu pesan per server, sisanya jalan.
-                        $serverErrors[] = 'Server "' . $label . '": ' . $this->agentErrorMessage($server, $e);
-                        break;
-                    }
-                    foreach ($names as $name) {
-                        $rows[] = [
-                            'name' => $name,
-                            'project' => $project,
-                            // Jalur volume agent melaporkan nama saja (bukan
-                            // driver/mountpoint/timestamp) → view menampilkan "—".
-                            'driver' => '',
-                            'mountpoint' => '',
-                            'created_at' => '',
-                            'orphaned' => !isset($allProjectNames[$project]),
-                            'server_id' => $serverId,
-                            'server_name' => $label,
-                            'server_kind' => 'agent',
-                            'can_purge' => false, // hapus volume server agent belum didukung
-                        ];
-                    }
-                }
+                $rows[] = [
+                    'name' => $volume['name'],
+                    'project' => $volume['project'],
+                    // Jalur volume agent melaporkan nama + project saja (bukan
+                    // driver/mountpoint/timestamp) → view menampilkan "—".
+                    'driver' => '',
+                    'mountpoint' => '',
+                    'created_at' => '',
+                    'orphaned' => $volume['orphaned'],
+                    'server_id' => $volume['server_id'],
+                    'server_name' => $volume['server_label'],
+                    'server_kind' => 'agent',
+                    'can_purge' => false, // hapus volume server agent belum didukung (lihat purge())
+                ];
             }
         }
 
@@ -292,50 +270,123 @@ class VolumeController
     }
 
     /**
-     * Peta nama volume server agent ⇒ label server.
+     * Volume seluruh **server agent** yang boleh dilihat user — dibaca **per
+     * server** (`AgentDeployer::backupVolumes()` ⇒ `GET /backups/volumes`), satu
+     * panggilan per server.
      *
-     * Dipakai `purge()` untuk menolak eksplisit **sebelum** efek samping apa pun:
-     * volume yang hidup di server agent tidak boleh dihapus dari host ini.
+     * Kenapa per server dan bukan per project seperti jalur lama
+     * (`GET /volumes?project=…`): daftar per project hanya bisa menyebut project
+     * yang masih ada di `apps.json`, sehingga volume **yatim** server agent
+     * (app-nya sudah dihapus) tidak pernah terlihat dan purge yatim menjadi buta
+     * di server remote (jebakan §12). `GET /backups/volumes` melaporkan seluruh
+     * volume ber-label compose **server itu** — termasuk yang yatim — dari Engine
+     * server itu juga (Engine host control plane tidak pernah dibaca, plan §3
+     * butir 4).
      *
-     * @return array<string,string>
+     * `orphaned` **selalu** diputuskan di sini dari `apps.json` server tersebut,
+     * bukan dari medan `orphaned` agent: metadata app adalah milik control plane
+     * (plan §4.3).
+     *
+     * Kegagalan satu server tidak pernah menggagalkan halaman: satu entri
+     * `errors` (server offline/`config` cacat), server lain tetap tampil.
+     *
+     * @param array<string,array<string,bool>> $activeProjects     nama project per server (semua app)
+     * @param array<string,array<string,bool>> $accessibleProjects nama project per server (app yang boleh dilihat user)
+     * @return array{volumes:array<int,array{name:string,project:string,server_id:string,server_label:string,orphaned:bool}>,errors:array<int,string>}
      */
-    protected function agentVolumeOwners(): array
+    protected function collectAgentVolumes(array $activeProjects, array $accessibleProjects, bool $isAdmin): array
     {
-        $owners = [];
-        $activeProjects = $this->activeProjectNames($this->appStore()->all());
+        $volumes = [];
+        $errors = [];
 
         foreach ($this->visibleAgentServers() as $server) {
             $serverId = (string) ($server['id'] ?? '');
             $label = $this->serverLabel($server);
-            $projects = array_keys($activeProjects[$serverId] ?? []);
-            if ($projects === []) {
+            $active = $activeProjects[$serverId] ?? [];
+            $accessible = $accessibleProjects[$serverId] ?? [];
+
+            // Non-admin: server tanpa satu pun app terlihat **tidak dihubungi**
+            // (fail-closed). Admin selalu dihubungi — server yang seluruh app-nya
+            // sudah dihapus justru satu-satunya tempat volume yatim berada.
+            if (!$isAdmin && $accessible === []) {
                 continue;
             }
 
             try {
                 $agent = $this->agentDeployerForServer($server);
             } catch (\Throwable $e) {
-                continue; // server cacat/tak terjangkau: tanpa daftar volume
+                $errors[] = 'Server "' . $label . '": ' . $this->agentErrorMessage($server, $e);
+                continue;
             }
             if ($agent === null) {
+                continue; // bukan server agent (mis. baris lokal) — bukan jalur ini
+            }
+
+            try {
+                $rows = $this->agentVolumeRows(
+                    $agent,
+                    $isAdmin ? array_keys($active) : array_keys($accessible)
+                );
+            } catch (\Throwable $e) {
+                // Server tak terjangkau: satu pesan per server, sisanya jalan.
+                $errors[] = 'Server "' . $label . '": ' . $this->agentErrorMessage($server, $e);
                 continue;
             }
 
-            foreach ($projects as $project) {
-                try {
-                    $names = $agent->getProjectVolumes($project);
-                } catch (\Throwable $e) {
-                    break; // server tak terjangkau — lewati server ini
+            foreach ($rows as $row) {
+                $name = trim((string) ($row['name'] ?? ''));
+                $project = trim((string) ($row['project'] ?? ''));
+                if ($name === '' || $project === '') {
+                    continue; // kontrak agent tidak lengkap — lewati barisnya, bukan servernya
                 }
-                foreach ($names as $name) {
-                    if (!isset($owners[$name])) {
-                        $owners[$name] = $label;
-                    }
-                }
+
+                $volumes[] = [
+                    'name' => $name,
+                    'project' => $project,
+                    'server_id' => $serverId,
+                    'server_label' => $label,
+                    'orphaned' => !isset($active[$project]),
+                ];
             }
         }
 
-        return $owners;
+        return ['volumes' => $volumes, 'errors' => $errors];
+    }
+
+    /**
+     * Baris volume satu server agent (`name` + `project`) — jalur utama
+     * `GET /backups/volumes`, dengan **mundur** ke jalur per project
+     * (`GET /volumes?project=…`) bila agent belum punya endpoint itu
+     * (`not_found`/`unsupported`) supaya agent versi lama tetap menampilkan
+     * volume app-nya (tanpa yatim) alih-alih kehilangan seluruh baris.
+     *
+     * Galat lain (tak terjangkau/TLS/token) **tidak** ditelan: itu bukan alasan
+     * memakai jalur alternatif, dan harus tampil sebagai galat server itu.
+     *
+     * @param array<int,string> $projects project yang boleh dikirim ke agent
+     * @return array<int,array{name:string,project:string}>
+     * @throws \Throwable server tak terjangkau / respons tidak sesuai kontrak
+     */
+    protected function agentVolumeRows(AgentDeployer $agent, array $projects): array
+    {
+        try {
+            return $agent->backupVolumes()['volumes'];
+        } catch (\Throwable $e) {
+            $legacy = $e instanceof AgentError
+                && in_array($e->reason, [AgentError::NOT_FOUND, AgentError::UNSUPPORTED], true);
+            if (!$legacy) {
+                throw $e;
+            }
+        }
+
+        $rows = [];
+        foreach ($projects as $project) {
+            foreach ($agent->getProjectVolumes($project) as $name) {
+                $rows[] = ['name' => $name, 'project' => $project];
+            }
+        }
+
+        return $rows;
     }
 
     /** Nama server lokal untuk kolom Server (fallback: `local`). */
@@ -349,19 +400,14 @@ class VolumeController
     }
 
     /**
-     * Pesan galat server agent untuk UI: token **dan** `base_url` internal
-     * dibuang (halaman tidak pernah memuat rahasia/endpoint server, plan §9.3).
+     * Pesan galat server agent untuk UI: token, `base_url`/host internal, dan
+     * blok PEM dibuang lewat **satu pintu** `AgentError::sanitizeForServer()`
+     * (halaman tidak pernah memuat rahasia/endpoint server, plan §9.3). Jangan
+     * menyalin regex `base_url` di controller ini lagi.
      */
     private function agentErrorMessage(array $server, \Throwable $e): string
     {
-        $message = AgentError::sanitize($e->getMessage(), (string) ($server['token'] ?? ''));
-
-        $baseUrl = trim((string) ($server['base_url'] ?? ''));
-        if ($baseUrl !== '') {
-            $message = str_replace([$baseUrl, rtrim($baseUrl, '/')], 'server agent', $message);
-        }
-
-        return $message;
+        return AgentError::sanitizeForServer($e->getMessage(), $server);
     }
 
     /** Nama server untuk ditampilkan (fallback: id server). */
@@ -445,14 +491,21 @@ class VolumeController
 
     /**
      * Hapus volume yatim. Menerima `volumes[]` (pilihan) atau `purge_orphans=1`
-     * (semua yatim). Volume milik app yang masih aktif DITOLAK (pengaman).
+     * (semua yatim **server lokal**). Volume milik app yang masih aktif DITOLAK
+     * (pengaman).
      *
      * Pemurgaan volume bersifat global (volume yatim tidak bisa diatribusikan ke
      * app yang bisa diakses) → hanya admin.
      *
-     * Multi-server: volume milik **server agent** ditolak eksplisit (fail-fast)
-     * — penghapusan volume agent belum didukung dan tidak boleh pernah jatuh ke
-     * host lokal (plan §3 butir 4).
+     * Multi-server: volume milik **server agent** tidak pernah jatuh ke host
+     * lokal (plan §3 butir 4) —
+     *  - disebut eksplisit di `volumes[]` ⇒ ditolak **sebelum** efek samping apa
+     *    pun (fail-fast, tidak ada satu pun volume lokal terhapus);
+     *  - `purge_orphans=1` ⇒ hanya yatim Engine host ini yang dihapus, sementara
+     *    yatim server agent (yang terdeteksi lewat `GET /backups/volumes`)
+     *    dilaporkan eksplisit supaya tidak diam-diam dilewatkan. Penghapusan
+     *    volume server agent belum punya op/job di agent, jadi belum dijalankan
+     *    dari sini.
      */
     public function purge(Request $request)
     {
@@ -485,11 +538,51 @@ class VolumeController
             }
         }
 
+        $agentListing = $this->collectAgentVolumes(
+            $this->activeProjectNames($apps),
+            $this->accessibleProjectNames($apps),
+            $this->isAdmin()
+        );
+
+        if ($agentListing['errors'] !== []) {
+            // Volume server agent tidak bisa diperiksa (offline/config cacat):
+            // beri tahu admin — daftar yatim yang ditampilkan/dihapus **tidak
+            // lengkap**, jangan diam-diam dilewatkan. Pesannya sudah diredaksi
+            // (`collectAgentVolumes()`), jadi tanpa token/base_url internal.
+            foreach ($agentListing['errors'] as $error) {
+                $this->flash('error', 'Volume server agent tidak diperiksa — ' . $error);
+            }
+        }
+
+        $agentOwners = [];
+        $agentOrphans = [];
+        foreach ($agentListing['volumes'] as $volume) {
+            $agentOwners[$volume['name']] ??= $volume['server_label'];
+            if ($volume['orphaned']) {
+                $agentOrphans[$volume['name']] = $volume['server_label'];
+            }
+        }
+
         if ((string) $request->post('purge_orphans', '') === '1') {
             $targets = array_keys(array_filter(
                 $volumeProject,
                 static fn (string $p): bool => !isset($projectNames[$p])
             ));
+
+            // Purge massal menyasar **hanya** Engine host ini (volume agent tidak
+            // pernah masuk daftar di atas). Yatim server agent dilaporkan
+            // eksplisit — jangan sampai admin mengira semuanya sudah bersih.
+            if ($agentOrphans !== []) {
+                $servers = array_values(array_unique(array_values($agentOrphans)));
+                sort($servers);
+                $this->flash(
+                    'error',
+                    count($agentOrphans) . ' volume yatim di server agent tidak dihapus (server '
+                    . implode(', ', $servers) . ') — penghapusan volume server agent belum didukung '
+                    . 'dari dashboard ini. Hapus di server itu sendiri, atau pilih volume lokal '
+                    . 'lalu gunakan "Hapus volume terpilih".'
+                );
+            }
         } else {
             $targets = array_values(array_filter(
                 array_map('strval', (array) $request->post('volumes', [])),
@@ -497,21 +590,18 @@ class VolumeController
             ));
         }
 
-        // Volume milik server agent (hanya admin yang sampai di sini). Dipetakan
-        // sebelum efek samping apa pun supaya penolakannya eksplisit & tidak ada
-        // satu pun volume lokal yang terhapus karena salah atribusi server.
-        $agentVolumeOwners = $this->agentVolumeOwners();
-
-        // validasi ketat: pola nama volume & harus yatim
+        // validasi ketat: pola nama volume & harus yatim. Volume milik server
+        // agent ditolak **sebelum efek samping apa pun** supaya tidak ada satu pun
+        // volume lokal yang terhapus karena salah atribusi server (fail-fast).
         $valid = [];
         foreach ($targets as $name) {
             if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/', $name)) {
                 $this->flash('error', "Nama volume tidak valid: {$name}");
                 return redirect('/volumes');
             }
-            if (isset($agentVolumeOwners[$name])) {
+            if (isset($agentOwners[$name])) {
                 $this->flash('error', 'Volume "' . $name . '" berada di server agent "'
-                    . $agentVolumeOwners[$name] . '" — menghapus volume server agent belum didukung '
+                    . $agentOwners[$name] . '" — menghapus volume server agent belum didukung '
                     . 'dari dashboard ini. Jalankan di server itu sendiri.');
                 return redirect('/volumes');
             }

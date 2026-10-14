@@ -39,22 +39,55 @@ final class VolumeScopeAgentHandler
     /** @var array<string,array<int,string>> nama volume per project (`?project=`) */
     public array $volumesByProject = [];
 
+    /** true ⇒ `GET /backups/volumes` belum ada di agent (404) — uji jalur mundur. */
+    public bool $noBackupVolumesEndpoint = false;
+
     /** true ⇒ semua panggilan gagal (server agent tak terjangkau). */
     public bool $offline = false;
+
+    /** Pesan galat transport tiruan (boleh memuat token/base_url untuk uji higienitas). */
+    public string $errorMessage = 'Connection refused (server agent offline)';
 
     public function __invoke(object $request, array $options): mixed
     {
         if ($this->offline) {
-            throw new RuntimeException('Connection refused (server agent offline)');
+            throw new RuntimeException($this->errorMessage);
         }
 
         /** @var \Psr\Http\Message\RequestInterface $request */
+        $path = $request->getUri()->getPath();
         $query = $request->getUri()->getQuery();
         $this->calls[] = [
             'method' => $request->getMethod(),
-            'path' => $request->getUri()->getPath(),
+            'path' => $path,
             'query' => $query,
         ];
+
+        // `GET /backups/volumes` — listing **per server**: seluruh volume ber-label
+        // compose server itu, termasuk yang project-nya sudah tidak ada di
+        // apps.json (yatim). Ini jalur yang dipakai control plane.
+        if ($path === '/backups/volumes') {
+            if ($this->noBackupVolumesEndpoint) {
+                return Create::promiseFor(new Psr7Response(
+                    404,
+                    ['Content-Type' => 'application/json'],
+                    (string) json_encode(['code' => 404, 'msg' => 'not found'])
+                ));
+            }
+
+            $rows = [];
+            foreach ($this->volumesByProject as $project => $names) {
+                foreach ($names as $name) {
+                    $rows[] = ['name' => $name, 'project' => $project];
+                }
+            }
+
+            return Create::promiseFor(new Psr7Response(
+                200,
+                ['Content-Type' => 'application/json'],
+                (string) json_encode(['code' => 0, 'data' => ['volumes' => $rows, 'status' => []]])
+            ));
+        }
 
         parse_str($query, $params);
         $project = (string) ($params['project'] ?? '');
@@ -65,6 +98,12 @@ final class VolumeScopeAgentHandler
         ]);
 
         return Create::promiseFor(new Psr7Response(200, ['Content-Type' => 'application/json'], (string) $payload));
+    }
+
+    /** @return list<string> path yang dipanggil (urutan panggilan) */
+    public function paths(): array
+    {
+        return array_map(static fn (array $call): string => $call['path'], $this->calls);
     }
 
     /** @return list<string> daftar project yang diminta (`?project=`) */
@@ -385,9 +424,14 @@ class VolumeServerScopeTest extends TestCase
         );
         $this->assertSame([], $this->handlers['srv-rahasia']->calls, 'agent server lain tidak pernah dipanggil');
         $this->assertSame(
-            ['app-jakarta'],
+            ['/backups/volumes'],
+            $this->handlers['srv-jakarta']->paths(),
+            'listing volume per server (satu panggilan), bukan per project — yatim server itu ikut terbaca'
+        );
+        $this->assertSame(
+            [],
             $this->handlers['srv-jakarta']->requestedProjects(),
-            'hanya project app yang boleh dilihat user yang diminta ke agent'
+            'jalur per project (yang buta yatim) tidak dipakai lagi'
         );
         $this->assertNotContains('vps-rahasia', array_column($rows, 'server_name'));
         $this->assertNotContains('rahasia_data', array_column($rows, 'name'));
@@ -577,6 +621,182 @@ class VolumeServerScopeTest extends TestCase
     }
 
     // ==================================================================
+    // Volume YATIM server agent (listing per server) + higienitas pesan galat
+    // ==================================================================
+
+    /**
+     * (i) Volume yatim server agent (project sudah tidak ada di `apps.json`)
+     * muncul di halaman **dengan penanda server** — inilah kekurangan jalur lama
+     * (`GET /volumes?project=…` hanya bisa menyebut project yang masih ada).
+     */
+    public function testAgentOrphanVolumesAreListedWithServerIdentity(): void
+    {
+        $this->agentServer('srv-jakarta', 'vps-jakarta', [
+            'app-jakarta' => ['jakarta_data'],
+            'app-tak-ada' => ['jakarta_yatim'], // project-nya sudah dihapus dari apps.json
+        ]);
+        $this->app(['id' => 'a2', 'name' => 'app-jakarta', 'server_id' => 'srv-jakarta']);
+
+        $controller = $this->controller(self::ADMIN);
+        $controller->index($this->get('/volumes'));
+
+        $vars = $controller->rendered[0]['vars'];
+        $rows = $vars['rows'];
+        $this->assertSame(['jakarta_yatim', 'jakarta_data'], array_column($rows, 'name'), 'yatim tampil lebih dulu');
+
+        $orphan = $this->rowNamed($rows, 'jakarta_yatim');
+        $this->assertTrue($orphan['orphaned']);
+        $this->assertSame('srv-jakarta', $orphan['server_id']);
+        $this->assertSame('vps-jakarta', $orphan['server_name']);
+        $this->assertSame('agent', $orphan['server_kind']);
+        $this->assertFalse($orphan['can_purge'], 'volume agent tidak boleh tampak bisa dipurge dari host ini');
+        $this->assertSame([], $vars['serverErrors']);
+    }
+
+    /**
+     * Volume yatim **server itu** dibaca sekali per server (bukan per project),
+     * sehingga server yang seluruh app-nya sudah dihapus tetap terlihat.
+     */
+    public function testAgentWithoutAnyActiveAppStillReportsItsOrphans(): void
+    {
+        $this->agentServer('srv-kosong', 'vps-kosong', ['app-hilang' => ['sisa_data']]);
+
+        $controller = $this->controller(self::ADMIN);
+        $controller->index($this->get('/volumes'));
+
+        $rows = $controller->rendered[0]['vars']['rows'];
+        $this->assertSame(['sisa_data'], array_column($rows, 'name'));
+        $this->assertSame('vps-kosong', $rows[0]['server_name']);
+        $this->assertTrue($rows[0]['orphaned']);
+        $this->assertSame(['/backups/volumes'], $this->handlers['srv-kosong']->paths());
+    }
+
+    /**
+     * (ii) Non-admin: yatim server agent (dan volume app user lain) tidak pernah
+     * sampai ke view; server di luar jangkauannya tidak dihubungi (0 panggilan).
+     */
+    public function testNonAdminNeverSeesAgentOrphansAndOnlyOwnServerIsCalled(): void
+    {
+        $this->agentServer('srv-jakarta', 'vps-jakarta', [
+            'app-jakarta' => ['jakarta_data'],
+            'app-tak-ada' => ['jakarta_yatim'],
+        ]);
+        $this->app(['id' => 'a2', 'name' => 'app-jakarta', 'owner_id' => 'u-member', 'server_id' => 'srv-jakarta']);
+        $this->agentServer('srv-rahasia', 'vps-rahasia', ['app-rahasia' => ['rahasia_data']]);
+        $this->app(['id' => 'a3', 'name' => 'app-rahasia', 'owner_id' => 'u-lain', 'server_id' => 'srv-rahasia']);
+
+        $controller = $this->controller(self::MEMBER);
+        $controller->index($this->get('/volumes'));
+
+        $this->assertSame(['jakarta_data'], array_column($controller->rendered[0]['vars']['rows'], 'name'));
+        $this->assertSame([], $this->handlers['srv-rahasia']->calls, 'server milik user lain tidak dihubungi');
+        $this->assertSame(['/backups/volumes'], $this->handlers['srv-jakarta']->paths());
+    }
+
+    /**
+     * (v) Higienitas pesan galat: token & `base_url`/host internal agent **tidak
+     * pernah** sampai ke halaman (satu pintu `AgentError::sanitizeForServer()`)
+     * — dulu hanya `VolumeController` yang meredaksinya.
+     */
+    public function testAgentErrorMessagesNeverLeakTokenOrBaseUrl(): void
+    {
+        $this->localVolumes([$this->volume('lokal_data', 'app-lokal')]);
+        $this->app(['id' => 'a1', 'name' => 'app-lokal', 'server_id' => ServerStore::LOCAL_ID]);
+        $this->agentServer('srv-bocor', 'vps-bocor', ['app-bocor' => ['bocor_data']], offline: true);
+        $this->handlers['srv-bocor']->errorMessage = 'Gagal menghubungi https://srv-bocor.internal.test:8443 '
+            . 'dengan token tok-uji-srv-bocor: Connection refused';
+        $this->app(['id' => 'a2', 'name' => 'app-bocor', 'server_id' => 'srv-bocor']);
+
+        $controller = $this->controller(self::ADMIN);
+        $controller->index($this->get('/volumes'));
+
+        $errors = $controller->rendered[0]['vars']['serverErrors'];
+        $this->assertCount(1, $errors);
+        $this->assertStringContainsString('vps-bocor', $errors[0], 'nama server tetap membantu diagnosis');
+        foreach (['tok-uji-srv-bocor', 'internal.test', 'https://'] as $secret) {
+            $this->assertStringNotContainsString($secret, $errors[0], 'rahasia/endpoint internal bocor: ' . $secret);
+        }
+
+        // Jalur purge (flash) memakai pintu yang sama.
+        $GLOBALS['RAMES_FLASH'] = [];
+        $controller->purge($this->post('/volumes/purge', 'volumes[]=bocor_data'));
+        $flashed = implode(' | ', array_column($GLOBALS['RAMES_FLASH'], 'message'));
+        $this->assertStringContainsString('vps-bocor', $flashed);
+        foreach (['tok-uji-srv-bocor', 'internal.test', 'https://'] as $secret) {
+            $this->assertStringNotContainsString($secret, $flashed, 'rahasia/endpoint internal bocor: ' . $secret);
+        }
+    }
+
+    /**
+     * (iv) Purge massal: yatim **lokal** tetap dibersihkan lewat runner lokal,
+     * yatim server agent **tidak pernah** dikirim ke runner lokal dan dilaporkan
+     * eksplisit (bukan dilewatkan diam-diam).
+     */
+    public function testPurgeOrphansReportsAgentOrphansExplicitlyAndNeverTouchesThem(): void
+    {
+        $this->localVolumes([$this->volume('a_yatim', 'app-tak-ada')]);
+        $this->app(['id' => 'a1', 'name' => 'app-a', 'server_id' => ServerStore::LOCAL_ID]);
+        $this->agentServer('srv-jakarta', 'vps-jakarta', [
+            'app-jakarta' => ['jakarta_data'],
+            'app-tak-ada' => ['jakarta_yatim'],
+        ]);
+        $this->app(['id' => 'a2', 'name' => 'app-jakarta', 'server_id' => 'srv-jakarta']);
+
+        $controller = $this->controller(self::ADMIN);
+        $controller->purge($this->post('/volumes/purge', 'purge_orphans=1'));
+
+        $this->assertSame(['a_yatim'], $controller->compose->removed, 'hanya yatim host ini yang dihapus');
+        $messages = implode(' | ', array_column($GLOBALS['RAMES_FLASH'], 'message'));
+        $this->assertStringContainsString('1 volume yatim dihapus', $messages);
+        $this->assertStringContainsString('vps-jakarta', $messages, 'server pemilik yatim disebut');
+        $this->assertStringContainsString('tidak dihapus', $messages, 'yatim agent dilaporkan, bukan dilewatkan');
+        $this->assertStringNotContainsString('jakarta_yatim', implode(' ', $controller->compose->removed));
+    }
+
+    /**
+     * (iv) Yatim server agent yang disebut **eksplisit**: ditolak fail-fast
+     * sebelum efek samping apa pun — tidak satu pun volume lokal ikut terhapus.
+     */
+    public function testPurgeRejectsNamedAgentOrphanBeforeDeletingAnything(): void
+    {
+        $this->localVolumes([$this->volume('a_yatim', 'app-tak-ada')]);
+        $this->app(['id' => 'a1', 'name' => 'app-a', 'server_id' => ServerStore::LOCAL_ID]);
+        $this->agentServer('srv-jakarta', 'vps-jakarta', ['app-tak-ada' => ['jakarta_yatim']]);
+        $this->app(['id' => 'a2', 'name' => 'app-jakarta', 'server_id' => 'srv-jakarta']);
+
+        $controller = $this->controller(self::ADMIN);
+        $controller->purge($this->post('/volumes/purge', 'volumes[]=jakarta_yatim&volumes[]=a_yatim'));
+
+        $this->assertSame([], $controller->compose->removed, 'fail-fast: tidak ada penghapusan sama sekali');
+        $this->assertSame('error', $GLOBALS['RAMES_FLASH'][0]['type'] ?? '');
+        $this->assertStringContainsString('vps-jakarta', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '');
+        $this->assertStringContainsString('belum didukung', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '');
+    }
+
+    /**
+     * Mundur yang aman: agent versi lama tanpa `GET /backups/volumes` tetap
+     * menampilkan volume project-nya lewat jalur per project (tanpa yatim),
+     * bukan kehilangan seluruh baris server itu.
+     */
+    public function testLegacyAgentFallsBackToProjectListing(): void
+    {
+        $this->agentServer('srv-lama', 'vps-lama', [
+            'app-jakarta' => ['jakarta_data'],
+            'app-tak-ada' => ['jakarta_yatim'],
+        ], legacyListing: true);
+        $this->app(['id' => 'a2', 'name' => 'app-jakarta', 'server_id' => 'srv-lama']);
+
+        $controller = $this->controller(self::ADMIN);
+        $controller->index($this->get('/volumes'));
+
+        $vars = $controller->rendered[0]['vars'];
+        $this->assertSame(['jakarta_data'], array_column($vars['rows'], 'name'));
+        $this->assertSame([], $vars['serverErrors']);
+        $this->assertSame(['app-jakarta'], $this->handlers['srv-lama']->requestedProjects());
+        $this->assertSame(['/backups/volumes', '/volumes'], $this->handlers['srv-lama']->paths());
+    }
+
+    // ==================================================================
     // Helper
     // ==================================================================
 
@@ -620,8 +840,13 @@ class VolumeServerScopeTest extends TestCase
     /**
      * @param array<string,array<int,string>> $volumesByProject
      */
-    private function agentServer(string $id, string $name, array $volumesByProject, bool $offline = false): void
-    {
+    private function agentServer(
+        string $id,
+        string $name,
+        array $volumesByProject,
+        bool $offline = false,
+        bool $legacyListing = false,
+    ): void {
         (new ServerStore())->create([
             'id' => $id,
             'name' => $name,
@@ -637,6 +862,7 @@ class VolumeServerScopeTest extends TestCase
         $handler = new VolumeScopeAgentHandler();
         $handler->volumesByProject = $volumesByProject;
         $handler->offline = $offline;
+        $handler->noBackupVolumesEndpoint = $legacyListing;
         $this->handlers[$id] = $handler;
 
         $server = (new ServerResolver())->resolve($id);

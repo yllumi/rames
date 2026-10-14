@@ -334,6 +334,27 @@ final class NetworkServerScopeTest extends TestCase
     }
 
     /**
+     * Higienitas pesan galat: galat transport `AgentClient` menyisipkan
+     * `base_url` server, jadi controller wajib meredaksinya lewat satu pintu
+     * (`AgentError::sanitizeForServer()` — bukan regex yang disalin per controller).
+     */
+    public function testAgentScopeErrorMessagesNeverLeakTokenOrBaseUrl(): void
+    {
+        $handler = new NetworkScopeFakeHandler(); // antrean kosong ⇒ galat transport
+        $docker = new NetworkScopeLocalDocker();
+        $docker->explode = true;
+
+        $controller = $this->controller($handler, $docker);
+        $controller->index($this->get('/networks?server=srv-agent-2'));
+
+        $engineError = (string) ($controller->rendered[0]['vars']['engineError'] ?? '');
+        $this->assertStringContainsString('agent-2', $engineError, 'nama server tetap membantu diagnosis');
+        foreach ([self::TOKEN, 'agent-2.test', 'https://'] as $secret) {
+            $this->assertStringNotContainsString($secret, $engineError, 'rahasia/endpoint internal bocor: ' . $secret);
+        }
+    }
+
+    /**
      * Daftar **dan** semua mutasi (`create`/`connect`/`disconnect`/`delete`)
      * menolak id tak dikenal dengan 404 sebelum efek samping apa pun — untuk
      * admin maupun non-admin.

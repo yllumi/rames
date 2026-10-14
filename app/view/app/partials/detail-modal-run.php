@@ -8,11 +8,15 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
         </div>
         <div class="modal-body">
+          <!-- Konteks server (multi-server): diisi app-terminal.js hanya untuk app
+               remote; app lokal membiarkannya tersembunyi. -->
+          <div id="run-server" class="alert alert-info py-2 small d-none mb-3" role="status" aria-live="polite"></div>
           <input type="hidden" id="run-container">
           <label class="form-label small" for="run-command">Perintah (dijalankan sebagai <code>sh -c</code> di dalam container):</label>
           <textarea id="run-command" class="form-control form-control-sm mono" rows="3"
                     placeholder="mis. ls -la /app&#10;php artisan migrate --force&#10;cat /etc/os-release"></textarea>
-          <div id="run-error" class="alert alert-danger py-2 small mt-3 mb-0 d-none" role="alert"></div>
+          <div id="run-error" class="alert alert-danger py-2 small mt-3 mb-0 d-none" role="alert"
+               style="white-space:pre-wrap;"></div>
           <pre id="run-output" class="mt-3 mb-1 p-2 rounded border mono small d-none"
                style="max-height:320px; overflow:auto; background:#0d1117; color:#e6e6e6;"></pre>
           <div class="d-flex justify-content-between align-items-center mt-2">

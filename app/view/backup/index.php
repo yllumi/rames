@@ -139,6 +139,15 @@ $breadcrumbs = [
         </tbody>
       </table>
     </div>
+    <div class="card-body border-top py-2 text-muted small">
+      Volume ber-badge <span class="badge badge-deploying">agent</span> hidup di <strong>server agent</strong>
+      (bukan host dashboard ini) dan ditandai dengan <strong>id server</strong>-nya<?php if ($isAdmin): ?> —
+      nama server dikelola di halaman Servers<?php endif; ?>. Volume tanpa badge tetap hidup di server lokal,
+      seperti sebelumnya. Untuk volume berstrategi <strong>dump</strong> di server agent, menu
+      <strong>Aksi</strong> menyediakan <strong>Unduh .sql</strong>: berkas dibaca dari staging
+      <em>server tersebut</em> (jalur agent, batas waktu ±30 detik per permintaan), jadi unduhan besar
+      sebaiknya dijalankan langsung di server itu.
+    </div>
     <div class="card-footer d-flex flex-wrap gap-2 align-items-center">
       <span class="text-muted small me-auto" id="backup-footer">Memuat status backup …</span>
       <button type="button" class="btn btn-outline-secondary btn-sm" id="backup-refresh">Muat ulang</button>
@@ -544,5 +553,5 @@ $breadcrumbs = [
   </div>
 </div>
 
-<script src="/js/backup.js?v=13"></script>
+<script src="/js/backup.js?v=14"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

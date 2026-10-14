@@ -7,6 +7,7 @@ use app\library\Agent\AgentError;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\ServerResolver;
 use app\library\Docker\AppContainers;
 use app\library\Files\ContainerFiles;
 use app\library\Files\FileError;
@@ -65,7 +66,9 @@ class FileController
 
             return $this->agentData(
                 $agent->fileList($app, $container, $path),
-                static fn (array $data): array => self::capListing($data)
+                static fn (array $data): array => self::capListing($data),
+                null,
+                $app
             );
         });
         if ($proxied !== null) {
@@ -90,7 +93,7 @@ class FileController
             $container = $this->agentContainer($request, $app);
             $path = PathGuard::normalize((string) $request->input('path', ''));
 
-            return $this->agentData($agent->fileRead($app, $container, $path));
+            return $this->agentData($agent->fileRead($app, $container, $path), null, null, $app);
         });
         if ($proxied !== null) {
             return $proxied;
@@ -128,7 +131,7 @@ class FileController
                 // Agent menolak (container berhenti 409, berkas hilang 404, terlalu
                 // besar 413): envelope diteruskan apa adanya — tidak ada byte
                 // berkas yang mengalir dan tidak ada unduhan kosong.
-                return $this->agentData($error);
+                return $this->agentData($error, null, null, $app);
             }
 
             $name = basename($path);
@@ -176,7 +179,8 @@ class FileController
 
             return $this->agentAck(
                 $agent->fileWrite($app, $container, $path, $text),
-                [$app, $container, 'write ' . $path . ' di server agent']
+                [$app, $container, 'write ' . $path . ' di server agent'],
+                $app
             );
         });
         if ($proxied !== null) {
@@ -211,7 +215,8 @@ class FileController
 
             return $this->agentAck(
                 $agent->fileMkdir($app, $container, $target),
-                [$app, $container, 'mkdir ' . $target . ' di server agent']
+                [$app, $container, 'mkdir ' . $target . ' di server agent'],
+                $app
             );
         });
         if ($proxied !== null) {
@@ -246,7 +251,8 @@ class FileController
 
             return $this->agentAck(
                 $agent->fileRename($app, $container, $from, $to),
-                [$app, $container, 'rename ' . $from . ' -> ' . $to . ' di server agent']
+                [$app, $container, 'rename ' . $from . ' -> ' . $to . ' di server agent'],
+                $app
             );
         });
         if ($proxied !== null) {
@@ -276,7 +282,8 @@ class FileController
 
             return $this->agentAck(
                 $agent->fileDelete($app, $container, $path),
-                [$app, $container, 'delete ' . $path . ' di server agent']
+                [$app, $container, 'delete ' . $path . ' di server agent'],
+                $app
             );
         });
         if ($proxied !== null) {
@@ -331,7 +338,8 @@ class FileController
             return $this->agentData(
                 $envelope,
                 null,
-                [$app, $container, 'move ' . $plan['from'] . ' -> ' . $target . ' di server agent']
+                [$app, $container, 'move ' . $plan['from'] . ' -> ' . $target . ' di server agent'],
+                $app
             );
         });
         if ($proxied !== null) {
@@ -374,7 +382,7 @@ class FileController
                 if ($code !== 0) {
                     // Kegagalan domain satu berkas → respons sama bentuknya dengan
                     // jalur lokal (berkas sebelumnya sudah tersalin, seperti lokal).
-                    return $this->agentFailureEnvelope($result);
+                    return $this->agentFailureEnvelope($result, $app);
                 }
                 $uploaded[] = $result['data'] ?? ['name' => $name];
             }
@@ -427,7 +435,8 @@ class FileController
             return $this->agentData(
                 $agent->fileExtract($app, $container, $dir, $name, $dest !== '' ? $dest : null),
                 null,
-                [$app, $container, 'extract ' . $dir . '/' . $name . ' di server agent']
+                [$app, $container, 'extract ' . $dir . '/' . $name . ' di server agent'],
+                $app
             );
         });
         if ($proxied !== null) {
@@ -475,7 +484,7 @@ class FileController
 
             return $callback($deployer);
         } catch (AgentError $e) {
-            return $this->agentFailure($e);
+            return $this->agentFailure($e, $app);
         } catch (FileError $e) {
             return json(['code' => $e->status, 'msg' => $e->getMessage()]);
         } catch (InvalidArgumentException $e) {
@@ -522,12 +531,14 @@ class FileController
      * @param array<string,mixed>          $envelope
      * @param callable(array):array|null   $shape
      * @param array{0:array,1:string,2:string}|null $audit
+     * @param array<string,mixed>          $app app pemilik operasi — untuk meredaksi
+     *                                          identitas server di pesan galat
      */
-    private function agentData(array $envelope, ?callable $shape = null, ?array $audit = null)
+    private function agentData(array $envelope, ?callable $shape = null, ?array $audit = null, array $app = [])
     {
         $code = (int) ($envelope['code'] ?? 0);
         if ($code !== 0) {
-            return $this->agentFailureEnvelope($envelope);
+            return $this->agentFailureEnvelope($envelope, $app);
         }
 
         $data = $envelope['data'] ?? [];
@@ -545,12 +556,13 @@ class FileController
      *
      * @param array<string,mixed> $envelope
      * @param array{0:array,1:string,2:string}|null $audit
+     * @param array<string,mixed> $app app pemilik operasi (redaksi pesan galat)
      */
-    private function agentAck(array $envelope, ?array $audit = null)
+    private function agentAck(array $envelope, ?array $audit = null, array $app = [])
     {
         $code = (int) ($envelope['code'] ?? 0);
         if ($code !== 0) {
-            return $this->agentFailureEnvelope($envelope);
+            return $this->agentFailureEnvelope($envelope, $app);
         }
         $this->agentAudit($audit);
 
@@ -574,12 +586,14 @@ class FileController
 
     /**
      * Galat **domain** yang dilaporkan agent (`{code:<status>,msg}`) → respons UI
-     * dengan kode yang sama. Pesannya disanitasi supaya token/Authorization tidak
-     * pernah tampil walau agent memantulkannya.
+     * dengan kode yang sama. Pesannya disanitasi lewat **satu pintu**
+     * `AgentError::sanitizeForServer()` supaya token/`Authorization` **dan**
+     * identitas server (`base_url`/host internal, blok PEM) tidak pernah tampil.
      *
      * @param array<string,mixed> $envelope
+     * @param array<string,mixed> $app app pemilik operasi (untuk dokumen server)
      */
-    private function agentFailureEnvelope(array $envelope)
+    private function agentFailureEnvelope(array $envelope, array $app = [])
     {
         $code = (int) ($envelope['code'] ?? 0);
         if ($code <= 0) {
@@ -590,22 +604,64 @@ class FileController
             $message = 'Operasi berkas ditolak server agent.';
         }
 
-        return json(['code' => $code, 'msg' => AgentError::sanitize($message)]);
+        return json([
+            'code' => $code,
+            'msg' => AgentError::sanitizeForServer($message, $this->agentServerForApp($app)),
+        ]);
     }
 
     /**
      * Respons galat jalur agent (transport/konfigurasi server) — kode mengikuti
      * `AgentDeployer::failureCode()` (404 tetap 404, sisanya 502) dan pesan
-     * disanitasi.
+     * disanitasi **satu pintu** `AgentError::sanitizeForServer()` (token,
+     * `base_url`/host internal, blok PEM ikut dibuang).
+     *
+     * @param array<string,mixed> $app app pemilik operasi (untuk dokumen server)
      */
-    private function agentFailure(Throwable $e)
+    private function agentFailure(Throwable $e, array $app = [])
     {
-        $detail = AgentError::sanitize($e->getMessage());
+        $detail = AgentError::sanitizeForServer($e->getMessage(), $this->agentServerForApp($app));
 
         return json([
             'code' => AgentDeployer::failureCode($e),
             'msg' => $detail === '' ? 'Operasi berkas di server agent gagal.' : $detail,
         ]);
+    }
+
+    /**
+     * Registry server (seam uji: store temp tanpa `database/` nyata) — pola
+     * `DatabaseController::serverResolver()`. Dipakai **hanya** untuk meredaksi
+     * identitas server pada pesan galat.
+     */
+    protected function serverResolver(): ServerResolver
+    {
+        return new ServerResolver();
+    }
+
+    /**
+     * Dokumen server sebuah app — **hanya** untuk meredaksi identitas server pada
+     * pesan galat (bukan keputusan otorisasi, yang tetap di `AppAccess` /
+     * `AgentDeployer::forApp()`).
+     *
+     * Best-effort: app kosong/server tak dikenal/gagal dibaca ⇒ `[]` dan pesan
+     * tetap disanitasi token-nya oleh `AgentError`.
+     *
+     * @param array<string,mixed> $app
+     * @return array<string,mixed>
+     */
+    private function agentServerForApp(array $app): array
+    {
+        if ($app === []) {
+            return [];
+        }
+
+        try {
+            $server = $this->serverResolver()->resolveForApp($app);
+        } catch (Throwable $e) {
+            return [];
+        }
+
+        return is_array($server) ? $server : [];
     }
 
     /**

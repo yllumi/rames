@@ -160,7 +160,7 @@ class DatabaseController
                 }
                 $detected = $agent->dbContainers();
             } catch (\Throwable $e) {
-                $errors[] = 'Server "' . $label . '": ' . AgentError::sanitize($e->getMessage());
+                $errors[] = 'Server "' . $label . '": ' . $this->agentMessage($e->getMessage(), $server);
                 continue;
             }
 
@@ -277,7 +277,10 @@ class DatabaseController
             try {
                 $agent = $this->agentDeployer($app);
             } catch (\Throwable $e) {
-                return $this->adminerError(AgentError::sanitize($e->getMessage()), 502);
+                return $this->adminerError(
+                    $this->agentMessage($e->getMessage(), $this->agentServerForApp($app)),
+                    502
+                );
             }
             if ($agent !== null) {
                 return $this->adminerViaAgent($request, $app, $agent, $container, $path);
@@ -439,7 +442,10 @@ class DatabaseController
                 $headers
             );
         } catch (AgentError $e) {
-            return $this->adminerError(AgentError::sanitize($e->getMessage()), AgentDeployer::failureCode($e));
+            return $this->adminerError(
+                $this->agentMessage($e->getMessage(), $this->agentServerForApp($app)),
+                AgentDeployer::failureCode($e)
+            );
         }
 
         if (($result['too_large'] ?? false) === true) {
@@ -448,7 +454,7 @@ class DatabaseController
 
         // Galat domain agent dikembalikan sebagai respons polos Rames (bukan body
         // JSON mesin); status HTTP-nya tetap milik agent.
-        $agentError = $this->agentJsonError($result);
+        $agentError = $this->agentJsonError($result, $this->agentServerForApp($app));
         if ($agentError !== null) {
             $this->discardAgentBody((string) $result['body_file']);
 
@@ -598,6 +604,45 @@ class DatabaseController
     }
 
     /**
+     * Pesan galat jalur agent untuk UI/log — **satu pintu** higienitas
+     * (`AgentError::sanitizeForServer()`): token, `base_url`/host internal, dan
+     * blok PEM tidak pernah sampai ke halaman. Dulu hanya `VolumeController`
+     * yang meredaksi `base_url`, sehingga pesan dari jalur lain bisa membocorkan
+     * alamat internal agent (mis. `AgentClient` menyisipkan `base_url` pada galat
+     * transport).
+     *
+     * @param array<string,mixed> $server dokumen server (kosong ⇒ sanitasi biasa)
+     */
+    private function agentMessage(string $message, array $server = []): string
+    {
+        return AgentError::sanitizeForServer($message, $server);
+    }
+
+    /**
+     * Dokumen server sebuah app — **hanya** untuk meredaksi identitas server pada
+     * pesan galat (bukan untuk keputusan otorisasi, yang tetap di `AppAccess`/
+     * `AgentDeployer::forApp`). Resolusi best-effort: gagal ⇒ `[]` dan pesan tetap
+     * disanitasi tanpa identitas server.
+     *
+     * @param array<string,mixed>|null $app
+     * @return array<string,mixed>
+     */
+    private function agentServerForApp(?array $app): array
+    {
+        if ($app === null) {
+            return [];
+        }
+
+        try {
+            $server = $this->serverResolver()->resolveForApp($app);
+        } catch (\Throwable) {
+            return [];
+        }
+
+        return is_array($server) ? $server : [];
+    }
+
+    /**
      * Cari app pemilik container DB + pastikan user berhak mengelolanya.
      *
      * Dipakai endpoint /database (proxy Adminer) sehingga otorisasi hanya ada
@@ -690,7 +735,7 @@ class DatabaseController
      * @param array{status:int,body_file:string} $result
      * @return array{0:int,1:string}|null null = bukan galat JSON
      */
-    private function agentJsonError(array $result): ?array
+    private function agentJsonError(array $result, array $server = []): ?array
     {
         $status = (int) ($result['status'] ?? 0);
         if ($status < 400) {
@@ -715,7 +760,7 @@ class DatabaseController
             $message = 'Server agent menolak permintaan Adminer (HTTP ' . $status . ').';
         }
 
-        return [$status, AgentError::sanitize($message)];
+        return [$status, $this->agentMessage($message, $server)];
     }
 
     private function validContainerName(string $name): bool

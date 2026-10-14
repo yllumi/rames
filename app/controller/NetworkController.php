@@ -74,7 +74,7 @@ class NetworkController
             // diam-diam menampilkan network server lokal (itu server yang salah)
             // — tampilkan galatnya dan daftar kosong. (Id tak dikenal tidak
             // sampai ke sini: `requestedServer()` sudah melempar 404.)
-            $engineError = $e->getMessage();
+            $engineError = $this->serverError($server, $e);
             $scopeFailed = true;
         }
 
@@ -139,7 +139,7 @@ class NetworkController
                 return $ga <=> $gb ?: strcmp((string) $a['name'], (string) $b['name']);
             });
         } catch (\Throwable $e) {
-            $engineError = 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage();
+            $engineError = 'Tidak dapat mengakses Docker Engine: ' . $this->serverError($server, $e);
         }
 
         return $this->renderView('network/index', [
@@ -167,7 +167,7 @@ class NetworkController
         } catch (AppAccessDenied $e) {
             throw $e; // server di luar jangkauan user ⇒ 404, tanpa efek samping
         } catch (\Throwable $e) {
-            $this->flash('error', $e->getMessage());
+            $this->flash('error', $this->serverError($server, $e));
             return redirect('/networks');
         }
         $back = $this->redirectToNetworks($server);
@@ -234,7 +234,7 @@ class NetworkController
             }
             $this->flash('success', "Network \"{$name}\" dibuat.");
         } catch (\Throwable $e) {
-            $this->flash('error', $e->getMessage());
+            $this->flash('error', $this->serverError($server, $e));
         }
 
         return $back;
@@ -253,7 +253,7 @@ class NetworkController
         } catch (AppAccessDenied $e) {
             throw $e; // server di luar jangkauan user ⇒ 404 (fail-closed)
         } catch (\Throwable $e) {
-            $this->flash('error', $e->getMessage());
+            $this->flash('error', $this->serverError($server, $e));
 
             return redirect('/networks');
         }
@@ -309,7 +309,7 @@ class NetworkController
                 $this->flash('error', 'Network tidak ditemukan.');
                 return redirect('/networks');
             }
-            $engineError = 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage();
+            $engineError = 'Tidak dapat mengakses Docker Engine: ' . $this->serverError($server, $e);
         }
 
         $name = $network !== null ? (string) ($network['Name'] ?? $id) : $id;
@@ -345,7 +345,7 @@ class NetworkController
             if (AgentDeployer::failureCode($e) === 404 || str_contains($e->getMessage(), '404')) {
                 $this->flash('error', 'Network tidak ditemukan di server "' . $serverId . '".');
             } else {
-                $this->flash('error', AgentError::sanitize($e->getMessage()));
+                $this->flash('error', $this->serverError($server, $e));
             }
 
             return $this->redirectToNetworks($server);
@@ -384,7 +384,7 @@ class NetworkController
         } catch (AppAccessDenied $e) {
             throw $e; // server di luar jangkauan user ⇒ 404, tanpa efek samping
         } catch (\Throwable $e) {
-            $this->flash('error', $e->getMessage());
+            $this->flash('error', $this->serverError($server, $e));
 
             return redirect('/networks');
         }
@@ -428,7 +428,7 @@ class NetworkController
             }
             $this->flash('success', "Container \"{$container}\" dihubungkan ke \"{$id}\".");
         } catch (\Throwable $e) {
-            $this->flash('error', 'Gagal menghubungkan container: ' . $e->getMessage());
+            $this->flash('error', 'Gagal menghubungkan container: ' . $this->serverError($server, $e));
         }
 
         return $back;
@@ -445,7 +445,7 @@ class NetworkController
         } catch (AppAccessDenied $e) {
             throw $e; // server di luar jangkauan user ⇒ 404, tanpa efek samping
         } catch (\Throwable $e) {
-            $this->flash('error', $e->getMessage());
+            $this->flash('error', $this->serverError($server, $e));
 
             return redirect('/networks');
         }
@@ -471,7 +471,7 @@ class NetworkController
             }
             $this->flash('success', "Container \"{$container}\" diputus dari \"{$id}\".");
         } catch (\Throwable $e) {
-            $this->flash('error', 'Gagal memutus container: ' . $e->getMessage());
+            $this->flash('error', 'Gagal memutus container: ' . $this->serverError($server, $e));
         }
 
         return $back;
@@ -492,7 +492,7 @@ class NetworkController
         } catch (AppAccessDenied $e) {
             throw $e; // server di luar jangkauan user ⇒ 404, tanpa efek samping
         } catch (\Throwable $e) {
-            $this->flash('error', $e->getMessage());
+            $this->flash('error', $this->serverError($server, $e));
 
             return redirect('/networks');
         }
@@ -510,7 +510,7 @@ class NetworkController
             $docker = $agent === null ? $this->docker() : null;
             $networks = $agent !== null ? $agent->networks() : $docker->listNetworks();
         } catch (\Throwable $e) {
-            $this->flash('error', 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage());
+            $this->flash('error', 'Tidak dapat mengakses Docker Engine: ' . $this->serverError($server, $e));
             return $back;
         }
 
@@ -555,7 +555,7 @@ class NetworkController
             }
             $this->flash('success', "Network \"{$name}\" dihapus.");
         } catch (\Throwable $e) {
-            $this->flash('error', 'Gagal menghapus network: ' . $e->getMessage());
+            $this->flash('error', 'Gagal menghapus network: ' . $this->serverError($server, $e));
         }
 
         return $back;
@@ -780,6 +780,25 @@ class NetworkController
             $here,
             $there
         ));
+    }
+
+    /**
+     * Pesan galat untuk UI/log — **satu pintu** higienitas identitas server:
+     * cakupan server agent (`$server !== null`) disanitasi
+     * `AgentError::sanitizeForServer()` sehingga token, `base_url`/host internal,
+     * dan blok PEM tidak pernah tampil; cakupan lokal (`$server === null`) tetap
+     * seperti sebelumnya (`AgentError` tidak mungkin datang dari jalur itu).
+     *
+     * Jangan menyalin regex `base_url` di controller — aturannya ada di
+     * `AgentError` (dipakai `VolumeController`/`DatabaseController` juga).
+     *
+     * @param array<string,mixed>|null $server
+     */
+    private function serverError(?array $server, \Throwable $e): string
+    {
+        return $server === null
+            ? $e->getMessage()
+            : AgentError::sanitizeForServer($e->getMessage(), $server);
     }
 
     /** Nama server untuk pesan (fallback: id). */

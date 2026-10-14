@@ -25,6 +25,11 @@ use RuntimeException;
  * lewat {@see self::sanitize()}; `AgentClient` menambahkan token-nya sendiri
  * sebagai argumen kedua supaya token yang bocor dari body/host error ikut
  * di-redaksi (`[redacted]`). Pola ini mengikuti `DuitkuClient::sanitize()`.
+ *
+ * Pesan yang akan **ditampilkan/log** untuk sebuah server wajib lewat
+ * {@see self::sanitizeForServer()} — di sana `base_url`/host internal dan blok
+ * PEM juga dibuang (`AgentClient` menyisipkan `base_url` pada galat transport,
+ * jadi `sanitize()` saja tidak cukup). Jangan menyalin regex itu ke controller.
  */
 final class AgentError extends RuntimeException
 {
@@ -128,6 +133,87 @@ final class AgentError extends RuntimeException
         $message = trim((string) preg_replace('/\s+/', ' ', $message));
 
         return self::truncate($message, self::MAX_MESSAGE_LENGTH);
+    }
+
+    /**
+     * **Satu pintu** pesan galat milik **satu server agent** untuk UI/log:
+     * {@see self::sanitize()} (token, `Authorization`, signature, panjang) plus
+     * redaksi **identitas server** — `base_url`/host internal dan blok PEM.
+     *
+     * Kenapa di sini: aturan redaksi `base_url` sebelumnya disalin di tiap
+     * controller (`VolumeController::agentErrorMessage()`), sehingga jalur lain
+     * (`DatabaseController`, `NetworkController`, …) bisa membocorkan alamat
+     * internal agent ke halaman/flash. Semua pemanggil kini memakai helper ini;
+     * jangan menyalin regex-nya lagi.
+     *
+     * Server dokumen boleh kosong/tanpa `base_url` (mis. server lokal): hasilnya
+     * sama seperti `sanitize()` biasa — aman dipakai tanpa percabangan.
+     *
+     * @param array<string,mixed> $server dokumen server (`token`/`token_ref`, `base_url`)
+     */
+    public static function sanitizeForServer(string $message, array $server = []): string
+    {
+        if ($message === '') {
+            return '';
+        }
+
+        $token = trim((string) ($server['token'] ?? $server['token_ref'] ?? ''));
+        $message = self::sanitize($message, $token);
+
+        // Alamat internal agent (URL penuh, `//host:port`, atau host saja) —
+        // galat curl/DNS sering hanya menyebut host/port.
+        foreach (self::baseUrlVariants($server) as $needle) {
+            $message = str_replace($needle, 'server agent', $message);
+        }
+
+        // Blok PEM (sertifikat kunci) tidak pernah boleh ikut tampil.
+        $message = (string) preg_replace(
+            '/-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----/s',
+            '[redacted]',
+            $message
+        );
+
+        // Rapikan sisa penggantian + potong ulang ke batas pesan.
+        return self::sanitize($message);
+    }
+
+    /**
+     * Varian `base_url` yang harus dibuang dari pesan galat, terpanjang lebih
+     * dulu supaya `host:port` tidak dirusak oleh penggantian `host` saja.
+     *
+     * @param array<string,mixed> $server
+     * @return array<int,string>
+     */
+    private static function baseUrlVariants(array $server): array
+    {
+        $baseUrl = trim((string) ($server['base_url'] ?? ''));
+        if ($baseUrl === '') {
+            return [];
+        }
+
+        $variants = [$baseUrl, rtrim($baseUrl, '/')];
+
+        $host = (string) parse_url($baseUrl, PHP_URL_HOST);
+        if ($host !== '') {
+            $port = parse_url($baseUrl, PHP_URL_PORT);
+            $authority = $host . (is_int($port) ? ':' . $port : '');
+            $variants[] = $authority;
+            $variants[] = '//' . $authority;
+            $variants[] = $host;
+        }
+
+        $unique = [];
+        foreach ($variants as $variant) {
+            $variant = trim((string) $variant);
+            if ($variant !== '') {
+                $unique[$variant] = true;
+            }
+        }
+
+        $needles = array_keys($unique);
+        usort($needles, static fn (string $a, string $b): int => strlen($b) <=> strlen($a));
+
+        return $needles;
     }
 
     /**

@@ -338,10 +338,51 @@
   // One-shot run command (non-interaktif)
   // ==================================================================
 
-  function openRunModal(appId, container) {
+  // BEGIN PURE run-error block (diextrak tes `node` — jangan hapus penanda)
+  // Pesan galat "Run" yang jelas per jenis kegagalan. Kode mengikuti kontrak
+  // server (`TerminalController::run()`): `code:0` sukses, `400` container/
+  // perintah tidak sah, `404` app tak ada/tak berhak, `501` op tidak didukung
+  // agen, `502` gagal bicara ke server agent (`AgentDeployer::failureCode()`),
+  // `500` galat lain. Pesan server (`msg`) selalu disanitasi server dan TIDAK
+  // pernah memuat token/base_url.
+  function runErrorMessage(code, msg, timedOut) {
+    var detail = (msg === null || msg === undefined) ? '' : String(msg);
+    if (code === 501) {
+      return 'Agen di server itu belum mendukung perintah satu-kali (Run) — perbarui agen di server tersebut lalu coba lagi.';
+    }
+    if (code === 502) {
+      return 'Perintah di server agent gagal: server tidak dapat dihubungi atau perintah melewati batas waktu ' +
+        'jalur agent (±30 detik). Untuk perintah panjang, pakai Terminal interaktif app ini.' +
+        (detail !== '' ? '\n' + detail : '');
+    }
+    var text = detail !== '' ? detail : 'Gagal menjalankan perintah.';
+    if (timedOut === true) text += '\n[batas waktu perintah tercapai — proses dihentikan]';
+
+    return text;
+  }
+  // END PURE run-error block
+
+  // Baris konteks server di modal Run (multi-server): hanya diisi bila app
+  // berjalan di server agent — app lokal tampil seperti sebelumnya.
+  function setRunServer(serverLabel) {
+    var node = el('run-server');
+    if (!node) return;
+    var label = (serverLabel || '').trim();
+    if (label === '') {
+      node.textContent = '';
+      node.classList.add('d-none');
+      return;
+    }
+    node.textContent = 'Perintah dijalankan di server agent ' + label +
+      ' — batas waktu jalur agent ±30 detik (perintah panjang jalankan lewat panel server itu).';
+    node.classList.remove('d-none');
+  }
+
+  function openRunModal(appId, container, serverLabel) {
     el('run-title').textContent = container;
     el('run-container').value = container;
     el('run-command').value = '';
+    setRunServer(serverLabel);
     var out = el('run-output');
     out.classList.add('d-none');
     out.textContent = '';
@@ -379,19 +420,18 @@
       }).then(function (d) {
         sp.classList.add('d-none');
         if (d.code !== 0 || !d.data) {
-          err.textContent = d.msg || 'Gagal menjalankan perintah.';
+          err.textContent = runErrorMessage(d.code, d.msg, false);
           err.classList.remove('d-none');
           return;
         }
         var res = d.data;
         var text = (res.stdout || '') + (res.stderr || '');
-        if (res.timedOut) text += '\n[timeout]';
         out.textContent = text === '' ? '(tanpa output)' : text;
         out.classList.remove('d-none');
-        exitEl.textContent = 'exit code: ' + res.code;
+        exitEl.textContent = 'exit code: ' + res.code + (res.timedOut ? ' (batas waktu)' : '');
       }).catch(function () {
         sp.classList.add('d-none');
-        err.textContent = 'Gagal terhubung ke server.';
+        err.textContent = 'Gagal terhubung ke panel — periksa koneksi Anda lalu coba lagi.';
         err.classList.remove('d-none');
       });
     });
@@ -401,7 +441,11 @@
     var btn = ev.target.closest('.run-btn');
     if (!btn) return;
     ev.preventDefault();
-    openRunModal(btn.getAttribute('data-app') || '', btn.getAttribute('data-container') || '');
+    openRunModal(
+      btn.getAttribute('data-app') || '',
+      btn.getAttribute('data-container') || '',
+      btn.getAttribute('data-server') || ''
+    );
   });
 
   // Tutup sesi bila pindah halaman (fire-and-forget)

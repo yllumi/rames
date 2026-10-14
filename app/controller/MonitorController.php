@@ -192,12 +192,17 @@ class MonitorController
             $entry['host'] = $host;
             $entry['containers'] = $rows;
             $entry['totals'] = ContainerStats::aggregate($rows);
-            $entry['error'] = $stats['error'];
+            // Pesan galat **dari agent** juga lewat pintu higienitas yang sama
+            // (isinya dipantulkan agent — jangan pernah dipercaya apa adanya).
+            $entry['error'] = is_string($stats['error']) && $stats['error'] !== ''
+                ? AgentError::sanitizeForServer($stats['error'], $server)
+                : null;
             $entry['at'] = date('H:i:s');
         } catch (Throwable $e) {
-            // Termasuk AgentError (token/TLS/transport) — pesan disanitasi supaya
-            // token server tidak pernah muncul di UI.
-            $detail = AgentError::sanitize($e->getMessage());
+            // Termasuk AgentError (token/TLS/transport) — pesan disanitasi lewat
+            // **satu pintu** `AgentError::sanitizeForServer()` supaya token,
+            // `base_url`/host internal, dan blok PEM tidak pernah muncul di UI.
+            $detail = AgentError::sanitizeForServer($e->getMessage(), $server);
             $entry['error'] = $detail === '' ? 'Server agent tidak dapat dihubungi.' : $detail;
         }
 

@@ -21,6 +21,9 @@
 //   GET  /api/backups/snapshots?volume=<n>   → {code:0,data:{volume,snapshots:[…]}}
 //   POST /backups/run                        (form: _token, volume)
 //   POST /backups/restore                    (form: _token, volume, snapshot, confirm)
+//   GET  /backups/dump/sql?volume=<n>&server_id=<id>  → unduhan berkas `.sql`
+//        (hanya volume server agent berstrategi `dump`; unduhan = navigasi biasa,
+//        tanpa CSRF karena GET read-only)
 // Penolakan akses = 404; kredit kurang saat menyalakan berkala = 402
 // (`{code:402,error}`); error validasi = 422; error Engine/restic = 500.
 (function () {
@@ -129,6 +132,80 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
+
+  // BEGIN PURE dump-sql block (diextrak tes `node` — jangan hapus penanda)
+  // Blok murni (tanpa DOM/jaringan) untuk tautan **"Unduh .sql"** volume server
+  // agent. Aturannya HARUS tetap sinkron dengan
+  // `BackupController::downloadDumpSql()` (`GET /backups/dump/sql`, ability
+  // `backup`):
+  //  - hanya volume **server agent** (`server_id` diisi & bukan `local`) —
+  //    volume server lokal diperlakukan seperti sebelumnya (tanpa kontrol baru);
+  //  - hanya strategi `dump` (strategi `snapshot` tidak punya berkas `.sql`);
+  //  - hanya untuk user yang berhak backup (`can_schedule` = hasil
+  //    `BackupAccess::can('backup', …)` per baris dari server).
+  // Server tetap sumber kebenaran: tautan ini hanya lapisan kedua.
+  var LOCAL_SERVER_ID = 'local';
+
+  function volumeServerId(row) {
+    if (!row || typeof row !== 'object') return '';
+    var id = row.server_id;
+    return (id === null || id === undefined) ? '' : String(id).trim();
+  }
+
+  function isAgentVolume(row) {
+    var id = volumeServerId(row);
+    return id !== '' && id !== LOCAL_SERVER_ID;
+  }
+
+  function dumpSqlItem(row) {
+    if (!isAgentVolume(row)) return null;
+    if (String(row.strategy || '') !== 'dump') return null;
+    if (row.can_schedule !== true) return null;
+    var name = row.name === null || row.name === undefined ? '' : String(row.name).trim();
+    if (name === '') return null;
+    var serverId = volumeServerId(row);
+    return {
+      url: '/backups/dump/sql?volume=' + encodeURIComponent(name) + '&server_id=' + encodeURIComponent(serverId),
+      label: 'Unduh .sql — server ' + serverId
+    };
+  }
+
+  // Item menu "Unduh .sql" (string HTML) — `''` bila baris tidak layak unduh.
+  // `escapeFn` disuntikkan supaya blok ini tetap murni (tanpa DOM).
+  function dumpSqlItemHtml(row, escapeFn) {
+    var item = dumpSqlItem(row);
+    if (item === null) return '';
+    return '<li><a class="dropdown-item" href="' + escapeFn(item.url) + '"' +
+      ' title="Unduh berkas .sql hasil dump terakhir — berkas dibaca dari server agent pemilik volume">' +
+      escapeFn(item.label) + '</a></li>';
+  }
+
+  // Penanda server pada kolom Volume: badge `agent` + id server untuk volume
+  // server agent (`''` untuk volume lokal — tampilan lama tidak berubah).
+  function serverBadgeHtml(row, escapeFn) {
+    if (!isAgentVolume(row)) return '';
+    return ' <span class="badge badge-deploying" title="Volume hidup di server agent, bukan di host dashboard ini">agent</span>' +
+      ' <span class="mono small text-muted">' + escapeFn(volumeServerId(row)) + '</span>';
+  }
+
+  // Item arsip "Unduh SQL" (tab Arsip, admin-only). Volume server **lokal**
+  // memakai tautan lama apa adanya; arsip server **agent** TIDAK punya jalur
+  // unduh dari dashboard (berkas dump hidup di server itu — endpoint arsip
+  // menolak target agent), jadi ditampilkan sebagai keterangan non-klik alih-alih
+  // tautan yang pasti gagal.
+  function archiveDumpSqlHtml(row, escapeFn) {
+    if (String(row.strategy || '') !== 'dump' || !row.last_snapshot) return '';
+    if (isAgentVolume(row)) {
+      return '<li><span class="dropdown-item-text small text-muted"' +
+        ' title="Berkas dump arsip ada di server agent — unduh dijalankan di server itu">' +
+        'Unduh SQL: di server ' + escapeFn(volumeServerId(row)) + '</span></li>';
+    }
+    return '<li><a class="dropdown-item" rel="noopener" href="' + escapeFn(
+      '/backups/archive/sql?volume=' + encodeURIComponent(String(row.name)) +
+      '&snapshot=' + encodeURIComponent(String(row.last_snapshot))
+    ) + '">Unduh SQL</a></li>';
+  }
+  // END PURE dump-sql block
 
   // Basis 1000, konsisten dengan `docker system df` & halaman lain.
   function fmtBytes(bytes) {
@@ -313,6 +390,9 @@
       '<ul class="dropdown-menu dropdown-menu-end">';
     if (ENABLED) {
       html += '<li><button type="button" class="dropdown-item backup-run-btn" data-volume="' + name + '">Backup sekarang</button></li>';
+      // Unduh hasil `db_dump` volume server agent (fitur backup hidup). Volume
+      // lokal tidak mendapat item ini — unduhan lokal dibaca di host ini.
+      html += dumpSqlItemHtml(row, esc);
     }
     html += '<li><button type="button" class="dropdown-item backup-snapshots-btn" data-volume="' + name + '">Snapshot</button></li>' +
       '<li><hr class="dropdown-divider"></li>' +
@@ -354,6 +434,10 @@
       : '<span class="badge text-bg-secondary" title="' + title + '">off</span>';
   }
 
+  // Penanda server pada baris volume (multi-server F4): volume server agent
+  // ditandai badge `agent` + id server (payload status hanya memuat `server_id`;
+  // nama server tampil di halaman Servers yang admin-only). Baris volume lokal
+  // dirender persis seperti sebelumnya — lihat `serverBadgeHtml()` di blok murni.
   function rowHtml(row) {
     var appLabel;
     if (row.app_name) {
@@ -366,7 +450,7 @@
     var appId = row.app_id ? ' <span class="text-muted small mono">' + esc(row.app_id) + '</span>' : '';
 
     return '<tr>' +
-      '<td><span class="mono">' + esc(row.name) + '</span></td>' +
+      '<td><span class="mono">' + esc(row.name) + '</span>' + serverBadgeHtml(row, esc) + '</td>' +
       '<td><span class="mono small">' + esc(row.project) + '</span></td>' +
       '<td class="small">' + appLabel + appId + '</td>' +
       '<td>' + strategyCell(row) + '</td>' +
@@ -395,9 +479,9 @@
       items += '<li><button type="button" class="dropdown-item archive-restore-btn" data-volume="' + name + '">Restore ke volume baru…</button></li>';
     }
     if (row.strategy === 'dump' && row.last_snapshot) {
-      var sqlUrl = '/backups/archive/sql?volume=' + encodeURIComponent(row.name) +
-        '&snapshot=' + encodeURIComponent(row.last_snapshot);
-      items += '<li><a class="dropdown-item" rel="noopener" href="' + esc(sqlUrl) + '">Unduh SQL</a></li>';
+      // Tautan (arsip server lokal) atau keterangan (arsip server agent) — lihat
+      // `archiveDumpSqlHtml()` di blok murni.
+      items += archiveDumpSqlHtml(row, esc);
     }
     if (items === '') {
       items = '<li><span class="dropdown-item-text text-muted small">Tidak ada aksi</span></li>';

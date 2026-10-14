@@ -4,6 +4,9 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Agent\AgentError;
+use app\library\Auth\AppAccess;
+use app\library\Auth\AppAccessDenied;
+use app\library\Auth\ServerAccess;
 use app\library\Auth\UserStore;
 use app\library\Backup\BackupAccess;
 use app\library\Backup\BackupCatalog;
@@ -58,12 +61,17 @@ use Webman\Http\Response;
  *   GET  /backups/guide                 → halaman panduan setup Restic (admin)
  * Tiap baris `volumes[]` (status & refresh) menyertakan `scheduled:bool` segar
  * dari `BackupSelection` (bukan dari cache), `can_schedule:bool`
- * (`BackupAccess::can('backup', …)` per baris), serta biaya backup
- * (`backup_gb`, `backup_credits_month`) — lihat `withScheduled()`.
+ * (`BackupAccess::can('backup', …)` per baris), biaya backup
+ * (`backup_gb`, `backup_credits_month`) — lihat `withScheduled()` — serta
+ * `server_name` (nama server pemilik baris, dipetakan **sekali** per respons,
+ * lihat `withServerNames()`) supaya UI tidak menampilkan id mentah.
  * `archived[]` (riwayat volume yang sudah dihapus) **admin-only** (keputusan 4a):
  * non-admin selalu menerima `[]`; tiap baris diberi `restorable:bool`. Lihat
  * `archivedRows()`.
- * Error akses → 404 (via `AppAccessDenied`), bukan 403.
+ * Error akses → 404 (via `AppAccessDenied`), bukan 403; **semua** 404 di
+ * controller ini memakai bentuk yang sama dengan penolakan akses pada konteks
+ * yang sama (`notFound()` ⇒ `AppAccessDenied::render()`), sehingga "bukan milik
+ * user" dan "id/volume tidak dikenal" tidak dapat dibedakan pemanggil.
  *
  * **Multi-server F4** (plan §4.2/§4.3/§5): daftar target volume kini menggabungkan
  * volume server **lokal** (Engine host ini) dengan volume **server agent** yang
@@ -116,7 +124,7 @@ class BackupController
     public function guide(Request $request)
     {
         if (!is_admin()) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         return view('backup/guide', [
@@ -159,6 +167,7 @@ class BackupController
         // Baris server agent TIDAK di-overlay: state-nya milik server itu (dikirim
         // apa adanya dari sana) — Engine host ini tidak tahu apa-apa soal volume itu.
         $rows = self::withScheduled($visible, null, $apps, $user);
+        $rows = $this->withServerNames($rows);
         $rows = self::overlayLocalRows($service, $rows);
 
         return json(['code' => 0, 'data' => [
@@ -187,7 +196,7 @@ class BackupController
     public function refresh(Request $request)
     {
         if (!is_admin()) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
         if (config('deploy.volume_backup_enabled', true) === false) {
             return json(['code' => 422, 'msg' => 'Fitur backup volume dimatikan.'])->withStatus(422);
@@ -225,7 +234,7 @@ class BackupController
             'running' => $service->isRunning(),
             'cached_at' => $service->catalog()['cached_at'],
             'status' => $status === [] ? new \stdClass() : $status,
-            'volumes' => self::withScheduled($visible, null, $apps, $user),
+            'volumes' => $this->withServerNames(self::withScheduled($visible, null, $apps, $user)),
             'archived' => $this->archivedPayload($service),
         ]]);
     }
@@ -271,7 +280,7 @@ class BackupController
         }
         if ($target === null) {
             // Termasuk volume DB dashboard (§8i.7) yang bukan target backup app.
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $actor = $this->currentUser();
@@ -410,7 +419,7 @@ class BackupController
         try {
             VolumeStateGuard::assertVolumeName($volume);
         } catch (\Throwable $e) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $service = $this->backupService();
@@ -426,7 +435,7 @@ class BackupController
             return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
         }
         if ($target === null) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $apps = (new AppStore())->all();
@@ -471,7 +480,7 @@ class BackupController
             return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
         }
         if ($target === null) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $apps = (new AppStore())->all();
@@ -530,7 +539,7 @@ class BackupController
             return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
         }
         if ($target === null) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $apps = (new AppStore())->all();
@@ -584,7 +593,7 @@ class BackupController
             return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
         }
         if ($target === null) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $apps = (new AppStore())->all();
@@ -640,7 +649,7 @@ class BackupController
             return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
         }
         if ($target === null) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $apps = (new AppStore())->all();
@@ -653,12 +662,26 @@ class BackupController
             try {
                 $this->assertAgentSupports($serverId, 'db_dump');
                 $dump = $this->agentDeployerForTarget($target)->downloadDump($volume);
+            } catch (AgentError $e) {
+                // `AgentError` juga `RuntimeException`, jadi ia wajib ditangkap
+                // **lebih dulu**: pesannya memuat `base_url`/host agent pada galat
+                // transport, dan identitas itu harus dibuang lewat satu pintu.
+                $code = AgentDeployer::failureCode($e);
+
+                return json([
+                    'code' => $code,
+                    'msg' => AgentError::sanitizeForServer($e->getMessage(), $this->agentServerOf($target)),
+                ])->withStatus($code);
             } catch (\RuntimeException $e) {
                 return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
             } catch (\Throwable $e) {
                 $code = AgentDeployer::failureCode($e);
 
-                return json(['code' => $code, 'msg' => AgentError::sanitize($e->getMessage())])->withStatus($code);
+                // Identitas server (token/base_url/PEM) dibuang lewat satu pintu.
+                return json([
+                    'code' => $code,
+                    'msg' => AgentError::sanitizeForServer($e->getMessage(), $this->agentServerOf($target)),
+                ])->withStatus($code);
             }
         } else {
             try {
@@ -740,7 +763,7 @@ class BackupController
     public function archivedSnapshots(Request $request)
     {
         if (!is_admin()) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $volume = trim((string) $request->get('volume', ''));
@@ -790,7 +813,7 @@ class BackupController
         // pola dengan endpoint admin lain di controller ini, sehingga routing
         // arsip dapat diuji tanpa sesi nyata.
         if (!$this->isAdmin()) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $volume = trim((string) $request->post('volume', ''));
@@ -865,7 +888,7 @@ class BackupController
         $plan = VolumeRestoreService::planArchiveRestore(is_array($entry) ? $entry : null, $targetExists);
         if (!$plan['ok']) {
             if ($plan['code'] === 404) {
-                return $this->notFound();
+                return $this->notFound($request);
             }
             return json(['code' => $plan['code'], 'msg' => $plan['msg']])->withStatus($plan['code']);
         }
@@ -888,7 +911,7 @@ class BackupController
     public function downloadArchiveSql(Request $request)
     {
         if (!is_admin()) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $volume = trim((string) $request->get('volume', ''));
@@ -956,7 +979,7 @@ class BackupController
     public function dbRun(Request $request)
     {
         if (!$this->isAdmin()) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         try {
@@ -983,7 +1006,7 @@ class BackupController
     public function dbPrune(Request $request)
     {
         if (!$this->isAdmin()) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         try {
@@ -1017,7 +1040,7 @@ class BackupController
     public function dbRestore(Request $request)
     {
         if (!$this->isAdmin()) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $confirm = trim((string) $request->post('confirm', ''));
@@ -1055,7 +1078,7 @@ class BackupController
     public function dbDownload(Request $request)
     {
         if (!$this->isAdmin()) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         $file = trim((string) $request->get('file', ''));
@@ -1063,7 +1086,7 @@ class BackupController
         try {
             $path = (new DbBackup())->download($file);
         } catch (\Throwable $e) {
-            return $this->notFound();
+            return $this->notFound($request);
         }
 
         return (new Response(200, [
@@ -1206,6 +1229,11 @@ class BackupController
      * server itu (`AgentDeployer::backupVolumes()`), lengkap dengan `server_id`
      * dan nama app dari control plane.
      *
+     * Hanya server yang **boleh dilihat** pemanggil yang dihubungi
+     * (`visibleAgentServers()` — satu pintu `ServerAccess::visibleServers()`),
+     * sama dengan {@see self::agentVolumeTargets()}; pemanggilnya (`refresh()`)
+     * memang admin-only, jadi daftar server tidak berubah untuk admin.
+     *
      * Best-effort: server tak terjangkau ⇒ dilewati (halaman & cache tetap jalan).
      * Baris mentah dari agent disanitasi ke kunci yang dikenal `BackupCatalog`
      * ({@see BackupCatalog::write()} menyaring ulang), jadi tidak ada kunci asing
@@ -1226,7 +1254,7 @@ class BackupController
         }
 
         $rows = [];
-        foreach ($this->agentServers() as $server) {
+        foreach ($this->visibleAgentServers($apps) as $server) {
             $serverId = (string) ($server['id'] ?? '');
             $agent = $this->agentDeployerForServer($server);
             if ($agent === null) {
@@ -1324,6 +1352,104 @@ class BackupController
         }
 
         return $rows;
+    }
+
+    /**
+     * Sisipkan `server_name` (nama server, bukan id mentah) ke baris volume.
+     *
+     * UI `/backups` menampilkan kolom Server; tanpa field ini ia hanya punya
+     * `server_id` (dua volume bernama sama di dua server jadi tidak dapat
+     * dibedakan oleh mata). Peta nama dibaca **sekali** per respons
+     * ({@see self::serverNames()}) dan **hanya bila ada baris** — bukan kueri per
+     * baris (endpoint ini dipolling dashboard).
+     *
+     * Baris tanpa `server_id` = volume server lokal. Server tak ada di registry ⇒
+     * id dipakai apa adanya (jangan kosongkan: UI tetap bisa membedakan baris).
+     *
+     * @param array<int,array<string,mixed>> $rows
+     * @return array<int,array<string,mixed>>
+     */
+    protected function withServerNames(array $rows): array
+    {
+        if ($rows === []) {
+            return $rows;
+        }
+
+        $names = $this->serverNames();
+
+        foreach ($rows as $index => $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $serverId = self::serverIdOf($row);
+            $row['server_name'] = $names[$serverId] ?? $serverId;
+            $rows[$index] = $row;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Peta `server_id ⇒ nama server` (termasuk baris `local`) — dibaca **sekali**
+     * per respons, pola sama `AppController::index()`.
+     *
+     * Best-effort: registry tak terbaca ⇒ peta kosong (baris memakai id apa
+     * adanya), status backup tidak pernah gagal karena registry server.
+     *
+     * `protected` (seam uji) supaya jumlah pembacaan registry dapat dihitung
+     * tanpa menyentuh `database/` nyata.
+     *
+     * @return array<string,string>
+     */
+    protected function serverNames(): array
+    {
+        try {
+            $servers = $this->serverResolver()->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        $names = [];
+        foreach ($servers as $server) {
+            if (!is_array($server)) {
+                continue;
+            }
+            $id = trim((string) ($server['id'] ?? ''));
+            if ($id === '') {
+                continue;
+            }
+            $name = trim((string) ($server['name'] ?? ''));
+            $names[$id] = $name !== '' ? $name : $id;
+        }
+
+        return $names;
+    }
+
+    /**
+     * Dokumen server sebuah baris volume — **hanya** untuk meredaksi identitas
+     * server (token, `base_url`/host internal, PEM) pada pesan galat; bukan untuk
+     * keputusan otorisasi (itu tetap `BackupAccess`/`AppAccess`).
+     *
+     * Best-effort: server lokal/tak dikenal/gagal dibaca ⇒ `[]` dan
+     * `AgentError::sanitizeForServer()` berperilaku seperti `sanitize()` biasa.
+     *
+     * @param array<string,mixed> $row baris target volume
+     * @return array<string,mixed>
+     */
+    private function agentServerOf(array $row): array
+    {
+        $serverId = self::serverIdOf($row);
+        if (BackupDispatcher::isLocalServer($serverId)) {
+            return [];
+        }
+
+        try {
+            $server = $this->serverResolver()->resolve($serverId);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        return is_array($server) ? $server : [];
     }
 
     /**
@@ -1590,6 +1716,10 @@ class BackupController
      * dengan daftar volume tiruan: menguji matriks hak & gerbang kredit tidak
      * boleh menuntut Docker Engine nyata di lingkungan tes.
      *
+     * Jalur agent-nya **bercakupan user** (`agentVolumeTargets()`): server di luar
+     * jangkauan pemanggil tidak pernah dihubungi, sesuai invarian multi-server
+     * (§9.3) — jangan kembali memanggil seluruh registry di sini.
+     *
      * @return array<int,array{name:string,project:string,app_id:?string,app_name:?string,orphaned:bool}>
      */
     protected function volumeTargets(): array
@@ -1617,6 +1747,13 @@ class BackupController
      * `/backups` tetap jalan) — ia tidak pernah membuat control plane menjalankan
      * operasi lokal sebagai pengganti.
      *
+     * **Cakupan user ditegakkan sebelum jaringan** (keputusan §9.3): hanya server
+     * di `visibleAgentServers()` yang dihubungi, dan untuk non-admin hanya baris
+     * volume milik app yang boleh ia lihat yang menjadi target. Member tanpa app
+     * karena itu **tidak menghubungi server mana pun** (sebelumnya seluruh server
+     * agent dipanggil lalu baru disaring) — sama dengan
+     * `VolumeController::collectAgentVolumes()`.
+     *
      * `protected` supaya tes dapat meng-override tanpa jaringan.
      *
      * @param array<int,array> $apps daftar app control plane
@@ -1631,8 +1768,23 @@ class BackupController
             }
         }
 
+        // Cakupan app user **sebelum** menyentuh jaringan: non-admin hanya boleh
+        // menyentuh server tempat ia punya app terlihat, dan hanya baris app itu
+        // yang menjadi target. Admin: seluruh app (server yang app-nya sudah
+        // dihapus justru satu-satunya tempat volume yatim berada).
+        $isAdmin = $this->isAdmin();
+        $accessibleAppIds = null;
+        if (!$isAdmin) {
+            $accessibleAppIds = [];
+            foreach (AppAccess::visible($apps, $this->currentUser()) as $app) {
+                if (is_array($app) && (string) ($app['id'] ?? '') !== '') {
+                    $accessibleAppIds[(string) $app['id']] = true;
+                }
+            }
+        }
+
         $out = [];
-        foreach ($this->agentServers() as $server) {
+        foreach ($this->visibleAgentServers($apps) as $server) {
             $serverId = (string) ($server['id'] ?? '');
             $agent = $this->agentDeployerForServer($server);
             if ($agent === null) {
@@ -1656,6 +1808,13 @@ class BackupController
                 $appId = (string) ($row['app_id'] ?? '');
                 $app = $appId !== '' ? ($byId[$appId] ?? null) : null;
 
+                // Non-admin: baris app lain/yatim tidak pernah menjadi target
+                // (fail-closed) — akses tidak sah tetap 404, sama seperti volume
+                // yang tidak ada, dan nama volume app lain tidak ikut dikirim.
+                if ($accessibleAppIds !== null && ($app === null || !isset($accessibleAppIds[$appId]))) {
+                    continue;
+                }
+
                 $out[] = [
                     'name' => $name,
                     'project' => (string) ($row['project'] ?? ($app['name'] ?? '')),
@@ -1671,12 +1830,22 @@ class BackupController
     }
 
     /**
-     * Dokumen server **agent** yang aktif (bukan server lokal, bukan yang
-     * dimatikan). Best-effort: registry server tak terbaca ⇒ daftar kosong.
+     * Dokumen server **agent** yang boleh **dilihat** pemanggil — satu pintu
+     * `ServerAccess::visibleServers()` (aturan role tidak disalin di sini),
+     * lalu disaring ke baris yang benar-benar server agent aktif.
      *
+     * Invarian yang dijaga: server di luar jangkauan user **tidak pernah
+     * dihubungi** (bukan sekadar disembunyikan setelah dipanggil), dan user
+     * tanpa app terlihat tidak menghubungi server mana pun. Perilaku ini sama
+     * dengan `VolumeController::visibleAgentServers()` — satu kebijakan untuk
+     * semua permukaan volume/backup.
+     *
+     * Best-effort: registry server tak terbaca ⇒ daftar kosong.
+     *
+     * @param array<int,array> $apps daftar app control plane (`AppStore::all()`)
      * @return array<int,array<string,mixed>>
      */
-    private function agentServers(): array
+    protected function visibleAgentServers(array $apps = []): array
     {
         try {
             $servers = $this->serverResolver()->all();
@@ -1684,9 +1853,14 @@ class BackupController
             return [];
         }
 
+        $visible = ServerAccess::visibleServers($servers, $this->currentUser(), $apps);
+
         $out = [];
-        foreach ($servers as $server) {
+        foreach ($visible as $server) {
             if (!is_array($server) || ServerResolver::isLocal($server) || !ServerResolver::isEnabled($server)) {
+                continue;
+            }
+            if ((string) ($server['id'] ?? '') === '') {
                 continue;
             }
             $out[] = $server;
@@ -1777,8 +1951,28 @@ class BackupController
         flash_set($type, $message);
     }
 
-    private function notFound()
+    /**
+     * 404 satu bentuk untuk seluruh endpoint `/backups/*`.
+     *
+     * Bentuknya **delegasi ke `AppAccessDenied::render()`**: JSON untuk endpoint
+     * `/api/*` & request AJAX, halaman 404 untuk permintaan halaman biasa.
+     *
+     * Kenapa: "volume ada tetapi bukan milik user" ditolak `BackupAccess` →
+     * `AppAccessDenied` (404), sedangkan "volume/id server tidak dikenal" keluar
+     * dari sini. Dulu method ini **selalu** JSON, sehingga pada konteks yang sama
+     * (mis. `POST /backups/run` dari form) kedua kasus bisa dibedakan dari bentuk
+     * responsnya — keberadaan sebuah volume/server bocor. Sekarang keduanya
+     * memakai renderer yang sama: status & bentuk respons identik, tanpa fallback.
+     *
+     * `$request` boleh `null` (pemanggil lama/uji) ⇒ JSON seperti sebelumnya;
+     * jalur produksi selalu mengirim request nyata.
+     */
+    private function notFound(?Request $request = null)
     {
+        if ($request instanceof Request) {
+            return (new AppAccessDenied())->render($request);
+        }
+
         return json(['code' => 404, 'msg' => 'Not Found'])->withStatus(404);
     }
 

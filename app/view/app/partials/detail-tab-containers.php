@@ -3,8 +3,21 @@
     <section class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h2 class="h6 mb-0">Containers</h2>
-    <span class="text-muted small"><?= count($containers) ?> container</span>
+    <span class="text-muted small">
+      <?php if ($isRemoteServer): ?>
+        <span class="badge badge-deploying" title="Container berjalan di server agent, bukan di host dashboard ini">agent</span>
+        <span class="mono"><?= e($appServerName) ?></span> ·
+      <?php endif; ?>
+      <?= count($containers) ?> container
+    </span>
   </div>
+  <?php if ($isRemoteServer): ?>
+  <div class="card-body border-bottom py-2 small text-muted">
+    Log, terminal, dan tombol <strong>Run</strong> di bawah dijalankan di
+    <strong>server agent <?= e($appServerName) ?></strong> (perintah satu-kali di sana
+    dibatasi waktu jalur agent ±30 detik).
+  </div>
+  <?php endif; ?>
   <?php if (empty($containers)): ?>
     <div class="card-body text-muted small">Belum ada data container.</div>
   <?php else: ?>
@@ -57,10 +70,11 @@
             <?php if ($cRunning && $canTerminal): ?>
               <button type="button" class="btn btn-outline-secondary btn-sm terminal-btn ms-1"
                       data-app="<?= e($app['id']) ?>" data-container="<?= e($cName) ?>"
-                      title="Buka shell interaktif (docker exec -it, shell otomatis: bash bila ada; user root)">⌁ Terminal</button>
+                      title="Buka shell interaktif (docker exec -it, shell otomatis: bash bila ada; user root)<?= $isRemoteServer ? ' di server agent ' . e($appServerName) : '' ?>">⌁ Terminal</button>
               <button type="button" class="btn btn-outline-primary btn-sm run-btn ms-1"
                       data-app="<?= e($app['id']) ?>" data-container="<?= e($cName) ?>"
-                      title="Jalankan perintah satu kali (docker exec ... sh -c)">> Run</button>
+                      data-server="<?= $isRemoteServer ? e($appServerName) : '' ?>"
+                      title="Jalankan perintah satu kali (docker exec ... sh -c)<?= $isRemoteServer ? ' di server agent ' . e($appServerName) : '' ?>">> Run</button>
             <?php endif; ?>
           <?php endif; ?>
         </td>

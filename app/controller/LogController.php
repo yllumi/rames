@@ -7,6 +7,7 @@ use app\library\Agent\AgentError;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\ServerResolver;
 use app\library\Docker\AppContainers;
 use app\library\Docker\ContainerLogs;
 use app\library\Docker\DockerClient;
@@ -70,7 +71,7 @@ class LogController
         } catch (\Throwable $e) {
             // Konfigurasi server agent cacat / `server_id` tak dikenal ⇒ fail-fast:
             // jangan pernah membaca daemon lokal untuk app server agent.
-            return $this->failure($e, 502);
+            return $this->failure($e, 502, $this->agentServerForApp($app));
         }
 
         if ($deployer !== null) {
@@ -84,7 +85,7 @@ class LogController
             try {
                 $text = $deployer->containerLogs($app, $container, $tail, $timestamps);
             } catch (\Throwable $e) {
-                return $this->failure($e, AgentDeployer::failureCode($e));
+                return $this->failure($e, AgentDeployer::failureCode($e), $this->agentServerForApp($app));
             }
 
             return json(['code' => 0, 'data' => [
@@ -143,12 +144,48 @@ class LogController
     }
 
     /**
-     * Respons galat jalur agent: pesan disanitasi (`AgentError::sanitize()`) supaya
-     * token/`Authorization`/signature tidak pernah muncul di UI atau log.
+     * Registry server (seam uji: store temp tanpa `database/` nyata) — pola
+     * `DatabaseController::serverResolver()`. Dipakai **hanya** untuk meredaksi
+     * identitas server pada pesan galat.
      */
-    private function failure(\Throwable $e, int $code)
+    protected function serverResolver(): ServerResolver
     {
-        $detail = AgentError::sanitize($e->getMessage());
+        return new ServerResolver();
+    }
+
+    /**
+     * Dokumen server sebuah app — **hanya** untuk meredaksi identitas server
+     * (token, `base_url`/host internal, blok PEM) pada pesan galat; keputusan
+     * otorisasi tetap di `AppAccess`/`AgentDeployer::forApp()`.
+     *
+     * Best-effort: server tak dikenal/gagal dibaca ⇒ `[]` (pesan tetap disanitasi
+     * token-nya oleh `AgentError`).
+     *
+     * @param array<string,mixed> $app
+     * @return array<string,mixed>
+     */
+    private function agentServerForApp(array $app): array
+    {
+        try {
+            $server = $this->serverResolver()->resolveForApp($app);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        return is_array($server) ? $server : [];
+    }
+
+    /**
+     * Respons galat jalur agent: pesan disanitasi **satu pintu**
+     * (`AgentError::sanitizeForServer()`) supaya token/`Authorization`/signature
+     * **dan** identitas server (`base_url`/host internal, PEM) tidak pernah muncul
+     * di UI atau log.
+     *
+     * @param array<string,mixed> $server dokumen server (kosong ⇒ sanitasi biasa)
+     */
+    private function failure(\Throwable $e, int $code, array $server = [])
+    {
+        $detail = AgentError::sanitizeForServer($e->getMessage(), $server);
 
         return json([
             'code' => $code,

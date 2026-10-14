@@ -358,7 +358,10 @@ class ServerController
 
             return json([
                 'code' => 1,
-                'error' => 'Konfigurasi server tidak bisa dipakai untuk menghubungi agent: ' . $e->getMessage(),
+                // Jalur agent juga bisa berakhir di sini (RuntimeException non-
+                // AgentError): identitas server tetap dibuang lewat satu pintu.
+                'error' => 'Konfigurasi server tidak bisa dipakai untuk menghubungi agent: '
+                    . AgentError::sanitizeForServer($e->getMessage(), $server),
                 'reason' => AgentError::INVALID_CONFIG,
             ]);
         }
@@ -451,9 +454,16 @@ class ServerController
                 ]
             );
         } catch (AgentError $e) {
-            return json(['code' => 400, 'msg' => $e->getMessage(), 'reason' => $e->reason]);
+            return json([
+                'code' => 400,
+                'msg' => AgentError::sanitizeForServer($e->getMessage(), $server),
+                'reason' => $e->reason,
+            ]);
         } catch (RuntimeException $e) {
-            return json(['code' => 400, 'msg' => $e->getMessage()]);
+            return json([
+                'code' => 400,
+                'msg' => AgentError::sanitizeForServer($e->getMessage(), $server),
+            ]);
         }
 
         return json([
@@ -785,15 +795,17 @@ class ServerController
     /**
      * Pesan galat koneksi dalam bahasa Indonesia + petunjuk tindakan.
      *
-     * Pesan `AgentError` sudah disanitasi pemiliknya (token/signature di-redaksi);
-     * sanitasi diulang di sini sebagai sabuk pengaman supaya nilai token yang
-     * tersimpan **tidak pernah** bisa ikut terkirim ke UI.
+     * Pesan `AgentError` sudah disanitasi pemiliknya (token/signature di-redaksi),
+     * tetapi **identitas server** (`base_url`/host internal, blok PEM) juga harus
+     * dibuang dari pesan yang tampil — itu **satu pintu**
+     * `AgentError::sanitizeForServer()` (jangan memakai `sanitize()` di sini dan
+     * jangan menyalin regex `base_url`).
      *
      * @param array<string,mixed> $server
      */
     private function friendlyError(AgentError $e, array $server): string
     {
-        $detail = AgentError::sanitize($e->getMessage(), trim((string) ($server['token'] ?? '')));
+        $detail = AgentError::sanitizeForServer($e->getMessage(), $server);
 
         $hint = match ($e->reason) {
             AgentError::UNREACHABLE => 'Agent tidak bisa dihubungi (koneksi/timeout/DNS). Periksa URL, apakah container agent hidup, dan firewall allowlist IP dashboard.',

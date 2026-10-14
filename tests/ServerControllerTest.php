@@ -717,6 +717,12 @@ class ServerControllerTest extends TestCase
         self::assertStringNotContainsString(self::TOKEN, $response->rawBody());
         self::assertStringNotContainsString('Bearer', (string) ($json['error'] ?? ''));
 
+        // Identitas internal server (`base_url`/host agent) juga tidak boleh
+        // tampil: `AgentClient` menyisipkannya pada galat transport, jadi pesan
+        // wajib lewat `AgentError::sanitizeForServer()` (satu pintu).
+        self::assertStringNotContainsString('10.0.0.12', (string) ($json['error'] ?? ''));
+        self::assertStringNotContainsString('https://10.0.0.12:8443', $response->rawBody());
+
         $stored = $this->store()->find($id);
         self::assertNotNull($stored);
         self::assertSame('offline', $stored['status']);

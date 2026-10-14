@@ -7,6 +7,7 @@ use app\library\Agent\AgentError;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\ServerResolver;
 use app\library\Docker\AppContainers;
 use app\library\Docker\DockerExec;
 use app\library\Storage\AppStore;
@@ -97,7 +98,7 @@ class TerminalController
         try {
             $deployer = $this->agentDeployer($app);
         } catch (\Throwable $e) {
-            return $this->agentFailure($e);
+            return $this->agentFailure($e, $app);
         }
 
         if ($deployer !== null) {
@@ -140,7 +141,7 @@ class TerminalController
         } catch (\Throwable $e) {
             // Endpoint ini hanya dipanggil EventSource → selalu balas SSE (klien
             // berhenti sendiri, bukan badai retry) — lihat catatan `sseGone()`.
-            return $this->sseGone($request, AgentError::sanitize($e->getMessage()));
+            return $this->sseGone($request, AgentError::sanitizeForServer($e->getMessage(), $this->agentServerForApp($app)));
         }
 
         if ($deployer !== null) {
@@ -267,7 +268,7 @@ class TerminalController
         try {
             $deployer = $this->agentDeployer($app);
         } catch (\Throwable $e) {
-            return $this->agentFailure($e);
+            return $this->agentFailure($e, $app);
         }
 
         if ($deployer !== null) {
@@ -281,7 +282,7 @@ class TerminalController
             try {
                 $deployer->terminalInput($app, $token, $data);
             } catch (\Throwable $e) {
-                return $this->agentFailure($e);
+                return $this->agentFailure($e, $app);
             }
 
             return json(['code' => 0]);
@@ -312,14 +313,14 @@ class TerminalController
         try {
             $deployer = $this->agentDeployer($app);
         } catch (\Throwable $e) {
-            return $this->agentFailure($e);
+            return $this->agentFailure($e, $app);
         }
 
         if ($deployer !== null) {
             try {
                 $deployer->terminalClose($app, $token);
             } catch (\Throwable $e) {
-                return $this->agentFailure($e);
+                return $this->agentFailure($e, $app);
             }
             // Container tidak diketahui di sini (metadata sesi hidup di agent);
             // audit tetap mencatat aksi + app.
@@ -348,7 +349,7 @@ class TerminalController
         try {
             $deployer = $this->agentDeployer($app);
         } catch (\Throwable $e) {
-            return $this->agentFailure($e);
+            return $this->agentFailure($e, $app);
         }
 
         if ($deployer !== null) {
@@ -422,7 +423,7 @@ class TerminalController
         try {
             $result = $deployer->runCommand($app, $container, $command, $timeout, $user);
         } catch (\Throwable $e) {
-            return $this->agentFailure($e);
+            return $this->agentFailure($e, $app);
         }
 
         $this->audit(
@@ -504,7 +505,7 @@ class TerminalController
         try {
             $session = $deployer->terminalOpen($app, $container, $opts);
         } catch (\Throwable $e) {
-            return $this->agentFailure($e);
+            return $this->agentFailure($e, $app);
         }
 
         $this->audit(
@@ -536,7 +537,7 @@ class TerminalController
         try {
             $stream = $deployer->terminalStream($app, $token);
         } catch (\Throwable $e) {
-            return $this->sseGone($request, AgentError::sanitize($e->getMessage()));
+            return $this->sseGone($request, AgentError::sanitizeForServer($e->getMessage(), $this->agentServerForApp($app)));
         }
 
         $connection = $request->connection;
@@ -595,17 +596,57 @@ class TerminalController
 
     /**
      * Respons JSON kegagalan jalur agent (koneksi/timeout/404/konfigurasi server
-     * cacat) — pesan disanitasi `AgentError::sanitize()` sehingga token server,
-     * header `Authorization`, dan signature tidak pernah tampil di UI atau log.
+     * cacat) — pesan disanitasi **satu pintu** `AgentError::sanitizeForServer()`
+     * sehingga token server, header `Authorization`, signature, **dan** identitas
+     * server (`base_url`/host internal, blok PEM) tidak pernah tampil di UI atau
+     * log.
+     *
+     * @param array<string,mixed> $app app pemilik sesi (untuk dokumen server)
      */
-    private function agentFailure(\Throwable $e)
+    private function agentFailure(\Throwable $e, array $app = [])
     {
-        $detail = AgentError::sanitize($e->getMessage());
+        $detail = AgentError::sanitizeForServer($e->getMessage(), $this->agentServerForApp($app));
 
         return json([
             'code' => AgentDeployer::failureCode($e),
             'msg' => $detail === '' ? 'Operasi di server agent gagal.' : $detail,
         ]);
+    }
+
+    /**
+     * Registry server (seam uji: store temp tanpa `database/` nyata) — pola
+     * `DatabaseController::serverResolver()`. Dipakai **hanya** untuk meredaksi
+     * identitas server pada pesan galat.
+     */
+    protected function serverResolver(): ServerResolver
+    {
+        return new ServerResolver();
+    }
+
+    /**
+     * Dokumen server sebuah app — **hanya** untuk meredaksi identitas server
+     * (token, `base_url`/host internal, blok PEM) pada pesan galat; keputusan
+     * otorisasi tetap di `AppAccess`/`AgentDeployer::forApp()`.
+     *
+     * Best-effort: app kosong/server tak dikenal/gagal dibaca ⇒ `[]` (pesan tetap
+     * disanitasi token-nya oleh `AgentError`).
+     *
+     * @param array<string,mixed> $app
+     * @return array<string,mixed>
+     */
+    private function agentServerForApp(array $app): array
+    {
+        if ($app === []) {
+            return [];
+        }
+
+        try {
+            $server = $this->serverResolver()->resolveForApp($app);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        return is_array($server) ? $server : [];
     }
 
     /**

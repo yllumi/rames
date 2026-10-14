@@ -322,6 +322,33 @@ final class DatabaseIndexServerScopeTest extends TestCase
     }
 
     // ==================================================================
+    // Higienitas pesan galat jalur agent
+    // ==================================================================
+
+    /**
+     * Galat transport `AgentClient` memuat `base_url` server; controller wajib
+     * meredaksinya lewat satu pintu (`AgentError::sanitizeForServer()`) sehingga
+     * halaman tidak pernah memuat endpoint internal/token.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAgentErrorMessagesNeverLeakTokenOrBaseUrl(): void
+    {
+        $handler = new DatabaseIndexFakeHandler(); // antrean kosong ⇒ galat transport
+        $docker = new DatabaseIndexLocalDocker();
+        $docker->explode = true;
+
+        $controller = $this->controller($handler, $docker);
+        $controller->index($this->get('/database'));
+
+        $engineError = (string) ($controller->rendered[0]['vars']['engineError'] ?? '');
+        $this->assertStringContainsString('vps-jakarta-2', $engineError, 'nama server tetap membantu diagnosis');
+        foreach (['tok-agent-uji-f3d-999', 'agent.test', 'https://'] as $secret) {
+            $this->assertStringNotContainsString($secret, $engineError, 'rahasia/endpoint internal bocor: ' . $secret);
+        }
+    }
+
+    // ==================================================================
     // Helper
     // ==================================================================
 
