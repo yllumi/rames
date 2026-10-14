@@ -25,6 +25,7 @@
 - **Backup volume harian ke S3 (restic)** — volume Docker milik app di-backup harian ke object storage (S3) via **restic** (inkremental + dedup + enkripsi + retensi): container database didump logis (tanpa downtime), volume lain di-snapshot (stop → snapshot → start). Restore dari UI di halaman `/backups` (SPECS §8h). Volume yang sudah dihapus (app dihapus total) tetap dapat dipulihkan dari tab **Arsip** (admin) — restore ke volume baru atau unduh dump `.sql`. Penyimpanan snapshot **berbayar kredit** (per GB/bulan, minimum 1 GB per app; lihat **Biaya backup** di bagian backup).
 - **Batas resource per service** — admin menetapkan batas maksimum CPU & memori tiap service app (hard limit per service, ditulis ke override compose); user lain melihat nilainya read-only. Saat **create**, semua user login dapat memilihnya lewat **penggeser** (slider) dalam plafon — owner/member dibatasi plafon billing, admin tanpa plafon (kapasitas host).
 - **Kredit, deposit & penagihan resource (role member)** — app milik user `member` ditagih pemakaian CPU/RAM per jam dari **saldo kredit** — plus **biaya penyimpanan snapshot backup** (1.000 kredit/GB/bulan, minimum 1 GB per app, diakru hanya saat app berjalan; SPECS §7.12): meteran per tick, tagihan otomatis awal periode berikutnya, dan saldo negatif ⇒ app owner **dihentikan otomatis** (kebijakan `stop`). Kredit diisi **deposit manual admin** (halaman `/credits`) atau **top-up mandiri via Duitku** (inquiry → redirect → callback tervalidasi HMAC-SHA256; dibuka lewat **modal** di halaman Kredit; kanal pembayaran ditampilkan **terkelompok per jenis** — Virtual Account/E-Wallet/QRIS/Retail, urutan kanonik dari server). Form email notifikasi kini di halaman **Profil** (`/profile`). Admin **bebas kredit penuh** (aktor admin **tidak pernah** diblokir gerbang) dan **app milik admin bebas kredit** — tidak diakru, tidak ditagih, dan tidak dibatasi plafon CPU/RAM untuk siapa pun; app yang di-*share* tetap ditagih ke **owner**; owner/member memilih CPU/RAM saat create dalam plafon admin (plafon hanya ditegakkan untuk member). Gerbang kredit mengecualikan aktor exempt (admin) & pemilik exempt (app milik admin) lebih dulu, lalu menilai aktor `member` (wajib bersaldo) dan owner/pembayar bila berbeda — aturan yang sama juga ditegakkan di worker deploy async (identitas aktor diteruskan ke proses worker; urutan penilaian **aktor → pembayar/owner** dengan pengecualian exempt yang sama — admin/app milik admin — jadi controller & worker tidak berbeda putusan, sedangkan pemanggil lama tanpa aktor membuat worker menilai **hanya owner**); sehingga **member tanpa saldo tetap diblokir** untuk app miliknya, dan operator member tetap diblokir bila owner member kekurangan saldo. App berjalan yang dialihkan ke pemilik bebas tagihan (admin) **dihentikan otomatis** — termasuk saat user pemilik dihapus (app-nya dialihkan ke admin) — agar tidak ada pemakaian gratis; admin tetap bisa menyalakannya kembali (app itu **tetap** diakru & akan dihentikan lagi bila kebijakan `stop` berlaku, jadi bukan jalur gratis). Bila billing/top-up dimatikan, deposit manual tetap berfungsi; bila top-up belum aktif (mis. kredensial belum diisi), **admin** melihat alasannya di halaman Kredit (SPECS §7.12).
+- **Multi-server (control plane + agent)** — dashboard bisa mengendalikan server tambahan: kode & image sama, peran runtime dibedakan `RAMES_MODE`; server agent = eksekutor tanpa UI di port TLS sendiri (`8443`, self-signed + pinning fingerprint), deploy dikirim sebagai job async (polling status & log). Halaman **Servers** (admin-only) untuk Add Server + Test connection; keunikan nama/port/container/subdomain **per server**; app lama tetap di server `local`. Lihat [Menambah server kedua](#menambah-server-kedua) (SPECS §2a/§7.14).
 - **Keamanan dasar** — CSRF token, eksekusi command bebas injection (`array` + `bypass_shell`), validasi input ketat, data domain di SQLite (transaksi atomik), cache JSON dengan file locking (`flock`).
 - **Basis data dashboard (SQLite) + backup berkala** — app/user/billing/seleksi+riwayat volume disimpan di satu berkas SQLite (`rames.sqlite`) dalam named volume **`rames`** (tidak hilang saat `git clean`/update). Snapshot `VACUUM INTO` harian + retensi, impor otomatis **sekali** dari `database/*.json` lama, dan restore dari UI/CLI (kartu **Database dashboard (SQLite)** di `/backups`, admin). Lihat [Basis data dashboard (SQLite)](#basis-data-dashboard-sqlite) (SPECS §8i).
 
@@ -229,6 +230,27 @@ docker exec rames-webman php cli/db.php export-json --dir=/tmp # ke direktori la
   ```
 - **Wildcard otomatis** — pasang `dnsmasq` dengan `address=/{APP_DOMAIN}/127.0.0.1` (lihat `ARCHITECTURE.md`/catatan pengujian).
 
+## Menambah server kedua
+
+Dashboard dapat mengendalikan **server tambahan** (multi-server): dashboard berperan **control plane**, server tambahan berperan **agent** — kode & image **sama**, dibedakan mode runtime (`RAMES_MODE=agent`; agent tidak punya UI). Server tempat dashboard berjalan tetap menangani app-nya sendiri sebagai server `local` (instalasi lama tidak berubah).
+
+1. **Di server baru** (Docker Engine + `docker compose` v2.6+, Nginx native + certbot, wildcard DNS `*.<APP_DOMAIN>` mengarah ke server itu), checkout repo lalu jalankan installer agent:
+
+   ```bash
+   git clone <repo> /srv/rames-agent && cd /srv/rames-agent
+   ./agent/install.sh --domain domain2.com --port-range 30000 30999
+   ```
+
+   Installer membuat `secrets/agent.env` (0600, token acak) + **sertifikat TLS self-signed**, menjalankan `docker compose -f docker-compose.agent.yml -p rames-agent up -d --build`, lalu mencetak **blok onboarding**: URL, token, fingerprint SHA-256, PEM sertifikat, dan versi agent.
+
+2. **Batasi port agent** (default `8443`) hanya untuk IP control plane (`ufw`/`iptables`) — port ini adalah pintu eksekusi Docker di server itu, jangan pernah dibuka ke publik.
+
+3. **Di dashboard (admin)**: menu **Servers → Add Server** → isi name, URL (`https://<ip>:8443`), token, **PEM** (paste dari blok onboarding), domain server, dan rentang port → **Test connection**. Dashboard menghitung fingerprint sendiri dari PEM; tidak cocok ⇒ gagal tegas dan server tidak disimpan.
+
+4. **Deploy app ke server itu**: `/apps/create` (admin) → pilih **Server** di dropdown. Keunikan nama app/port/container/subdomain diperiksa **per server**.
+
+Selengkapnya (opsi installer, rotasi token/sertifikat dengan `--force`, firewall, operasi harian): [`agent/README.md`](./agent/README.md). Alur internal: `ARCHITECTURE.md` §5.21–§5.26, `SPECS.md` §2a/§7.14/§12.
+
 ## Konfigurasi (.env)
 
 | Variabel | Default | Keterangan |
@@ -237,6 +259,10 @@ docker exec rames-webman php cli/db.php export-json --dir=/tmp # ke direktori la
 | `APP_PORT` | `8000` | Port akses dashboard (host) |
 | `SESSION_SECRET` | `change-me` | Secret session — **wajib ganti** |
 | `PORT_RANGE_START` / `PORT_RANGE_END` | `30000` / `30999` | Rentang host port untuk container app |
+| `RAMES_MODE` | `dashboard` | Peran runtime: `dashboard` (control plane) atau `agent` (server yang dikendalikan, tanpa UI; lihat [Menambah server kedua](#menambah-server-kedua)) |
+| `AGENT_TOKEN` | (kosong) | Bearer token control plane → agent (**rahasia**, dibuat `agent/install.sh`). Kosong di mode agent ⇒ seluruh route agent tidak didaftarkan (fail-closed) |
+| `AGENT_BIND` | `0.0.0.0:8443` | Alamat listen agent (HTTPS self-signed; TLS diterminasi di proses agent) |
+| `AGENT_TLS_CERT` / `AGENT_TLS_KEY` | (kosong) | Path sertifikat & private key TLS agent — **wajib** di mode agent (start ditolak tanpa TLS) |
 | `NGINX_CONF_PATH` / `NGINX_ENABLED_PATH` | `/etc/nginx/sites-available` / `sites-enabled` | Direktori config Nginx host (di-mount ke container) |
 | `NGINX_RELOAD_STATUS_FILE` | `{proyek}/nginx-status/last-reload.json` | Status reload yang ditulis watcher host / dashboard |
 | `NGINX_HTTP_CONF` | `/etc/nginx/nginx.conf` | Config utama nginx host (dipakai helper reload) |
@@ -315,14 +341,19 @@ docker exec rames-webman php cli/db.php export-json --dir=/tmp # ke direktori la
 app/
 ├── command/MakeAdmin.php        # php webman make:admin (provisioning user awal)
 ├── controller/                  # AuthController, AppController, CreditController, PaymentController,
-│                                #   FileController, SslController, NginxController, UserController
+│                                #   FileController, SslController, NginxController, UserController,
+│                                #   ServerController (registry server), AgentController + AgentJobController + AgentLogController + AgentTerminalController (route mesin agent)
 ├── library/                     # SELURUH logika bisnis (controller hanya mediator)
 │   ├── Auth/UserStore.php
 │   ├── Billing/                 # kredit & penagihan + top-up Duitku: Pricing, BillingStore, CreditAccount,
 │   │                            #   UsageMeter, Invoicer, BillingGate, BillingPeriod, InsufficientCredits,
 │   │                            #   BillingRunner, AppStopper, DuitkuClient, DuitkuSignature, DuitkuError,
 │   │                            #   TopUpOrder, TopUpService
-│   ├── Deploy/                  # DeployerInterface, LocalDeployer, DeployerFactory
+│   ├── Agent/                   # transport & job agent: AgentClient, AgentError, TlsPinMaterializer,
+│   │                            #   AgentJobStore, NonceStore, AgentAppProjection, AgentArtifactPackager,
+│   │                            #   AgentArtifactMaterializer
+│   ├── Deploy/                  # DeployerInterface, LocalDeployer, AgentDeployer, DeployerFactory,
+│   │                            #   ServerResolver, DeployWorkerLauncher
 │   ├── Docker/                  # ComposeParser, DockerClient, DockerComposeRunner, PortManager, AppContainers
 │   ├── Files/                   # file manager container: PathGuard, TextContent, ArchiveGuard,
 │   │                            #   ListingParser, FileError, FilesInput, ContainerFiles
@@ -332,11 +363,11 @@ app/
 │   ├── Storage/                 # SqliteDatabase, SqliteStore, SchemaMigrations, JsonImporter, DbBackup,
 │   │                            #   JsonStore (cache runtime, flock), AppStore
 │   └── Support/ProcessRunner.php
-├── middleware/                  # AuthMiddleware, CsrfMiddleware
+├── middleware/                  # AuthMiddleware, CsrfMiddleware, AgentAuthMiddleware (mode agent)
 ├── process/BillingProcess.php   # timer billing (meteran + penagihan + top-up)
 ├── process/DbBackupProcess.php  # timer backup DB SQLite (snapshot + retensi)
-└── view/                        # template Raw Webman (.html)
-cli/deploy.php                   # background worker deploy/rebuild
+└── view/                        # template Raw Webman (.html) + server/ (halaman Servers)
+cli/deploy.php                   # background worker deploy/rebuild (dipakai juga oleh agent, env RAMES_JOB_ID)
 cli/billing.php                  # worker CLI billing (status|sample|tick|invoice|expire)
 cli/db.php                       # CLI basis data SQLite (status|migrate|import-json|export-json|integrity|backup|list|prune|restore)
 cli/ssl.php                      # background worker SSL (Let's Encrypt)
@@ -344,6 +375,8 @@ config/                          # konfigurasi Webman + config/deploy.php
 database/                        # berkas JSON warisan (diimpor sekali) + keys/env/restic (gitignored)
                                  #   DB SQLite: named volume `rames` → /var/lib/rames/rames.sqlite (§8i)
 apps/                           # hasil clone tiap app (gitignored)
+agent/                           # paket server agent: install.sh + README.md (multi-server)
+docker-compose.agent.yml         # compose server agent (project rames-agent, TLS di :8443)
 nginx-status/                    # status reload nginx (gitignored)
 public/css/app.css               # stylesheet dashboard
 public/js/app-files.js           # file manager container (modal di detail app)
@@ -388,7 +421,7 @@ runtime/                         # state runtime (gitignored): logs/, db-backup/
 
 - Watcher host (`systemd` + `inotifywait`) untuk reload Nginx otomatis — sementara digantikan reload dari dashboard (lihat "Reload Nginx host")
 - SSL multi-domain dalam satu sertifikat (SAN)
-- Ekstrak `DeployerInterface` menjadi agent HTTP terpisah (multi-server)
+- **Multi-server (control plane + agent)** — ✅ **F0 + F1 + F2 + F3a selesai & terverifikasi**: satu kode/image dengan dua peran runtime (`RAMES_MODE=dashboard|agent`), registry server admin-only (`/servers`) + satu domain dasar per server, deploy ke server agent lewat **job async** (polling status & log), TLS self-signed + pinning, keunikan nama/port/container/subdomain **per server**, Nginx/domain/SSL dijalankan **di server target** (op job `nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke`, `GET /apps/{id}/nginx`, `POST /nginx/check`), serta **log container & terminal diproksi** (`GET /apps/{id}/logs`, `POST /terminal/open|/terminal/{token}/input|close`, `GET /terminal/{token}/stream`; SSE byte-passthrough, sesi agent tidak ditutup saat klien drop; `Run` one-shot ⇒ 501). Sisa: **F3** file manager/Adminer/monitor/network + daftar volume project diproksi, **F4** backup/metering/template pull/self-update agent, dan **cacat F2** (aksi UI subdomain/rute/domain untuk app agent masih memakai reloader/issuer **lokal** — lihat `ARCHITECTURE.md` §8 GOTCHA no. 15). Cara menambah server kedua: lihat [Menambah server kedua](#menambah-server-kedua) & [`agent/README.md`](./agent/README.md) (detail: `SPECS.md` §12, `ARCHITECTURE.md` §5.27–§5.28 & §8)
 - Role & permission antar user
 - Log viewer real-time per container
 - Penyimpanan data domain sudah di SQLite (named volume `rames`, backup berkala §8i); sisa: cache runtime tetap JSON, dan belum ada salinan off-site/S3 untuk snapshot DB dashboard

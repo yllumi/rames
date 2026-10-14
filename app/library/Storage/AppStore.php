@@ -37,6 +37,38 @@ class AppStore
         return $this->store->path();
     }
 
+    // ==================================================================
+    // Dimensi server (multi-server F1) — satu sumber normalisasi
+    // ==================================================================
+
+    /**
+     * Id server pemilik app — **satu-satunya** jalur normalisasi dimensi server.
+     *
+     * `$app['server_id']` non-kosong dipakai apa adanya; kosong/absen ⇒ server
+     * lokal ({@see ServerStore::LOCAL_ID}) — kompatibilitas app lama (migrasi
+     * skema v2 sudah mem-backfill, ini jaring pengaman untuk dokumen yang belum
+     * lewat migrasi / dibaca dari payload agent).
+     *
+     * JANGAN menulis ulang `?: 'local'` di kelas lain — pakai helper ini
+     * (AppPorts, ContainerNames, SubdomainManager).
+     *
+     * @param array<string,mixed> $app
+     */
+    public static function serverIdOf(array $app): string
+    {
+        return self::normalizeServerId($app['server_id'] ?? '');
+    }
+
+    /**
+     * Normalisasi id server dari nilai mentah (string/`mixed` non-skalar).
+     */
+    public static function normalizeServerId(mixed $serverId): string
+    {
+        $id = is_scalar($serverId) ? trim((string) $serverId) : '';
+
+        return $id === '' ? ServerStore::LOCAL_ID : $id;
+    }
+
     /**
      * @return array<int,array>
      */
@@ -55,6 +87,11 @@ class AppStore
         return null;
     }
 
+    /**
+     * App pertama dengan nama tersebut **lintas server** — perilaku lama
+     * dipertahankan agar pemakai lama tidak rusak. Untuk keunikan per server
+     * pakai {@see findByNameOnServer()}.
+     */
     public function findByName(string $name): ?array
     {
         foreach ($this->all() as $app) {
@@ -70,6 +107,31 @@ class AppStore
         return $this->findByName($name) !== null;
     }
 
+    /**
+     * App dengan nama tersebut **di server tertentu** (multi-server F1).
+     *
+     * `$serverId` kosong ⇒ server lokal (lihat {@see normalizeServerId()}).
+     */
+    public function findByNameOnServer(string $name, string $serverId): ?array
+    {
+        $scope = self::normalizeServerId($serverId);
+        foreach ($this->all() as $app) {
+            if (($app['name'] ?? '') === $name && self::serverIdOf($app) === $scope) {
+                return $app;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Nama sudah dipakai di server tersebut? (padanan scope-aware dari
+     * {@see nameExists()})
+     */
+    public function nameExistsOnServer(string $name, string $serverId): bool
+    {
+        return $this->findByNameOnServer($name, $serverId) !== null;
+    }
+
     public function create(array $app): array
     {
         $app['id'] = $app['id'] ?? bin2hex(random_bytes(8));
@@ -77,12 +139,21 @@ class AppStore
         $app['updated_at'] = date('c');
         $app['owner_id'] = (string) ($app['owner_id'] ?? '');
         $app['members'] = is_array($app['members'] ?? null) ? $app['members'] : [];
+        // Dimensi server (multi-server F0/F1): tanpa nilai eksplisit, app lahir di
+        // server lokal. Normalisasi lewat satu helper (`serverIdOf`).
+        $app['server_id'] = self::serverIdOf($app);
 
         $this->store->update(function (array &$data) use ($app): void {
             foreach ($data as $existing) {
-                if (($existing['name'] ?? '') === $app['name']) {
-                    throw new RuntimeException("Nama app \"{$app['name']}\" sudah dipakai.");
+                if (($existing['name'] ?? '') !== $app['name']) {
+                    continue;
                 }
+                if (self::serverIdOf($existing) !== $app['server_id']) {
+                    continue; // nama sama di server berbeda = sah (keunikan per server)
+                }
+                throw new RuntimeException(
+                    "Nama app \"{$app['name']}\" sudah dipakai di server \"{$app['server_id']}\"."
+                );
             }
             $data[] = $app;
         });

@@ -14,6 +14,12 @@
 
 use Webman\Route;
 
+use app\controller\AgentController;
+use app\controller\AgentDockerController;
+use app\controller\AgentFilesController;
+use app\controller\AgentJobController;
+use app\controller\AgentLogController;
+use app\controller\AgentTerminalController;
 use app\controller\AuthController;
 use app\controller\BackupController;
 use app\controller\CreditController;
@@ -28,11 +34,127 @@ use app\controller\FileController;
 use app\controller\HealthController;
 use app\controller\PaymentController;
 use app\controller\ProfileController;
+use app\controller\ServerController;
 use app\controller\SslController;
 use app\controller\TerminalController;
 use app\controller\UpdateController;
 use app\controller\UserController;
 use app\controller\VolumeController;
+
+/*
+|--------------------------------------------------------------------------
+| Gerbang mode runtime (multi-server F0: satu kode & image, dua peran)
+|--------------------------------------------------------------------------
+| Mode dibaca dari `config('deploy.mode')` (bersumber env `RAMES_MODE`, lihat
+| config/deploy.php):
+|
+|   - `dashboard` (default) → SELURUH route UI/API dashboard di file ini;
+|   - `agent`               → HANYA route mesin agent (diagnostik `/healthz`
+|     `/version`, job async `/jobs*`, proyeksi app `/apps/{id}`). Route
+|     dashboard (login, apps, nginx, ssl, backups, monitor, database, credits,
+|     users, api/*) **tidak didaftarkan sama sekali** — bukan sekadar
+|     disembunyikan — sehingga di server agent memang tidak ada permukaan
+|     dashboard/UI.
+|
+| FAIL-CLOSED: route agent hanya didaftarkan bila `AGENT_TOKEN` terisi. Tanpa
+| token, server agent tidak mengekspos route apa pun (semua 404) — permukaan
+| tanpa token hanya akan jadi pintu terbuka. Penegakan token/nonce sendiri
+| datang bersama AgentAuthMiddleware (misi Auth & Security).
+|
+| Catatan middleware: route agent sengaja TIDAK memasang middleware sesi/CSRF
+| apa pun di sini (lihat tests/AgentModeTest.php). Gerbang daftar middleware
+| global per mode ada di config/middleware.php — di luar wilayah misi F0 ini.
+*/
+$ramesMode = config('deploy.mode');
+if (!is_string($ramesMode) || $ramesMode === '') {
+    // Di luar runtime webman (mis. uji unit) `config()` bisa kosong.
+    $ramesMode = 'dashboard';
+}
+$ramesAgentToken = config('deploy.agent_token');
+$ramesAgentToken = is_string($ramesAgentToken) ? $ramesAgentToken : '';
+
+if ($ramesMode === 'agent') {
+    if (trim($ramesAgentToken) !== '') {
+        Route::get('/healthz', [AgentController::class, 'health']);
+        Route::get('/version', [AgentController::class, 'version']);
+
+        // Job async (F1 multi-server, plan §4.1/§11 catatan 7): agent menerima
+        // job deploy dari control plane, menjalankannya sendiri lewat
+        // `DeployWorkerLauncher` (`cli/deploy.php` detached), lalu dilaporkan
+        // lewat polling status + log (tanpa streaming panjang — timeout HTTP
+        // ≤30 detik). Semua route tertutup `AgentAuthMiddleware` (token +
+        // timestamp + nonce + signature) yang dipasang global di mode agent.
+        Route::post('/jobs', [AgentJobController::class, 'create']);
+        Route::get('/jobs/{id}', [AgentJobController::class, 'show']);
+        Route::get('/jobs/{id}/log', [AgentJobController::class, 'log']);
+
+        // Proyeksi app di agent (F1, plan §4.3 sisi pull): control plane menarik
+        // state eksekusi app (status/containers/deploy_history/ssl) sesudah job.
+        // Whitelist field ada di `AgentJobController::APP_FIELDS` — nilai `env`
+        // & deploy key tidak pernah keluar dari agent.
+        Route::get('/apps/{id}', [AgentJobController::class, 'showApp']);
+
+        // Nginx (F2 multi-server, plan §5): perakitan config dibaca dari server
+        // ini (control plane tidak menyalin logika/path Nginx), dan preflight
+        // `ensureWritable()` hanya memeriksa direktori Nginx server ini.
+        // Operasi tulis/hapus/reload & SSL **bukan** route tersendiri: semuanya
+        // job di `POST /jobs` (op `nginx_write|nginx_remove|nginx_reload|
+        // ssl_issue|ssl_revoke`) supaya pipeline & log tetap satu jalur.
+        Route::get('/apps/{id}/nginx', [AgentJobController::class, 'renderNginx']);
+        Route::post('/nginx/check', [AgentJobController::class, 'checkNginx']);
+
+        // F3a multi-server (plan §5, operasional per server): **log container**
+        // & **terminal** app yang berjalan di server ini. Sesi terminal hidup di
+        // sini (`DockerExec`); control plane mem-proxy aliran SSE-nya apa adanya
+        // (byte passthrough chunked) — sesi TIDAK ditutup saat koneksi SSE klien
+        // drop (aturan repo), hanya `POST /terminal/{token}/close`, proses yang
+        // keluar, atau prune TTL.
+        //
+        // Catatan kontrak: `app_id` ikut di query/body setiap panggilan supaya
+        // validasi "token milik app ini" tetap satu sumber di
+        // `DockerExec::sessionInfo($token, $appId)` — token saja tidak cukup.
+        Route::get('/apps/{id}/logs', [AgentLogController::class, 'index']);
+        Route::post('/terminal/open', [AgentTerminalController::class, 'openSession']);
+        Route::get('/terminal/{token}/stream', [AgentTerminalController::class, 'streamSession']);
+        Route::post('/terminal/{token}/input', [AgentTerminalController::class, 'inputSession']);
+        Route::post('/terminal/{token}/close', [AgentTerminalController::class, 'closeSession']);
+
+        // F3b/F3c multi-server (plan §4.1/§5): **file manager** container & **monitoring**
+        // yang dijalankan di server ini. Control plane mem-proxy semuanya
+        // (`FileController`/`MonitorController` ⇒ `AgentDeployer`); Docker Engine
+        // & `/proc` server ini adalah satu-satunya sumber datanya — host control
+        // plane tidak pernah dibaca untuk app remote (plan §3 butir 4).
+        //
+        // File manager: operasi memakai library yang sama dengan jalur lokal
+        // (`ContainerFiles`/`PathGuard`/`FilesInput`/`ArchiveGuard`) sehingga
+        // batas 2 MiB editor, 5000 entri listing, tolak biner, dan proteksi
+        // zip-slip tetap berlaku; byte ditransfer streaming (unduh: respons
+        // berkas; unggah: body biner mentah) dengan plafon
+        // `AgentDeployer::MAX_TRANSFER_BYTES`. Berkas temp selalu dibersihkan.
+        // `app_id` ikut di query (GET) / body (POST) supaya app dibaca dari
+        // proyeksi agent, bukan dari tebakan pemanggil.
+        Route::get('/files/list', [AgentFilesController::class, 'list']);
+        Route::get('/files/read', [AgentFilesController::class, 'read']);
+        Route::get('/files/download', [AgentFilesController::class, 'download']);
+        Route::post('/files/write', [AgentFilesController::class, 'write']);
+        Route::post('/files/mkdir', [AgentFilesController::class, 'mkdir']);
+        Route::post('/files/rename', [AgentFilesController::class, 'rename']);
+        Route::post('/files/delete', [AgentFilesController::class, 'delete']);
+        Route::post('/files/move', [AgentFilesController::class, 'move']);
+        Route::post('/files/upload', [AgentFilesController::class, 'upload']);
+        Route::post('/files/extract', [AgentFilesController::class, 'extract']);
+
+        // Monitoring: `/proc` server ini (`/system/host-usage`) + baris
+        // monitoring container dari Engine server ini, dirakit
+        // `ResourceCollector` di sini (`/monitor/containers`). Penyaringan hak
+        // akses (`AppAccess::visible()`) dilakukan control plane, bukan di sini.
+        Route::get('/system/host-usage', [AgentDockerController::class, 'hostUsage']);
+        Route::get('/monitor/containers', [AgentDockerController::class, 'containers']);
+    }
+
+    // Berhenti di sini: route dashboard di bawah tidak pernah didaftarkan.
+    return;
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -133,6 +255,32 @@ Route::post('/api/update/check', [UpdateController::class, 'check']);
 Route::post('/api/update/start', [UpdateController::class, 'start']);
 Route::post('/api/update/rollback', [UpdateController::class, 'rollback']);
 Route::get('/api/update/status', [UpdateController::class, 'status']);
+
+/*
+|--------------------------------------------------------------------------
+| Registry server (multi-server, fase F0) — admin-only
+|--------------------------------------------------------------------------
+| Halaman & aksi untuk server yang dikendalikan dashboard: server lokal (diri
+| sendiri, baris seed `local`) + server `kind=agent`. Non-admin ⇒ **404** (bukan
+| 403) di semua route di bawah — penjagaan ada di `ServerController` lewat
+| `ServerAccess::requireManageServers()` (pola `NginxController`), supaya
+| keberadaan registry server tidak bocor ke member.
+|
+| Semua mutasi lewat POST (kena CSRF & AuthMiddleware global), otorisasi dicek
+| SEBELUM efek samping apa pun. `apiIndex` hanya menyajikan data tanpa token/PEM.
+| `/servers/create` didaftarkan sebelum `/servers/{id}` agar tidak tertukar.
+|--------------------------------------------------------------------------
+*/
+Route::get('/servers', [ServerController::class, 'index']);
+Route::get('/servers/create', [ServerController::class, 'createForm']);
+Route::post('/servers', [ServerController::class, 'store']);
+Route::get('/servers/{id}', [ServerController::class, 'editForm']);
+Route::post('/servers/{id}', [ServerController::class, 'update']);
+Route::post('/servers/{id}/delete', [ServerController::class, 'delete']);
+// Uji koneksi ke agent (JSON; panggilan HTTP ≤30 s ke `GET /healthz` + `/version`).
+Route::post('/servers/{id}/test', [ServerController::class, 'testConnection']);
+// Daftar server untuk JS dashboard (tanpa token/PEM).
+Route::get('/api/servers', [ServerController::class, 'apiIndex']);
 
 // SSL otomatis (Let's Encrypt)
 Route::get('/ssl', [SslController::class, 'index']);

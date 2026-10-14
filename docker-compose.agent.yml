@@ -1,0 +1,108 @@
+# =============================================================================
+# Rames — paket AGENT (server #2..N), multi-server F0 (plan §8, §10.1, §10.2)
+# =============================================================================
+# Berkas ini untuk **server agent**, BUKAN untuk server dashboard:
+#   - project compose terpisah (`rames-agent`) & container terpisah
+#     (`rames-agent`) → aman dijalankan di host yang sama dengan dashboard
+#     (dashboard: project `rames`, container `rames-webman`, volume `rames`).
+#   - kode & image SAMA dengan dashboard (`build: .`); yang berbeda hanya mode
+#     runtime (`RAMES_MODE=agent`): route dashboard tidak didaftarkan, timer
+#     dashboard tidak dipasang, dan listener-nya TLS di port agent sendiri.
+#   - JANGAN pernah `docker compose down` project lain dari sini.
+#
+# Jalankan lewat `agent/install.sh` (idempoten): ia membuat `secrets/agent.env`
+# (0600) + sertifikat TLS self-signed, lalu `up -d --build`. Berkas rahasia itu
+# TIDAK ada di repo (`/secrets/` di-`.gitignore`) — karena itu `env_file` di
+# bawah WAJIB ada sebelum compose dijalankan (compose gagal tegas bila hilang).
+#
+# PORT AGENT (`${AGENT_PORT_PUBLISH:-8443}:8443`) **WAJIB DIBATASI FIREWALL**
+# hanya untuk IP control plane (keputusan 6). Agent = pintu eksekusi Docker di
+# server ini; jangan pernah dibuka ke publik. Verifikasi dari control plane:
+#   curl -sS --cacert <agent.crt> -H "Authorization: Bearer <token>" \
+#        https://<ip-agent>:8443/version
+# =============================================================================
+
+name: rames-agent
+
+services:
+  webman:
+    build: .
+    # Nama unik (hindari bentrok dengan container dashboard `rames-webman`)
+    container_name: rames-agent
+    restart: unless-stopped
+    # Jalankan dari direktori proyek — SAMA dengan path host (lihat volume ${PWD})
+    working_dir: "${PWD}"
+    environment:
+      # Mode runtime: satu kode, dua peran. Ditanam literal di sini (bukan dari
+      # env_file) supaya agent TIDAK PERNAH bisa start sebagai dashboard penuh
+      # hanya karena berkas rahasia kurang satu baris.
+      RAMES_MODE: "agent"
+      # Wiring host (bukan rahasia, bukan identitas agent).
+      NGINX_CONF_PATH: "${NGINX_CONF_PATH:-/etc/nginx/sites-available}"
+      NGINX_ENABLED_PATH: "${NGINX_ENABLED_PATH:-/etc/nginx/sites-enabled}"
+      NGINX_HTTP_CONF: "${NGINX_HTTP_CONF:-/etc/nginx/nginx.conf}"
+      NGINX_BIN: "${NGINX_BIN:-/usr/sbin/nginx}"
+      NGINX_RELOAD_IMAGE: "${NGINX_RELOAD_IMAGE:-alpine}"
+      DOCKER_SOCKET: "${DOCKER_SOCKET:-/var/run/docker.sock}"
+      DOCKER_BINARY: "${DOCKER_BINARY:-docker}"
+      # SQLite proyeksi agent (bukan kebenaran — plan §4.3) di named volume
+      # `rames-agent-data`; sengaja terpisah dari volume dashboard `rames`.
+      RAMES_DB_DIR: "${RAMES_DB_DIR:-/var/lib/rames}"
+      # CATATAN PENTING soal identitas agent: `APP_DOMAIN`, `PORT_RANGE_START/END`,
+      # `AGENT_BIND`, `AGENT_TOKEN`, `AGENT_TLS_CERT`, `AGENT_TLS_KEY` TIDAK
+      # ditulis di blok ini karena compose selalu memenangkan `environment` atas
+      # `env_file` — kalau ditulis di sini, nilai placeholder (`example.com`,
+      # rentang port bawaan) akan menimpa nilai nyata dari `secrets/agent.env`
+      # dan agent diam-diam salah domain. Satu sumbernya: `env_file` di bawah
+      # (ditulis `agent/install.sh`); lihat agent/README.md.
+    env_file:
+      # RAHASIA + identitas agent (0600, tidak pernah masuk repo):
+      #   AGENT_TOKEN, AGENT_TLS_CERT, AGENT_TLS_KEY, AGENT_BIND,
+      #   APP_DOMAIN, PORT_RANGE_START, PORT_RANGE_END, RAMES_MODE
+      - ./secrets/agent.env
+    volumes:
+      # Kode di-mount di path yang SAMA dengan host (${PWD}): daemon host harus
+      # mengenali path yang sama, karena compose app dijalankan DI DALAM
+      # container ini terhadap daemon host (pola identik dengan dashboard).
+      - "${PWD}:${PWD}"
+      # SQLite proyeksi agent — DI LUAR bind ${PWD}:${PWD} agar tidak hilang
+      # saat `git clean`/update. Nama eksplisit + label `rames.role=agent-db`
+      # supaya fitur backup volume dashboard (SPECS §8h, memakai label
+      # `rames.role=dashboard-db`) MENGEKSAKLUSIKAN volume ini.
+      - "rames-agent-data:/var/lib/rames"
+      # Docker socket: agent = eksekutor docker compose/Engine API di host ini.
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      # Config Nginx host (agent menulis .conf + reload lewat helper container).
+      - "${NGINX_CONF_PATH:-/etc/nginx/sites-available}:${NGINX_CONF_PATH:-/etc/nginx/sites-available}"
+      - "${NGINX_ENABLED_PATH:-/etc/nginx/sites-enabled}:${NGINX_ENABLED_PATH:-/etc/nginx/sites-enabled}"
+      # Status reload yang ditulis watcher host, dibaca proses agent.
+      - "./nginx-status:${PWD}/nginx-status"
+      # Sertifikat Let's Encrypt app (ditulis certbot di container ini, dibaca
+      # nginx host) — sama seperti dashboard.
+      - "/etc/letsencrypt:/etc/letsencrypt"
+    ports:
+      # Pintu agent: HTTPS self-signed (TLS diterminasi di proses agent, bukan
+      # Nginx host) + pinning fingerprint di control plane.
+      # WAJIB: batasi port ini di firewall HANYA untuk IP control plane.
+      - "${AGENT_PORT_PUBLISH:-8443}:8443"
+    # DNS eksplisit (alasan sama dengan dashboard): /etc/resolv.conf host bisa
+    # symlink rusak → resolver internal Docker tak punya upstream → `git clone`
+    # dan `docker compose pull` gagal resolve.
+    dns:
+      - "${DNS_1:-8.8.8.8}"
+      - "${DNS_2:-1.1.1.1}"
+    # Composer otomatis bila vendor/ belum ada (bind ${PWD} → hasilnya tersimpan
+    # di host), lalu migrasi skema SQLite proyeksi agent, baru start.
+    # SENGAJA TANPA `cli/db.php import-json`: impor data lama milik DASHBOARD
+    # (auth_users/apps) ke DB agent akan melanggar §4.3 (kredensial user tidak
+    # pernah ada di server agent).
+    command: ["sh", "-c", "if [ ! -d vendor ]; then composer install --no-dev --optimize-autoloader; fi && php cli/db.php migrate && php start.php start"]
+
+# Named volume SQLite proyeksi agent. `name: rames-agent-data` → nama nyata di
+# host = `rames-agent-data` (stabil lintas `docker compose down`).
+volumes:
+  rames-agent-data:
+    name: rames-agent-data
+    labels:
+      # Penanda volume DB agent — dikecualikan dari backup volume dashboard (§8h).
+      rames.role: agent-db

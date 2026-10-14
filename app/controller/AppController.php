@@ -3,20 +3,27 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Agent\AgentClient;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
+use app\library\Auth\ServerAccess;
 use app\library\Auth\UserStore;
 use app\library\Billing\AppStopper;
 use app\library\Billing\BillingGate;
 use app\library\Billing\CreditAccount;
 use app\library\Billing\InsufficientCredits;
 use app\library\Billing\Pricing;
+use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\AppNginxReloader;
+use app\library\Deploy\AppSslRevoker;
 use app\library\Deploy\ComposeSource;
 use app\library\Deploy\ContainerNames;
 use app\library\Deploy\DeployerFactory;
+use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\NetworkManager;
 use app\library\Deploy\ResourceLimits;
+use app\library\Deploy\ServerResolver;
 use app\library\Deploy\SubdomainManager;
 use app\library\Db\DbContainerDetector;
 use app\library\Docker\AppPorts;
@@ -30,6 +37,7 @@ use app\library\Nginx\NginxReloader;
 use app\library\Nginx\NginxRoutes;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
+use app\library\Storage\ServerStore;
 use app\library\Support\Markdown;
 use app\library\System\HostUsage;
 use app\library\Template\TemplateCatalog;
@@ -47,6 +55,13 @@ use Symfony\Component\Yaml\Yaml;
  */
 class AppController
 {
+    /**
+     * Nama direktori akar untuk **clone analisis sementara** app di server agent
+     * (di `sys_get_temp_dir()`): dipakai hanya untuk membaca file compose repo
+     * pada langkah analisis wizard create, lalu dibuang — bukan artefak app.
+     */
+    private const REPO_ANALYSIS_DIR = 'rames-agent-repo-analysis';
+
     // ==================================================================
     // Daftar & detail
     // ==================================================================
@@ -114,12 +129,16 @@ class AppController
         $store = new AppStore();
         $app = $this->findApp($id, 'view');
 
-        $deployer = DeployerFactory::create();
+        $deployer = DeployerFactory::createForApp($app);
 
-        // status container live (best effort — engine mungkin tidak tersedia)
+        // status container live (best effort — engine/agent mungkin tidak tersedia)
         $live = [];
         try {
-            $live = $deployer->getContainers($app['name']);
+            // Server agent: container dibaca dari agent (`GET /apps/{id}`) — jangan
+            // pernah membaca Docker Engine host control plane untuk app remote.
+            $live = $deployer instanceof AgentDeployer
+                ? $deployer->getContainersForApp($app)
+                : $deployer->getContainers((string) $app['name']);
         } catch (\Throwable $e) {
             // pakai data tersimpan
         }
@@ -135,28 +154,14 @@ class AppController
         // Network eksternal (shared) yang bisa di-join app ini. Kandidat:
         // bukan built-in & bukan milik app aktif (compose) — biasanya shared
         // network yang dibuat lewat halaman /networks.
-        $availableNetworks = [];
-        try {
-            $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
-            $activeNames = [];
-            foreach ($store->all() as $s) {
-                $activeNames[(string) ($s['name'] ?? '')] = true;
-            }
-            foreach ($docker->listNetworks() as $n) {
-                $nname = (string) ($n['Name'] ?? '');
-                if ($nname === '' || in_array($nname, ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge'], true)) {
-                    continue;
-                }
-                $project = (string) (($n['Labels'] ?? [])['com.docker.compose.project'] ?? '');
-                if ($project !== '' && isset($activeNames[$project])) {
-                    continue; // network milik app aktif dikelola lewat app tsb
-                }
-                $availableNetworks[] = $nname;
-            }
-            sort($availableNetworks);
-        } catch (\Throwable $e) {
-            // engine tidak tersedia — form tampil tanpa daftar
-        }
+        //
+        // Server agent: daftar network host control plane BUKAN kandidat (app
+        // berjalan di server lain) — jalur baca network per-server belum ada
+        // (F3) ⇒ daftar DIBIARKAN KOSONG (lihat {@see self::availableNetworksFor()}).
+        $availableNetworks = $this->availableNetworksFor(
+            $store->all(),
+            $deployer instanceof AgentDeployer
+        );
 
         // Public key deploy key app (untuk repo private via SSH)
         $sshPubkey = null;
@@ -237,6 +242,11 @@ class AppController
      * Konteks tab "Compose" (app mode compose saja): nama file utama, isinya,
      * dan daftar file sumber (untuk editor & daftar file).
      *
+     * Master compose app di server **agent** hidup di metadata app
+     * (`compose_content`, ditulis {@see self::saveComposeOnAgent()}) — host ini
+     * tidak menyimpan direktori artefaknya, jadi isi di disk (bila ada, mis. app
+     * lama hasil wizard) hanya dipakai sebagai cadangan.
+     *
      * @return array{main_file:string,content:string,files:array<int,string>}|null
      */
     private function composeContext(array $app): ?array
@@ -245,9 +255,19 @@ class AppController
             return null;
         }
         $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
+        $mainFile = ComposeSource::resolveMainFile($dir, $app);
+        $stored = $app['compose_content'] ?? null;
+
+        if (is_string($stored) && trim($stored) !== '') {
+            return [
+                'main_file' => $mainFile,
+                'content' => $stored,
+                'files' => is_dir($dir) ? ComposeSource::listSourceFiles($dir) : [],
+            ];
+        }
 
         return [
-            'main_file' => ComposeSource::resolveMainFile($dir, $app),
+            'main_file' => $mainFile,
             'content' => ComposeSource::readMain($dir, $app),
             'files' => ComposeSource::listSourceFiles($dir),
         ];
@@ -277,9 +297,251 @@ class AppController
     // Wizard create — langkah 1 (form + clone + parse + saran port)
     // ==================================================================
 
+    // ==================================================================
+    // Server target (multi-server F1) — mediator; keputusan di app\library
+    // ==================================================================
+
+    /**
+     * Server target pembuatan app — **satu pintu** untuk seluruh wizard create
+     * (git/compose/template/konfirmasi).
+     *
+     * Kontrak (plan §4/§4.2 + keputusan user §9.3, misi `ms-f1-create-server`):
+     *  1. `server_id` kosong/`local` ⇒ server lokal — perilaku lama persis;
+     *  2. hanya **admin** boleh memilih server selain server lokal. Permintaan
+     *     non-admin dengan id non-lokal ditolak **sebelum** id-nya dicari,
+     *     sehingga keberadaan server lain tidak bocor (bukan pesan "server
+     *     tidak dikenal", dan **tidak** diam-diam memakai server lokal);
+     *  3. id tidak dikenal ⇒ `ServerResolver::resolve()` melempar (`fail-fast` —
+     *     tidak pernah jatuh ke server lokal);
+     *  4. server dinonaktifkan / offline / agent tanpa capability dasar ⇒
+     *     `ServerResolver::assertReadyForCreate()` menolak dengan pesan jelas
+     *     (untuk capability: jalankan Test connection dulu).
+     *
+     * Tanpa efek samping: tidak menyentuh store app & tidak menulis berkas.
+     * Seluruh keputusan ada di library (`ServerResolver`); controller hanya
+     * mediator.
+     *
+     * @param string             $requestedId `server_id` mentah dari request (''/absen = lokal)
+     * @param array|null         $user        user login (`current_user()`)
+     * @param ServerResolver|null $resolver  seam uji (store temp)
+     * @return array<string,mixed> dokumen server target
+     * @throws RuntimeException server tidak boleh dipilih / tidak dikenal / belum siap
+     */
+    private function resolveCreateServer(string $requestedId, ?array $user, ?ServerResolver $resolver = null): array
+    {
+        $requested = trim($requestedId);
+
+        if (
+            $requested !== '' && $requested !== ServerStore::LOCAL_ID
+            && !ServerAccess::canSelectServer($user)
+        ) {
+            throw new RuntimeException(
+                'Anda tidak berhak memilih server untuk app baru — app dibuat di server lokal.'
+            );
+        }
+
+        $server = ($resolver ?? new ServerResolver())->resolve($requested);
+        ServerResolver::assertReadyForCreate($server);
+
+        return $server;
+    }
+
+    /**
+     * Konteks server untuk form wizard — **kontrak view** (dipakai misi
+     * Frontend UI; jangan mengganti nama field tanpa memberi tahu):
+     *
+     *  - `servers`          : daftar pilihan server yang boleh dipakai user ini.
+     *                         Admin ⇒ seluruh registry; non-admin ⇒ **hanya
+     *                         server lokal** (nama/host server lain tidak
+     *                         pernah dikirim ke browser). Setiap entri =
+     *                         `ServerResolver::option()` (`id`, `name`, `kind`,
+     *                         `domain`, `enabled`, `status`, `capabilities`).
+     *  - `selectedServerId` : id server terpilih (default server lokal;
+     *                         diabaikan bila tidak ada di daftar pilihan).
+     *  - `canSelectServer`  : `ServerAccess::canSelectServer(current_user())` —
+     *                         UI boleh menyembunyikan selektor, server tetap
+     *                         sumber kebenaran.
+     *
+     * @param array|null         $user             user login (null = belum login)
+     * @param string             $selectedServerId id yang sebaiknya terpilih
+     * @param ServerResolver|null $resolver        seam uji (store temp)
+     * @return array{servers:array<int,array<string,mixed>>,selectedServerId:string,canSelectServer:bool}
+     */
+    private function serverFormContext(?array $user, string $selectedServerId = '', ?ServerResolver $resolver = null): array
+    {
+        $resolver ??= new ServerResolver();
+        $canSelect = ServerAccess::canSelectServer($user);
+
+        $servers = $canSelect
+            ? array_map(static fn (array $server): array => ServerResolver::option($server), $resolver->all())
+            : [ServerResolver::option($resolver->local())];
+
+        // Baris server lokal wajib ada di daftar (ia pilihan default) — registry
+        // yang kehilangan baris lokal di-self-heal di sini, bukan menghasilkan
+        // select tanpa opsi terpilih.
+        if ($canSelect && !in_array(ServerStore::LOCAL_ID, array_column($servers, 'id'), true)) {
+            array_unshift($servers, ServerResolver::option($resolver->local()));
+        }
+
+        $selected = AppStore::normalizeServerId($selectedServerId);
+        if ($selected !== ServerStore::LOCAL_ID) {
+            $allowed = array_column($servers, 'id');
+            if (!$canSelect || !in_array($selected, $allowed, true)) {
+                $selected = ServerStore::LOCAL_ID;
+            }
+        }
+
+        return [
+            'servers' => array_values($servers),
+            'selectedServerId' => $selected,
+            'canSelectServer' => $canSelect,
+        ];
+    }
+
+    /**
+     * `server_id` dari request sebagai string aman (array/objek ditolak → `''`
+     * = server lokal). Dipakai jalur create; nilai tetap divalidasi ulang
+     * `resolveCreateServer()` (nama server dari request tidak pernah dipercaya).
+     */
+    private function requestedServerId(Request $request): string
+    {
+        $raw = $request->post('server_id');
+
+        return is_scalar($raw) ? trim((string) $raw) : '';
+    }
+
+    /**
+     * Konteks alokasi host port pada scope server (multi-server F1, plan §4.2):
+     * `PortManager` berentang port **efektif server** + host port yang sudah
+     * terpakai **app di server itu** (app di server lain tidak menahan port di
+     * sini). Server lokal tidak berubah: rentangnya tetap
+     * `config('deploy.port_range')` dan seluruh app lama (tanpa `server_id`)
+     * memang ternormalisasi ke server lokal.
+     *
+     * @param string $serverId id server (''/`local` = server lokal); id tak
+     *                         dikenal ⇒ melempar (fail-fast `ServerResolver`)
+     * @return array{manager:PortManager,used:array<int,int>}
+     */
+    private function portContext(string $serverId): array
+    {
+        $server = (new ServerResolver())->resolve($serverId);
+        $range = ServerResolver::portRange($server);
+        $manager = new PortManager((int) $range['start'], (int) $range['end']);
+
+        return [
+            'manager' => $manager,
+            'used' => $manager->usedHostPorts(AppPorts::onServer(
+                (new AppStore())->all(),
+                (string) ($server['id'] ?? ServerStore::LOCAL_ID)
+            )),
+        ];
+    }
+
+    /**
+     * Server target untuk app **yang sudah ada** (jalur app-scoped). Fail-fast
+     * bila `server_id` app menunjuk server yang hilang.
+     *
+     * @param array<string,mixed> $app
+     * @return array<string,mixed>
+     */
+    private function serverForApp(array $app): array
+    {
+        return (new ServerResolver())->resolveForApp($app);
+    }
+
+    /**
+     * Direktori artefak app **di host ini** untuk jalur yang masih menulis file
+     * lokal (env/limits/network/nama container) — atau `null` + flash error.
+     *
+     * Multi-server F1/F2: jalur-jalur itu menulis berkas di server lokal, jadi
+     * untuk app di server **agent** operasinya ditolak **eksplisit** dengan
+     * alasan sesungguhnya ("belum aktif untuk server agent (fase F2/F3)") —
+     * bukan pesan menyesatkan "Direktori app tidak ada" yang membuat user
+     * mengira app/direktori sudah terhapus. Perilaku server lokal **tidak
+     * berubah** (pesan & alur lama).
+     *
+     * @param array<string,mixed> $app
+     * @param string              $feature nama fitur untuk pesan galat
+     * @return string|null direktori app, atau null bila sudah ditolak (flash error ditulis)
+     */
+    private function appArtifactDirOrFail(array $app, string $feature): ?string
+    {
+        try {
+            $local = ServerResolver::isLocal($this->serverForApp($app));
+        } catch (\Throwable $e) {
+            // `server_id` app menunjuk server yang hilang dari registry: tolak
+            // eksplisit (bukan 500 mentah) & jangan sentuh apa pun.
+            flash_set('error', $feature . ' tidak bisa dijalankan: ' . $e->getMessage());
+
+            return null;
+        }
+
+        if (!$local) {
+            flash_set(
+                'error',
+                $feature . ' belum aktif untuk server agent (fase F2/F3) — jalur ini masih menulis '
+                . 'artefak app di server lokal, jadi tidak dijalankan agar tidak menyentuh server yang salah.'
+            );
+
+            return null;
+        }
+
+        $dir = (string) config('deploy.apps_path') . '/' . (string) ($app['name'] ?? '');
+        if (!is_dir($dir)) {
+            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+
+            return null;
+        }
+
+        return $dir;
+    }
+
+    /**
+     * Pesan penolakan pra-deploy untuk aksi yang membaca artefak app **di host
+     * ini** (rebuild/rollback) — `null` bila aksi boleh dilanjutkan.
+     *
+     * Multi-server F1: app milik server **agent** **tidak** diperiksa —
+     * checkout repo-nya hidup di server itu (`AgentArtifactMaterializer`), jadi
+     * ketiadaan direktori lokal bukan kesalahan dan bukan alasan menolak; worker
+     * yang mengerjakan aksinya lewat `AgentDeployer` di server target. Server
+     * lokal mempertahankan pesan lamanya persis.
+     *
+     * @param array<string,mixed> $app
+     * @param string              $feature nama aksi untuk pesan galat
+     */
+    private function localArtifactsError(array $app, string $feature): ?string
+    {
+        try {
+            if (!ServerResolver::isLocal($this->serverForApp($app))) {
+                return null;
+            }
+        } catch (\Throwable $e) {
+            // `server_id` app menunjuk server yang hilang dari registry: tolak
+            // eksplisit (bukan 500 mentah) — jangan menyentuh host yang salah.
+            return $feature . ' tidak bisa dijalankan: ' . $e->getMessage();
+        }
+
+        $dir = (string) config('deploy.apps_path') . '/' . (string) ($app['name'] ?? '');
+
+        return is_dir($dir) ? null : 'Direktori app tidak ada. App mungkin sudah dihapus.';
+    }
+
+    // ==================================================================
+    // Wizard create — langkah 1 (analisis repo / compose / template)
+    // ==================================================================
+
     public function createForm(Request $request)
     {
         $mode = (string) $request->get('mode', 'git');
+
+        // Pilihan server untuk form: admin boleh memilih server mana pun, user
+        // lain hanya server lokal (registry server tidak pernah bocor ke
+        // non-admin — kontrak `serverFormContext()`).
+        $rawServerId = $request->get('server_id');
+        $serverContext = $this->serverFormContext(
+            current_user(),
+            is_scalar($rawServerId) ? (string) $rawServerId : ''
+        );
 
         // Mode template: galeri template app siap-pakai (compose prebuilt,
         // SPECS.md §7.2b). Definisi template dibaca dari folder repo
@@ -291,44 +553,80 @@ class AppController
             }
             unset($t);
 
-            return view('app/create', [
+            return view('app/create', $serverContext + [
                 'mode' => 'template',
                 'templates' => $templates,
             ]);
         }
 
-        return view('app/create', [
+        return view('app/create', $serverContext + [
             'mode' => $mode === 'compose' ? 'compose' : 'git',
         ]);
     }
 
-    public function createPreview(Request $request)
+    /**
+     * Wizard create — langkah 1 (mode "Clone repo Git"): validasi input, clone
+     * repo, parse compose, simpan `pending_app` di session.
+     *
+     * Multi-server F1: untuk server **agent** clone di sini hanya dipakai
+     * **analisis** (nama file compose + daftar service untuk halaman konfirmasi)
+     * dan dibuang lagi — checkout repo app dibuat agent saat menerima job
+     * (`AgentArtifactMaterializer`), bukan di host control plane.
+     *
+     * @param GitService|null $git seam uji: operasi git (null = bawaan)
+     */
+    public function createPreview(Request $request, ?GitService $git = null)
     {
         $name = strtolower(trim((string) $request->post('name', '')));
         $repoUrl = trim((string) $request->post('repo_url', ''));
         $branch = trim((string) $request->post('branch', 'main'));
         $authMethod = (string) $request->post('auth_method', 'none');
         $subdomain = SubdomainManager::normalize((string) $request->post('subdomain', ''));
+        $serverId = (string) ServerStore::LOCAL_ID;
+        $git ??= new GitService();
 
         $keyManager = new SshKeyManager();
         $generatedKey = false;
+        // Diisi hanya untuk app di server **agent** (clone analisis sementara);
+        // dideklarasikan sebelum `try` supaya `finally` selalu aman.
+        $analysisDir = null;
 
         try {
             $this->validateCreateInput($name, $repoUrl, $branch, $authMethod);
 
+            // Server target (admin-only untuk selain server lokal) — fail-fast
+            // SEBELUM clone/kunci/berkas apa pun.
+            $server = $this->resolveCreateServer($this->requestedServerId($request), current_user());
+            $serverId = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
+            $localTarget = ServerResolver::isLocal($server);
+
             $store = new AppStore();
-            if ($store->nameExists($name)) {
-                throw new RuntimeException("Nama app \"{$name}\" sudah dipakai.");
+            // Keunikan nama berlaku **per server** (plan §4.2): nama yang sama
+            // boleh ada di server berbeda.
+            if ($store->nameExistsOnServer($name, $serverId)) {
+                throw new RuntimeException("Nama app \"{$name}\" sudah dipakai di server ini.");
             }
 
-            // Subdomain opsional — validasi format + keunikan sebelum menyentuh disk.
-            $this->assertSubdomainAvailable($subdomain, $name);
+            // Subdomain opsional — validasi format + keunikan per server sebelum
+            // menyentuh disk.
+            $this->assertSubdomainAvailable($subdomain, $name, '', $serverId);
 
             $appsPath = (string) config('deploy.apps_path');
-            $dest = $appsPath . '/' . $name;
-            if (is_dir($dest)) {
-                // area apps_path dikelola sistem — bersihkan lalu clone ulang
-                $this->cleanupDir($dest);
+            if ($localTarget) {
+                $dest = $appsPath . '/' . $name;
+                if (is_dir($dest)) {
+                    // area apps_path dikelola sistem — bersihkan lalu clone ulang
+                    $this->cleanupDir($dest);
+                }
+            } else {
+                // App di server **agent**: checkout repo TIDAK dibuat di host ini —
+                // clone untuk deploy terjadi di agent (`AgentArtifactMaterializer`,
+                // satu host dengan container-nya). Analisis langkah ini (nama file
+                // compose + daftar service untuk halaman konfirmasi) tetap harus
+                // membaca repo, jadi dipakai clone sementara di luar `apps_path`
+                // yang dibuang lagi setelah diparse (lihat `finally`).
+                $analysisDir = $this->newRepoAnalysisDir($name);
+                $dest = $analysisDir;
             }
 
             // Repo private: generate deploy key SSH sebelum clone. Kalau sudah ada
@@ -340,7 +638,6 @@ class AppController
                 $sshKeyPath = $keyManager->privateKeyPath($name);
             }
 
-            $git = new GitService();
             $git->clone($repoUrl, $branch, $dest, $sshKeyPath);
 
             $composeFile = $git->findComposeFile($dest);
@@ -350,7 +647,7 @@ class AppController
             }
 
             $parsed = (new ComposeParser())->parse($dest . '/' . $composeFile);
-            $services = $this->resolveServicePorts($parsed['services']);
+            $services = $this->resolveServicePorts($parsed['services'], $serverId);
 
             // simpan data pending (belum commit) di session
             $primary = $this->defaultPrimary($services);
@@ -366,6 +663,7 @@ class AppController
                 'primary_port' => $this->defaultPrimaryPort($services, $primary),
                 'auth_method' => $authMethod,
                 'ssh_key' => $authMethod === 'ssh' ? 'keys/' . $name : null,
+                'server_id' => $serverId,
             ];
             // Kosong ⇒ jangan tulis field (fallback ke `name`).
             if ($subdomain !== '') {
@@ -387,13 +685,20 @@ class AppController
                     'form_name' => $name,
                     'form_repo_url' => $repoUrl,
                     'form_branch' => $branch,
-                ]);
+                ] + $this->serverFormContext(current_user(), $serverId));
             }
             if ($generatedKey) {
                 $keyManager->remove($name);
             }
             flash_set('error', $e->getMessage());
             return redirect('/apps/create');
+        } finally {
+            // Clone analisis app di server agent bersifat sekali pakai: jangan
+            // meninggalkan checkout repo di host control plane (berhasil maupun
+            // gagal) — checkout sesungguhnya hidup di agent.
+            if ($analysisDir !== null) {
+                $this->cleanupDir($analysisDir);
+            }
         }
     }
 
@@ -411,17 +716,25 @@ class AppController
         $composeContent = (string) $request->post('compose', '');
         $subdomain = SubdomainManager::normalize((string) $request->post('subdomain', ''));
         $dest = '';
+        $serverId = (string) ServerStore::LOCAL_ID;
 
         try {
             $this->validateCreateName($name);
 
+            // Server target (admin-only untuk selain server lokal) — fail-fast
+            // SEBELUM menulis berkas apa pun.
+            $server = $this->resolveCreateServer($this->requestedServerId($request), current_user());
+            $serverId = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
+
             $store = new AppStore();
-            if ($store->nameExists($name)) {
-                throw new RuntimeException("Nama app \"{$name}\" sudah dipakai.");
+            // Keunikan nama per server (plan §4.2).
+            if ($store->nameExistsOnServer($name, $serverId)) {
+                throw new RuntimeException("Nama app \"{$name}\" sudah dipakai di server ini.");
             }
 
-            // Subdomain opsional — validasi format + keunikan sebelum menulis file.
-            $this->assertSubdomainAvailable($subdomain, $name);
+            // Subdomain opsional — validasi format + keunikan per server sebelum
+            // menulis file.
+            $this->assertSubdomainAvailable($subdomain, $name, '', $serverId);
 
             // area apps_path dikelola sistem — bersihkan lalu tulis ulang file
             $dest = (string) config('deploy.apps_path') . '/' . $name;
@@ -446,7 +759,7 @@ class AppController
             }
 
             $parsed = (new ComposeParser())->parse($dest . '/' . $composeFile);
-            $services = $this->resolveServicePorts($parsed['services']);
+            $services = $this->resolveServicePorts($parsed['services'], $serverId);
 
             $pending = [
                 'name' => $name,
@@ -460,6 +773,7 @@ class AppController
                 'primary_port' => $this->defaultPrimaryPort($services, $this->defaultPrimary($services)),
                 'auth_method' => 'none',
                 'ssh_key' => null,
+                'server_id' => $serverId,
             ];
             if ($subdomain !== '') {
                 $pending['subdomain'] = $subdomain;
@@ -479,7 +793,7 @@ class AppController
                 'compose_error' => $e->getMessage(),
                 'form_name' => $name,
                 'form_compose' => $composeContent,
-            ]);
+            ] + $this->serverFormContext(current_user(), $serverId));
         }
     }
 
@@ -507,7 +821,10 @@ class AppController
             return redirect('/apps/create?mode=template');
         }
 
-        return view('app/template', [
+        return view('app/template', $this->serverFormContext(
+            current_user(),
+            is_scalar($request->get('server_id')) ? (string) $request->get('server_id') : ''
+        ) + [
             'template' => $template,
             'guide_html' => Markdown::toHtml((string) ($template['guide'] ?? '')),
             'form_name' => (string) $request->get('name', $template['slug']),
@@ -546,6 +863,7 @@ class AppController
         $env = [];
         $generated = [];
         $limits = [];
+        $serverId = (string) ServerStore::LOCAL_ID;
 
         // Fase 1 — validasi yang tidak menyentuh disk (template, nama, nilai env).
         try {
@@ -556,10 +874,16 @@ class AppController
                 throw new RuntimeException('Template "' . $slug . '" tidak valid: ' . $template['error']);
             }
             $this->validateCreateName($name);
-            if ((new AppStore())->nameExists($name)) {
-                throw new RuntimeException("Nama app \"{$name}\" sudah dipakai.");
+
+            // Server target (admin-only untuk selain server lokal), lalu keunikan
+            // nama & subdomain **per server** (plan §4.2).
+            $server = $this->resolveCreateServer($this->requestedServerId($request), current_user());
+            $serverId = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
+
+            if ((new AppStore())->nameExistsOnServer($name, $serverId)) {
+                throw new RuntimeException("Nama app \"{$name}\" sudah dipakai di server ini.");
             }
-            $this->assertSubdomainAvailable($subdomain, $name);
+            $this->assertSubdomainAvailable($subdomain, $name, '', $serverId);
             $env = $catalog->resolveEnv($template, $envInput);
             $generated = $catalog->generatedKeys($template, $envInput);
 
@@ -606,7 +930,7 @@ class AppController
                 $limitsContext['repo'][$service] = $limit;
             }
 
-            return view('app/template', [
+            return view('app/template', $this->serverFormContext(current_user(), $serverId) + [
                 'template' => $template,
                 'form_name' => $name,
                 'form_env' => $envInput,
@@ -647,7 +971,7 @@ class AppController
             }
 
             $parsed = (new ComposeParser())->parse($dest . '/' . $composeFile);
-            $services = $this->resolveServicePorts($parsed['services']);
+            $services = $this->resolveServicePorts($parsed['services'], $serverId);
             // Template tanpa `ports:` (mis. server database) tidak punya primary:
             // app dibuat tanpa vhost/subdomain (SPECS §7.2b).
             $tplPrimaryService = (string) ($template['primary']['service'] ?? '');
@@ -660,7 +984,7 @@ class AppController
             );
 
             // Template dilarang menulis container_name → prefix = nama app.
-            $containerPrefix = $this->resolveContainerPrefix($name, $composeFile, $name);
+            $containerPrefix = $this->resolveContainerPrefix($name, $composeFile, $name, $serverId);
 
             $pending = [
                 'name' => $name,
@@ -674,6 +998,7 @@ class AppController
                 'primary_port' => $primary['port'],
                 'auth_method' => 'none',
                 'ssh_key' => null,
+                'server_id' => $serverId,
             ];
             if ($subdomain !== '') {
                 $pending['subdomain'] = $subdomain;
@@ -703,7 +1028,7 @@ class AppController
             }
             flash_set('error', $e->getMessage());
 
-            return view('app/template', [
+            return view('app/template', $this->serverFormContext(current_user(), $serverId) + [
                 'template' => $template,
                 'form_name' => $name,
                 'form_env' => $envInput,
@@ -736,18 +1061,20 @@ class AppController
 
     /**
      * Resolusi konflik host port untuk daftar service hasil parse compose
-     * (dipakai kedua mode create — clone repo & compose).
+     * (dipakai ketiga mode create — clone repo, compose, template).
+     *
+     * Scope server (multi-server F1): rentang port & port terpakai mengikuti
+     * **server target** app baru — lihat {@see self::portContext()}.
      *
      * @param array<string,array> $services
+     * @param string              $serverId id server target (''/`local` = lokal)
      * @return array<string,array>
      */
-    private function resolveServicePorts(array $services): array
+    private function resolveServicePorts(array $services, string $serverId = ''): array
     {
-        $range = config('deploy.port_range', ['start' => 30000, 'end' => 30999]);
-        $portManager = new PortManager((int) $range['start'], (int) $range['end']);
-        $usedPorts = $portManager->usedHostPorts((new AppStore())->all());
+        $context = $this->portContext($serverId);
 
-        return $portManager->resolve($services, $usedPorts);
+        return $context['manager']->resolve($services, $context['used']);
     }
 
     /**
@@ -828,16 +1155,33 @@ class AppController
             return redirect('/apps/create');
         }
 
+        // Server target yang dipilih di langkah analisis (kosong = server lokal).
+        // Validasi ulang fail-fast: registry server bisa berubah di antara dua
+        // langkah (server dihapus/dinonaktifkan) — jangan sampai halaman
+        // konfirmasi menampilkan FQDN/limit untuk server yang salah.
+        $serverId = (string) ServerStore::LOCAL_ID;
+        try {
+            $server = $this->resolveCreateServer((string) ($pending['server_id'] ?? ''), current_user());
+            $serverId = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
+        } catch (\Throwable $e) {
+            $request->session()->delete('pending_app');
+            flash_set('error', $e->getMessage());
+            return redirect('/apps/create');
+        }
+        $pending['server_id'] = $serverId;
+
         // Base compose sudah ada di disk (hasil clone/upload langkah analisis).
         $dir = (string) config('deploy.apps_path') . '/' . $pending['name'];
 
         // Data subdomain untuk ditampilkan/diedit di halaman konfirmasi: FQDN
         // efektif + label + flag "eksplisit" (field terisi, bukan fallback name).
+        // FQDN-nya milik **server target** (keputusan 4: `{label}.{domain server}`).
         $label = SubdomainManager::normalize((string) ($pending['subdomain'] ?? ''));
+        $asIf = ['name' => (string) $pending['name'], 'subdomain' => $label, 'server_id' => $serverId];
 
-        return view('app/confirm', [
+        return view('app/confirm', $this->serverFormContext(current_user(), $serverId) + [
             'pending' => $pending,
-            'subdomain' => $label === '' ? app_subdomain((string) $pending['name']) : app_subdomain($label),
+            'subdomain' => app_subdomain_of($asIf),
             'subdomain_label' => $label,
             'subdomain_custom' => $label !== '',
             'resourceLimits' => $this->limitsContext(
@@ -865,13 +1209,30 @@ class AppController
         $serviceInput = (array) $request->post('services', []);
         $primarySelection = (string) $request->post('primary', '');
 
+        // Server target: form konfirmasi boleh mengirim ulang `server_id`
+        // (dipilih di langkah pertama); selain itu pilihan tersimpan di session
+        // yang dipakai. Validasi fail-fast SEBELUM efek samping apa pun.
+        $postedServerId = $request->post('server_id') === null
+            ? (string) ($pending['server_id'] ?? '')
+            : $this->requestedServerId($request);
+
+        try {
+            $server = $this->resolveCreateServer($postedServerId, current_user());
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+            return redirect('/apps/create/confirm');
+        }
+        $serverId = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
+        $pending['server_id'] = $serverId;
+
         // Prefix nama container divalidasi lebih dulu supaya pesan errornya kembali
         // ke halaman konfirmasi (pending_app masih tersimpan), bukan ke form create.
         try {
             $containerPrefix = $this->resolveContainerPrefix(
                 (string) $pending['name'],
                 (string) $pending['compose_file'],
-                (string) $request->post('container_prefix', '')
+                (string) $request->post('container_prefix', ''),
+                $serverId
             );
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
@@ -879,7 +1240,7 @@ class AppController
         }
 
         try {
-            $services = $this->validateAndApplyPorts($pending['services'], $serviceInput);
+            $services = $this->validateAndApplyPorts($pending['services'], $serviceInput, $serverId);
             $primary = $this->resolvePrimarySelection(
                 $services,
                 $primarySelection,
@@ -892,7 +1253,7 @@ class AppController
             $subdomain = $request->post('subdomain') !== null
                 ? SubdomainManager::normalize((string) $request->post('subdomain'))
                 : SubdomainManager::normalize((string) ($pending['subdomain'] ?? ''));
-            $this->assertSubdomainAvailable($subdomain, (string) $pending['name']);
+            $this->assertSubdomainAvailable($subdomain, (string) $pending['name'], '', $serverId);
 
             // Batas CPU/memori: owner/member boleh memilih saat create (D2=a),
             // dibatasi plafon billing. Admin bebas (billing bukan untuk admin).
@@ -969,6 +1330,7 @@ class AppController
      * @param array<string,string>|null $template  metadata asal template (bila dibuat dari template)
      * @param array<string,array{cpus:?float,memory_mb:?int}> $limits batas CPU/memori per service (kosong = tidak diatur)
      * @param string|null               $subdomain label subdomain eksplisit (null/'' = tanpa field, fallback `name`)
+     * @param DeployWorkerLauncher|null $launcher  seam uji: peluncur worker (null = bawaan)
      * @return array{app:array,spawned:bool}
      */
     private function createAndDeploy(
@@ -980,39 +1342,84 @@ class AppController
         array $env = [],
         ?array $template = null,
         array $limits = [],
-        ?string $subdomain = null
+        ?string $subdomain = null,
+        ?DeployWorkerLauncher $launcher = null
     ): array {
+        // Server target app baru (`$pending['server_id']`, absen/kosong = lokal).
+        // Fail-fast bila id server sudah tidak ada di registry.
+        $server = (new ServerResolver())->resolveForApp($pending);
+
         // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy —
         // hanya bila ada port yang akan di-proxy ke domain. App tanpa `ports:`
         // tidak membuat vhost, jadi direktori Nginx tidak relevan (SPECS §7.2).
-        if ($this->hasDeclaredPorts($services)) {
-            DeployerFactory::create()->ensureWritable();
+        //
+        // Prasyarat itu milik host INI, jadi hanya berlaku untuk server lokal:
+        // untuk server `kind=agent` vhost dibuat di server itu (fase F2) dan
+        // `AgentDeployer::ensureWritable()` memang melempar "belum didukung" —
+        // karena itu tidak dipanggil (bukan diam-diam memakai direktori lokal).
+        if ($this->hasDeclaredPorts($services) && ServerResolver::isLocal($server)) {
+            DeployerFactory::createFor($server)->ensureWritable();
         }
-
-        $composeFiles = [$pending['compose_file']];
-        $this->writeOverride($pending, $services, $composeFiles, $containerPrefix);
 
         $dir = (string) config('deploy.apps_path') . '/' . $pending['name'];
+        $agentServer = !ServerResolver::isLocal($server);
 
-        // Batas CPU/memori (admin saja) — file override ditulis SEBELUM entri
-        // apps.json dibuat; kegagalan ⇒ pemanggil membersihkan direktori app.
-        if (ResourceLimits::writeOverride($dir, [$pending['compose_file']], $limits)) {
-            $composeFiles[] = ResourceLimits::OVERRIDE_FILE;
-        }
+        // Rencana host port pilihan user (server **agent**): disimpan di metadata
+        // app (`host_ports`) dan dikirim `AgentArtifactPackager` lewat
+        // `artifacts.files` saat job berangkat — host ini **tidak** menulis
+        // berkas override untuk app di server agent (misi F1 celah B).
+        $portPlan = $agentServer ? $this->hostPortPlan($services) : [];
 
-        if ($env !== []) {
-            $composeFiles[] = EnvManager::OVERRIDE_FILE;
-            $composeFiles = $this->orderComposeFiles($composeFiles);
+        // Artefak lokal app (override port/nama container, batas CPU/memori,
+        // override env) hanya bisa ditulis bila direktori app lokal memang ada di
+        // host ini **dan app memang milik server ini**. App **repo** milik server
+        // **agent** tidak punya direktori itu — checkout-nya dibuat agent
+        // (`AgentArtifactMaterializer`), jadi penulisan lokal **dilewati** dengan
+        // alasan yang benar (bukan gagal "Gagal menulis
+        // docker-compose.override.yml"); override env/limits/nama container
+        // dibuat worker di agent dari metadata app ini.
+        $localArtifacts = is_dir($dir) && !$agentServer;
 
-            $envManager = new EnvManager();
-            $envManager->write((string) $pending['name'], $env);
-            $envManager->writeOverride($dir, $composeFiles, $env);
+        $composeFiles = [$pending['compose_file']];
+        if ($agentServer) {
+            $composeFiles = $this->agentComposeFiles(
+                (string) $pending['compose_file'],
+                $portPlan,
+                $containerPrefix,
+                $limits,
+                $env,
+                (array) ($pending['compose_files'] ?? [])
+            );
         } else {
-            $composeFiles = $this->orderComposeFiles($composeFiles);
+            if ($localArtifacts) {
+                $this->writeOverride($pending, $services, $composeFiles, $containerPrefix);
+            }
+
+            // Batas CPU/memori (admin saja) — file override ditulis SEBELUM entri
+            // apps.json dibuat; kegagalan ⇒ pemanggil membersihkan direktori app.
+            if ($localArtifacts && ResourceLimits::writeOverride($dir, [$pending['compose_file']], $limits)) {
+                $composeFiles[] = ResourceLimits::OVERRIDE_FILE;
+            }
+
+            if ($env !== [] && $localArtifacts) {
+                $composeFiles[] = EnvManager::OVERRIDE_FILE;
+                $composeFiles = $this->orderComposeFiles($composeFiles);
+
+                $envManager = new EnvManager();
+                $envManager->write((string) $pending['name'], $env);
+                $envManager->writeOverride($dir, $composeFiles, $env);
+            } else {
+                // Nilai env tetap dipersist di `apps.json` (`$appData['env']`) supaya
+                // worker di server target bisa menulis override-nya sendiri.
+                $composeFiles = $this->orderComposeFiles($composeFiles);
+            }
         }
 
         $appData = [
             'name' => $pending['name'],
+            // Server pemilik app (multi-server F1): selalu eksplisit — kosong
+            // ternormalisasi ke server lokal oleh `AppStore::create()`.
+            'server_id' => AppStore::normalizeServerId($pending['server_id'] ?? ''),
             'owner_id' => (string) (current_user()['id'] ?? ''),
             'members' => [],
             'source' => $pending['source'] ?? ComposeSource::SOURCE_GIT,
@@ -1036,6 +1443,13 @@ class AppController
             'containers' => [],
         ];
 
+        // Rencana host port (server agent) ikut metadata app: `AgentArtifactPackager`
+        // membangkitkan override port dari field ini saat job berangkat, sehingga
+        // agent memakai pilihan user — bukan port bawaan repo (misi F1 celah B).
+        if ($portPlan !== []) {
+            $appData['host_ports'] = $portPlan;
+        }
+
         // Subdomain opsional: kosong ⇒ field tidak ditulis (fallback ke `name`).
         if ($subdomain !== null && $subdomain !== '') {
             $appData['subdomain'] = $subdomain;
@@ -1043,7 +1457,7 @@ class AppController
 
         $app = (new AppStore())->create($appData);
 
-        $spawned = $this->spawnWorker($app['id'], 'deploy', null, $this->currentActorId());
+        $spawned = $this->spawnWorker($app['id'], 'deploy', null, $this->currentActorId(), $launcher);
         if (!$spawned) {
             (new AppStore())->update($app['id'], function (array &$s): void {
                 $s['status'] = 'error';
@@ -1095,13 +1509,12 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
-        if (!is_dir($dir)) {
-            $msg = 'Direktori app tidak ada. App mungkin sudah dihapus.';
+        $blocked = $this->localArtifactsError($app, 'Rebuild');
+        if ($blocked !== null) {
             if ($request->expectsJson()) {
-                return json(['code' => 1, 'error' => $msg]);
+                return json(['code' => 1, 'error' => $blocked]);
             }
-            flash_set('error', $msg);
+            flash_set('error', $blocked);
             return redirect('/apps/' . $id);
         }
 
@@ -1190,9 +1603,9 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
-        if (!is_dir($dir)) {
-            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+        $blocked = $this->localArtifactsError($app, 'Rollback');
+        if ($blocked !== null) {
+            flash_set('error', $blocked);
             return redirect('/apps/' . $id);
         }
 
@@ -1229,7 +1642,7 @@ class AppController
         $store = new AppStore();
         $app = $this->findApp($id, 'stop');
         try {
-            DeployerFactory::create()->stop($app);
+            DeployerFactory::createForApp($app)->stop($app);
             $store->update($id, function (array &$s): void {
                 $s['status'] = 'stopped';
                 $s['message'] = 'Stopped';
@@ -1254,7 +1667,7 @@ class AppController
         }
 
         try {
-            DeployerFactory::create()->start($app);
+            DeployerFactory::createForApp($app)->start($app);
             $store->update($id, function (array &$s): void {
                 $s['status'] = 'running';
                 $s['message'] = 'Running';
@@ -1280,13 +1693,17 @@ class AppController
         ));
 
         try {
+            // Satu deployer untuk server pemilik app: app di server agent
+            // di-teardown LEWAT AGENT (job `teardown`), tidak pernah di host ini.
+            $deployer = DeployerFactory::createForApp($app);
+
             if ($mode === 'purge') {
                 // Hapus total: down -v (semua volume termasuk anonymous terhapus).
-                DeployerFactory::create()->teardown($app, null);
+                $deployer->teardown($app, null);
             } else {
                 // Default aman: pertahankan volume tercentang (data DB dll. tetap
                 // ada, dipakai ulang bila app dibuat ulang dengan nama sama).
-                DeployerFactory::create()->teardown($app, $preserve);
+                $deployer->teardown($app, $preserve);
             }
 
             $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
@@ -1422,8 +1839,13 @@ class AppController
      * lama yang punya sertifikat, di-revoke dulu. Setelah tersimpan, config
      * Nginx ditulis ulang (subdomain → redirect ke custom domain).
      */
-    public function setDomain(Request $request, string $id)
-    {
+    public function setDomain(
+        Request $request,
+        string $id,
+        ?NginxReloader $localReloader = null,
+        ?AgentClient $agentClient = null,
+        ?SslIssuer $localIssuer = null
+    ) {
         $store = new AppStore();
         $app = $this->findApp($id, 'domain');
 
@@ -1449,10 +1871,11 @@ class AppController
             }
             $this->assertDomainUnique($store, $id, $domain);
 
-            // Custom domain lama (bila ada sertifikat) di-revoke sebelum diganti.
+            // Custom domain lama (bila ada sertifikat) di-revoke sebelum diganti —
+            // di server pemilik app (agent ⇒ job `ssl_revoke` di sana).
             if ($oldCustom !== '') {
                 try {
-                    (new SslIssuer())->revoke($oldCustom);
+                    $this->revokeDomainCert($app, $oldCustom, $localIssuer, $agentClient);
                 } catch (\Throwable $e) {
                     flash_set('info', 'Peringatan: gagal revoke sertifikat lama ' . $oldCustom . ' — ' . $e->getMessage());
                 }
@@ -1468,18 +1891,18 @@ class AppController
                 $s['custom_needs_ssl'] = false;
             });
 
-            $app = $store->find($id);
-            if ($app !== null) {
-                try {
-                    $this->applyNginxConfig($app);
-                } catch (\Throwable $e) {
-                    flash_set('error', 'Custom domain ' . $domain . ' tersimpan, tetapi gagal menulis config Nginx: ' . $e->getMessage() . ' (jalankan Rebuild untuk menerapkan).');
-                    return redirect('/apps/' . $id);
-                }
+            // Konteks server tidak boleh hilang bila pembacaan ulang gagal:
+            // reload/penulisan harus tetap diarahkan ke server app (bukan lokal).
+            $app = $store->find($id) ?? $app;
+            try {
+                $this->applyNginxConfig($app, $agentClient);
+            } catch (\Throwable $e) {
+                flash_set('error', 'Custom domain ' . $domain . ' tersimpan, tetapi gagal menulis config Nginx: ' . $e->getMessage() . ' (jalankan Rebuild untuk menerapkan).');
+                return redirect('/apps/' . $id);
             }
 
-            // Reload nginx host agar reverse proxy custom domain langsung aktif.
-            $reloadNote = $this->reloadNginxNote();
+            // Reload Nginx di server app agar reverse proxy custom domain aktif.
+            $reloadNote = $this->reloadNginxNote($app, $localReloader, $agentClient);
             flash_set('success', 'Custom domain ' . $domain . ' diset. Subdomain bawaan kini redirect ke domain tersebut.' . ($reloadNote !== '' ? ' ' . $reloadNote : '') . ' Jangan lupa arahkan DNS domain ke server, lalu aktifkan SSL-nya.');
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
@@ -1491,8 +1914,13 @@ class AppController
      * Hapus custom domain app. Sertifikat SSL domain (bila ada) di-revoke;
      * bila revoke gagal, domain tetap dihapus dari config (recovery via Rebuild).
      */
-    public function removeDomain(Request $request, string $id)
-    {
+    public function removeDomain(
+        Request $request,
+        string $id,
+        ?NginxReloader $localReloader = null,
+        ?AgentClient $agentClient = null,
+        ?SslIssuer $localIssuer = null
+    ) {
         $store = new AppStore();
         $app = $this->findApp($id, 'domain');
 
@@ -1504,7 +1932,8 @@ class AppController
 
         $revokeError = null;
         try {
-            (new SslIssuer())->revoke($customDomain);
+            // Pencabutan terjadi di server pemilik app (agent ⇒ op `ssl_revoke`).
+            $this->revokeDomainCert($app, $customDomain, $localIssuer, $agentClient);
         } catch (\Throwable $e) {
             $revokeError = $e->getMessage();
         }
@@ -1519,18 +1948,18 @@ class AppController
             $s['custom_needs_ssl'] = false;
         });
 
-        $app = $store->find($id);
-        if ($app !== null) {
-            try {
-                $this->applyNginxConfig($app);
-                // Reload nginx host agar subdomain kembali melayani app (best-effort).
-                $reloadNote = $this->reloadNginxNote();
-                if ($reloadNote !== '') {
-                    $revokeError = ($revokeError ?? '') . ' ' . $reloadNote;
-                }
-            } catch (\Throwable $e) {
-                $revokeError = ($revokeError ?? '') . ' Gagal menulis config Nginx: ' . $e->getMessage();
+        // Lihat catatan di `setDomain()`: konteks server dipertahankan walau
+        // pembacaan ulang gagal (jangan pernah jatuh ke host lokal).
+        $app = $store->find($id) ?? $app;
+        try {
+            $this->applyNginxConfig($app, $agentClient);
+            // Reload Nginx di server app agar subdomain kembali melayani app (best-effort).
+            $reloadNote = $this->reloadNginxNote($app, $localReloader, $agentClient);
+            if ($reloadNote !== '') {
+                $revokeError = ($revokeError ?? '') . ' ' . $reloadNote;
             }
+        } catch (\Throwable $e) {
+            $revokeError = ($revokeError ?? '') . ' Gagal menulis config Nginx: ' . $e->getMessage();
         }
 
         if ($revokeError !== null) {
@@ -1555,16 +1984,16 @@ class AppController
      * menerbitkan ulang di tab SSL. Otorisasi dicek lewat `findApp()` (404 bila
      * tak berhak) SEBELUM efek samping apa pun.
      */
-    public function setSubdomain(Request $request, string $id)
+    public function setSubdomain(Request $request, string $id, ?NginxReloader $localReloader = null, ?AgentClient $agentClient = null)
     {
         $store = new AppStore();
-        $this->findApp($id, 'domain');
+        $app = $this->findApp($id, 'domain');
 
         $label = SubdomainManager::normalize((string) $request->post('subdomain', ''));
 
         $manager = new SubdomainManager(
             $store,
-            new NginxConfigGuard(new NginxReloader(), DeployerFactory::create(), $store)
+            new NginxConfigGuard($this->nginxReloaderFor($app, $localReloader, $agentClient), DeployerFactory::createForApp($app, null, $agentClient), $store)
         );
         $result = $manager->change($id, $label);
 
@@ -1626,7 +2055,7 @@ class AppController
      * Otorisasi dicek lewat `findApp()` (app tak berhak = 404) sebelum efek
      * samping apa pun.
      */
-    public function saveRoutes(Request $request, string $id)
+    public function saveRoutes(Request $request, string $id, ?NginxReloader $localReloader = null, ?AgentClient $agentClient = null)
     {
         $store = new AppStore();
         $app = $this->findApp($id, 'routes');
@@ -1642,7 +2071,11 @@ class AppController
 
             $routes = NginxRoutes::parse($text);
 
-            $guard = new NginxConfigGuard(new NginxReloader(), DeployerFactory::create(), $store);
+            $guard = new NginxConfigGuard(
+                $this->nginxReloaderFor($app, $localReloader, $agentClient),
+                DeployerFactory::createForApp($app, null, $agentClient),
+                $store
+            );
             $result = $guard->applyRoutes($id, $routes);
 
             if (!$result['ok']) {
@@ -1661,20 +2094,113 @@ class AppController
 
     /**
      * Tulis ulang config Nginx app (dipakai saat custom domain di-set/dihapus).
+     *
+     * App di server agent ⇒ job `nginx_write` **di server itu**
+     * ({@see AgentDeployer::writeNginxConfig()}) — host kontrol tidak pernah
+     * menulis config Nginx untuk app remote.
      */
-    private function applyNginxConfig(array $app): void
+    private function applyNginxConfig(array $app, ?AgentClient $agentClient = null): void
     {
-        DeployerFactory::create()->writeNginxConfig($app);
+        DeployerFactory::createForApp($app, null, $agentClient)->writeNginxConfig($app);
     }
 
     /**
-     * Reload nginx host via NginxReloader (best-effort). Mengembalikan string
-     * pesan error bila gagal, atau string kosong bila sukses.
+     * Kandidat network eksternal yang boleh ditawarkan ke form app.
+     *
+     * Untuk app di server **agent** selalu `[]`: daftar network host kontrol
+     * adalah network di host yang **salah** (app berjalan di server lain), dan
+     * jalur baca network per-server belum ada (fase F3). Menyembunyikan daftar
+     * aman; menawarkan network lokal adalah bug lintas-server. Pesan yang lebih
+     * spesifik untuk app agent perlu perubahan view (wilayah Frontend UI).
+     *
+     * @param array<int,array<string,mixed>> $allApps seluruh app (untuk mengecualikan
+     *                                               network milik app aktif)
+     * @param bool                           $agentApp app berjalan di server agent?
+     * @param DockerClient|null              $docker   seam uji (null = klien bawaan)
+     * @return array<int,string>
      */
-    private function reloadNginxNote(): string
+    private function availableNetworksFor(array $allApps, bool $agentApp, ?DockerClient $docker = null): array
+    {
+        if ($agentApp) {
+            return [];
+        }
+
+        $available = [];
+        try {
+            $docker ??= new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+            $activeNames = [];
+            foreach ($allApps as $s) {
+                $activeNames[(string) ($s['name'] ?? '')] = true;
+            }
+            foreach ($docker->listNetworks() as $n) {
+                $nname = (string) ($n['Name'] ?? '');
+                if ($nname === '' || in_array($nname, ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge'], true)) {
+                    continue;
+                }
+                $project = (string) (($n['Labels'] ?? [])['com.docker.compose.project'] ?? '');
+                if ($project !== '' && isset($activeNames[$project])) {
+                    continue; // network milik app aktif dikelola lewat app tsb
+                }
+                $available[] = $nname;
+            }
+            sort($available);
+        } catch (\Throwable $e) {
+            // engine tidak tersedia — form tampil tanpa daftar
+        }
+
+        return $available;
+    }
+
+    /**
+     * Reloader Nginx untuk app ini: lokal ⇒ `NginxReloader` (perilaku lama),
+     * server agent ⇒ {@see AppNginxReloader} (job `nginx_reload` di server itu).
+     *
+     * Dipakai jalur `NginxConfigGuard` (subdomain & rute proxy) supaya guard —
+     * termasuk **jalur rollback**-nya — tidak pernah menyentuh Nginx host
+     * kontrol untuk app di server agent.
+     *
+     * @param array<string,mixed> $app
+     * @param NginxReloader|null  $localReloader seam uji: reloader lokal (dipakai
+     *                                           hanya bila app memang lokal)
+     * @param AgentClient|null    $agentClient   seam uji: klien agent (tanpa jaringan)
+     */
+    private function nginxReloaderFor(array $app, ?NginxReloader $localReloader = null, ?AgentClient $agentClient = null): NginxReloader
+    {
+        return new AppNginxReloader($app, null, $agentClient, $localReloader);
+    }
+
+    /**
+     * Cabut sertifikat `$domain` di **server pemilik app** — lokal lewat
+     * `SslIssuer` (perilaku lama), server agent lewat job `ssl_revoke` di sana
+     * ({@see AppSslRevoker}). Fail-fast bila server app tak dikenal atau agent
+     * belum mendukung op — tidak pernah mencabut di host yang salah.
+     *
+     * @param array<string,mixed> $app
+     * @param SslIssuer|null       $localIssuer seam uji (dipakai hanya untuk app lokal)
+     * @param AgentClient|null     $agentClient seam uji
+     */
+    private function revokeDomainCert(array $app, string $domain, ?SslIssuer $localIssuer = null, ?AgentClient $agentClient = null): void
+    {
+        (new AppSslRevoker(null, $agentClient, $localIssuer))->revoke($app, $domain);
+    }
+
+    /**
+     * Reload Nginx **di server pemilik app** (best-effort). Mengembalikan string
+     * pesan error bila gagal, atau string kosong bila sukses.
+     *
+     * App di server agent memakai job `nginx_reload` di server itu
+     * ({@see AppNginxReloader}) — host kontrol tidak pernah me-reload Nginx untuk
+     * app remote.
+     *
+     * @param array<string,mixed> $app
+     * @param NginxReloader|null  $localReloader seam uji
+     * @param AgentClient|null    $agentClient   seam uji
+     */
+    private function reloadNginxNote(array $app, ?NginxReloader $localReloader = null, ?AgentClient $agentClient = null): string
     {
         try {
-            $r = (new NginxReloader())->reload();
+            $r = $this->nginxReloaderFor($app, $localReloader, $agentClient)->reload();
+
             return $r['ok'] ? '' : 'Reload Nginx GAGAL: ' . ($r['error'] ?? 'unknown error') . ' — klik tombol "Reload Nginx" untuk mencoba lagi.';
         } catch (\Throwable $e) {
             return 'Reload Nginx gagal: ' . $e->getMessage() . ' — klik tombol "Reload Nginx" untuk mencoba lagi.';
@@ -1683,23 +2209,39 @@ class AppController
 
     /**
      * Validasi label subdomain create (format + keunikan atas FQDN efektif app
-     * lain). Kosong = fallback `name` (tetap dicek unik). Melempar RuntimeException
-     * dengan pesan jelas bila tidak valid. Delegasi kebijakan ke SubdomainManager.
+     * lain **di server yang sama**). Kosong = fallback `name` (tetap dicek unik).
+     * Melempar RuntimeException dengan pesan jelas bila tidak valid. Delegasi
+     * kebijakan ke SubdomainManager.
+     *
+     * @param string      $serverId id server target (''/`local` = server lokal;
+     *                              `null` = seluruh server — hanya untuk pemanggil lama)
      */
-    private function assertSubdomainAvailable(string $label, string $name, string $excludeId = ''): string
+    private function assertSubdomainAvailable(string $label, string $name, string $excludeId = '', ?string $serverId = null): string
     {
-        return (new SubdomainManager(new AppStore()))->assertAvailable($label, $name, $excludeId);
+        return (new SubdomainManager(new AppStore()))->assertAvailable($label, $name, $excludeId, $serverId);
     }
 
     /**
-     * Pastikan sebuah domain belum dipakai app lain (sebagai subdomain efektif
-     * maupun custom domain). Subdomain app itu sendiri sudah dicek pemanggil.
+     * Pastikan sebuah domain belum dipakai app lain **di server yang sama**
+     * (sebagai subdomain efektif maupun custom domain).
+     *
+     * Multi-server F1 (plan §4.2 + §9 keputusan 4): keunikan domain berlaku
+     * **per server** — dua server berbeda boleh memakai domain yang sama (FQDN
+     * efektifnya memakai domain dasar server masing-masing, dan custom domain
+     * selalu diterbitkan di server pemilik app). Scope ditentukan dari app
+     * `$excludeId` lewat {@see AppStore::serverIdOf()} (tanpa query per baris).
+     * Subdomain app itu sendiri sudah dicek pemanggil.
      */
     private function assertDomainUnique(AppStore $store, string $excludeId, string $domain): void
     {
+        $scope = AppStore::serverIdOf($store->find($excludeId) ?? []);
+
         foreach ($store->all() as $other) {
             if (($other['id'] ?? '') === $excludeId) {
                 continue;
+            }
+            if (AppStore::serverIdOf($other) !== $scope) {
+                continue; // server lain: domainnya tidak saling berebut
             }
             if (app_subdomain_of($other) === $domain) {
                 throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai subdomain app "' . ($other['name'] ?? '?') . '".');
@@ -1730,9 +2272,8 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
-        if (!is_dir($dir)) {
-            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+        $dir = $this->appArtifactDirOrFail($app, 'Environment variable');
+        if ($dir === null) {
             return redirect('/apps/' . $id);
         }
 
@@ -1772,7 +2313,7 @@ class AppController
             //    kegagalan penerapan tidak menggagalkan penyimpanan.
             $app = $store->find($id) ?? $app;
             try {
-                $applied = DeployerFactory::create()->applyEnv($app, static function (string $stage, string $message): void {
+                $applied = DeployerFactory::createForApp($app)->applyEnv($app, static function (string $stage, string $message): void {
                 });
                 $store->update($id, function (array &$s) use ($applied): void {
                     $s['containers'] = $applied['containers'] ?? [];
@@ -1804,9 +2345,8 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
-        if (!is_dir($dir)) {
-            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+        $dir = $this->appArtifactDirOrFail($app, 'Environment variable');
+        if ($dir === null) {
             return redirect('/apps/' . $id);
         }
 
@@ -1868,9 +2408,8 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
-        if (!is_dir($dir)) {
-            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+        $dir = $this->appArtifactDirOrFail($app, 'Jaringan eksternal');
+        if ($dir === null) {
             return redirect('/apps/' . $id);
         }
 
@@ -1936,7 +2475,7 @@ class AppController
             // 3) Recreate container (up -d tanpa build) agar network diterapkan.
             $app = $store->find($id) ?? $app;
             try {
-                $applied = DeployerFactory::create()->applyEnv($app, static function (string $stage, string $message): void {
+                $applied = DeployerFactory::createForApp($app)->applyEnv($app, static function (string $stage, string $message): void {
                 });
                 $store->update($id, function (array &$s) use ($applied): void {
                     $s['containers'] = $applied['containers'] ?? [];
@@ -1974,9 +2513,8 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
-        if (!is_dir($dir)) {
-            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+        $dir = $this->appArtifactDirOrFail($app, 'Nama container');
+        if ($dir === null) {
             return redirect('/apps/' . $id);
         }
 
@@ -2019,7 +2557,7 @@ class AppController
             // 3) Recreate container agar nama baru dipakai (tanpa build).
             $app = $store->find($id) ?? $app;
             try {
-                $applied = DeployerFactory::create()->applyEnv($app, static function (string $stage, string $message): void {
+                $applied = DeployerFactory::createForApp($app)->applyEnv($app, static function (string $stage, string $message): void {
                 });
                 $store->update($id, function (array &$s) use ($applied): void {
                     $s['containers'] = $applied['containers'] ?? [];
@@ -2062,9 +2600,8 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
-        $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
-        if (!is_dir($dir)) {
-            flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
+        $dir = $this->appArtifactDirOrFail($app, 'Batas CPU/memori');
+        if ($dir === null) {
             return redirect('/apps/' . $id);
         }
 
@@ -2083,7 +2620,7 @@ class AppController
             // 2) Recreate container agar batas baru dipakai (tanpa build).
             $app = $result['app'];
             try {
-                $applied = DeployerFactory::create()->applyEnv($app, static function (string $stage, string $message): void {
+                $applied = DeployerFactory::createForApp($app)->applyEnv($app, static function (string $stage, string $message): void {
                 });
                 $store->update($id, function (array &$s) use ($applied): void {
                     $s['containers'] = $applied['containers'] ?? [];
@@ -2115,7 +2652,7 @@ class AppController
      *
      * @return string prefix final ('' = pakai nama default compose)
      */
-    private function resolveContainerPrefix(string $appName, string $composeFile, string $rawPrefix): string
+    private function resolveContainerPrefix(string $appName, string $composeFile, string $rawPrefix, string $serverId = ''): string
     {
         $prefix = ContainerNames::normalizePrefix($rawPrefix);
         ContainerNames::assertValidPrefix($prefix);
@@ -2124,31 +2661,61 @@ class AppController
         }
 
         $dir = (string) config('deploy.apps_path') . '/' . $appName;
+        if (!is_dir($dir)) {
+            // App **repo** milik server **agent**: base compose-nya hanya ada di
+            // server itu (checkout di agent), jadi daftar service & pemeriksaan
+            // `deploy.replicas` tidak bisa dijalankan dari control plane. Ditolak
+            // **eksplisit** (bukan diloloskan tanpa cek / bukan pesan menyesatkan
+            // "base compose tidak ditemukan").
+            throw new RuntimeException(
+                'Nama container kustom belum aktif untuk app repo di server agent pada fase ini: base compose '
+                . 'app ini ada di server agent, sehingga pemeriksaan daftar service & `deploy.replicas` tidak '
+                . 'bisa dilakukan dari dashboard. Biarkan kolom "Prefix nama container" kosong lalu deploy lagi.'
+            );
+        }
         $services = ContainerNames::services($dir, [$composeFile]);
         ContainerNames::assertNotReplicated($services);
         ContainerNames::assertAvailable(
             ContainerNames::mapFor(array_keys($services), $prefix),
-            $this->usedContainerNames($appName)
+            $this->usedContainerNames($appName, $serverId)
         );
 
         return $prefix;
     }
 
     /**
-     * Nama container yang sudah terpakai di host, di luar project app ini.
-     * Engine API jadi acuan utama (mencakup container app lain, container
-     * eksternal, dan container dashboard sendiri); apps.json dipakai sebagai
-     * cadangan bila Engine tidak dapat diakses.
+     * Nama container yang sudah terpakai **di server app ini**, di luar project
+     * app ini.
      *
+     * - Server **lokal**: Engine API jadi acuan utama (mencakup container app
+     *   lain, container eksternal, dan container dashboard sendiri); apps.json
+     *   dipakai sebagai cadangan bila Engine tidak dapat diakses — perilaku
+     *   lama, tidak berubah.
+     * - Server **agent**: Engine server itu belum bisa dibaca dari control plane
+     *   (F3 akan merutekannya lewat agent), jadi Engine **lokal tidak pernah**
+     *   dibaca untuk app milik server lain (kesalahan paling berbahaya, plan §3
+     *   butir 4). Yang bisa dipastikan dari control plane adalah bentrok antar
+     *   app dashboard di server itu lewat apps.json (`ContainerNames::usedFromApps()`
+     *   berscope server); container di luar dashboard baru terlihat pada F3.
+     *
+     * @param string $ownProject nama project app ini (dilewati)
+     * @param string $serverId   id server app (''/`local` = lokal)
      * @return array<string,string> nama => deskripsi pemilik
      */
-    private function usedContainerNames(string $ownProject): array
+    private function usedContainerNames(string $ownProject, string $serverId = ''): array
     {
+        $server = (new ServerResolver())->resolve($serverId);
+        $scope = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
+
+        if (!ServerResolver::isLocal($server)) {
+            return ContainerNames::usedFromApps((new AppStore())->all(), $ownProject, $scope);
+        }
+
         try {
             $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
-            return ContainerNames::usedFromEngine($docker->listContainers(), $ownProject);
+            return ContainerNames::usedFromEngine($docker->listContainers(), $ownProject, $scope);
         } catch (\Throwable $e) {
-            return ContainerNames::usedFromApps((new AppStore())->all(), $ownProject);
+            return ContainerNames::usedFromApps((new AppStore())->all(), $ownProject, $scope);
         }
     }
 
@@ -2277,16 +2844,21 @@ class AppController
      * Simpan perubahan compose app mode compose (POST /apps/{id}/compose) —
      * tab "Compose" di detail app.
      *
-     * Alur (validasi dulu, baru tulis — gagal = tidak ada state yang berubah):
-     *  1) Validasi isi compose (YAML valid, ada service, tanpa `build:`).
-     *  2) Rencanakan host port: port lama tiap service dipertahankan, konflik
-     *     dengan app lain digeser ke port bebas (PortManager).
-     *  3) Tulis file compose utama + file pendukung baru, hapus file tercentang.
-     *  4) Tulis ulang override port (2 lapis: reset + ports).
-     *  5) Persist compose_files/primary_service + spawn worker `apply`
-     *     (up -d tanpa build + tulis config Nginx; progres via polling).
+     * Dua jalur, dipilih dari **server pemilik app**:
+     *  - server **lokal** (perilaku lama, tidak berubah): validasi → rencana host
+     *    port → tulis file compose + berkas pendukung di `apps/<name>` → tulis
+     *    ulang override port (2 lapis) → persist + spawn worker `apply`.
+     *  - server **agent**: stdout compose disimpan sebagai metadata app
+     *    (`compose_content`) + rencana host port (`host_ports`), lalu worker
+     *    `apply` mengirimnya ke agent lewat `artifacts.compose`/`artifacts.files`
+     *    (`AgentArtifactPackager` → `AgentArtifactMaterializer`). Host ini
+     *    **tidak** menulis direktori/berkas artefak app agent; nama file utama
+     *    tetap mengikuti aturan repo ({@see ComposeSource::resolveMainFile()}).
+     * @param DeployWorkerLauncher|null $launcher seam uji: peluncur worker palsu
+     *                                            (null = bawaan); jalur produksi tidak
+     *                                            pernah mengisinya
      */
-    public function saveCompose(Request $request, string $id)
+    public function saveCompose(Request $request, string $id, ?DeployWorkerLauncher $launcher = null)
     {
         $store = new AppStore();
         $app = $this->findApp($id, 'compose');
@@ -2309,6 +2881,19 @@ class AppController
         }
 
         $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
+
+        // Server pemilik app (fail-fast: `server_id` menunjuk server yang hilang).
+        try {
+            $server = $this->serverForApp($app);
+        } catch (\Throwable $e) {
+            flash_set('error', 'Compose tidak bisa disimpan: ' . $e->getMessage());
+            return redirect('/apps/' . $id);
+        }
+
+        if (!ServerResolver::isLocal($server)) {
+            return $this->saveComposeOnAgent($request, $app, $store, $launcher);
+        }
+
         if (!is_dir($dir)) {
             flash_set('error', 'Direktori app tidak ada. App mungkin sudah dihapus.');
             return redirect('/apps/' . $id);
@@ -2376,7 +2961,7 @@ class AppController
                 $s['error'] = null;
             });
 
-            if (!$this->spawnWorker($id, 'apply', null, $this->currentActorId())) {
+            if (!$this->spawnWorker($id, 'apply', null, $this->currentActorId(), $launcher)) {
                 $store->update($id, function (array &$s): void {
                     $s['status'] = 'error';
                     $s['stage'] = null;
@@ -2394,6 +2979,239 @@ class AppController
         }
 
         return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Simpan compose app yang tinggal di server **agent** (misi F1 celah A).
+     *
+     * Perbedaan pokok dari jalur lokal: host ini **tidak** memiliki (dan tidak
+     * membuat) direktori artefak app agent, jadi compose hasil edit disimpan
+     * sebagai metadata app (`compose_content`) + rencana host port (`host_ports`)
+     * dan dikirim worker `apply` lewat `artifacts.compose`/`artifacts.files`;
+     * `AgentArtifactMaterializer` di agent yang menulis berkasnya (compose +
+     * override port) sebelum worker agent berjalan — "simpan dulu, baru up -d".
+     *
+     * Urutan fail-fast: validasi isi compose & bentuk berkas unggahan **sebelum**
+     * `apps.json` disentuh; job hanya di-spawn bila semuanya sah. `apply` dipakai
+     * (bukan `deploy`) supaya tidak ada build di server app.
+     *
+     * Catatan urutan persist: seperti jalur lokal, `compose_content` +
+     * `compose_files` + rencana port ditulis **sebelum** worker di-spawn — payload
+     * job membawa dokumen app itu (`AgentDeployer` → proyeksi agent), dan packager
+     * membaca rencana port dari sana. Worker gagal ⇒ status app ditandai `error`
+     * (perilaku yang sama dengan jalur lokal), bukan rollback metadata.
+     *
+     * @param array<string,mixed>       $app      dokumen app (server agent)
+     * @param DeployWorkerLauncher|null $launcher seam uji (null = bawaan)
+     */
+    private function saveComposeOnAgent(Request $request, array $app, AppStore $store, ?DeployWorkerLauncher $launcher = null): \Webman\Http\Response
+    {
+        $id = (string) $app['id'];
+        $name = (string) $app['name'];
+        $dir = (string) config('deploy.apps_path') . '/' . $name;
+
+        try {
+            $content = (string) $request->post('compose', '');
+
+            // 1) Validasi isi compose DULU (fail-fast, belum ada efek samping).
+            ComposeSource::assertDeployable($content);
+
+            // 2) Berkas pendukung (upload/hapus) belum bisa dikirim ke agent —
+            //    tolak eksplisit, jangan dibuang diam-diam.
+            $delete = array_values(array_filter(
+                array_map('strval', (array) $request->post('file_delete', [])),
+                static fn (string $f): bool => $f !== ''
+            ));
+            if ($this->uploadsFrom($request) !== [] || $delete !== []) {
+                throw new RuntimeException(
+                    'Berkas pendukung compose (unggah/hapus) belum didukung untuk app di server agent — '
+                    . 'simpan compose tanpa berkas pendukung dulu; berkas yang sudah ada di server agent tidak diubah.'
+                );
+            }
+
+            // 3) Rencana host port untuk service di compose baru (scope server app
+            //    ini: rentang port & port terpakai milik server itu) + primary.
+            $server = $this->serverForApp($app);
+            $serverId = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
+            $range = ServerResolver::portRange($server);
+            $context = $this->portContext($serverId);
+            $services = ComposeSource::planHostPorts(
+                ComposeSource::parseContent($content),
+                ComposeSource::existingHostPorts($app),
+                $context['used'],
+                (int) $range['start'],
+                (int) $range['end']
+            );
+            $portPlan = $this->hostPortPlan($services);
+            $primarySelection = $this->resolvePrimarySelection(
+                $services,
+                '',
+                (string) ($app['primary_service'] ?? ''),
+                (int) ($app['primary_port'] ?? 0)
+            );
+
+            // 4) Daftar compose_files kanonik (base → override port → … → env).
+            $composeFiles = $this->agentComposeFiles(
+                ComposeSource::resolveMainFile($dir, $app),
+                $portPlan,
+                ContainerNames::normalizePrefix($app['container_prefix'] ?? ''),
+                $this->limitsOf($app),
+                is_array($app['env'] ?? null) ? $app['env'] : [],
+                (array) ($app['compose_files'] ?? [])
+            );
+
+            // 5) Persist metadata (master compose + rencana port + daftar berkas).
+            $store->update($id, function (array &$s) use ($content, $composeFiles, $primarySelection, $portPlan): void {
+                $s['compose_content'] = $content;
+                $s['compose_files'] = $composeFiles;
+                if ($portPlan === []) {
+                    unset($s['host_ports']);   // compose baru tanpa port → jangan pertahankan rencana lama
+                } else {
+                    $s['host_ports'] = $portPlan;
+                }
+                $s['primary_service'] = $primarySelection['service'];
+                $s['primary_port'] = $primarySelection['port'];
+                $s['status'] = 'deploying';
+                $s['stage'] = 'queued';
+                $s['message'] = 'Menerapkan perubahan compose di server agent ...';
+                $s['error'] = null;
+            });
+
+            // 6) Spawn worker `apply` — worker control plane mengirim job ke agent
+            //    (artifacts.compose + files), agent menulis berkas lalu up -d.
+            if (!$this->spawnWorker($id, 'apply', null, $this->currentActorId(), $launcher)) {
+                $store->update($id, function (array &$s): void {
+                    $s['status'] = 'error';
+                    $s['stage'] = null;
+                    $s['message'] = 'Gagal menjalankan worker deploy.';
+                    $s['error'] = 'Gagal spawn worker deploy.';
+                });
+                flash_set('error', 'Compose tersimpan, tetapi gagal menjalankan deploy ulang di server agent.');
+
+                return redirect('/apps/' . $id);
+            }
+
+            flash_set('success', 'Compose disimpan & diterapkan di server agent (tanpa build).');
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Rencana host port app (metadata `host_ports`) dari hasil resolusi port
+     * wizard/create: daftar `{service, container, host}` — `host` `null` untuk
+     * port yang hanya diekspos (tidak dipublikasikan ke host).
+     *
+     * Isinya = pilihan user (atau alokasi otomatis `PortManager`), bukan port
+     * bawaan repo; dibangkitkan ulang menjadi berkas override port oleh
+     * {@see \app\library\Agent\AgentArtifactPackager} saat job berangkat.
+     *
+     * @param array<string,array> $services hasil ComposeParser + resolusi host port
+     * @return array<int,array{service:string,container:int,host:?int}>
+     */
+    private function hostPortPlan(array $services): array
+    {
+        $plan = [];
+        foreach ($services as $service => $svc) {
+            $service = (string) $service;
+            if ($service === '' || !is_array($svc) || empty($svc['ports'])) {
+                continue;
+            }
+            foreach ((array) $svc['ports'] as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+                $container = (int) ($entry['container'] ?? 0);
+                if ($container <= 0) {
+                    continue;
+                }
+                $host = isset($entry['host']) && (int) $entry['host'] > 0 ? (int) $entry['host'] : null;
+                $plan[] = ['service' => $service, 'container' => $container, 'host' => $host];
+            }
+        }
+
+        return $plan;
+    }
+
+    /**
+     * Batas CPU/memori app (metadata `limits`) sebagai array — `[]` bila tidak
+     * diatur/tidak valid (jalur agent tidak boleh gagal karena data lama).
+     *
+     * @param array<string,mixed> $app
+     * @return array<string,mixed>
+     */
+    private function limitsOf(array $app): array
+    {
+        try {
+            return ResourceLimits::of($app);
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Daftar `compose_files` app di server **agent**, urutan kanonik repo:
+     * base → override port (reset + ports, hanya bila ada rencana port) → override
+     * yang diregenerasi worker agent dari metadata app (nama container, limits,
+     * jaringan) → override env **paling akhir**.
+     *
+     * Berbeda dari jalur lokal, host ini **tidak** menulis berkas override
+     * tersebut: berkas override port dikirim `AgentArtifactPackager` lewat
+     * `artifacts.files` (materializer di agent yang menulis), sedangkan
+     * nama/limits/env/jaringan ditulis worker agent dari metadata app. Entri-nya
+     * tetap dicatat supaya `docker compose -f …` di agent benar-benar memakainya
+     * — dan hanya dicatat bila berkasnya memang akan ada (worker agent selalu
+     * menulisnya lebih dulu); `LocalDeployer::resolveComposeFiles()` di agent
+     * membuang entri generated yang berkasnya hilang, jadi tidak pernah ada entri
+     * yatim.
+     *
+     * @param array<int,array{service:string,container:int,host:?int}> $portPlan
+     * @param array<string,mixed>  $limits
+     * @param array<string,string> $env
+     * @param array<int,string>    $existing compose_files app saat ini (override lain dipertahankan)
+     * @return array<int,string>
+     */
+    private function agentComposeFiles(
+        string $mainFile,
+        array $portPlan,
+        ?string $containerPrefix,
+        array $limits,
+        array $env,
+        array $existing = []
+    ): array {
+        $managed = [
+            ComposeSource::RESET_OVERRIDE_FILE,
+            ComposeSource::PORTS_OVERRIDE_FILE,
+            ContainerNames::OVERRIDE_FILE,
+            ResourceLimits::OVERRIDE_FILE,
+            EnvManager::OVERRIDE_FILE,
+        ];
+
+        $files = [$mainFile];
+        if ($portPlan !== []) {
+            $files[] = ComposeSource::RESET_OVERRIDE_FILE;
+            $files[] = ComposeSource::PORTS_OVERRIDE_FILE;
+        }
+        if (ContainerNames::normalizePrefix((string) ($containerPrefix ?? '')) !== '') {
+            $files[] = ContainerNames::OVERRIDE_FILE;
+        }
+        if ($limits !== []) {
+            $files[] = ResourceLimits::OVERRIDE_FILE;
+        }
+        foreach ($existing as $file) {
+            $file = (string) $file;
+            if (!str_starts_with($file, ComposeSource::GENERATED_PREFIX) || in_array($file, $managed, true)) {
+                continue;
+            }
+            $files[] = $file;   // mis. override jaringan
+        }
+        if ($env !== []) {
+            $files[] = EnvManager::OVERRIDE_FILE;   // selalu paling akhir → menang atas repo
+        }
+
+        return $this->orderComposeFiles($files);
     }
 
     /**
@@ -2961,11 +3779,11 @@ class AppController
      * @param array               $input
      * @return array<string,array>
      */
-    private function validateAndApplyPorts(array $services, array $input): array
+    private function validateAndApplyPorts(array $services, array $input, string $serverId = ''): array
     {
-        $range = config('deploy.port_range', ['start' => 30000, 'end' => 30999]);
-        $portManager = new PortManager((int) $range['start'], (int) $range['end']);
-        $usedPorts = $portManager->usedHostPorts((new AppStore())->all());
+        $context = $this->portContext($serverId);
+        $portManager = $context['manager'];
+        $usedPorts = $context['used'];
 
         $localUsed = [];
         foreach ($services as $svcName => $svc) {
@@ -3149,22 +3967,6 @@ class AppController
     }
 
     /**
-     * Spawn background worker deploy (detached, non-blocking).
-     *
-     * Dipakai pcntl_fork + pcntl_exec (tanpa shell, sesuai konvensi anti
-     * command injection). Alasan: proc_open + proc_close BLOCKING sampai worker
-     * selesai — request HTTP yang memanggilnya menggantung selama build (bisa
-     * menit), sehingga timeout/refresh browser tampak "menggagalkan" deploy.
-     * Dengan fork + exec + SIGCHLD:
-     *   - request langsung kembali (hanya fork, tidak menunggu build);
-     *   - worker berjalan detached (posix_setsid) dan tetap lanjut meski HTTP
-     *     worker di-restart atau browser ditutup;
-     *   - di HTTP worker SIGCHLD di-ignore (kernel otomatis reap anak => tanpa
-     *     zombie); di worker anak SIGCHLD di-reset ke SIG_DFL sebelum exec agar
-     *     proc_get_status/proc_close di dalam worker tetap membaca exit code
-     *     proses anaknya (git/docker) dengan benar.
-     */
-    /**
      * Id user yang sedang login ('' bila tak ada konteks login). Dipakai untuk
      * meneruskan identitas aktor ke worker deploy (argv[4]) supaya controller &
      * worker memakai pengecualian kredit yang sama (admin bebas kredit).
@@ -3176,66 +3978,30 @@ class AppController
         return $user === null ? '' : (string) ($user['id'] ?? '');
     }
 
-    private function spawnWorker(string $appId, string $mode, ?string $arg = null, ?string $actorId = null): bool
-    {
-        $logDir = runtime_path('logs/deploy');
-        if (!is_dir($logDir)) {
-            @mkdir($logDir, 0775, true);
-        }
-        $logFile = $logDir . '/' . $appId . '.log';
-
-        $command = [PHP_BINARY, base_path('cli/deploy.php'), $appId, $mode];
-        if ($arg !== null && $arg !== '') {
-            $command[] = $arg;
-        }
-
-        // Argumen posisi ke-5 worker (argv[4]) = id aktor yang menekan tombol.
-        // Slot argv[3] (`ref`) selalu diisi (string kosong bila bukan rollback)
-        // agar posisi argumen stabil. Worker memakai aktor untuk pengecualian
-        // kredit (admin bebas) yang sama dengan controller — tanpa ini admin
-        // bisa lolos di controller tetapi ditolak worker (app jadi `error`).
-        $actorId = trim((string) $actorId);
-        if ($actorId !== '') {
-            if (count($command) < 5) {
-                $command[] = '';
-            }
-            $command[] = $actorId;
-        }
-
-        // Otomatis-reap anak saat selesai supaya tidak menumpuk zombie.
-        @pcntl_signal(SIGCHLD, SIG_IGN);
-
-        $pid = @pcntl_fork();
-        if ($pid === -1) {
-            return false;
-        }
-
-        if ($pid === 0) {
-            // Proses anak: lepas dari sesi/terminal, ganti stdio ke /dev/null,
-            // lalu ganti image proses menjadi worker (cli/deploy.php). Logging
-            // ditangani worker sendiri via file_put_contents ke logFile.
-            @posix_setsid();
-            @fclose(STDIN);
-            @fclose(STDOUT);
-            @fclose(STDERR);
-            // Buka ulang fd 0/1/2 ke /dev/null (fd reuse — tidak ada posix_dup2).
-            // Variabel sengaja dipertahankan sampai pcntl_exec agar fd tetap terbuka.
-            $nullIn = @fopen('/dev/null', 'r');
-            $nullOut = @fopen('/dev/null', 'w');
-            $nullErr = @fopen('/dev/null', 'w');
-            // RESET SIGCHLD ke default sebelum exec. Tanpa ini worker mewarisi
-            // SIGCHLD=SIG_IGN dari HTTP worker → kernel auto-reap proses anak
-            // (git/docker) saat keluar, sehingga proc_get_status/proc_close di
-            // ProcessRunner kehilangan exit code (selalu -1) dan perintah yang
-            // sukses (mis. `git checkout main` → "Already on 'main'") dianggap
-            // gagal. Disposisi SIG_DFL bertahan melewati exec.
-            @pcntl_signal(SIGCHLD, SIG_DFL);
-            pcntl_exec(PHP_BINARY, array_slice($command, 1));
-            // Hanya tercapai bila exec gagal.
-            exit(127);
-        }
-
-        return true;
+    /**
+     * Spawn background worker deploy (detached, non-blocking).
+     *
+     * Satu implementasi bersama ada di
+     * {@see \app\library\Deploy\DeployWorkerLauncher} (dipakai juga oleh
+     * `AgentJobController` di server agent, misi F1) — di sini hanya delegasi,
+     * supaya perilaku spawn tidak punya dua salinan yang bisa menyimpang.
+     * Mekanisme & alasannya (pcntl_fork + pcntl_exec, SIGCHLD lewat
+     * `SigchldGuard`, log ke `runtime/logs/deploy/{appId}.log`) ada di
+     * docblock kelas launcher.
+     *
+     * @param DeployWorkerLauncher|null $launcher seam uji: launcher dengan spawn
+     *                                            palsu (null = bawaan). Dipakai
+     *                                            jalur create agar tes tidak
+     *                                            benar-benar membuat proses.
+     */
+    private function spawnWorker(
+        string $appId,
+        string $mode,
+        ?string $arg = null,
+        ?string $actorId = null,
+        ?DeployWorkerLauncher $launcher = null
+    ): bool {
+        return ($launcher ?? new DeployWorkerLauncher())->launch($appId, $mode, $arg, (string) $actorId);
     }
 
     /**
@@ -3250,6 +4016,26 @@ class AppController
             }
         }
         return '';
+    }
+
+    /**
+     * Direktori **sementara** untuk analisis repo app yang akan di-deploy ke
+     * server **agent** (multi-server F1).
+     *
+     * Wizard create perlu membaca file compose repo (nama file + daftar service)
+     * untuk halaman konfirmasi, sedangkan checkout repo app di server agent
+     * adalah milik agent (`AgentArtifactMaterializer`) dan **tidak boleh**
+     * ditinggalkan di host control plane. Karena itu clone analisis dibuat di
+     * luar `apps_path` (folder temp sistem) dan dihapus lagi setelah diparse.
+     */
+    private function newRepoAnalysisDir(string $name): string
+    {
+        $base = rtrim(sys_get_temp_dir(), '/') . '/' . self::REPO_ANALYSIS_DIR;
+        if (!is_dir($base) && !@mkdir($base, 0700, true) && !is_dir($base)) {
+            throw new RuntimeException('Gagal menyiapkan direktori analisis repo sementara.');
+        }
+
+        return $base . '/' . ComposeSource::sanitizeName($name) . '-' . bin2hex(random_bytes(4));
     }
 
     /**

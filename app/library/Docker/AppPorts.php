@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\Docker;
 
+use app\library\Storage\AppStore;
 use RuntimeException;
 
 /**
@@ -52,6 +53,119 @@ final class AppPorts
         }
 
         return $result;
+    }
+
+    // ==================================================================
+    // Scope server (multi-server F1)
+    // ==================================================================
+
+    /**
+     * Filter daftar app berdasarkan scope server.
+     *
+     * `null` = **semua server** (perilaku lama; fail-safe — pemanggil lama yang
+     * belum server-aware tidak boleh kehilangan data). Bila diisi = hanya app di
+     * server itu (id server dinormalisasi lewat {@see AppStore::serverIdOf()}).
+     *
+     * @param array<int,array> $apps
+     * @return array<int,array>
+     */
+    public static function onServer(array $apps, ?string $serverId = null): array
+    {
+        if ($serverId === null) {
+            return array_values(array_filter($apps, 'is_array'));
+        }
+
+        $scope = AppStore::normalizeServerId($serverId);
+        $result = [];
+        foreach ($apps as $app) {
+            if (is_array($app) && AppStore::serverIdOf($app) === $scope) {
+                $result[] = $app;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Seluruh port publish semua app pada scope server (satu baris per port,
+     * sudah termasuk identitas app pemiliknya).
+     *
+     * `$serverId` null = semua server (perilaku lama).
+     *
+     * @param array<int,array> $apps
+     * @return array<int,array{id:string,name:string,server_id:string,service:string,container:int,host:int}>
+     */
+    public static function allOnServer(array $apps, ?string $serverId = null): array
+    {
+        $result = [];
+        foreach (self::onServer($apps, $serverId) as $app) {
+            foreach (self::all($app) as $port) {
+                $result[] = [
+                    'id' => (string) ($app['id'] ?? ''),
+                    'name' => (string) ($app['name'] ?? ''),
+                    'server_id' => AppStore::serverIdOf($app),
+                    'service' => $port['service'],
+                    'container' => $port['container'],
+                    'host' => $port['host'],
+                ];
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Host port yang sudah terpakai pada scope server — **tanpa duplikat**.
+     *
+     * `$serverId` null = semua server: himpunan port seluruh app, jadi sama
+     * dengan perilaku sebelum multi-server (uji regresi eksplisit). Isi
+     * `$serverId` = hanya port app di server itu, sehingga dua app dengan port
+     * sama di **server berbeda** tidak dianggap bentrok.
+     *
+     * @param array<int,array> $apps
+     * @return array<int,int>
+     */
+    public static function usedOn(array $apps, ?string $serverId = null): array
+    {
+        $used = [];
+        foreach (self::allOnServer($apps, $serverId) as $port) {
+            if ($port['host'] > 0) {
+                $used[$port['host']] = $port['host'];
+            }
+        }
+
+        return array_values($used);
+    }
+
+    /**
+     * App pemilik `$hostPort` pada scope server (null = tidak ada bentrok).
+     *
+     * Dedupe/pemetaan port memakai {@see all()} sehingga host port dari data app
+     * lama (`host_port`) maupun data Engine (`ports[]`) ikut terhitung. Port ≤ 0
+     * (belum dipublikasikan) tidak pernah dianggap bentrok.
+     *
+     * @param array<int,array> $apps
+     * @param string $excludeId id app yang boleh memakai port itu (app sendiri)
+     * @return array|null app pemilik port
+     */
+    public static function conflictsOn(array $apps, int $hostPort, ?string $serverId = null, string $excludeId = ''): ?array
+    {
+        if ($hostPort <= 0) {
+            return null;
+        }
+
+        foreach (self::onServer($apps, $serverId) as $app) {
+            if ($excludeId !== '' && (string) ($app['id'] ?? '') === $excludeId) {
+                continue;
+            }
+            foreach (self::all($app) as $port) {
+                if ($port['host'] === $hostPort) {
+                    return $app;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

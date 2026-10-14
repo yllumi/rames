@@ -1,0 +1,744 @@
+<?php
+declare(strict_types=1);
+
+namespace Tests;
+
+use app\library\Agent\AgentClient;
+use app\library\Agent\AgentArtifactPackager;
+use app\library\Agent\AgentError;
+use app\library\Agent\TlsPinMaterializer;
+use app\library\Deploy\AgentDeployer;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Psr7\Response;
+use PHPUnit\Framework\TestCase;
+use RuntimeException;
+
+/**
+ * Handler Guzzle tiruan untuk `AgentDeployer` (tanpa jaringan): merekam setiap
+ * permintaan (method, path, query, body) dan melayani respons dari antrean.
+ *
+ * Sengaja **tidak** memakai handler di `tests/AgentClientTest.php` (kelas itu
+ * dideklarasikan di berkas dengan nama kelas lain sehingga tidak bisa
+ * di-autoload PSR-4).
+ */
+final class AgentDeployerFakeHandler
+{
+    /** @var array<int,array{method:string,path:string,query:string,body:string}> */
+    public array $calls = [];
+
+    /** @var list<Response|\Throwable> */
+    private array $queue = [];
+
+    /** @param array<string,string> $headers */
+    public function reply(int $status, string $body = '', array $headers = []): self
+    {
+        $this->queue[] = new Response($status, $headers + ['Content-Type' => 'application/json'], $body);
+
+        return $this;
+    }
+
+    public function fail(\Throwable $error): self
+    {
+        $this->queue[] = $error;
+
+        return $this;
+    }
+
+    public function count(): int
+    {
+        return count($this->calls);
+    }
+
+    /**
+     * @return array{method:string,path:string,query:string,body:string}
+     */
+    public function call(int $index): array
+    {
+        if (!isset($this->calls[$index])) {
+            throw new \LogicException("panggilan HTTP #{$index} tidak ada (total {$this->count()})");
+        }
+
+        return $this->calls[$index];
+    }
+
+    /** Body JSON panggilan ke-`$index` sebagai array. */
+    public function jsonBody(int $index): array
+    {
+        $decoded = json_decode($this->call($index)['body'], true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    public function __invoke(object $request, array $options): mixed
+    {
+        if ($this->queue === []) {
+            throw new RuntimeException('AgentDeployerFakeHandler: antrean respons habis');
+        }
+
+        /** @var \Psr\Http\Message\RequestInterface $request */
+        $this->calls[] = [
+            'method' => $request->getMethod(),
+            'path' => $request->getUri()->getPath(),
+            'query' => $request->getUri()->getQuery(),
+            'body' => (string) $request->getBody(),
+        ];
+
+        $next = array_shift($this->queue);
+        if ($next instanceof \Throwable) {
+            throw $next;
+        }
+
+        return Create::promiseFor($next);
+    }
+}
+
+/**
+ * Test `AgentDeployer` — implementasi `DeployerInterface` untuk server
+ * `kind=agent` (misi `ms-f1-deploy`).
+ *
+ * Yang dikunci (plan §3 butir 4 + §4.1 + §11 catatan 6):
+ *  1. setiap operasi panjang dipetakan ke **op job agent** yang benar
+ *     (`ref` untuk rollback, `preserve_volumes` untuk teardown);
+ *  2. polling berhenti saat `done`; baris log baru diteruskan **tepat sekali**
+ *     (offset byte-accurate, termasuk saat `X-Rames-Offset` agent bergeser atau
+ *     potongan baris belum selesai);
+ *  3. `error` dari agent ⇒ exception berisi pesan agent (disanitasi, tanpa token);
+ *  4. batas waktu total ⇒ exception, bukan menggantung;
+ *  5. state eksekusi (status/containers/deploy_history/ssl_status) sesudah job
+ *     **ditarik dari agent** dan digabung ke app yang dikembalikan — metadata
+ *     control plane tidak ikut tertimpa;
+ *  6. operasi Nginx/volume **melempar** (`unsupported`) dan **tidak** menulis
+ *     apa pun ke host ini (tidak ada fallback `LocalDeployer`).
+ *
+ * Seluruh uji tanpa jaringan: `AgentClient` ber-handler tiruan; sertifikat TLS
+ * ditulis ke `/tmp`. Tidak ada Docker, `apps/`, atau `database/rames.sqlite`
+ * nyata yang tersentuh.
+ */
+class AgentDeployerTest extends TestCase
+{
+    private const APP_ID = 'app-uji-1';
+    private const TOKEN = 'tok-agent-uji-f1-4d7a9c';
+
+    private string $tmp;
+
+    /** @var list<array{0:string,1:string}> */
+    private array $lines = [];
+
+    protected function setUp(): void
+    {
+        $this->tmp = sys_get_temp_dir() . '/rames-agentdeployer-' . bin2hex(random_bytes(4));
+        if (!mkdir($this->tmp, 0777, true) && !is_dir($this->tmp)) {
+            throw new RuntimeException("gagal membuat direktori temp: {$this->tmp}");
+        }
+        $this->lines = [];
+    }
+
+    protected function tearDown(): void
+    {
+        self::removeTree($this->tmp);
+    }
+
+    // ==================================================================
+    // (i) op → op job agent
+    // ==================================================================
+
+    /**
+     * @return array<string,array{0:string,1:array<string,mixed>,2:array<string,mixed>}>
+     */
+    public static function operationCases(): array
+    {
+        return [
+            'deploy' => ['deploy', [], ['op' => 'deploy']],
+            'rebuild' => ['rebuild', [], ['op' => 'rebuild']],
+            'apply' => ['apply', [], ['op' => 'apply']],
+            'apply_env' => ['applyEnv', [], ['op' => 'apply_env']],
+            'rollback' => ['rollback', ['ref' => 'abc1234'], ['op' => 'rollback', 'ref' => 'abc1234']],
+            'stop' => ['stop', [], ['op' => 'stop']],
+            'start' => ['start', [], ['op' => 'start']],
+            'teardown (purge)' => ['teardown', ['preserve' => null], ['op' => 'teardown', 'preserve_volumes' => null]],
+            'teardown (preserve)' => ['teardown', ['preserve' => ['vol_a', 'vol_b']], ['op' => 'teardown', 'preserve_volumes' => ['vol_a', 'vol_b']]],
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $args
+     * @param array<string,mixed> $expected
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('operationCases')]
+    public function testEveryOperationMapsToAnAgentJobOp(string $method, array $args, array $expected): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $this->queueSuccessfulJob($handler);
+        $handler->reply(200, json_encode(['code' => 0, 'app' => []]));
+        $deployer = $this->deployer($handler);
+
+        match ($method) {
+            'deploy' => $deployer->deploy($this->app(), $this->logger()),
+            'rebuild' => $deployer->rebuild($this->app(), $this->logger()),
+            'apply' => $deployer->apply($this->app(), $this->logger()),
+            'applyEnv' => $deployer->applyEnv($this->app(), $this->logger()),
+            'rollback' => $deployer->rollback($this->app(), (string) $args['ref'], $this->logger()),
+            'stop' => $deployer->stop($this->app()),
+            'start' => $deployer->start($this->app()),
+            'teardown' => $deployer->teardown($this->app(), $args['preserve']),
+            default => throw new \LogicException("method tak dikenal: {$method}"),
+        };
+
+        $first = $handler->call(0);
+        $this->assertSame('POST', $first['method']);
+        $this->assertSame('/jobs', $first['path']);
+
+        $body = $handler->jsonBody(0);
+        foreach ($expected as $key => $value) {
+            $this->assertArrayHasKey($key, $body, "payload job wajib memuat `{$key}`");
+            $this->assertSame($value, $body[$key], "payload `{$key}` tidak sesuai");
+        }
+
+        // Dokumen app ikut dikirim (proyeksi di agent, plan §4.3).
+        $this->assertSame(self::APP_ID, $body['app']['id'] ?? null);
+        $this->assertSame('demo', $body['app']['name'] ?? null);
+    }
+
+    public function testRollbackWithoutRefIsRejectedBeforeAnyCall(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+
+        try {
+            $this->deployer($handler)->rollback($this->app(), '   ', $this->logger());
+            $this->fail('rollback tanpa ref harus ditolak');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('ref', $e->getMessage());
+        }
+
+        $this->assertSame(0, $handler->count(), 'tidak boleh ada panggilan HTTP');
+    }
+
+    // ==================================================================
+    // (ii) polling + offset log
+    // ==================================================================
+
+    public function testPollingStopsWhenDoneAndForwardsEachNewLineExactlyOnce(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $lineA = '[2026-10-14T10:00:00+07:00] [build] Menjalankan docker compose up -d --build ...' . "\n";
+        $lineB = '[2026-10-14T10:00:05+07:00] done' . "\n";
+
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'job_id' => 'job1', 'op' => 'deploy', 'log_offset' => 42]))
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'running']]))
+            ->reply(200, $lineA)
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'done']]))
+            ->reply(200, $lineB)
+            ->reply(200, '')
+            ->reply(200, json_encode(['code' => 0, 'app' => $this->agentAppState()]));
+
+        $result = $this->deployer($handler)->deploy($this->app(), $this->logger());
+
+        // Baris log diteruskan tepat sekali, stage+pesan terpisah.
+        $this->assertSame([
+            ['build', 'Menjalankan docker compose up -d --build ...'],
+            ['done', 'done'],
+        ], $this->logLines());
+
+        // Offset pertama = `log_offset` dari POST /jobs, lanjutannya byte-accurate.
+        $this->assertSame('offset=42', $handler->call(2)['query']);
+        $this->assertSame('/jobs/job1/log', $handler->call(2)['path']);
+        $this->assertSame('offset=' . (42 + strlen($lineA)), $handler->call(4)['query']);
+
+        // Status `done` menghentikan polling: tidak ada GET /jobs/{id} sesudahnya.
+        $statusCalls = 0;
+        foreach ($handler->calls as $call) {
+            if ($call['path'] === '/jobs/job1') {
+                $statusCalls++;
+            }
+        }
+        $this->assertSame(2, $statusCalls, 'polling harus berhenti begitu status done');
+
+        $this->assertSame('running', $result['status']);
+    }
+
+    public function testPartialTrailingLineIsNeitherForwardedNorSkipped(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $complete = '[ts] [build] baris lengkap' . "\n";
+        $partial = '[ts] [build] baris belum selesai';
+        $rest = " lanjutannya\n";
+
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'job_id' => 'job2', 'log_offset' => 10]))
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'running']]))
+            // Potongan pertama: satu baris lengkap + ekor baris yang belum tamat.
+            ->reply(200, $complete . $partial)
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'done']]))
+            // Bacaan berikutnya mulai dari AWAL baris yang belum tamat.
+            ->reply(200, $partial . $rest)
+            ->reply(200, '')
+            ->reply(200, json_encode(['code' => 0, 'app' => []]));
+
+        $this->deployer($handler)->deploy($this->app(), $this->logger());
+
+        $this->assertSame('offset=' . (10 + strlen($complete)), $handler->call(4)['query'], 'offset tidak boleh melewati baris yang belum tamat');
+        $this->assertSame([
+            ['build', 'baris lengkap'],
+            ['build', 'baris belum selesai lanjutannya'],
+        ], $this->logLines());
+    }
+
+    public function testShiftedXramesOffsetHeaderDoesNotCauseDuplicates(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $line = '[ts] [build] satu baris' . "\n";
+
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'job_id' => 'job3', 'log_offset' => 7]))
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'running']]))
+            // Header agent sengaja "bergeser" — offset kita dihitung dari body.
+            ->reply(200, $line, ['X-Rames-Offset' => '999999'])
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'done']]))
+            ->reply(200, '', ['X-Rames-Offset' => '999999'])
+            ->reply(200, json_encode(['code' => 0, 'app' => []]));
+
+        $this->deployer($handler)->deploy($this->app(), $this->logger());
+
+        $this->assertSame('offset=' . (7 + strlen($line)), $handler->call(4)['query']);
+        $this->assertSame([['build', 'satu baris']], $this->logLines());
+    }
+
+    public function testMissingLogOffsetFallsBackToZeroAndSaysSoInTheLog(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'job_id' => 'job4', 'op' => 'deploy']))
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'done']]))
+            ->reply(200, '')
+            ->reply(200, json_encode(['code' => 0, 'app' => []]));
+
+        $this->deployer($handler)->deploy($this->app(), $this->logger());
+
+        $this->assertSame('offset=0', $handler->call(2)['query'], 'tanpa log_offset, baca dari 0');
+        $this->assertStringContainsString('log_offset', implode(' ', array_column($this->lines, 1)));
+    }
+
+    // ==================================================================
+    // (iii) error job
+    // ==================================================================
+
+    public function testAgentJobErrorBecomesExceptionWithSanitizedMessage(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'job_id' => 'job5', 'log_offset' => 0]))
+            ->reply(200, json_encode(['code' => 0, 'job' => [
+                'status' => 'error',
+                'error' => 'docker compose gagal: unauthorized token=' . self::TOKEN,
+            ]]))
+            ->reply(200, '');
+
+        try {
+            $this->deployer($handler)->rebuild($this->app(), $this->logger());
+            $this->fail('job error harus melempar exception');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('docker compose gagal', $e->getMessage());
+            $this->assertStringContainsString('rebuild', $e->getMessage());
+            $this->assertStringContainsString('vps-jakarta-2', $e->getMessage(), 'identitas server wajib ada');
+            $this->assertStringNotContainsString(self::TOKEN, $e->getMessage(), 'token tidak boleh bocor ke pesan galat');
+        }
+    }
+
+    // ==================================================================
+    // (iv) batas waktu total
+    // ==================================================================
+
+    public function testTotalTimeoutThrowsInsteadOfHanging(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, json_encode(['code' => 0, 'job_id' => 'job6', 'log_offset' => 0]));
+        for ($i = 0; $i < 10; $i++) {
+            $handler
+                ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'running', 'stage' => 'build']]))
+                ->reply(200, '');
+        }
+
+        $now = 0.0;
+        $deployer = $this->deployer($handler, timeout: 5, clock: static function () use (&$now): float {
+            $now += 3.0;
+
+            return $now;
+        });
+
+        try {
+            $deployer->deploy($this->app(), $this->logger());
+            $this->fail('timeout total harus melempar exception');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('detik', $e->getMessage());
+            $this->assertStringContainsString('job6', $e->getMessage());
+        }
+
+        $this->assertLessThan(6, $handler->count(), 'tidak boleh menggantung: polling berhenti saat batas waktu');
+    }
+
+    // ==================================================================
+    // (v) state eksekusi ditarik dari agent
+    // ==================================================================
+
+    public function testExecutionStateFromAgentIsMergedIntoReturnedApp(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $this->queueSuccessfulJob($handler);
+        $handler->reply(200, json_encode(['code' => 0, 'app' => $this->agentAppState()]));
+
+        $result = $this->deployer($handler)->deploy($this->app(), $this->logger());
+
+        $this->assertSame('running', $result['status']);
+        $this->assertSame([['service_name' => 'web', 'container_name' => 'demo-web-1', 'image' => 'nginx', 'internal_port' => 80, 'host_port' => 31001, 'status' => 'running']], $result['containers']);
+        $this->assertSame([['sha' => 'deadbee', 'action' => 'deploy', 'status' => 'success']], $result['deploy_history']);
+        $this->assertSame('active', $result['ssl_status']);
+
+        // Metadata tetap milik control plane.
+        $this->assertSame('demo', $result['name']);
+        $this->assertSame('u-owner', $result['owner_id']);
+        $this->assertSame([['KEY' => 'VALUE']], $result['env']);
+        $this->assertSame('srv-2', $result['server_id']);
+
+        // Permintaan state memakai id app control plane.
+        $last = $handler->call($handler->count() - 1);
+        $this->assertSame('/apps/' . self::APP_ID, $last['path']);
+    }
+
+    public function testStatePullFailureDoesNotFailASucceededJob(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $this->queueSuccessfulJob($handler);
+        // Agent versi lama/gagal: `GET /apps/{id}` menjawab 500.
+        $handler->reply(500, json_encode(['code' => 1, 'error' => 'boom']));
+
+        $result = $this->deployer($handler)->deploy($this->app(), $this->logger());
+
+        $this->assertSame('deploying', $result['status'], 'dokumen app dikembalikan apa adanya');
+        $this->assertStringContainsString('Gagal menarik state', implode(' ', array_column($this->lines, 1)));
+    }
+
+    public function testUnknownAppOnStatePullIsTreatedAsNoState(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $this->queueSuccessfulJob($handler);
+        // App belum/tidak lagi diproyeksikan di agent ⇒ 404 = "tidak ada state",
+        // bukan kegagalan job (deploy-nya sendiri sudah sukses).
+        $handler->reply(404, json_encode(['code' => 1, 'error' => 'App tidak ditemukan.']));
+
+        $result = $this->deployer($handler)->deploy($this->app(), $this->logger());
+
+        $this->assertSame('deploying', $result['status']);
+        $this->assertStringNotContainsString('Gagal menarik state', implode(' ', array_column($this->lines, 1)));
+    }
+
+    // ==================================================================
+    // (vi) operasi host yang BELUM server-aware — TIDAK BOLEH jatuh ke lokal
+    // ==================================================================
+
+    /**
+     * Volume project masih belum server-aware (F3) ⇒ `unsupported`, dan operasi
+     * itu **tidak boleh** menyentuh host ini. Operasi Nginx/SSL sudah pindah ke
+     * jalur job agent (F2) — diuji `AgentDeployerNginxTest`.
+     */
+    public function testHostOperationsAreUnsupportedAndNeverTouchLocalHost(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $deployer = $this->deployer($handler);
+
+        $cases = [
+            'getProjectVolumes' => static fn (AgentDeployer $d) => $d->getProjectVolumes('demo'),
+        ];
+
+        foreach ($cases as $name => $call) {
+            try {
+                $call($deployer);
+                $this->fail("{$name}() harus melempar untuk server agent (bukan menulis ke host ini)");
+            } catch (AgentError $e) {
+                $this->assertSame(AgentError::UNSUPPORTED, $e->reason, $name);
+                $this->assertStringContainsString('server agent', $e->getMessage(), $name);
+                $this->assertStringContainsString('BUKAN di server lokal', $e->getMessage(), $name);
+            }
+        }
+
+        $this->assertSame(0, $handler->count(), 'operasi tak didukung tidak boleh memanggil agent/lokal sama sekali');
+    }
+
+    public function testGetContainersReadsFromAgentByAppId(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, json_encode(['code' => 0, 'app' => $this->agentAppState()]));
+
+        $containers = $this->deployer($handler)->getContainersForApp($this->app());
+
+        $this->assertSame('demo-web-1', $containers[0]['container_name']);
+        $this->assertSame('/apps/' . self::APP_ID, $handler->call(0)['path']);
+        $this->assertSame('GET', $handler->call(0)['method']);
+    }
+
+    public function testAppWithoutValidIdIsRejected(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+
+        try {
+            $this->deployer($handler)->deploy(['name' => 'demo', 'id' => '../etc/passwd'], $this->logger());
+            $this->fail('id app tak sah harus ditolak');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('id', $e->getMessage());
+        }
+
+        $this->assertSame(0, $handler->count());
+    }
+
+    // ==================================================================
+    // (vii) artefak app (misi ms-f1-artifacts)
+    // ==================================================================
+
+    /**
+     * Artefak dikirim untuk op yang membutuhkannya (deploy/rebuild/apply/rollback)
+     * dan **tidak** dipaketkan untuk op yang tidak menyentuh artefak.
+     *
+     * @return array<string,array{0:string,1:bool}>
+     */
+    public static function artifactOpCases(): array
+    {
+        return [
+            'deploy' => ['deploy', true],
+            'rebuild' => ['rebuild', true],
+            'apply' => ['apply', true],
+            'rollback' => ['rollback', true],
+            'apply_env' => ['applyEnv', false],
+            'stop' => ['stop', false],
+            'start' => ['start', false],
+            'teardown' => ['teardown', false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('artifactOpCases')]
+    public function testArtifactsRideAlongOnlyForOpsThatNeedThem(string $method, bool $expected): void
+    {
+        $compose = "services:\n  web:\n    image: nginx:alpine\n";
+        mkdir($this->tmp . '/apps/demo', 0777, true);
+        file_put_contents($this->tmp . '/apps/demo/docker-compose.yml', $compose);
+
+        $app = ['source' => 'compose'] + $this->app();
+
+        $handler = new AgentDeployerFakeHandler();
+        $this->queueSuccessfulJob($handler);
+        $handler->reply(200, json_encode(['code' => 0, 'app' => []]));
+        $deployer = $this->deployer($handler);
+
+        match ($method) {
+            'deploy' => $deployer->deploy($app, $this->logger()),
+            'rebuild' => $deployer->rebuild($app, $this->logger()),
+            'apply' => $deployer->apply($app, $this->logger()),
+            'applyEnv' => $deployer->applyEnv($app, $this->logger()),
+            'rollback' => $deployer->rollback($app, 'abc1234', $this->logger()),
+            'stop' => $deployer->stop($app),
+            'start' => $deployer->start($app),
+            'teardown' => $deployer->teardown($app, null),
+            default => throw new \LogicException("method tak dikenal: {$method}"),
+        };
+
+        $body = $handler->jsonBody(0);
+        if (!$expected) {
+            $this->assertArrayNotHasKey('artifacts', $body, "op `{$method}` tidak boleh memaketkan artefak");
+
+            return;
+        }
+
+        $this->assertSame($compose, $body['artifacts']['compose'] ?? null);
+        $this->assertSame('docker-compose.yml', $body['artifacts']['compose_name'] ?? null);
+        $this->assertNull($body['artifacts']['template'] ?? null);
+    }
+
+    /**
+     * Gagal memaketkan artefak (mis. file compose hilang di control plane) ⇒
+     * **tidak ada** job yang dikirim, galat disampaikan ke pemanggil (dan pesan
+     * tidak memuat token server).
+     */
+    public function testPackagerFailureAbortsTheJobBeforeAnyHttpCall(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $app = ['source' => 'compose'] + $this->app(); // file compose tidak ada di disk
+
+        try {
+            $this->deployer($handler)->deploy($app, $this->logger());
+            $this->fail('pemaketan gagal harus membatalkan job');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('artefak app tidak bisa dikirim', $e->getMessage());
+            $this->assertStringContainsString('docker-compose.yml', $e->getMessage());
+            $this->assertStringContainsString('vps-jakarta-2', $e->getMessage(), 'pesan galat menyebut server target');
+            $this->assertStringNotContainsString(self::TOKEN, $e->getMessage(), 'token server tidak boleh bocor');
+        }
+
+        $this->assertSame(0, $handler->count(), 'job tidak boleh dikirim bila artefak tidak lengkap');
+
+        // Op yang tidak menyentuh artefak tetap jalan walau file compose hilang.
+        $this->queueSuccessfulJob($handler);
+        $handler->reply(200, json_encode(['code' => 0, 'app' => []]));
+        $this->deployer($handler)->applyEnv($app, $this->logger());
+
+        $this->assertSame('POST', $handler->call(0)['method']);
+        $this->assertSame('/jobs', $handler->call(0)['path']);
+        $this->assertArrayNotHasKey('artifacts', $handler->jsonBody(0));
+    }
+
+    // ==================================================================
+    // Helper
+    // ==================================================================
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function app(): array
+    {
+        return [
+            'id' => self::APP_ID,
+            'name' => 'demo',
+            'server_id' => 'srv-2',
+            'owner_id' => 'u-owner',
+            'repo_url' => 'https://example.test/demo.git',
+            'branch' => 'main',
+            'env' => [['KEY' => 'VALUE']],
+            'compose_files' => ['docker-compose.yml'],
+            'status' => 'deploying',
+            'containers' => [],
+            'deploy_history' => [],
+        ];
+    }
+
+    /**
+     * State eksekusi versi agent — juga membawa field metadata yang mencoba
+     * "menimpa" control plane (harus diabaikan).
+     *
+     * @return array<string,mixed>
+     */
+    private function agentAppState(): array
+    {
+        return [
+            'id' => self::APP_ID,
+            'name' => 'nama-dari-agent',
+            'server_id' => 'local',
+            'status' => 'running',
+            'stage' => null,
+            'message' => 'Running',
+            'error' => null,
+            'containers' => [[
+                'service_name' => 'web',
+                'container_name' => 'demo-web-1',
+                'image' => 'nginx',
+                'internal_port' => 80,
+                'host_port' => 31001,
+                'status' => 'running',
+            ]],
+            'deploy_history' => [['sha' => 'deadbee', 'action' => 'deploy', 'status' => 'success']],
+            'ssl_status' => 'active',
+        ];
+    }
+
+    /**
+     * Antrean respons satu job sukses (POST → status `done` → log → log ekor).
+     * Respons `GET /apps/{id}` **tidak** ikut diantrekan — pemanggil menambahnya
+     * sendiri supaya baris `panggilan ke-N` pada assertion tetap jelas.
+     */
+    private function queueSuccessfulJob(AgentDeployerFakeHandler $handler, string $jobId = 'job-ok'): void
+    {
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'job_id' => $jobId, 'op' => 'deploy', 'log_offset' => 0]))
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'done', 'message' => 'Running']]))
+            ->reply(200, '')
+            ->reply(200, '');
+    }
+
+    private function deployer(
+        AgentDeployerFakeHandler $handler,
+        ?int $timeout = 30,
+        ?callable $clock = null,
+        ?AgentArtifactPackager $packager = null,
+    ): AgentDeployer {
+        $server = [
+            'id' => 'srv-2',
+            'name' => 'vps-jakarta-2',
+            'kind' => 'agent',
+            'base_url' => 'https://agent.test:8443',
+            'token' => self::TOKEN,
+            // Domain server (APP_DOMAIN server itu) — vhost/SSL di agent butuh ini
+            // (kontrak F2 §5); tanpa domain, operasi vhost/SSL ditolak lebih awal.
+            'domain' => 'agent.example.test',
+            'tls_cert_pem' => self::selfSignedPem(),
+        ];
+
+        $client = new AgentClient($server, $handler, 25, new TlsPinMaterializer($this->tmp . '/tls'));
+
+        return new AgentDeployer(
+            $server,
+            $client,
+            $timeout,
+            AgentDeployer::MIN_POLL_INTERVAL_MS,
+            static function (int $microseconds): void {
+                // tanpa tidur nyata di uji
+            },
+            $clock,
+            // Path artefak diarahkan ke /tmp: uji tidak menyentuh `apps/` atau
+            // `database/keys/` nyata.
+            $packager ?? new AgentArtifactPackager(
+                $this->tmp . '/apps',
+                $this->tmp . '/database/keys',
+                $this->tmp . '/database'
+            )
+        );
+    }
+
+    /** @return callable(string,string):void */
+    private function logger(): callable
+    {
+        return function (string $stage, string $message): void {
+            $this->lines[] = [$stage, $message];
+        };
+    }
+
+    /**
+     * Baris log yang berasal dari agent (mengabaikan baris envelope stage
+     * `agent`).
+     *
+     * @return array<int,array{0:string,1:string}>
+     */
+    private function logLines(): array
+    {
+        return array_values(array_filter($this->lines, static fn (array $line): bool => $line[0] !== 'agent'));
+    }
+
+    /** Sertifikat self-signed sekali pakai (pola `AgentClientTest`). */
+    private static function selfSignedPem(): string
+    {
+        static $pem = null;
+        if ($pem !== null) {
+            return $pem;
+        }
+
+        $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+        $csr = openssl_csr_new(['commonName' => 'agent.test'], $key, ['digest_alg' => 'sha256']);
+        $cert = openssl_csr_sign($csr, null, $key, 365, ['digest_alg' => 'sha256']);
+        openssl_x509_export($cert, $exported);
+
+        return $pem = (string) $exported;
+    }
+
+    private static function removeTree(string $path): void
+    {
+        if (!is_dir($path)) {
+            @unlink($path);
+
+            return;
+        }
+        foreach (scandir($path) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            self::removeTree($path . '/' . $entry);
+        }
+        @rmdir($path);
+    }
+}

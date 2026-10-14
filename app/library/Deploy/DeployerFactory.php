@@ -3,18 +3,138 @@ declare(strict_types=1);
 
 namespace app\library\Deploy;
 
+use app\library\Agent\AgentClient;
+use app\library\Agent\AgentError;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
 use app\library\Nginx\NginxConfigGenerator;
+use RuntimeException;
 
 /**
  * Factory deployer — satu-satunya titik pembuatan DeployerInterface.
- * Untuk fase berikutnya (agent HTTP multi-server), ganti implementasi di sini
- * tanpa mengubah controller.
+ *
+ * Sejak multi-server F0 (plan §4) kelas ini juga **sadar server**:
+ *  - {@see self::create()} tetap berarti "server lokal" dan berperilaku persis
+ *    seperti sebelumnya (pemanggil lama tidak berubah);
+ *  - {@see self::createFor()} memilih implementasi berdasarkan dokumen server:
+ *    `kind=local` ⇒ {@see LocalDeployer}, `kind=agent` ⇒ {@see AgentDeployer}
+ *    (F1) — **tidak pernah** silang;
+ *  - {@see self::createForApp()} adalah pintu tunggal untuk F1+ (resolve
+ *    `server_id` app lalu pilih implementasi).
+ *
+ * Kontrak fail-fast yang dikunci (plan §3 butir 4): server `kind=agent` **tidak
+ * pernah** dijalankan sebagai `LocalDeployer`. Konfigurasi server agent yang
+ * cacat (mis. `base_url` bukan https, token/PEM hilang) melempar `AgentError`
+ * **sebelum** efek samping apa pun (bukan fallback ke lokal).
  */
 class DeployerFactory
 {
+    /**
+     * Deployer untuk server lokal (perilaku lama).
+     */
     public static function create(): DeployerInterface
+    {
+        return self::localDeployer();
+    }
+
+    /**
+     * Deployer untuk dokumen server tertentu.
+     *
+     * - `kind=local` ⇒ {@see LocalDeployer} (jalur yang sama dengan
+     *   {@see self::create()}, termasuk hook uji `DEPLOYER_CLASS`);
+     * - `kind=agent` ⇒ {@see AgentDeployer} — seluruh eksekusi lewat HTTP ke
+     *   agent (job async), tidak ada jalur lokal;
+     * - `kind` kosong/tak dikenal ⇒ **RuntimeException** (fail-fast, tidak
+     *   menebak "mungkin lokal").
+     *
+     * @param array<string,mixed> $server dokumen server (butuh `id`/`name` untuk
+     *                                      pesan galat, `kind` untuk pemilihan, dan
+     *                                      `base_url`/`token`/`tls_cert_pem` untuk
+     *                                      membangun klien agent)
+     * @param AgentClient|null    $client klien agent yang sudah jadi — seam uji
+     *                                      (tanpa jaringan); null ⇒ dibangun dari
+     *                                      dokumen server
+     * @throws RuntimeException kind tak dikenal / konfigurasi server agent cacat
+     *                          (AgentError) — SELALU, agar app di server remote
+     *                          tidak jatuh ke runner lokal
+     */
+    public static function createFor(array $server, ?AgentClient $client = null): DeployerInterface
+    {
+        $kind = strtolower(trim((string) ($server['kind'] ?? '')));
+
+        if ($kind === 'local') {
+            return self::localDeployer();
+        }
+
+        $label = self::label($server);
+
+        if ($kind === 'agent') {
+            if ($client === null) {
+                try {
+                    $client = new AgentClient($server);
+                } catch (AgentError $e) {
+                    // Identitas server wajib ikut supaya admin tahu server mana
+                    // yang konfigurasinya cacat (tanpa membocorkan token).
+                    throw new AgentError(
+                        $label . ': ' . $e->getMessage(),
+                        $e->reason
+                    );
+                }
+            }
+
+            return new AgentDeployer($server, $client);
+        }
+
+        throw new RuntimeException(
+            "{$label} punya `kind` yang tidak dikenal: \"" . $kind . '". Operasi dibatalkan (fail-fast).'
+        );
+    }
+
+    /**
+     * Pintu tunggal F1+: resolve server pemilik app (`apps.server_id`, kosong ⇒
+     * server lokal) lalu pilih deployer-nya.
+     *
+     * @param array<string,mixed>  $app      dokumen app (`server_id`)
+     * @param ServerResolver|null  $resolver resolver server; null = store bawaan
+     *                                       (tes menyuntikkan resolver ber-path temp)
+     * @param AgentClient|null     $client   klien agent yang sudah jadi (seam uji)
+     * @throws RuntimeException `server_id` app tidak ada di registry, atau
+     *                          konfigurasi server agent cacat
+     */
+    public static function createForApp(
+        array $app,
+        ?ServerResolver $resolver = null,
+        ?AgentClient $client = null,
+    ): DeployerInterface {
+        $server = ($resolver ?? new ServerResolver())->resolveForApp($app);
+
+        return self::createFor($server, $client);
+    }
+
+    /**
+     * Label server untuk pesan galat (nama, id) agar mudah didiagnosis.
+     *
+     * @param array<string,mixed> $server
+     */
+    private static function label(array $server): string
+    {
+        $name = trim((string) ($server['name'] ?? ''));
+        $id = trim((string) ($server['id'] ?? ''));
+        if ($name !== '' && $id !== '') {
+            return "Server \"{$name}\" ({$id})";
+        }
+        if ($name !== '') {
+            return "Server \"{$name}\"";
+        }
+
+        return $id !== '' ? "Server ({$id})" : 'Server tanpa id';
+    }
+
+    /**
+     * Konstruksi deployer lokal — satu-satunya tempat `LocalDeployer` dibuat
+     * (dipakai `create()` dan `createFor(kind=local)`).
+     */
+    private static function localDeployer(): DeployerInterface
     {
         // Hook pengujian: override implementasi lewat env DEPLOYER_CLASS
         // (mis. fake deployer pada unit test tanpa daemon Docker). Hanya aktif

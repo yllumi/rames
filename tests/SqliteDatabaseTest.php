@@ -86,7 +86,7 @@ class SqliteDatabaseTest extends TestCase
 
         $rows = $pdo->query('SELECT "version" FROM "schema_migrations"')->fetchAll(PDO::FETCH_COLUMN);
         $this->assertCount($expected, $rows);
-        $this->assertSame([1], array_map('intval', $rows));
+        $this->assertSame(range(1, SchemaMigrations::LATEST), array_map('intval', $rows));
         $this->assertSame(SchemaMigrations::LATEST, (int) $pdo->query('PRAGMA user_version')->fetchColumn());
     }
 

@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace app\library\Deploy;
 
+use app\library\Storage\AppStore;
+use app\library\Storage\ServerStore;
 use RuntimeException;
 use Symfony\Component\Yaml\Yaml;
 
@@ -180,11 +182,30 @@ final class ContainerNames
      * Nama container yang sudah terpakai di host (dari Engine API), di luar
      * project milik app ini sendiri.
      *
+     * Scope server (multi-server F1): `$serverId` null = server **lokal**
+     * (Engine yang dibaca memang Engine lokal — perilaku lama). Server selain
+     * lokal **ditolak fail-fast**: pembacaan Engine lintas server belum aktif di
+     * F1 (F1/F3 akan merutekannya ke agent). JANGAN diam-diam membaca Engine
+     * lokal untuk app milik server remote — itu kesalahan paling berbahaya
+     * (plan §3 butir 4).
+     *
      * @param array<int,array> $containers hasil DockerClient::listContainers()
      * @return array<string,string> nama => deskripsi pemilik
+     * @throws RuntimeException bila $serverId bukan server lokal
      */
-    public static function usedFromEngine(array $containers, string $ownProject): array
+    public static function usedFromEngine(array $containers, string $ownProject, ?string $serverId = null): array
     {
+        if ($serverId !== null) {
+            $scope = AppStore::normalizeServerId($serverId);
+            if ($scope !== ServerStore::LOCAL_ID) {
+                throw new RuntimeException(
+                    'Nama container server "' . $scope . '" tidak bisa dibaca: pembacaan Docker Engine '
+                    . 'lintas server belum aktif (F1/F3 akan merutekannya lewat agent). '
+                    . 'Operasi dibatalkan, bukan dijalankan pada Docker Engine lokal.'
+                );
+            }
+        }
+
         $used = [];
         foreach ($containers as $container) {
             if (!is_array($container)) {
@@ -213,14 +234,23 @@ final class ContainerNames
      * Cadangan saat Engine API tidak dapat diakses: nama container dari
      * `apps.json` app lain.
      *
+     * Scope server (multi-server F1): `$serverId` null = **semua server**
+     * (perilaku lama, fail-safe); bila diisi = hanya app di server itu — app di
+     * server lain tidak boleh menahan nama container di server ini.
+     *
      * @param array<int,array> $apps
+     * @param string|null $serverId id server (null = semua server)
      * @return array<string,string> nama => deskripsi pemilik
      */
-    public static function usedFromApps(array $apps, string $ownProject): array
+    public static function usedFromApps(array $apps, string $ownProject, ?string $serverId = null): array
     {
+        $scope = $serverId === null ? null : AppStore::normalizeServerId($serverId);
         $used = [];
         foreach ($apps as $app) {
             if (!is_array($app)) {
+                continue;
+            }
+            if ($scope !== null && AppStore::serverIdOf($app) !== $scope) {
                 continue;
             }
             $name = (string) ($app['name'] ?? '');

@@ -78,11 +78,29 @@ if (!function_exists('flash_pull')) {
 
 if (!function_exists('app_subdomain')) {
     /**
-     * Subdomain default sebuah app = {name}.{APP_DOMAIN}.
+     * Subdomain/FQDN default untuk server lokal, atau FQDN efektif sebuah app.
+     *
+     * Multi-server (misi `ms-f1-domain`, plan §9 keputusan 4): domain dasar
+     * diambil dari **server pemilik app** (`servers.domain`), bukan lagi selalu
+     * `APP_DOMAIN` global. Tiga bentuk argumen:
+     *  - tanpa argumen ⇒ domain dasar server **lokal** (dipakai UI
+     *    dashboard/global yang tidak terikat app tertentu);
+     *  - string (nama/label) ⇒ `{label}.{domain server lokal}` (perilaku lama,
+     *    dipakai view yang hanya punya nama app);
+     *  - array app ⇒ FQDN efektif app itu, memakai domain servernya
+     *    (setara `app_subdomain_of()`).
+     *
+     * @param string|array<string,mixed>|null $value nama/label, dokumen app, atau null
      */
-    function app_subdomain(string $name): string
+    function app_subdomain(string|array|null $value = null, ?\app\library\Deploy\ServerResolver $resolver = null): string
     {
-        return $name . '.' . config('deploy.app_domain', 'example.com');
+        if (is_array($value)) {
+            return app_subdomain_of($value, $resolver);
+        }
+
+        $domain = \app\library\Deploy\ServerResolver::domainForAppOrLocal([], $resolver);
+
+        return $value === null ? $domain : $value . '.' . $domain;
     }
 }
 
@@ -91,30 +109,41 @@ if (!function_exists('app_subdomain_of')) {
      * FQDN subdomain **efektif** sebuah app.
      *
      * Field `subdomain` di `apps.json` menyimpan **label** slug (mis.
-     * `blog-x7k2`) — FQDN dirakit `{label}.{APP_DOMAIN}`. Bila field kosong /
-     * tidak ada, dipakai `{name}.{APP_DOMAIN}` (perilaku lama, tanpa migrasi).
-     * Nilai lama yang sudah berupa FQDN penuh (mengandung titik) dihormati apa
-     * adanya supaya data lama tetap berfungsi.
+     * `blog-x7k2`) — FQDN dirakit `{label}.{domain server app}`. Bila field
+     * kosong / tidak ada, dipakai `{name}.{domain server app}` (perilaku lama,
+     * tanpa migrasi). Nilai lama yang sudah berupa FQDN penuh (mengandung titik)
+     * dihormati apa adanya supaya data lama tetap berfungsi.
+     *
+     * Domain dasarnya milik **server pemilik app** (plan §9 keputusan 4);
+     * app di server lokal tetap memakai `APP_DOMAIN` selama `servers.domain`
+     * server lokal kosong — jadi tidak ada perubahan perilaku di sana.
      *
      * Ini satu-satunya jalur yang boleh menurunkan subdomain — jangan menebak
      * dari `name` langsung.
+     *
+     * @param array<string,mixed> $app
      */
-    function app_subdomain_of(array $app): string
+    function app_subdomain_of(array $app, ?\app\library\Deploy\ServerResolver $resolver = null): string
     {
         $sub = strtolower(trim((string) ($app['subdomain'] ?? '')));
+        $domain = \app\library\Deploy\ServerResolver::domainForAppOrLocal($app, $resolver);
+
         if ($sub === '') {
-            return app_subdomain((string) ($app['name'] ?? ''));
+            return (string) ($app['name'] ?? '') . '.' . $domain;
         }
-        return str_contains($sub, '.') ? $sub : app_subdomain($sub);
+
+        return str_contains($sub, '.') ? $sub : $sub . '.' . $domain;
     }
 }
 
 if (!function_exists('app_subdomain_label')) {
     /**
-     * Label subdomain efektif app (tanpa APP_DOMAIN) — dipakai UI untuk
+     * Label subdomain efektif app (tanpa domain dasar server) — dipakai UI untuk
      * menampilkan/mengedit field `subdomain`. Fallback ke `name`.
+     *
+     * @param array<string,mixed> $app
      */
-    function app_subdomain_label(array $app): string
+    function app_subdomain_label(array $app, ?\app\library\Deploy\ServerResolver $resolver = null): string
     {
         $sub = strtolower(trim((string) ($app['subdomain'] ?? '')));
         if ($sub === '') {
@@ -123,7 +152,9 @@ if (!function_exists('app_subdomain_label')) {
         if (!str_contains($sub, '.')) {
             return $sub;
         }
-        $suffix = '.' . strtolower((string) config('deploy.app_domain', 'example.com'));
+
+        $suffix = '.' . \app\library\Deploy\ServerResolver::domainForAppOrLocal($app, $resolver);
+
         return str_ends_with($sub, $suffix) ? substr($sub, 0, -strlen($suffix)) : $sub;
     }
 }
@@ -131,14 +162,19 @@ if (!function_exists('app_subdomain_label')) {
 if (!function_exists('app_subdomain_is_custom')) {
     /**
      * Apakah app memakai subdomain eksplisit — field `subdomain` terisi dan
-     * hasilnya berbeda dari default `{name}.{APP_DOMAIN}`.
+     * hasilnya berbeda dari default `{name}.{domain server app}`.
+     *
+     * @param array<string,mixed> $app
      */
-    function app_subdomain_is_custom(array $app): bool
+    function app_subdomain_is_custom(array $app, ?\app\library\Deploy\ServerResolver $resolver = null): bool
     {
         if (trim((string) ($app['subdomain'] ?? '')) === '') {
             return false;
         }
-        return app_subdomain_of($app) !== app_subdomain((string) ($app['name'] ?? ''));
+
+        $domain = \app\library\Deploy\ServerResolver::domainForAppOrLocal($app, $resolver);
+
+        return app_subdomain_of($app, $resolver) !== (string) ($app['name'] ?? '') . '.' . $domain;
     }
 }
 
@@ -146,9 +182,20 @@ if (!function_exists('app_subdomain_valid')) {
     /**
      * Validasi format label subdomain: slug `[a-z0-9-]`, diawali & diakhiri
      * alfanumerik, maksimal 63 karakter (batas label DNS).
+     *
+     * Menerima juga dokumen app (label efektifnya yang divalidasi) — batas ini
+     * murni soal bentuk label, jadi hasilnya identik untuk semua server.
+     *
+     * @param string|array<string,mixed>|null $value label atau dokumen app
      */
-    function app_subdomain_valid(string $label): bool
+    function app_subdomain_valid(string|array|null $value, ?\app\library\Deploy\ServerResolver $resolver = null): bool
     {
+        if (is_array($value)) {
+            $value = app_subdomain_label($value, $resolver);
+        }
+
+        $label = is_string($value) ? $value : '';
+
         return $label !== ''
             && strlen($label) <= 63
             && preg_match('/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/', $label) === 1;

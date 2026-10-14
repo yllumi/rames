@@ -22,7 +22,7 @@ use Throwable;
 final class SchemaMigrations
 {
     /** Versi skema terakhir yang dikenal. */
-    public const LATEST = 1;
+    public const LATEST = 2;
 
     /**
      * Daftar migrasi berversi. Kunci = nomor versi (menaik), nilai = callable.
@@ -39,6 +39,20 @@ final class SchemaMigrations
                         self::ensure($pdo, $store, $collection);
                     }
                 }
+            },
+            2 => static function (PDO $pdo): void {
+                // Registry server (multi-server): dibuat migrasi 1 untuk DB baru,
+                // di sini dipastikan ada untuk DB lama.
+                foreach (self::storeDefinitions()['servers'] as $collection) {
+                    self::ensure($pdo, 'servers', $collection);
+                }
+                // Kolom `server_id` pada apps. `ensure()` tidak menambah kolom ke
+                // tabel yang sudah ada ⇒ kolom dulu (ALTER), indeks kemudian.
+                foreach (self::storeDefinitions()['apps'] as $collection) {
+                    self::ensureDerivedColumns($pdo, 'apps', $collection);
+                }
+                self::backfillAppServerId($pdo);
+                self::seedLocalServer($pdo);
             },
         ];
     }
@@ -107,7 +121,10 @@ final class SchemaMigrations
     {
         return [
             'apps' => [
-                ['table' => 'apps', 'path' => '', 'idField' => 'id', 'columns' => ['name', 'owner_id', 'status', 'source', 'subdomain']],
+                ['table' => 'apps', 'path' => '', 'idField' => 'id', 'columns' => ['name', 'owner_id', 'status', 'source', 'subdomain', 'server_id']],
+            ],
+            'servers' => [
+                ['table' => 'servers', 'path' => '', 'idField' => 'id', 'columns' => ['name', 'kind', 'enabled']],
             ],
             'auth' => [
                 ['table' => 'users', 'path' => '', 'idField' => 'id', 'columns' => ['username', 'role', 'email']],
@@ -193,6 +210,128 @@ final class SchemaMigrations
     public static function createMetaTables(PDO $pdo): void
     {
         $pdo->exec('CREATE TABLE IF NOT EXISTS "kv" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)');
+    }
+
+    /**
+     * Pastikan seluruh kolom turunan koleksi ada, baru indeksnya.
+     *
+     * {@see ensure()} menjalankan `CREATE TABLE IF NOT EXISTS` **lalu**
+     * `indexSql()`. Pada tabel yang sudah ada, `CREATE TABLE IF NOT EXISTS`
+     * tidak menambah kolom baru sehingga `CREATE INDEX ("server_id")` gagal
+     * `no such column: server_id`. Karena itu kolom yang hilang ditambahkan
+     * lebih dulu (`ALTER TABLE`, dideteksi `PRAGMA table_info`).
+     *
+     * @param array{table:string,path?:string,idField?:?string,columns?:array<int,string>} $collection
+     */
+    private static function ensureDerivedColumns(PDO $pdo, string $store, array $collection): void
+    {
+        $table = self::tableName($store, (string) $collection['table']);
+        if (!self::tableExists($pdo, $table)) {
+            self::ensure($pdo, $store, $collection);
+            return;
+        }
+
+        $present = self::existingColumns($pdo, $table);
+        foreach (self::columnNames($collection) as $column) {
+            if (!in_array($column, $present, true)) {
+                $pdo->exec('ALTER TABLE "' . $table . '" ADD COLUMN "' . $column . '" TEXT');
+            }
+        }
+        foreach (self::indexSql($store, $collection) as $sql) {
+            $pdo->exec($sql);
+        }
+    }
+
+    /**
+     * Backfill `server_id` apps lama: baris tanpa nilai di kolom turunan diberi
+     * server lokal. Nilai ditulis ke kolom turunan **dan** ke dokumen JSON
+     * (`data`) — JSON adalah sumber kebenaran, jadi keduanya tidak boleh
+     * divergen. Dokumen yang bukan objek dibiarkan apa adanya.
+     */
+    private static function backfillAppServerId(PDO $pdo): void
+    {
+        $table = self::tableName('apps', 'apps');
+        $rows = $pdo->query(
+            'SELECT "id", "data" FROM "' . $table . '" '
+            . 'WHERE "server_id" IS NULL OR "server_id" = \'\''
+        )->fetchAll(PDO::FETCH_ASSOC);
+
+        $update = $pdo->prepare(
+            'UPDATE "' . $table . '" SET "server_id" = ?, "data" = ? WHERE "id" = ?'
+        );
+        foreach ($rows as $row) {
+            $doc = json_decode((string) $row['data']);
+            if (!$doc instanceof \stdClass) {
+                continue; // dokumen bukan objek (atau korup) → jangan dirusak
+            }
+
+            // Nilai yang sudah ada di JSON dipertahankan (kebenaran ada di JSON).
+            $existing = isset($doc->server_id) && is_scalar($doc->server_id) ? (string) $doc->server_id : '';
+            $serverId = $existing !== '' ? $existing : ServerStore::LOCAL_ID;
+            $doc->server_id = $serverId;
+
+            $encoded = json_encode(
+                $doc,
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION
+            );
+            if ($encoded === false) {
+                continue; // tak bisa di-encode → biarkan baris apa adanya
+            }
+
+            $update->execute([$serverId, $encoded, (string) $row['id']]);
+        }
+    }
+
+    /**
+     * Seed baris server lokal (`local`) — control plane selalu punya dirinya
+     * sendiri sebagai server #1. Idempoten (`INSERT OR IGNORE`); kolom turunan
+     * diisi sekalian karena `SqliteStore` menurunkannya dari dokumen JSON.
+     * Sengaja **tanpa** `config()` — nilai `domain` diisi lapisan resolver.
+     */
+    private static function seedLocalServer(PDO $pdo): void
+    {
+        $table = self::tableName('servers', 'servers');
+        $stmt = $pdo->prepare(
+            'INSERT OR IGNORE INTO "' . $table . '" '
+            . '("id", "ord", "data", "updated_at", "name", "kind", "enabled") '
+            . 'VALUES (?, ?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            ServerStore::LOCAL_ID,
+            0,
+            '{"id":"local","name":"local","kind":"local","enabled":true,"domain":""}',
+            date('c'),
+            'local',
+            'local',
+            1,
+        ]);
+    }
+
+    /**
+     * Apakah tabel fisik ada.
+     */
+    private static function tableExists(PDO $pdo, string $table): bool
+    {
+        $stmt = $pdo->prepare('SELECT 1 FROM "sqlite_master" WHERE "type" = \'table\' AND "name" = ?');
+        $stmt->execute([$table]);
+
+        return $stmt->fetchColumn() !== false;
+    }
+
+    /**
+     * Nama kolom fisik tabel (mode fetch eksplisit agar tidak bergantung pada
+     * mode bawaan PDO pemanggil).
+     *
+     * @return array<int,string>
+     */
+    private static function existingColumns(PDO $pdo, string $table): array
+    {
+        $names = [];
+        foreach ($pdo->query('PRAGMA table_info("' . $table . '")')->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $names[] = (string) ($row['name'] ?? '');
+        }
+
+        return $names;
     }
 
     /**

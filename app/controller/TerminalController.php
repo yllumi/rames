@@ -3,8 +3,10 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Agent\AgentError;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
+use app\library\Deploy\AgentDeployer;
 use app\library\Docker\AppContainers;
 use app\library\Docker\DockerExec;
 use app\library\Storage\AppStore;
@@ -77,6 +79,13 @@ class TerminalController
     /** Detik tanpa output sama sekali sebelum sesi dianggap macet. */
     private const SSE_STALL_SECONDS = 10;
 
+    /**
+     * Interval memompa aliran **dari agent** (detik) — membaca socket upstream
+     * non-blocking; kecil supaya echo ketikan terasa instan, tapi tetap memberi
+     * worker Webman kesempatan melayani request lain.
+     */
+    private const PROXY_TICK = 0.05;
+
     // ==================================================================
     // Buka sesi interaktif
     // ==================================================================
@@ -84,6 +93,17 @@ class TerminalController
     public function open(Request $request, string $id)
     {
         $app = $this->requireApp($id);
+
+        try {
+            $deployer = $this->agentDeployer($app);
+        } catch (\Throwable $e) {
+            return $this->agentFailure($e);
+        }
+
+        if ($deployer !== null) {
+            return $this->openAtAgent($request, $app, $deployer);
+        }
+
         $container = AppContainers::resolve($app, (string) $request->post('container', ''));
         if ($container === null) {
             return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
@@ -113,7 +133,19 @@ class TerminalController
 
     public function stream(Request $request, string $id, string $token)
     {
-        $this->requireApp($id);
+        $app = $this->requireApp($id);
+
+        try {
+            $deployer = $this->agentDeployer($app);
+        } catch (\Throwable $e) {
+            // Endpoint ini hanya dipanggil EventSource → selalu balas SSE (klien
+            // berhenti sendiri, bukan badai retry) — lihat catatan `sseGone()`.
+            return $this->sseGone($request, AgentError::sanitize($e->getMessage()));
+        }
+
+        if ($deployer !== null) {
+            return $this->proxyAgentStream($request, $app, $token, $deployer);
+        }
 
         $exec = $this->dockerExec();
         if ($exec->sessionInfo($token, $id) === null) {
@@ -230,7 +262,30 @@ class TerminalController
 
     public function input(Request $request, string $id, string $token)
     {
-        $this->requireApp($id);
+        $app = $this->requireApp($id);
+
+        try {
+            $deployer = $this->agentDeployer($app);
+        } catch (\Throwable $e) {
+            return $this->agentFailure($e);
+        }
+
+        if ($deployer !== null) {
+            $data = (string) $request->post('data', '');
+            if (strlen($data) > 65536) {
+                return json(['code' => 400, 'msg' => 'Input terlalu besar.']);
+            }
+            if ($data === '') {
+                return json(['code' => 0]);
+            }
+            try {
+                $deployer->terminalInput($app, $token, $data);
+            } catch (\Throwable $e) {
+                return $this->agentFailure($e);
+            }
+
+            return json(['code' => 0]);
+        }
 
         $exec = $this->dockerExec();
         if ($exec->sessionInfo($token, $id) === null) {
@@ -253,6 +308,25 @@ class TerminalController
     public function close(Request $request, string $id, string $token)
     {
         $app = $this->requireApp($id);
+
+        try {
+            $deployer = $this->agentDeployer($app);
+        } catch (\Throwable $e) {
+            return $this->agentFailure($e);
+        }
+
+        if ($deployer !== null) {
+            try {
+                $deployer->terminalClose($app, $token);
+            } catch (\Throwable $e) {
+                return $this->agentFailure($e);
+            }
+            // Container tidak diketahui di sini (metadata sesi hidup di agent);
+            // audit tetap mencatat aksi + app.
+            $this->audit($app, '', 'close sesi terminal di server agent');
+            return json(['code' => 0]);
+        }
+
         $exec = $this->dockerExec();
         $session = $exec->sessionInfo($token, $id);
         if ($session === null) {
@@ -270,6 +344,24 @@ class TerminalController
     public function run(Request $request, string $id)
     {
         $app = $this->requireApp($id);
+
+        try {
+            $deployer = $this->agentDeployer($app);
+        } catch (\Throwable $e) {
+            return $this->agentFailure($e);
+        }
+
+        if ($deployer !== null) {
+            // Penjaga antar-fase (plan §3 butir 4): jalur "Run" (one-shot) belum
+            // server-aware, jadi app di server agent DITOLAK eksplisit — bukan
+            // diam-diam dieksekusi di server lokal control plane.
+            return json([
+                'code' => 501,
+                'msg' => 'Perintah satu-kali (Run) belum didukung untuk app di server agent. '
+                    . 'Gunakan tab Terminal (sesi interaktif) — sesi itu berjalan di server agent.',
+            ])->withStatus(501);
+        }
+
         $container = AppContainers::resolve($app, (string) $request->post('container', ''));
         if ($container === null) {
             return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
@@ -332,6 +424,150 @@ class TerminalController
     }
 
     /**
+     * Deployer **agent** untuk app, atau `null` bila app dilayani server lokal
+     * (satu pintu: `AgentDeployer::forApp()` — resolusi `server_id` app).
+     *
+     * Seam uji: subclass menyuntikkan deployer dengan klien agent tiruan supaya
+     * seluruh jalur proxy bisa diuji tanpa jaringan & tanpa Docker.
+     *
+     * @param array<string,mixed> $app
+     * @throws \Throwable server `kind=agent` yang konfigurasinya cacat — fail-fast,
+     *                    TIDAK ada jalur mundur ke server lokal (plan §3 butir 4)
+     */
+    protected function agentDeployer(array $app): ?AgentDeployer
+    {
+        return AgentDeployer::forApp($app);
+    }
+
+    // ==================================================================
+    // Jalur server agent (F3a) — sesi hidup DI AGENT, kontrol hanya mem-proxy
+    // ==================================================================
+
+    /**
+     * `open()` untuk app di server agent: validasi container di sini (bentuk +
+     * keanggotaan data proyeksi, tanpa menyentuh Engine lokal), pembukaan sesi di
+     * agent, dan audit di sini (identitas pelaku hanya ada di control plane).
+     */
+    private function openAtAgent(Request $request, array $app, AgentDeployer $deployer)
+    {
+        $container = AgentDeployer::containerRef($app, (string) $request->post('container', ''));
+        if ($container === null) {
+            return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
+        }
+
+        $opts = [
+            'shell' => trim((string) $request->post('shell', '')),
+            'user' => self::resolveUser((string) $request->post('user', '')),
+        ];
+
+        try {
+            $session = $deployer->terminalOpen($app, $container, $opts);
+        } catch (\Throwable $e) {
+            return $this->agentFailure($e);
+        }
+
+        $this->audit(
+            $app,
+            $container,
+            'open shell ' . (string) ($session['shell'] ?? '') . ' (user ' . $opts['user'] . ') di server agent'
+        );
+
+        return json(['code' => 0, 'data' => $session]);
+    }
+
+    /**
+     * Proxy aliran SSE sesi terminal yang hidup **di server agent**.
+     *
+     * Byte dari agent diteruskan apa adanya sebagai potongan chunked: agent
+     * memakai protokol SSE yang sama (`retry`/`output`/`cycle`/`gone`/`close`),
+     * jadi `EventSource` di browser tidak perlu tahu bedanya. Upstream dibaca
+     * **non-blocking** lewat `Timer` (worker Webman tetap melayani request lain)
+     * dan **tidak** di-buffer penuh di memori.
+     *
+     * Koneksi klien drop **bukan** akhir sesi (aturan repo): cleanup hanya menutup
+     * socket upstream — sesi tetap hidup di agent sampai `close`/TTL, sehingga
+     * `EventSource` boleh menyambung ulang.
+     *
+     * @param array<string,mixed> $app
+     */
+    private function proxyAgentStream(Request $request, array $app, string $token, AgentDeployer $deployer)
+    {
+        try {
+            $stream = $deployer->terminalStream($app, $token);
+        } catch (\Throwable $e) {
+            return $this->sseGone($request, AgentError::sanitize($e->getMessage()));
+        }
+
+        $connection = $request->connection;
+        if (!$connection instanceof TcpConnection) {
+            ($stream['close'])();
+            return json(['code' => 500, 'msg' => 'Koneksi streaming tidak tersedia.']);
+        }
+
+        // Header SSE dikembalikan sebagai respons (bukan `false`) supaya Webman
+        // memakai jalur streaming chunked yang tidak menutup koneksi — sama
+        // dengan jalur lokal (lihat catatan di SSE_HEADERS).
+        $response = new Response(200, self::SSE_HEADERS, '');
+
+        $timerId = null;
+        $read = $stream['read'];
+        $closeUpstream = $stream['close'];
+        $cleanup = function () use (&$timerId, $closeUpstream): void {
+            if ($timerId !== null) {
+                Timer::del($timerId);
+                $timerId = null;
+            }
+            // Idempoten & boleh dipanggil dari beberapa jalur (EOF, drop klien, error).
+            $closeUpstream();
+        };
+
+        $timerId = Timer::add(self::PROXY_TICK, function () use ($connection, $read, $cleanup): void {
+            if ($connection->getStatus() !== TcpConnection::STATUS_ESTABLISHED) {
+                $cleanup();
+                return;
+            }
+            try {
+                $chunk = $read();
+            } catch (\Throwable $e) {
+                $cleanup();
+                $connection->close();
+                return;
+            }
+            if ($chunk === null) {
+                // Aliran agent berakhir (siklus SSE, sesi ditutup di agent, atau
+                // sambungan putus): tutup aliran chunked dengan benar. EventSource
+                // menyambung ulang dan akan menemukan sesi yang masih hidup.
+                $connection->send(new Chunk(''));
+                $cleanup();
+                $connection->close();
+                return;
+            }
+            if ($chunk !== '') {
+                $connection->send(new Chunk($chunk));
+            }
+        });
+
+        $connection->onClose = $cleanup;
+
+        return $response;
+    }
+
+    /**
+     * Respons JSON kegagalan jalur agent (koneksi/timeout/404/konfigurasi server
+     * cacat) — pesan disanitasi `AgentError::sanitize()` sehingga token server,
+     * header `Authorization`, dan signature tidak pernah tampil di UI atau log.
+     */
+    private function agentFailure(\Throwable $e)
+    {
+        $detail = AgentError::sanitize($e->getMessage());
+
+        return json([
+            'code' => AgentDeployer::failureCode($e),
+            'msg' => $detail === '' ? 'Operasi di server agent gagal.' : $detail,
+        ]);
+    }
+
+    /**
      * Ambil app + pastikan user berhak memakai terminal container-nya.
      *
      * `protected` (bukan private) semata agar unit test bisa men-bypass
@@ -359,8 +595,12 @@ class TerminalController
      * retry plus error "MIME type is not text/event-stream" di console browser, tanpa
      * cara klien tahu bahwa sesinya sudah tidak ada. Dengan balasan SSE, klien bisa
      * berhenti sendiri dan menampilkan pesan yang jelas.
+     *
+     * `protected` supaya jalur agent (`AgentTerminalController`) memakai balasan
+     * yang sama untuk app yang tidak ada / sesi yang tidak dikenal — satu bentuk
+     * protokol, bukan salinan kedua.
      */
-    private function sseGone(Request $request, string $message)
+    protected function sseGone(Request $request, string $message)
     {
         $connection = $request->connection;
         if (!$connection instanceof TcpConnection) {

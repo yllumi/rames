@@ -34,19 +34,26 @@ final class DetachedWorker
      * `$argv[0]` = program, sisanya argumen (bentuk array ⇒ bebas command
      * injection: langsung `execve`, tanpa shell).
      *
-     * @param array<int,string> $argv program + argumen (mentah, tanpa escaping)
-     * @param int|null          $pid  diisi pid anak (proses yang di-exec) bila spawn
-     *                                berhasil; 0 bila gagal. Dipakai pemanggil untuk
-     *                                memantau worker tanpa harus menebak-nebak.
+     * @param array<int,string>    $argv program + argumen (mentah, tanpa escaping)
+     * @param int|null             $pid  diisi pid anak (proses yang di-exec) bila spawn
+     *                                   berhasil; 0 bila gagal. Dipakai pemanggil untuk
+     *                                   memantau worker tanpa harus menebak-nebak.
+     * @param array<string,string> $env  variabel lingkungan tambahan yang diwariskan
+     *                                   ke worker (mis. `RAMES_JOB_ID` di server agent);
+     *                                   kosong ⇒ lingkungan diwariskan apa adanya
      * @return bool true bila anak berhasil di-fork (bukan jaminan exec berhasil)
      */
-    public static function spawn(array $argv, ?int &$pid = null): bool
+    public static function spawn(array $argv, ?int &$pid = null, array $env = []): bool
     {
         $pid = 0;
 
         if ($argv === [] || !function_exists('pcntl_fork') || !function_exists('pcntl_exec')) {
             return false;
         }
+
+        // pcntl_exec() mengganti SELURUH lingkungan bila envp diberikan, jadi
+        // lingkungan saat ini digabung dulu (bukan hanya variabel tambahan).
+        $envp = $env === [] ? [] : array_merge(getenv(), $env);
 
         // Otomatis-reap anak saat selesai supaya tidak menumpuk zombie.
         @pcntl_signal(SIGCHLD, SIG_IGN);
@@ -72,7 +79,7 @@ final class DetachedWorker
             // SIGCHLD=SIG_IGN dari HTTP worker → kernel auto-reap proses anak
             // (docker/restic) saat keluar, sehingga exit code-nya hilang.
             @pcntl_signal(SIGCHLD, SIG_DFL);
-            pcntl_exec((string) $argv[0], array_slice($argv, 1));
+            pcntl_exec((string) $argv[0], array_slice($argv, 1), $envp);
             // Hanya tercapai bila exec gagal.
             exit(127);
         }

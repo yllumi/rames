@@ -23,6 +23,12 @@ use RuntimeException;
  * lewat {@see NginxConfigGuard::applySubdomain()} (store+config+reload), sehingga
  * class ini murni kebijakan/orchestrasi dan mudah diuji tanpa Docker.
  *
+ * Multi-server (misi `ms-f1-domain`, plan §9 keputusan 4): domain dasar FQDN
+ * diambil dari **server pemilik app** (`ServerResolver::domainForAppOrLocal()`),
+ * bukan lagi `config('deploy.app_domain')` global — sehingga dua server bisa
+ * memakai label subdomain yang sama tanpa dianggap bentrok. Resolver opsional di
+ * konstruktor agar tes bisa memakai store server di path temp.
+ *
  * Stateless — dependensi disuntikkan (aman untuk worker Webman persistent).
  */
 final class SubdomainManager
@@ -33,6 +39,7 @@ final class SubdomainManager
     public function __construct(
         private readonly AppStore $store,
         private readonly ?NginxConfigGuard $guard = null,
+        private readonly ?ServerResolver $resolver = null,
     ) {
     }
 
@@ -54,24 +61,34 @@ final class SubdomainManager
      * app yang belum punya field `subdomain` (mereka memakai `name`), serta
      * bentrok dengan custom domain app lain.
      *
+     * Scope server (multi-server F1, plan §4.2 + §9 keputusan 4): `$serverId`
+     * diisi ⇒ keunikan hanya diperiksa terhadap app di server itu (FQDN di server
+     * lain memakai domain dasar berbeda, jadi tidak pernah bentrok). `null` =
+     * semua server (perilaku lama, fail-safe) agar pemanggil lama tidak berubah;
+     * FQDN-nya lalu dirakit dengan domain server **lokal**.
+     *
      * Melempar RuntimeException dengan pesan jelas bila format salah / bentrok.
      *
      * @return string FQDN efektif
      */
-    public function assertAvailable(string $label, string $name, string $excludeId = ''): string
+    public function assertAvailable(string $label, string $name, string $excludeId = '', ?string $serverId = null): string
     {
         $label = self::normalize($label);
         if ($label !== '' && !self::isValidLabel($label)) {
             throw new RuntimeException(self::formatError());
         }
 
-        $effective = $label === '' ? app_subdomain($name) : app_subdomain($label);
+        $scope = $serverId === null ? null : AppStore::normalizeServerId($serverId);
+        $effective = self::fqdn($label === '' ? $name : $label, $scope, $this->resolver);
 
         foreach ($this->store->all() as $other) {
             if ((string) ($other['id'] ?? '') === $excludeId) {
                 continue;
             }
-            if (app_subdomain_of($other) === $effective) {
+            if ($scope !== null && AppStore::serverIdOf($other) !== $scope) {
+                continue; // server lain: FQDN-nya di domain lain, tidak bentrok
+            }
+            if (app_subdomain_of($other, $this->resolver) === $effective) {
                 throw new RuntimeException('Subdomain ' . $effective . ' sudah dipakai app "' . (string) ($other['name'] ?? '?') . '".');
             }
             if ((string) ($other['custom_domain'] ?? '') === $effective) {
@@ -99,7 +116,7 @@ final class SubdomainManager
         }
 
         $name = (string) ($app['name'] ?? '');
-        $previous = app_subdomain_of($app);
+        $previous = app_subdomain_of($app, $this->resolver);
 
         if (!AppPorts::hasHostPort($app)) {
             return $this->result(
@@ -114,7 +131,7 @@ final class SubdomainManager
             return $this->result(self::formatError(), $previous);
         }
 
-        $effective = $label === '' ? app_subdomain($name) : app_subdomain($label);
+        $effective = self::fqdn($label === '' ? $name : $label, AppStore::serverIdOf($app), $this->resolver);
 
         if ($effective === $previous) {
             return [
@@ -124,7 +141,7 @@ final class SubdomainManager
         }
 
         try {
-            $this->assertAvailable($label, $name, $appId);
+            $this->assertAvailable($label, $name, $appId, AppStore::serverIdOf($app));
         } catch (RuntimeException $e) {
             return $this->result($e->getMessage(), $previous);
         }
@@ -150,6 +167,25 @@ final class SubdomainManager
     {
         return 'Subdomain hanya boleh huruf kecil a-z, angka, dan strip (-), maksimal 63 karakter, '
             . 'serta diawali & diakhiri huruf/angka.';
+    }
+
+    /**
+     * Rakit FQDN `{label}.{domain server scope}`.
+     *
+     * `$scope` = id server pemilik app (sudah dinormalisasi `AppStore`); `null`
+     * (pemanggil lama tanpa dimensi server) = domain server lokal.
+     *
+     * Domainnya lewat {@see ServerResolver::domainForAppOrLocal()} yang toleran:
+     * registry server yang tidak terbaca (mis. helper dipakai dari CLI tanpa
+     * config) jatuh ke `APP_DOMAIN` — perilaku lama, bukan galat.
+     *
+     * @param array<string,mixed>|null $resolver
+     */
+    private static function fqdn(string $label, ?string $scope, ?ServerResolver $resolver): string
+    {
+        $app = $scope === null ? [] : ['server_id' => $scope];
+
+        return $label . '.' . ServerResolver::domainForAppOrLocal($app, $resolver);
     }
 
     /**

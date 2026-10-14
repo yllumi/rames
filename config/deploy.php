@@ -31,12 +31,55 @@ $billingFloat = static function (string $name, float $default): float {
     return $value === false || trim($value) === '' ? $default : (float) $value;
 };
 
+// Mode runtime (multi-server F0): satu kode & satu image, dua peran.
+//   - `dashboard` (default) → control plane: UI, login, timer dashboard;
+//   - `agent`               → server yang dikendalikan: hanya route diagnostik
+//     (`/healthz`, `/version`), tanpa UI, tanpa timer dashboard.
+// Dibaca eksplisit seperti blok billing di bawah: `?:` menelan nilai falsy, dan
+// nilai tak dikenal harus jatuh ke default secara sadar. Nilai di luar daftar
+// putih diperlakukan `dashboard` (peran paling lengkap; peran agent menuntut
+// token yang eksplisit, lihat `agent_token`).
+$ramesModeEnv = getenv('RAMES_MODE');
+$ramesMode = is_string($ramesModeEnv) ? strtolower(trim($ramesModeEnv)) : '';
+if (!in_array($ramesMode, ['dashboard', 'agent'], true)) {
+    $ramesMode = 'dashboard';
+}
+
 // Lokasi basis data SQLite (fondasi migrasi JSON → SQLite). `database_path`
 // tetap dipakai untuk keys/env/restic, jadi tidak diubah.
 $sqliteDir = getenv('RAMES_DB_DIR') ?: (base_path() . '/database');
 $sqliteFile = getenv('RAMES_DB_FILE') ?: ($sqliteDir . '/rames.sqlite');
 
 return [
+    // ---------------------------------------------------------------------
+    // Mode runtime & identitas agent (multi-server F0, plan §10.1)
+    // ---------------------------------------------------------------------
+    // `dashboard` (default) | `agent`. Dinormalkan di atas.
+    'mode' => $ramesMode,
+
+    // Token bearer yang dipakai control plane untuk memanggil agent
+    // (`Authorization: Bearer <token>`; penegakannya misi Auth & Security).
+    // RAHASIA: hanya dari .env, jangan pernah di-log/ditampilkan. Kosong ⇒
+    // route agent TIDAK didaftarkan sama sekali (fail-closed, config/route.php).
+    'agent_token' => getenv('AGENT_TOKEN') ?: '',
+
+    // Alamat bind HTTP agent (HTTPS self-signed + pinning fingerprint di sisi
+    // control plane; allowlist IP lewat firewall, bukan UI). Dipakai worker
+    // agent sebagai alamat listen (`config/process.php`, dengan TLS) — bentuk
+    // `IP:PORT` tanpa skema, mis. `0.0.0.0:8443`; skema `http(s)://` boleh
+    // ditulis dan akan dinormalkan.
+    'agent_bind' => getenv('AGENT_BIND') ?: '0.0.0.0:8443',
+
+    // TLS agent (keputusan 6): TLS diterminasi DI PROSES AGENT SENDIRI, bukan
+    // oleh Nginx host (kalau Nginx host yang jadi terminator, objek yang di-pin
+    // di control plane berubah jadi sertifikat Nginx host, bukan sertifikat agent).
+    // Path absolut ke sertifikat & private key (self-signed, dibuat
+    // `agent/install.sh`). WAJIB ada & terbaca di mode agent: `config/process.php`
+    // menolak start tanpa TLS (fail-fast) — tidak ada mode "tanpa TLS".
+    // Nilai contoh (dibuat installer, 0600): '<repo>/secrets/agent/tls.crt'.
+    'agent_tls_cert' => getenv('AGENT_TLS_CERT') ?: '',
+    'agent_tls_key' => getenv('AGENT_TLS_KEY') ?: '',
+
     // Domain dasar; subdomain app = {name}.{app_domain}
     'app_domain' => getenv('APP_DOMAIN') ?: 'example.com',
 

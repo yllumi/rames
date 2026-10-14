@@ -11,6 +11,12 @@ use RuntimeException;
  * Docker. Diaktifkan via env DEPLOYER_CLASS (lihat DeployerFactory).
  *
  * Mode rollback bisa dipaksa gagal lewat env FAKE_DEPLOYER_FAIL.
+ *
+ * Setiap pemanggilan method dicatat ke berkas `FAKE_DEPLOYER_LOG` (bila env itu
+ * diisi) sehingga test subproses bisa memverifikasi **method & argumen** yang
+ * benar-benar dipanggil `cli/deploy.php` (mis. mode `teardown` dengan daftar
+ * `preserve_volumes` dari payload job agent). Statik kelas tidak bisa dibaca
+ * lintas proses, jadi jejaknya lewat berkas.
  */
 class FakeCliDeployer implements DeployerInterface
 {
@@ -19,18 +25,32 @@ class FakeCliDeployer implements DeployerInterface
         return new self();
     }
 
+    /** Catat jejak pemanggilan (tanpa efek bila `FAKE_DEPLOYER_LOG` kosong). */
+    private function note(string $entry): void
+    {
+        $path = (string) getenv('FAKE_DEPLOYER_LOG');
+        if ($path !== '') {
+            @file_put_contents($path, $entry . "\n", FILE_APPEND);
+        }
+    }
+
     public function deploy(array $app, callable $logger): array
     {
+        $this->note('deploy');
+
         return $this->finish($app, 'deploy');
     }
 
     public function rebuild(array $app, callable $logger): array
     {
+        $this->note('rebuild');
+
         return $this->finish($app, 'rebuild');
     }
 
     public function rollback(array $app, string $ref, callable $logger): array
     {
+        $this->note('rollback:' . $ref);
         if ((string) getenv('FAKE_DEPLOYER_FAIL') !== '') {
             throw new RuntimeException('fake deployer gagal (test)');
         }
@@ -48,24 +68,34 @@ class FakeCliDeployer implements DeployerInterface
 
     public function stop(array $app): void
     {
+        $this->note('stop');
     }
 
     public function start(array $app): void
     {
+        $this->note('start');
     }
 
     public function apply(array $app, callable $logger): array
     {
+        $this->note('apply');
+
         return $this->finish($app, 'apply');
     }
 
     public function applyEnv(array $app, callable $logger): array
     {
+        $this->note('apply-env');
+
         return $this->finish($app, 'apply-env');
     }
 
-    public function teardown(array $app, ?array $preserveVolumes = null): void
+    /**
+     * @param array<int,string>|null $preserveVolumes
+     */
+    public function teardown(array $app, ?array $preserveVolumes = null, ?callable $logger = null): void
     {
+        $this->note('teardown:' . json_encode($preserveVolumes));
     }
 
     public function getProjectVolumes(string $project): array
@@ -80,19 +110,24 @@ class FakeCliDeployer implements DeployerInterface
 
     public function ensureWritable(): void
     {
+        $this->note('nginx-ensure-writable');
     }
 
     public function renderNginxConfig(array $app): string
     {
+        $this->note('nginx-render');
+
         return 'mock';
     }
 
     public function writeNginxConfig(array $app): void
     {
+        $this->note('nginx-write');
     }
 
     public function removeNginxConfig(array $app): void
     {
+        $this->note('nginx-remove');
     }
 
     private function finish(array $app, string $action): array

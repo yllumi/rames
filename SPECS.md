@@ -7,7 +7,9 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - Container yang dihasilkan oleh tiap app
 - Reverse proxy Nginx yang mengarahkan subdomain ke container yang sesuai
 
-**Fase saat ini (Phase 1):** dashboard dan "agent" (logic eksekusi Docker/Nginx) dibangun dan dijalankan di **satu server yang sama**, dibungkus dengan Docker Compose. Arsitektur tetap disiapkan agar logic eksekusi bisa diekstrak menjadi agent HTTP terpisah di fase berikutnya (multi-server) tanpa merombak business logic dashboard.
+**Phase 1 (selesai):** dashboard dan "agent" (logic eksekusi Docker/Nginx) dibangun dan dijalankan di **satu server yang sama**, dibungkus dengan Docker Compose.
+
+**Fase multi-server (F0 + F1 + F2 + F3a mendarat & terverifikasi):** ekstraksi itu sudah direalisasikan. Kode & image yang **sama** kini bisa dijalankan dalam dua peran runtime (`RAMES_MODE=dashboard|agent`): **control plane** (dashboard: UI, login, registry server, timer) dan **agent** (eksekutor di server tempat app berjalan, tanpa UI). Control plane mengendalikan satu atau lebih server agent lewat **HTTP JSON** di port agent sendiri (HTTPS self-signed + pinning fingerprint); operasi panjang (deploy/rebuild/rollback/…) dijalankan sebagai **job async** karena batas timeout HTTP 30 detik. Server tempat dashboard berjalan tetap menjadi server `local` bawaan, sehingga instalasi lama berperilaku persis seperti sebelumnya. Rincian kebutuhan fase ini ada di §2a & §5; registry server & scope per server di §7.14.
 
 ## 2. Goals (Phase 1)
 
@@ -38,9 +40,22 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [x] File manager container per container app (jelajah, unggah multi-berkas, unduh, edit teks, buat folder, rename, pindah, hapus, ekstrak arsip) — ability `files` = operator+, hanya saat container berjalan (§7.9)
 - [x] Kredit, deposit & penagihan resource (role `member`) — meteran CPU/RAM per jam, tagihan periode otomatis, deposit manual admin + top-up mandiri online via Duitku (§7.12)
 
+## 2a. Goals Multi-Server (fase F0–F3a)
+
+Kebutuhan fase ini (cek daftar di §12 untuk sisa yang belum):
+
+- [x] **Dua peran runtime dari satu kode & satu image**: `RAMES_MODE=dashboard` (control plane: UI, login, timer) dan `RAMES_MODE=agent` (eksekutor: hanya route mesin, tanpa UI). Bukan fork kode — perbaikan bug berlaku di kedua peran.
+- [x] **Satu domain dasar per server** (`servers.domain`, keputusan: satu `APP_DOMAIN` + wildcard DNS per server). Subdomain app = `{label}.{domain server pemilik app}`; app di server `local` tetap memakai `APP_DOMAIN` bila `servers.domain` kosong (tanpa perubahan perilaku).
+- [x] **Kelola & pilih server = admin-only**: halaman `/servers` (pola `/nginx`; non-admin → **404**), pemilihan server hanya ada di form create app untuk admin. Tidak ada ability per-server baru untuk member dan tidak ada pricing per server.
+- [x] **Bootstrap manual + TLS self-signed + pinning**: ops menyiapkan server baru dan menjalankan `agent/install.sh` di server itu; admin menambahkan server lewat **Add Server** (paste token + PEM) lalu **Test connection**. TLS diterminasi **di proses agent** (port `8443`), bukan Nginx host; fingerprint yang di-pin = sertifikat agent sendiri.
+- [x] **Job async** (konsekuensi batas timeout HTTP 30 dtk): `POST /jobs` → balas `job_id` + `log_offset` → agent spawn worker `cli/deploy.php` detached → control plane **polling** `GET /jobs/{id}` & `GET /jobs/{id}/log?offset=N`.
+- [x] **Keunikan per server** (bukan lagi global): nama app, host port, nama container, project compose, subdomain, dan custom domain diperiksa terhadap app **di server itu** (dua server boleh memakai nama/port/subdomain yang sama).
+- [x] **Kompatibilitas single-server**: app lama otomatis ber-`server_id` = server `local` (migrasi skema v2), tanpa perubahan perilaku.
+- [x] **Nginx/domain/SSL di server target (F2, terverifikasi)**: tulis/hapus/reload config Nginx & penerbitan/pencabutan SSL dijalankan sebagai job di agent (`nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke`), perakitan vhost dibaca dari `GET /apps/{id}/nginx` (agent) sehingga control plane tidak menyalin logika/path Nginx; preflight direktori lewat `POST /nginx/check`. Jalur SSL control plane (`SslController`/`cli/ssl.php`) sadar server (mengirim job `ssl_issue`). **Cacat sisa** (belum server-aware, pemilik Rames Build): aksi UI subdomain/rute/domain masih memakai `NginxReloader`/`SslIssuer` **lokal** untuk app agent (ARCHITECTURE §5.27 catatan + §8 GOTCHA no. 15).
+- [x] **Log container & terminal per server (F3a, terverifikasi)**: `GET /apps/{id}/logs` (Engine server itu) + `POST /terminal/open|/terminal/{token}/input|close` & `GET /terminal/{token}/stream` di agent; control plane mem-proxy SSE **byte-passthrough** dan **sesi agent tidak ditutup saat klien drop**. `Run` (one-shot) untuk app agent sengaja **501** (bukan dieksekusi lokal).
+
 ## 3. Non-Goals (Phase 1)
 
-- Multi-server / agent sebagai service HTTP terpisah
 - Permission granular per-resource (mis. izin terpisah untuk terminal vs database) — Phase 1 memakai 4 tingkat role tetap: admin, owner, operator, viewer (§7.7)
 - Auto-scaling, health-check lanjutan & monitoring resource penuh (metrik historis, alerting) — Phase 1 hanya ringkasan status/usage per container (§8d)
 - Log viewer streaming penuh & buffer historis — Phase 1 memakai polling tail sederhana (§8c)
@@ -84,10 +99,10 @@ Nginx **tidak** dijalankan sebagai container — sistem memakai instalasi Nginx 
 │                 │  container            │                     │
 │                 │  - Auth                │                     │
 │                 │  - App CRUD           │                     │
-│                 │  - Deployer (internal  │                     │
-│                 │    module, akan        │                     │
-│                 │    diekstrak jadi      │                     │
-│                 │    agent nanti)        │                     │
+│                 │  - Deployer           │                     │
+│                 │    (LocalDeployer     │                     │
+│                 │    + AgentDeployer    │                     │
+│                 │    per server)        │                     │
 │                 └───────────┬─────────┘                       │
 │                              │ tulis file config                │
 │                              ▼                                 │
@@ -104,9 +119,36 @@ Nginx **tidak** dijalankan sebagai container — sistem memakai instalasi Nginx 
 
 Ini menghindari kebutuhan expose SSH atau sudo dari dalam container ke host, sekaligus tetap memakai Nginx yang sudah ada di server.
 
-**Catatan penting soal `docker.sock`:** Phase 1 tetap membutuhkan dashboard container mount `/var/run/docker.sock` untuk mengeksekusi `docker compose` bagi tiap app. Ini adalah *known risk* yang disengaja diterima untuk fase awal (single admin, tidak ada input publik ke dashboard). Validasi input tetap wajib diterapkan ketat (lihat bagian Security). Isolasi lebih baik (agent terpisah, rootless Podman) direncanakan untuk fase berikutnya, bukan Phase 1.
+**Catatan penting soal `docker.sock`:** Phase 1 tetap membutuhkan dashboard container mount `/var/run/docker.sock` untuk mengeksekusi `docker compose` bagi tiap app. Ini adalah *known risk* yang disengaja diterima untuk fase awal (single admin, tidak ada input publik ke dashboard). Validasi input tetap wajib diterapkan ketat (lihat bagian Security). Isolasi lebih baik lewat **agent terpisah** sudah direalisasikan (§2a/§5 — agent HTTP di server sendiri); rootless Podman sebagai pengganti `docker.sock` masih rencana fase lanjutan.
 
 Struktur kode disiapkan dengan interface `DeployerInterface` (clone, build, up, get containers, generate nginx config) supaya implementasi bisa diganti dari "eksekusi lokal" menjadi "panggil agent HTTP" tanpa mengubah controller/business logic dashboard.
+
+### Arsitektur multi-server (fase F0–F3a)
+
+Ekstraksi `DeployerInterface` sudah direalisasikan: pemilihan implementasi kini ditentukan oleh **dokumen server** pemilik app (`DeployerFactory::createForApp()` → `LocalDeployer` untuk server `local`, `AgentDeployer` untuk server `kind=agent`). Tidak ada jalur "app remote dijalankan lokal": `server_id` yang tidak dikenal **melempar**, bukan jatuh ke server lokal.
+
+```
+┌───────────────────────────────┐        ┌─────────────────────────────────┐
+│ Server #1 — CONTROL PLANE      │        │ Server #2..N — AGENT            │
+│ (dashboard, RAMES_MODE=dashboard)      │ (RAMES_MODE=agent, kode & image │
+│                               │        │  yang sama, tanpa UI)           │
+│  UI + Controller + Middleware │        │  AgentAuthMiddleware            │
+│  SQLite: users, servers, apps │        │  AgentController / AgentJob…    │
+│  (metadata = sumber kebenaran)│        │  SQLite: proyeksi app + job     │
+│  ServerResolver + Factory     │  HTTPS │  LocalDeployer + app/library/*  │
+│  cli/deploy.php (worker lokal)│ ─────▶ │  worker cli/deploy.php (detached)│
+│                               │ ≤30 s  │  docker.sock + Nginx native     │
+│  Nginx native (host #1)       │ + token│  Nginx native (host #2)         │
+└───────────────────────────────┘        └─────────────────────────────────┘
+```
+
+- **Agent = eksekutor tanpa UI.** Mode `agent` menggerbangi `config/route.php`, `config/middleware.php`, dan `config/process.php` (listener TLS di `AGENT_BIND`, default `0.0.0.0:8443`); seluruh route dashboard tidak didaftarkan, dan hanya `AgentAuthMiddleware` (token) yang dipasang global. Tanpa `AGENT_TOKEN`, route agent **tidak didaftarkan sama sekali** (fail-closed → semua 404).
+- **Transport**: JSON + bearer token + `X-Rames-Timestamp`/`X-Rames-Nonce` (+ signature HMAC opsional), TLS dengan self-signed cert sebagai trust anchor (`TlsPinMaterializer`), timeout ≤30 s.
+- **Protocol**: seluruh route agent wajib token — termasuk `GET /healthz` & `GET /version`; tidak ada route publik di agent.
+- **Agent memakai library yang sama** (`LocalDeployer`, `EnvManager`, `NginxConfigGenerator`, `cli/deploy.php`) sehingga tidak ada duplikasi logika deploy; yang berbeda hanya kerangka runtime.
+- **Bootstrap**: `agent/install.sh` (di server agent, manual oleh ops) menyiapkan `secrets/agent.env`, sertifikat TLS self-signed, dan `docker-compose.agent.yml` (project `rames-agent`), lalu mencetak blok onboarding (URL/token/fingerprint/PEM). Dashboard menambahkannya lewat halaman **Servers** (§7.14).
+
+Kepemilikan data antar peran (satu sumber kebenaran per bidang, himpunan field **disjoint**) dijelaskan di §7.14.
 
 ## 6. Autentikasi
 
@@ -159,6 +201,7 @@ Store `apps` di basis data SQLite (`config('deploy.sqlite_file')`, tabel `apps_a
   {
     "id": "b3f1c2a4-...",
     "name": "myapp",
+    "server_id": "local",        // id server pemilik app (registry §7.14); kosong/absen = server lokal
     "source": "git",             // git (hasil clone repo) | compose (paste/upload docker-compose.yml)
     "owner_id": "u1",
     "members": {
@@ -200,6 +243,11 @@ Store `apps` di basis data SQLite (`config('deploy.sqlite_file')`, tabel `apps_a
     "nginx_routes": [             // rute proxy tambahan per app (§8.2a); absen/[] = perilaku lama (config identik)
       { "path": "/api/", "target": "http://127.0.0.1:3001" }
     ],
+    "host_ports": [                // rencana host port pilihan user (multi-server F1); dipakai merakit override port job agent
+      { "service": "web", "container": 8080, "host": 30001 }
+    ],
+    "compose_content": "services:\n  web:\n    ...", // master compose app server agent (tab Compose); TIDAK diproyeksikan ke agent
+    "custom_domain": null,         // FQDN custom domain app (§8b); ikut diproyeksikan ke agent (bukan rahasia)
     "created_at": "2026-08-13T10:00:00+07:00",
     "updated_at": "2026-08-13T10:05:00+07:00"
   }
@@ -209,7 +257,8 @@ Store `apps` di basis data SQLite (`config('deploy.sqlite_file')`, tabel `apps_a
 > Konvensi: sebutan lama `apps.json` di bagian lain dokumen ini (mis. §7.2, §7.4, §8.2a) merujuk pada store `apps` (SQLite) ini.
 
 Field penting:
-- `name` — slug unik **global** (dipakai sebagai nama project compose, direktori lokal `apps/{name}`, dan subdomain **default** bila `subdomain` kosong, §7.11), sehingga tidak ada dua app dengan nama sama meski pemiliknya berbeda
+- `name` — slug (dipakai sebagai nama project compose, direktori lokal `apps/{name}`, dan subdomain **default** bila `subdomain` kosong, §7.11). Sejak multi-server keunikannya **per server** (`AppStore::findByNameOnServer()`): dua app di server berbeda boleh memakai nama yang sama, tetapi nama tidak boleh duplikat di server yang sama (§7.14)
+- `server_id` — id server pemilik app di **registry server** (§7.14); kosong/absen = server `local` (perilaku app lama, migrasi skema v2 mengisi `local`). Dimensi ini menentukan *di mana* app dieksekusi (`DeployerFactory::createForApp()`); normalisasi lewat `AppStore::serverIdOf()` (satu jalur)
 - `source` — asal source app: `git` (default bila field absen — dibuat lewat mode *Clone repo Git*) atau `compose` (dibuat lewat mode *Compose (paste/upload)*: file `docker-compose.yml` ditulis langsung ke `apps/{name}` **tanpa repo Git**, untuk image prebuilt). Menentukan perilaku Rebuild (§7.2a) dan ketersediaan Rollback (§7.5)
 - `owner_id` — id user pemilik app; app hanya terlihat oleh owner, member yang dibagikan, dan admin (§7.7)
 - `members` — map `userId → {role, added_at, added_by}`; role `viewer` | `operator` | `owner` (co-owner)
@@ -225,6 +274,8 @@ Field penting:
 - `limits` — map `service => {cpus: float|null, memory_mb: int|null}`: batas **maksimum** CPU (core, float) & memori (MB, int) per service (§7.6b). `null`/absen = tidak diatur dashboard (nilai compose repo tetap berlaku); tanpa migrasi untuk app lama. Ditulis ke `docker-compose.override.limits.yml` (`ResourceLimits`, §7.6b). Hanya admin yang boleh mengubah (§7.7)
 - `nginx_routes` — daftar rute proxy tambahan per app (§8.2a): `[{path, target}]`, opsional, maks. **20** rute. Absen/`[]` = perilaku lama (config Nginx identik, tanpa perubahan). Dirender ke **serve block** (HTTP 80 & HTTPS 443) saja; tanpa migrasi untuk app lama
 - `subdomain` — label slug subdomain app (§7.11): huruf kecil `a-z`, angka, `-`, diawali & diakhiri alfanumerik, maks. **63** karakter (batas label DNS). FQDN efektif = `{label}.{APP_DOMAIN}`; kosong/absen = `{name}.{APP_DOMAIN}` (perilaku lama). Nilai lama yang sudah berupa **FQDN penuh** (mengandung titik) tetap dihormati — tanpa migrasi data. Ditulis lewat tab **Domain & SSL** (`SubdomainManager` + `NginxConfigGuard::applySubdomain()`, §7.11)
+- `host_ports` — rencana host port pilihan user (`[{service, container, host}]`, multi-server F1 celah B). Dipakai `AgentArtifactPackager` merakit berkas override port (`artifacts.files`) untuk job app server agent supaya agent tidak memakai port bawaan repo. **Tidak** ikut diproyeksikan ke agent; hanya ada di dokumen app control plane (rekamannya juga tersedia dari `apps/<name>/docker-compose.override*.yml` untuk app lokal)
+- `compose_content` — **master compose app server agent** (isi mentah tab Compose) yang disimpan di dokumen app, bukan berkas lokal — trade-off sadar agar tidak ada tulisan file lokal di control plane untuk app agent (ARCHITECTURE §5.24). Didahulukan atas berkas `apps/<name>/` saat merakit artefak job; **tidak** diproyeksikan ke agent. `custom_domain` (FQDN custom domain, §8b) **ikut** diproyeksikan (bukan rahasia) karena state SSL/domain milik agent perlu tahu domain efektif
 
 ### 7.2 Alur "Create App"
 
@@ -1023,6 +1074,61 @@ Tiap template dari `TemplateCatalog::all()` tampil sebagai kartu: logo lokal (`p
 
 **Pengujian**: `TemplateImagesTest`, `TemplatePullServiceTest`, `TemplatePullStateTest`, `CliTemplatePullTest` (worker subproses + seam `TEMPLATE_PULL_RUNNER_CLASS` + fake `tests/FakeTemplatePullRunner.php`), `NginxConfigTabRedirectTest` (whitelist tab + `code 403` non-admin).
 
+### 7.14 Registry Server & Scope per Server (multi-server)
+
+Control plane menyimpan daftar server yang dikelolanya di store `servers` (SQLite, tabel `servers_servers`) — dahulu tidak ada sama sekali. Satu baris = satu server:
+
+```json
+{
+  "id": "local",                  // "local" = dashboard ini sendiri (di-seed migrasi v2, tidak bisa dihapus)
+  "name": "vps-jakarta-2",        // huruf kecil a-z, angka, strip (-); maks. 32 karakter
+  "kind": "agent",                // local | agent
+  "enabled": true,
+  "domain": "",                   // domain dasar server ini; kosong = APP_DOMAIN global
+  "notes": "",
+  "base_url": "https://10.0.0.12:8443",  // wajib https:// absolut, tanpa query/fragment/userinfo (kind=agent)
+  "token": "agt_…",               // bearer token control plane → agent (RAHASIA)
+  "tls_cert_pem": "-----BEGIN CERTIFICATE-----…",  // PEM self-signed agent (bukan rahasia) → materialisasi + pinning
+  "tls_fingerprint": "ab:cd:…",   // SHA-256 dihitung dashboard dari PEM (untuk verifikasi manual & deteksi rotasi)
+  "port_range": { "start": 31000, "end": 31999 },  // opsional; tidak boleh tumpang tindih rentang server lokal
+  "status": "online",             // online | offline | unknown (hasil Test connection)
+  "agent_version": "0.1.0",
+  "capabilities": ["deploy"],
+  "last_seen_at": "2026-10-14T12:00:00+07:00"
+}
+```
+
+**Baris server lokal** (`id=local`) dibuat migrasi skema v2 dan **mengunci field identitas** (`name`, `kind`, `base_url`, `token`, `tls_cert_pem`, `enabled`, `port_range`) — hanya `domain` & `notes` yang bisa diubah; aturannya hanya di `ServerResolver::validateLocal()` (controller tidak menyalin). `port_range` lokal dikunci karena sumber kebenarannya `.env` (`PORT_RANGE_START`/`PORT_RANGE_END`). Rentang port server agent tidak boleh tumpang tindih dengan rentang server lokal.
+
+**Otorisasi**: mengelola **dan** memilih server = **admin-only** — halaman `/servers` & seluruh aksinya menolak non-admin dengan **404** (`ServerAccess::canManageServers()` → `AppAccessDenied`, pola `/nginx`), dan pemilihan server di form create app hanya untuk admin (`ServerAccess::canSelectServer()`). Member hanya boleh melihat server yang menaungi app yang boleh ia lihat (informasi yang sudah ia punya dari halaman app-nya); bukan daftar lengkap, tanpa hak mengubah/memilih. Tidak ada ability per-server baru dan tidak ada pricing per server.
+
+**Onboarding**: ops menjalankan `agent/install.sh` di server baru (membuat token + sertifikat TLS self-signed, mencetak URL/token/fingerprint/PEM), lalu admin **Add Server** (name, `base_url`, token, PEM, `domain`, `port_range`) → **Test connection**. Uji koneksi memanggil `GET /healthz` **dengan pinning** (PEM dipakai sebagai trust anchor, bukan `verify=false`); fingerprint tidak cocok ⇒ gagal tegas (server tidak disimpan), sukses ⇒ `status=online` + `agent_version`/`capabilities`/`last_seen_at` tersimpan. `capabilities` menentukan op yang boleh dikirim control plane (`ServerResolver::assertReadyForCreate()` menolak server nonaktif/offline/tanpa capability dasar).
+
+**Scope per server (F1)** — keunikan yang tadinya global kini diperiksa **terhadap app di server itu** (dimensi dinormalisasi satu jalur, `AppStore::serverIdOf()`):
+
+| Keunikan | Penegak |
+|---|---|
+| Nama app | `AppStore::nameExistsOnServer()`/`findByNameOnServer()` (create/detail) |
+| Host port | `AppPorts::onServer()`/`allOnServer()` + `PortManager` |
+| Nama container (`container_name`) | `ContainerNames::usedFromApps(..., $serverId)` |
+| Project name compose | mengikuti nama app (per server) |
+| Subdomain (FQDN efektif) | `SubdomainManager::assertAvailable(..., $serverId)` — FQDN dirakit dari `server.domain` |
+| Custom domain | keunikan diperiksa per server (FQDN di domain lain tidak bentrok) |
+
+Dua server boleh memakai label subdomain, nama app, dan port yang sama karena domain dasar & daemon-nya berbeda.
+
+**Kepemilikan data antar peran** (satu sumber kebenaran per bidang, himpunan field **disjoint**):
+
+| Bidang | Control plane | Agent |
+|---|---|---|
+| Metadata app (`owner_id`, `members`, `name`, `subdomain`, `custom_domain`, `repo_url`, `branch`, `env`, `compose_files`, `limits`, `nginx_routes`, `container_prefix`, `primary_service`, `primary_port`, `external_networks`, `template`, `auth_method`, `ssh_key`, `source`, `server_id`) | ✅ **kebenaran** | proyeksi — **ditimpa** dari payload job (control plane menang) |
+| Metadata **khusus control plane** (`compose_content` = master compose app agent, `host_ports` = rencana port) | ✅ **kebenaran** | **tidak diproyeksikan** — dipakai hanya untuk merakit artefak job (`artifacts.files` = override port + compose); agent menulisnya sendiri |
+| State eksekusi (`status`, `stage`, `message`, `error`, `containers`, `deploy_history`, `ssl_status`) | salinan hasil sinkron | ✅ **kebenaran** (hanya agent yang bisa mengamati) |
+| Job registry (`runtime/agent-jobs/`) | — | ✅ |
+| Billing (ledger, usage, order) & registry/riwayat backup volume | ✅ **kebenaran** | — (agent hanya menjalankan job + menulis log) |
+
+Arah sinkronisasi satu arah per bidang: metadata **push** (control plane → agent, ikut payload job), state eksekusi **pull** (agent → control plane, setelah job & saat refresh status). Agent hilang/dipasang ulang ⇒ proyeksi + artefak dibangun ulang dari metadata pada job berikutnya; control plane rusak ⇒ agent masih menyimpan proyeksi + artefak (regenerasi dari control plane adalah arah normal, bukan andalan). Basis data agent = data turunan (tidak ikut backup DB dashboard §8i); yang harus bertahan di server app adalah volume app (§8h, dijalankan agent).
+
 ## 8. Reverse Proxy / Subdomain Routing
 
 ### 8.1 Domain dasar
@@ -1479,6 +1585,15 @@ APP_PORT=8000
 SESSION_SECRET=change-me
 PORT_RANGE_START=30000
 PORT_RANGE_END=30999
+# Multi-server (§2a/§5/§7.14): mode runtime & identitas server agent.
+# Untuk instalasi single-server (dashboard saja) biarkan default; server agent
+# diisi `agent/install.sh` pada checkout terpisah.
+RAMES_MODE=dashboard                      # dashboard (default) | agent
+# AGENT_TOKEN=                            # bearer token control plane → agent (RAHASIA). Kosong di mode agent ⇒
+                                          # seluruh route agent tidak didaftarkan (fail-closed, semua 404)
+# AGENT_BIND=0.0.0.0:8443                 # alamat listen agent (HTTPS self-signed); TLS diterminasi di proses agent
+# AGENT_TLS_CERT=/path/secrets/agent/tls.crt   # WAJIB di mode agent (start ditolak tanpa TLS)
+# AGENT_TLS_KEY=/path/secrets/agent/tls.key
 APPS_PATH=/app/apps
 NGINX_CONF_PATH=/etc/nginx/sites-available   # dimount dari host ke dashboard container
 NGINX_RELOAD_STATUS_FILE=/app/nginx-status/last-reload.json  # ditulis watcher, dibaca dashboard
@@ -1650,9 +1765,15 @@ rames                        # named volume DB dashboard: rames.sqlite + snapsho
 - **Anti-escape pengalihan kepemilikan (§7.12):** saat app berjalan (`running`/`deploying`) dialihkan dari pemilik yang **ditagih** (member) ke pemilik **bebas tagihan** (admin) dan `BILLING_ENABLED` aktif, app **dihentikan otomatis** (`status=stopped`, `message`=`REASON_TRANSFER`) agar tidak ada pemakaian gratis — berlaku pada pengalihan manual (`transferOwner` → `shouldStopOnTransfer`/`stopForBillingEscape`) **dan** pada **hapus user** (`UserController::delete()` → `stopTransferredToExemptOwner($appsBefore, true, true)`, dengan `previousOwnerBillable` dihitung sebelum user dihapus). Admin dapat menyalakannya kembali (admin gratis). `billingPayerFor()` defensif `try/catch (\Throwable)` ⇒ jatuh ke aktor bila `auth.json` tak terbaca (N7; `AuthMiddleware` tetap penjaga utama).
 - **Gerbang kredit bukan otorisasi (§7.12):** `BillingGate` menilai saldo **aktor** dan **pemilik** app — **tetapi aktor exempt (admin) & pemilik exempt (app milik admin) dikecualikan lebih dulu** (`BillingGate::roleIsExempt()`) sehingga **admin tidak pernah diblokir kredit** dan **app milik admin bebas untuk siapa pun**; yang tersisa dinilai: aktor `member` (wajib bersaldo) dan pihak pembayar bila berbeda (blokir fungsional — 402/redirect `/credits`); `AppAccess` tetap satu-satunya pintu hak akses (penolakan **404**). Aksi admin-only (`POST /credits/deposit`, `POST /credits/charge`) → non-admin **404**, bukan 403. `POST /profile/email` (jalur utama; `POST /credits/email` dipertahankan sebagai **kompatibilitas mundur**) hanya mengubah email **user login sendiri** (id tidak dibaca dari request — anti IDOR; input non-skalar ditolak tanpa menghapus email lama); `GET /credits/topup/return` hanya membaca order **milik user login** (order lain → 404).
 
+- **Multi-server (agent)**: seluruh permukaan agent tertutup token — `AgentAuthMiddleware` (bearer token `hash_equals` + timestamp ±60 s + nonce sekali-pakai + signature HMAC opsional) dipasang **global** di mode agent, termasuk untuk `GET /healthz`/`GET /version` (tanpa route publik); tanpa `AGENT_TOKEN` route agent **tidak didaftarkan** (fail-closed, semua 404). TLS diterminasi di proses agent (self-signed) dan **di-pin** dari sisi control plane — PEM sertifikat dipakai sebagai trust anchor sendiri (`TlsPinMaterializer`), bukan `verify=false`; `base_url` wajib `https://`. Port agent hanya boleh dibuka untuk IP control plane lewat firewall (bukan UI). Token agent tersimpan di kolom SQLite `servers` **belum terenkripsi at-rest** dan tidak pernah dirender ulang setelah disimpan; sertifikat agent berlaku 825 hari **tanpa rotasi otomatis** (`install.sh --force` mengganti cert+token ⇒ admin wajib memperbarui di halaman Servers). Respons gagal auth selalu **401 tanpa detail** (tanpa oracle header mana yang salah); detail protokol & penangkal di `ARCHITECTURE.md` §4.2/§7/§8.
+
 ## 12. Future Work (di luar Phase 1)
 
-- Ekstrak `DeployerInterface` implementation menjadi agent HTTP terpisah untuk dukungan multi-server
+**Multi-server (F0 + F1 + F2 + F3a) sudah mendarat & terverifikasi (suite + probe)** — ekstraksi `DeployerInterface` menjadi agent HTTP, registry server + scope per server, mode runtime agent (`RAMES_MODE`), job async, TLS self-signed + pinning, materialisasi artefak, **Nginx/domain/SSL di server target** (§2a, §5, §7.14; op job `nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke`, `GET /apps/{id}/nginx`, `POST /nginx/check`), serta **log container + terminal SSE diproksi** (`GET /apps/{id}/logs`, `POST /terminal/open|/terminal/{token}/input|close`, `GET /terminal/{token}/stream`; `Run` one-shot ⇒ 501). Yang **belum**:
+
+- **F3 sisa — Operasional per server**: (b) file manager streaming upload/download; (c) networks + monitor (container stats + `/proc` server); (d) DB/Adminer diproksi; (e) daftar volume project di agent. **Catatan risiko**: `FileController`/`DatabaseController`/`MonitorController`/`NetworkController` belum punya penjaga server — app server agent di jalur itu menembak Engine host control plane (belum ditolak eksplisit); tambahkan garda `server_id` sebelum F3 dirilis. **Snapshot**: sebagian F3b/F3c (`AgentFilesController`/`AgentDockerController`, `FileController`/`MonitorController` agent-aware) sedang mendarat saat sesi verifikasi ini dan **belum** diverifikasi assurance.
+- **F4 — Data & uang per server**: (a) backup/restore volume per server (restic, kredensial per-job env-file 0600); (b) metering & tagihan per server; (c) template pull + self-update agent + version gating.
+- **Sisa F2 (cacat terverifikasi)**: aksi UI control-plane subdomain (`setSubdomain`), rute (`saveRoutes`), dan custom domain (`setDomain`/`removeDomain`) masih memakai `NginxReloader`/`SslIssuer` **lokal** untuk app agent (ARCHITECTURE §8 GOTCHA no. 15); akibatnya `ssl_revoke`/`AgentDeployer::revokeSsl()` tidak terpakai dari UI. Cleanup artefak + deploy key saat delete/teardown di agent, template yang hanya ada di checkout control plane (slug wajib sama di checkout agent), artefak non-UTF-8 (payload JSON), clone di `POST /jobs` (operasi tetap ≤30 s per panggilan), dan penjaga local-only untuk env var/limits/network/prefix juga masih menyala. **Sudah selesai** (bukan sisa): `saveCompose` app agent (`compose_content`) & override port app agent (`artifacts.files`).
 - Role & permission antar user (mis. admin vs. member dengan akses app terbatas)
 - Migrasi dari JSON file ke SQLite/RDBMS jika jumlah app/user bertambah signifikan — **sudah dilakukan** (§8i: data domain di SQLite dalam named volume `rames`); sisa: cache runtime JSON (§8i.2) tetap berkas
 - Rootless Podman sebagai pengganti Docker socket untuk mengurangi risiko root-escape

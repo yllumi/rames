@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Tests;
 
 use app\controller\TerminalController;
+use app\library\Deploy\AgentDeployer;
 use app\library\Docker\DockerExec;
 
 /**
@@ -26,6 +27,16 @@ class FakeTerminalController extends TerminalController
     protected function dockerExec(): DockerExec
     {
         return $this->exec;
+    }
+
+    /**
+     * Selalu server lokal: uji ini menguji jalur `DockerExec` lokal, bukan jalur
+     * proxy agent (itu di `LogTerminalServerProxyTest`). Tanpa override ini,
+     * implementasi produksi akan membaca registry server nyata (`database/`).
+     */
+    protected function agentDeployer(array $app): ?AgentDeployer
+    {
+        return null;
     }
 
     /**

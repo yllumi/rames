@@ -194,8 +194,11 @@ class AppStopper
 
     /**
      * Resolusi penghenti: pakai `$stopper` yang di-inject, selain itu
-     * `DeployerFactory::create()->stop($app)` (di-resolve sekali per batch agar
-     * tidak membuat deployer baru untuk setiap app).
+     * `DeployerFactory::createForApp($app)->stop($app)` — **deployer dipilih per
+     * server pemilik app** (multi-server F1): app di server agent dihentikan
+     * lewat agent, tidak pernah di host control plane. Deployer di-memo per id
+     * server **di dalam batch ini** (variabel lokal closure, bukan properti
+     * kelas) supaya tetap satu deployer per server seperti sebelumnya.
      *
      * @return callable(array):void
      */
@@ -204,10 +207,14 @@ class AppStopper
         if ($this->stopper !== null) {
             return $this->stopper;
         }
-        $deployer = DeployerFactory::create();
 
-        return static function (array $app) use ($deployer): void {
-            $deployer->stop($app);
+        /** @var array<string,\app\library\Deploy\DeployerInterface> $deployers */
+        $deployers = [];
+
+        return static function (array $app) use (&$deployers): void {
+            $serverId = AppStore::serverIdOf($app);
+            $deployers[$serverId] ??= DeployerFactory::createForApp($app);
+            $deployers[$serverId]->stop($app);
         };
     }
 }
