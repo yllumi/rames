@@ -7,11 +7,15 @@ use app\library\Adminer\AdminerHelper;
 use app\library\Adminer\AdminerProxy;
 use app\library\Adminer\AdminerProxyError;
 use app\library\Adminer\AdminerProxyLimitExceeded;
+use app\library\Adminer\AdminerTempDir;
+use app\library\Agent\AgentError;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Db\DbConnectionResolver;
 use app\library\Db\DbContainerDetector;
 use app\library\Db\DbCredentialResolver;
+use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\ServerResolver;
 use app\library\Docker\AppContainers;
 use app\library\Docker\DockerClient;
 use app\library\Storage\AppStore;
@@ -19,6 +23,7 @@ use InvalidArgumentException;
 use RuntimeException;
 use support\Request;
 use Webman\Http\Response as WebmanResponse;
+use Workerman\Timer;
 
 /**
  * Database (MySQL/MariaDB) — halaman daftar container + proxy Adminer.
@@ -48,7 +53,7 @@ class DatabaseController
         // Non-admin hanya melihat container DB milik app yang boleh diakses
         // (miliknya sendiri atau yang dibagikan kepadanya); container app user
         // lain & container eksternal disembunyikan. Admin melihat semua.
-        $apps = AppAccess::visible((new AppStore())->all(), $user);
+        $apps = AppAccess::visible($this->appStore()->all(), $user);
 
         $appById = [];
         foreach ($apps as $app) {
@@ -58,9 +63,23 @@ class DatabaseController
         $engineError = null;
         $rows = [];
         try {
-            $rows = (new DbContainerDetector())->detectAll($apps, $isAdmin);
+            // Deteksi server lokal: Engine host ini (seam uji — TIDAK pernah
+            // dipakai untuk app di server agent).
+            $rows = $this->detector($this->dockerClient())->detectAll($apps, $isAdmin);
         } catch (\Throwable $e) {
             $engineError = 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage();
+        }
+
+        // Server agent (F3d): container DB app remote dibaca dari agent tempat app
+        // itu berjalan — Engine host control plane tidak pernah disentuh untuk app
+        // remote (plan §3 butir 4). Kepemilikan tetap dipetakan di sini (satu
+        // sumber: AppStore control plane + AppAccess), agent hanya mendeteksi.
+        $agentRows = $this->agentDbRows($apps, $isAdmin);
+        if ($agentRows['rows'] !== []) {
+            $rows = array_merge($rows, $agentRows['rows']);
+        }
+        foreach ($agentRows['errors'] as $message) {
+            $engineError = $engineError === null ? $message : $engineError . ' | ' . $message;
         }
 
         // Hak kelola per container: viewer hanya boleh melihat (ability 'database'
@@ -82,12 +101,141 @@ class DatabaseController
             }
         }
 
-        return view('db/index', [
+        return $this->renderView('db/index', [
             'rows' => $rows,
             'engineError' => $engineError,
             'isAdmin' => $isAdmin,
             'ownerNamesByApp' => $ownerNamesByApp,
         ]);
+    }
+
+    // ==================================================================
+    // Server agent (F3d) — deteksi container DB & proxy Adminer per server
+    // ==================================================================
+
+    /**
+     * Baris container DB yang hidup **di server agent** untuk app yang boleh
+     * dilihat user (satu panggilan per server, bukan per app).
+     *
+     * Pemetaan kepemilikan memakai `AppStore` control plane — agent tidak
+     * mengetahui identitas user dashboard. Non-admin hanya melihat baris
+     * container milik app yang boleh diaksesnya (penyaringan sisi server, bukan
+     * di view).
+     *
+     * Kegagalan satu server **tidak** menggagalkan halaman: pesannya
+     * dikembalikan di `errors` (server offline ≠ daftar lokal rusak).
+     *
+     * @param array<int,array<string,mixed>> $apps app yang boleh dilihat user
+     * @return array{rows:array<int,array<string,mixed>>,errors:array<int,string>}
+     */
+    private function agentDbRows(array $apps, bool $isAdmin): array
+    {
+        $rows = [];
+        $errors = [];
+
+        // Kelompokkan app per `server_id` (hanya yang bukan server lokal).
+        $byServer = [];
+        foreach ($apps as $app) {
+            try {
+                $server = $this->serverResolver()->resolveForApp($app);
+            } catch (\Throwable $e) {
+                continue; // server_id tak dikenal: AppAccess sudah menanganinya di tempat lain
+            }
+            if (ServerResolver::isLocal($server)) {
+                continue;
+            }
+            $byServer[(string) ($server['id'] ?? '')] = $server;
+        }
+
+        // Admin melihat kepemilikan seluruh app (termasuk milik user lain) pada
+        // server itu; non-admin hanya app yang boleh diakses.
+        $ownerApps = $isAdmin ? $this->appStore()->all() : $apps;
+
+        foreach ($byServer as $serverId => $server) {
+            $label = trim((string) ($server['name'] ?? '')) !== '' ? (string) $server['name'] : $serverId;
+            try {
+                $agent = $this->agentDeployerForServer($server);
+                if ($agent === null) {
+                    continue;
+                }
+                $detected = $agent->dbContainers();
+            } catch (\Throwable $e) {
+                $errors[] = 'Server "' . $label . '": ' . AgentError::sanitize($e->getMessage());
+                continue;
+            }
+
+            $ownerByContainer = [];
+            foreach ($ownerApps as $app) {
+                if ((string) ($app['server_id'] ?? '') !== $serverId) {
+                    continue;
+                }
+                foreach (($app['containers'] ?? []) as $container) {
+                    $name = is_array($container) ? (string) ($container['container_name'] ?? '') : '';
+                    if ($name !== '') {
+                        $ownerByContainer[$name] = $app;
+                    }
+                }
+            }
+
+            $visible = [];
+            foreach ($apps as $app) {
+                if ((string) ($app['server_id'] ?? '') === $serverId) {
+                    $visible[(string) ($app['id'] ?? '')] = true;
+                }
+            }
+
+            foreach ($detected as $row) {
+                $name = (string) ($row['container_name'] ?? '');
+                if ($name === '') {
+                    continue;
+                }
+                $owner = $ownerByContainer[$name] ?? null;
+                if (!$isAdmin && ($owner === null || !isset($visible[(string) ($owner['id'] ?? '')]))) {
+                    continue; // milik app user lain / eksternal — tidak ditampilkan
+                }
+
+                $rows[] = [
+                    'container_name' => $name,
+                    'container_id' => (string) ($row['container_id'] ?? ''),
+                    'image' => (string) ($row['image'] ?? ''),
+                    'state' => (string) ($row['state'] ?? 'unknown'),
+                    'status' => (string) ($row['status'] ?? ''),
+                    'owned' => $owner !== null,
+                    'app_id' => $owner !== null ? (string) ($owner['id'] ?? '') : null,
+                    'app_name' => $owner !== null ? (string) ($owner['name'] ?? '') : null,
+                    'server_id' => $serverId,
+                    'server_name' => (string) ($server['name'] ?? ''),
+                ];
+            }
+        }
+
+        usort($rows, static fn (array $a, array $b): int => strcmp((string) $a['container_name'], (string) $b['container_name']));
+
+        return ['rows' => $rows, 'errors' => $errors];
+    }
+
+    /**
+     * Deployer agent untuk app, atau `null` bila app dilayani server lokal
+     * (seam uji: subclass menyuntikkan deployer dengan klien agent tiruan).
+     *
+     * @param array<string,mixed> $app
+     * @throws AgentError server `kind=agent` cacat — fail-fast, tanpa jalur lokal
+     */
+    protected function agentDeployer(array $app): ?AgentDeployer
+    {
+        return AgentDeployer::forApp($app);
+    }
+
+    /**
+     * Deployer agent untuk dokumen server (operasi tingkat server: daftar
+     * container DB) — seam uji.
+     *
+     * @param array<string,mixed> $server
+     * @throws AgentError
+     */
+    protected function agentDeployerForServer(array $server): ?AgentDeployer
+    {
+        return AgentDeployer::forServer($server);
     }
 
     // ==================================================================
@@ -122,6 +270,20 @@ class DatabaseController
             throw new AppAccessDenied('database', $app);
         }
 
+        // App di server agent (F3d): helper Adminer hidup di sana — control plane
+        // hanya mem-forward (body mentah + streaming berkas), tidak pernah
+        // menjalankan helper/Docker di host ini.
+        if ($app !== null) {
+            try {
+                $agent = $this->agentDeployer($app);
+            } catch (\Throwable $e) {
+                return $this->adminerError(AgentError::sanitize($e->getMessage()), 502);
+            }
+            if ($agent !== null) {
+                return $this->adminerViaAgent($request, $app, $agent, $container, $path);
+            }
+        }
+
         try {
             $inspect = $this->inspectDbContainer($container);
         } catch (RuntimeException $e) {
@@ -131,7 +293,7 @@ class DatabaseController
         $network = AdminerHelper::targetNetwork($inspect, (string) ($app['name'] ?? ''));
 
         try {
-            $helper = new AdminerHelper();
+            $helper = $this->adminerHelper();
             $helper->ensureRunning();
             $helper->ensureOnNetwork($network);
         } catch (\Throwable $e) {
@@ -226,12 +388,208 @@ class DatabaseController
     }
 
     // ==================================================================
+    // Adminer per server agent (F3d) — control plane mem-forward
+    // ==================================================================
+
+    /**
+     * Teruskan satu permintaan Adminer ke helper **di server agent**.
+     *
+     * Kontrak yang dijaga (sama dengan jalur lokal):
+     *  - **body mutasi mentah** (`rawBody()`, tidak pernah `post()`/parse) ⇒
+     *    unggahan multipart impor Adminer utuh;
+     *  - **prefix dilaporkan lewat `X-Forwarded-Prefix`** (dari konfigurasi
+     *    halaman, bukan dari klien) ⇒ HTML Adminer tidak disunting;
+     *  - jar cookie Adminer tetap **server-side di sesi dashboard** (dititipkan
+     *    ke agent lewat header `X-Rames-Adminer-Jar`) sehingga agent tetap tanpa
+     *    state lintas-request;
+     *  - batas ukuran respons 64 MiB & timeout ≤30 s (`AgentClient`).
+     *
+     * @param array<string,mixed> $app
+     */
+    private function adminerViaAgent(
+        Request $request,
+        array $app,
+        AgentDeployer $agent,
+        string $container,
+        string $path,
+    ): WebmanResponse {
+        $prefix = $this->adminerPrefix($container);
+        $jar = $this->sessionJar($request, $container);
+        $forwarded = $this->adminerForwardContext($request);
+
+        $headers = $this->adminerForwardHeaders($request);
+        $headers['X-Forwarded-Prefix'] = $prefix;
+        $headers['X-Forwarded-Proto'] = $forwarded['proto'];
+        if ($forwarded['for'] !== '') {
+            $headers['X-Forwarded-For'] = $forwarded['for'];
+        }
+        $headers[AgentAdminerController::HEADER_JAR] = AgentAdminerController::encodeJar($jar);
+
+        $method = strtoupper((string) $request->method());
+        $body = in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true) ? (string) $request->rawBody() : null;
+
+        try {
+            $result = $agent->adminerForward(
+                $app,
+                $container,
+                $method,
+                $path,
+                (string) $request->queryString(),
+                $body,
+                $headers
+            );
+        } catch (AgentError $e) {
+            return $this->adminerError(AgentError::sanitize($e->getMessage()), AgentDeployer::failureCode($e));
+        }
+
+        if (($result['too_large'] ?? false) === true) {
+            return $this->adminerError(AdminerProxy::LIMIT_MESSAGE, 413);
+        }
+
+        // Galat domain agent dikembalikan sebagai respons polos Rames (bukan body
+        // JSON mesin); status HTTP-nya tetap milik agent.
+        $agentError = $this->agentJsonError($result);
+        if ($agentError !== null) {
+            $this->discardAgentBody((string) $result['body_file']);
+
+            return $this->adminerError($agentError[1], $agentError[0]);
+        }
+
+        $responseHeaders = $result['headers'];
+        $this->rememberJar(
+            $request,
+            $container,
+            AgentAdminerController::decodeJar(self::agentHeader($responseHeaders, AgentAdminerController::HEADER_JAR))
+        );
+
+        // Sesi helper basi pada request yang mengubah data: halaman pesan Rames
+        // (bentuk sama dengan jalur lokal), bukan body Adminer yang tak berguna.
+        if (trim(self::agentHeader($responseHeaders, AgentAdminerController::HEADER_SESSION_EXPIRED)) === '1') {
+            $this->discardAgentBody((string) $result['body_file']);
+            $this->audit($app, $container, 'adminer sesi kedaluwarsa');
+
+            return $this->adminerSessionExpired($container);
+        }
+
+        if ($path === '' && $method === 'GET') {
+            $this->audit($app, $container, 'adminer');
+        }
+
+        $out = $this->agentResponseHeaders($responseHeaders, $result);
+        if ((string) $result['body_file'] !== '') {
+            $this->scheduleTempCleanup((string) $result['body_file']);
+
+            return (new WebmanResponse((int) $result['status'], $out))->withFile((string) $result['body_file']);
+        }
+
+        return new WebmanResponse((int) $result['status'], $out);
+    }
+
+    /**
+     * Jar cookie Adminer container ini dari sesi dashboard (kunci sama dengan
+     * jalur lokal supaya berganti jalur server tidak mencampur sesi helper).
+     *
+     * `protected` = seam uji (subclass memakai jar in-memory) — produksi membaca
+     * sesi Webman seperti jalur lokal.
+     *
+     * @return array<string,string>
+     */
+    protected function sessionJar(Request $request, string $container): array
+    {
+        $state = $request->session()->get(self::ADMINER_SESSION_PREFIX . $container);
+        $jar = is_array($state) ? ($state['jar'] ?? []) : [];
+
+        return is_array($jar) ? $jar : [];
+    }
+
+    /**
+     * Simpan jar cookie Adminer (dirotasi agent) ke sesi dashboard.
+     *
+     * @param array<string,string> $jar
+     */
+    protected function rememberJar(Request $request, string $container, array $jar): void
+    {
+        $request->session()->set(self::ADMINER_SESSION_PREFIX . $container, ['jar' => $jar]);
+    }
+
+    /**
+     * Nilai satu header dari daftar header Guzzle (case-insensitive).
+     *
+     * @param array<string,array<int,string>> $headers
+     */
+    private static function agentHeader(array $headers, string $name): string
+    {
+        foreach ($headers as $key => $values) {
+            if (strtolower((string) $key) === strtolower($name)) {
+                $values = is_array($values) ? $values : [$values];
+
+                return trim(implode(', ', array_map('strval', $values)));
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Header respons agent yang boleh diteruskan ke browser.
+     *
+     *  - header hop-by-hop/`Content-Length` dibuang (Workerman yang mengurusnya
+     *    saat membaca berkas);
+     *  - `X-Rames-Adminer-*` **tidak** pernah keluar ke browser: jar adalah state
+     *    server-side dan penanda sesi kedaluwarsa hanya untuk control plane.
+     *
+     * @param array<string,array<int,string>> $headers
+     * @return array<string,array<int,string>>
+     */
+    private function agentResponseHeaders(array $headers, array $result): array
+    {
+        $out = [];
+        foreach ($headers as $name => $values) {
+            $key = (string) $name;
+            $lower = strtolower($key);
+            if (in_array($lower, ['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding'], true)) {
+                continue;
+            }
+            if (str_starts_with($lower, 'x-rames-')) {
+                continue;
+            }
+            $out[$key] = is_array($values) ? array_values(array_map('strval', $values)) : [(string) $values];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Jadwalkan penghapusan berkas respons sementara control plane (Workerman
+     * membaca berkas setelah handler kembali) + prune oportunistik sebagai
+     * backstop bila `Timer` tidak tersedia (proses CLI/uji).
+     */
+    private function scheduleTempCleanup(string $path): void
+    {
+        AdminerTempDir::prune(dirname($path));
+        try {
+            Timer::add(600, static function () use ($path): void {
+                @unlink($path);
+            }, [], false);
+        } catch (\Throwable $e) {
+            // tanpa event loop: andalkan prune oportunistik di atas
+        }
+    }
+
+    private function discardAgentBody(string $path): void
+    {
+        if ($path !== '') {
+            @unlink($path);
+        }
+    }
+
+    // ==================================================================
     // Helper internal
     // ==================================================================
 
     private function inspectDbContainer(string $container): array
     {
-        $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+        $docker = $this->dockerClient();
         $inspect = $docker->inspectContainer($container);
         if (!(new DbContainerDetector($docker))->isDbContainer($inspect)) {
             throw new RuntimeException('Container "' . $container . '" bukan server MySQL/MariaDB.');
@@ -246,12 +604,15 @@ class DatabaseController
      * di satu tempat. Container DB yang tidak terdaftar di apps.json (mis.
      * dibuat manual di host) hanya boleh diakses admin.
      *
+     * `protected` (bukan private) semata agar unit test bisa men-bypass
+     * `AppStore`/`AppAccess` (data runtime nyata) — produksi tidak berubah.
+     *
      * @throws AppAccessDenied dirender sebagai 404 oleh webman
      */
-    private function findOwningApp(string $container): ?array
+    protected function findOwningApp(string $container): ?array
     {
         $owner = null;
-        foreach ((new AppStore())->all() as $app) {
+        foreach ($this->appStore()->all() as $app) {
             foreach (($app['containers'] ?? []) as $c) {
                 if (($c['container_name'] ?? '') === $container) {
                     $owner = $app;
@@ -270,6 +631,91 @@ class DatabaseController
         AppAccess::require('database', $owner, current_user());
 
         return $owner;
+    }
+
+    /**
+     * Store app control plane (seam uji: path temp tanpa `database/` nyata).
+     */
+    protected function appStore(): AppStore
+    {
+        return new AppStore();
+    }
+
+    /**
+     * Registry server (seam uji: store temp tanpa `database/` nyata).
+     */
+    protected function serverResolver(): ServerResolver
+    {
+        return new ServerResolver();
+    }
+
+    /**
+     * Detektor container DB — seam uji supaya engine dapat diganti (dan
+     * dibuktikan tidak tersentuh untuk app di server agent).
+     */
+    protected function detector(DockerClient $docker): DbContainerDetector
+    {
+        return new DbContainerDetector($docker);
+    }
+
+    /**
+     * Engine Docker **host ini** (jalur lokal) — seam uji supaya daemon lokal
+     * dapat dibuktikan TIDAK tersentuh untuk app di server agent.
+     */
+    protected function dockerClient(): DockerClient
+    {
+        return new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+    }
+
+    /**
+     * Helper Adminer **host ini** (jalur lokal) — seam uji supaya uji jalur lokal
+     * tidak menjalankan `docker run` nyata.
+     */
+    protected function adminerHelper(): AdminerHelper
+    {
+        return new AdminerHelper();
+    }
+
+    /**
+     * Envelope galat JSON dari agent (`{code:1,error,reason}`, `Content-Type`
+     * `application/json`) ⇒ pasangan `[status, pesan]` untuk respons polos
+     * `Adminer: …`.
+     *
+     * Agent memakai status HTTP yang benar untuk galat domainnya (404 container
+     * tak ada, 502 helper gagal, 400 nama tak sah); control plane **tidak**
+     * membocorkan body JSON mesin ke browser (dan tidak pernah meneruskan pesan
+     * mentah agent tanpa sanitasi). Respons helper Adminer sendiri selalu HTML,
+     * jadi deteksi ini tidak pernah salah menandai halaman Adminer.
+     *
+     * @param array{status:int,body_file:string} $result
+     * @return array{0:int,1:string}|null null = bukan galat JSON
+     */
+    private function agentJsonError(array $result): ?array
+    {
+        $status = (int) ($result['status'] ?? 0);
+        if ($status < 400) {
+            return null;
+        }
+
+        $file = (string) ($result['body_file'] ?? '');
+        if ($file === '' || !is_file($file)) {
+            return null;
+        }
+        $raw = @file_get_contents($file, false, null, 0, 4096);
+        if ($raw === false || !str_starts_with(ltrim($raw), '{')) {
+            return null;
+        }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+
+        $message = trim((string) ($decoded['error'] ?? $decoded['msg'] ?? ''));
+        if ($message === '') {
+            $message = 'Server agent menolak permintaan Adminer (HTTP ' . $status . ').';
+        }
+
+        return [$status, AgentError::sanitize($message)];
     }
 
     private function validContainerName(string $name): bool
@@ -421,13 +867,22 @@ class DatabaseController
      */
     private function adminerSessionExpired(string $container): WebmanResponse
     {
-        return view('db/session-expired', [
+        return $this->renderView('db/session-expired', [
             'container' => $container,
             'retryUrl' => $this->adminerPrefix($container) . '/',
         ])->withStatus(409)->withHeader('Cache-Control', 'no-store');
     }
 
-    private function audit(?array $app, string $container, string $action): void
+    protected function renderView(string $template, array $vars): WebmanResponse
+    {
+        return view($template, $vars);
+    }
+
+    /**
+     * Audit trail akses DB — `protected` (bukan private) semata agar unit test
+     * tidak menulis ke `runtime/logs/db` nyata.
+     */
+    protected function audit(?array $app, string $container, string $action): void
     {
         $dir = runtime_path() . '/logs/db';
         if (!is_dir($dir)) {

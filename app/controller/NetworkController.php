@@ -4,19 +4,36 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Auth\AppAccess;
+use app\library\Agent\AgentError;
+use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\ServerResolver;
 use app\library\Docker\DockerClient;
 use app\library\Storage\AppStore;
+use app\library\Storage\ServerStore;
 use support\Request;
 
 /**
  * Halaman Network — mengelola network Docker host (Engine API via DockerClient).
+ *
+ * **Per server (F3c multi-server, plan §5)**: halaman ini dapat dibatasi ke satu
+ * server lewat parameter `server` (`?server=<id>` / field POST `server`). Untuk
+ * server `kind=agent` seluruh operasi Engine dijalankan **di server itu** lewat
+ * `AgentDeployer`; daemon host control plane tidak pernah disentuh untuk app
+ * remote (plan §3 butir 4). Tanpa parameter, perilakunya persis seperti dulu
+ * (server lokal).
+ *
+ * Karena satu network hanya bermakna di satu server, aturan berikut ditegakkan:
+ *  - daftar/„shared network” disaring per server (`external_networks` app di
+ *    server lain **diabaikan** di halaman ini);
+ *  - connect container yang app-nya berjalan di server lain **ditolak** dengan
+ *    pesan jelas (`assertContainerServer()`), bukan dieksekusi ke server salah.
  *
  * Controller hanya mediator — tanpa state di properti (Webman persistent).
  *
  * Proteksi hapus network (berlapis, di controller BUKAN hanya di UI):
  *  - Network built-in/system (bridge, host, none, ingress, docker_gwbridge) → blok.
  *  - Network yang masih dipakai container → blok (Engine juga menolak dengan 409).
- *  - Network compose milik app yang masih ada di apps.json → blok
+ *  - Network compose milik app yang masih ada di apps.json **server itu** → blok
  *    (dikelola lewat halaman app; hindari merusak networking app yang berjalan).
  */
 class NetworkController
@@ -29,16 +46,40 @@ class NetworkController
      */
     public function index(Request $request)
     {
-        $docker = $this->docker();
         $engineError = null;
         $rows = [];
-        $isAdmin = is_admin();
-        $accessible = $this->accessibleProjects();
-        $sharedAttached = $this->sharedNetworkNames();
+        $isAdmin = $this->isAdmin();
+        $server = null;
+        $agent = null;
+        $scopeFailed = false;
 
         try {
-            $activeProjects = $this->activeProjects();
-            foreach ($docker->listNetworks() as $n) {
+            $server = $this->requestedServer($request);
+            $agent = $server !== null ? $this->agentFor($server) : null;
+        } catch (\Throwable $e) {
+            // Server tak dikenal / konfigurasi agent cacat: **jangan** diam-diam
+            // menampilkan network server lokal (itu server yang salah) — tampilkan
+            // galatnya dan daftar kosong.
+            $engineError = $e->getMessage();
+            $scopeFailed = true;
+        }
+
+        $serverId = $this->serverKeyOf($server);
+        $accessible = $this->accessibleProjects($serverId);
+        $sharedAttached = $this->sharedNetworkNames($serverId);
+
+        try {
+            if ($scopeFailed) {
+                $networks = [];
+            } else {
+                $networks = $agent !== null ? $agent->networks() : $this->docker()->listNetworks();
+            }
+            $activeProjects = $scopeFailed ? [] : $this->activeProjects($serverId);
+            $inspect = $agent !== null
+                ? static fn (string $id): array => $agent->networkDetail($id)['network']
+                : fn (string $id): array => $this->docker()->inspectNetwork($id);
+
+            foreach ($networks as $n) {
                 $name = (string) ($n['Name'] ?? '');
                 if ($name === '') {
                     continue;
@@ -50,12 +91,12 @@ class NetworkController
                 $sharedHere = isset($sharedAttached[$name]);
 
                 // Non-admin hanya melihat network milik app yang bisa diakses +
-                // shared network yang terpasang di app tersebut.
+                // shared network yang terpasang di app tersebut (satu server).
                 if (!$isAdmin && !$isYours && !$sharedHere) {
                     continue;
                 }
 
-                $count = $this->containerCount($docker, $n);
+                $count = $this->containerCount($n, $inspect);
 
                 $rows[] = [
                     'id' => (string) ($n['Id'] ?? ''),
@@ -87,10 +128,15 @@ class NetworkController
             $engineError = 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage();
         }
 
-        return view('network/index', [
+        return $this->renderView('network/index', [
             'rows' => $rows,
             'engineError' => $engineError,
             'canManage' => $isAdmin,
+            // Cakupan server (halaman per server, F3c). Field tambahan ini tidak
+            // mengubah pemakaian lama view (yang belum membacanya = server lokal).
+            'serverId' => $serverId,
+            'serverName' => (string) ($server['name'] ?? ''),
+            'servers' => $this->serverOptions(),
         ]);
     }
 
@@ -99,9 +145,20 @@ class NetworkController
      */
     public function create(Request $request)
     {
-        if (!is_admin()) {
-            flash_set('error', 'Membuat network bersifat global (lintas app) — hanya admin yang boleh melakukannya.');
+        // Cakupan server dibaca lebih dulu supaya pesan/redirect tetap di
+        // halaman server yang benar (agent-scoped page tidak "melompat" ke lokal).
+        $server = null;
+        try {
+            $server = $this->requestedServer($request, true);
+        } catch (\Throwable $e) {
+            $this->flash('error', $e->getMessage());
             return redirect('/networks');
+        }
+        $back = $this->redirectToNetworks($server);
+
+        if (!$this->isAdmin()) {
+            $this->flash('error', 'Membuat network bersifat global (lintas app) — hanya admin yang boleh melakukannya.');
+            return $back;
         }
 
         $name = strtolower(trim((string) $request->post('name', '')));
@@ -113,8 +170,8 @@ class NetworkController
         $attachable = (string) $request->post('attachable', '') === '1';
 
         if ($name === '' || !preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/', $name)) {
-            flash_set('error', 'Nama network tidak valid. Gunakan huruf/angka, titik, underscore, atau dash (diawali huruf/angka).');
-            return redirect('/networks');
+            $this->flash('error', 'Nama network tidak valid. Gunakan huruf/angka, titik, underscore, atau dash (diawali huruf/angka).');
+            return $back;
         }
         $allowedDrivers = ['bridge', 'overlay', 'macvlan'];
         if (!in_array($driver, $allowedDrivers, true)) {
@@ -123,13 +180,13 @@ class NetworkController
 
         // Validasi ringan format IPAM (Engine melakukan validasi final).
         if ($subnet !== '' && !preg_match('#^[0-9a-fA-F:.]+/\d+$#', $subnet)) {
-            flash_set('error', 'Subnet harus berupa CIDR, mis. 172.20.0.0/16.');
-            return redirect('/networks');
+            $this->flash('error', 'Subnet harus berupa CIDR, mis. 172.20.0.0/16.');
+            return $back;
         }
         foreach (['gateway' => $gateway, 'ip_range' => $ipRange] as $label => $val) {
             if ($val !== '' && !preg_match('#^[0-9a-fA-F:.]+$#', $val)) {
-                flash_set('error', ucfirst($label) . ' harus berupa alamat IP, mis. 172.20.0.1.');
-                return redirect('/networks');
+                $this->flash('error', ucfirst($label) . ' harus berupa alamat IP, mis. 172.20.0.1.');
+                return $back;
             }
         }
 
@@ -152,12 +209,19 @@ class NetworkController
         }
 
         try {
-            $this->docker()->createNetwork($config);
-            flash_set('success', "Network \"{$name}\" dibuat.");
+            $agent = $server !== null ? $this->agentFor($server) : null;
+            if ($agent !== null) {
+                // Network dibuat DI server itu (bukan di host control plane).
+                $agent->createNetwork($config);
+            } else {
+                $this->docker()->createNetwork($config);
+            }
+            $this->flash('success', "Network \"{$name}\" dibuat.");
         } catch (\Throwable $e) {
-            flash_set('error', $e->getMessage());
+            $this->flash('error', $e->getMessage());
         }
-        return redirect('/networks');
+
+        return $back;
     }
 
     /**
@@ -165,6 +229,21 @@ class NetworkController
      */
     public function detail(Request $request, string $id)
     {
+        $server = null;
+        $agent = null;
+        try {
+            $server = $this->requestedServer($request);
+            $agent = $server !== null ? $this->agentFor($server) : null;
+        } catch (\Throwable $e) {
+            $this->flash('error', $e->getMessage());
+
+            return redirect('/networks');
+        }
+
+        if ($agent !== null) {
+            return $this->agentDetail($agent, $server, $id);
+        }
+
         $docker = $this->docker();
         $engineError = null;
         $network = null;
@@ -209,7 +288,7 @@ class NetworkController
             usort($candidates, static fn (array $a, array $b): int => strcmp((string) $a['name'], (string) $b['name']));
         } catch (\Throwable $e) {
             if (str_contains($e->getMessage(), '404')) {
-                flash_set('error', 'Network tidak ditemukan.');
+                $this->flash('error', 'Network tidak ditemukan.');
                 return redirect('/networks');
             }
             $engineError = 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage();
@@ -217,7 +296,7 @@ class NetworkController
 
         $name = $network !== null ? (string) ($network['Name'] ?? $id) : $id;
 
-        return view('network/detail', [
+        return $this->renderView('network/detail', [
             'id' => $id,
             'name' => $name,
             'network' => $network,
@@ -225,43 +304,114 @@ class NetworkController
             'candidates' => $candidates,
             'engineError' => $engineError,
             'builtin' => in_array($name, self::PROTECTED_NAMES, true),
-            'canManage' => is_admin(),
+            'canManage' => $this->isAdmin(),
+            'serverId' => '',
+            'serverName' => '',
+            'servers' => $this->serverOptions(),
+        ]);
+    }
+
+    /**
+     * Detail network **di server agent** — kontrol & kandidat container dibaca
+     * dari agent (Engine server itu), bukan dari daemon host control plane.
+     *
+     * @param array<string,mixed> $server
+     */
+    private function agentDetail(AgentDeployer $agent, array $server, string $id)
+    {
+        $serverId = $this->serverKeyOf($server);
+
+        try {
+            $data = $agent->networkDetail($id);
+        } catch (AgentError $e) {
+            if (AgentDeployer::failureCode($e) === 404 || str_contains($e->getMessage(), '404')) {
+                $this->flash('error', 'Network tidak ditemukan di server "' . $serverId . '".');
+            } else {
+                $this->flash('error', AgentError::sanitize($e->getMessage()));
+            }
+
+            return $this->redirectToNetworks($server);
+        }
+
+        $network = $data['network'];
+        $name = (string) ($network['Name'] ?? $id);
+
+        return $this->renderView('network/detail', [
+            'id' => $id,
+            'name' => $name,
+            'network' => $network,
+            'attached' => $data['attached'],
+            'candidates' => $data['candidates'],
+            'engineError' => null,
+            'builtin' => in_array($name, self::PROTECTED_NAMES, true),
+            'canManage' => $this->isAdmin(),
+            'serverId' => $serverId,
+            'serverName' => (string) ($server['name'] ?? ''),
+            'servers' => $this->serverOptions(),
         ]);
     }
 
     /**
      * Hubungkan container ke network (POST /networks/{id}/connect).
+     *
+     * **Satu server**: container milik app yang berjalan di server lain
+     * ditolak (`assertContainerServer()`) — network tidak bisa dipakai lintas
+     * server (plan §5).
      */
     public function connect(Request $request, string $id)
     {
-        if (!is_admin()) {
-            flash_set('error', 'Menghubungkan container ke network bersifat global — hanya admin yang boleh melakukannya. Gunakan tab Network di detail app untuk koneksi persisten.');
+        $server = null;
+        try {
+            $server = $this->requestedServer($request, true);
+        } catch (\Throwable $e) {
+            $this->flash('error', $e->getMessage());
+
             return redirect('/networks');
+        }
+        $back = $this->redirectToNetworks($server, $id);
+
+        if (!$this->isAdmin()) {
+            $this->flash('error', 'Menghubungkan container ke network bersifat global — hanya admin yang boleh melakukannya. Gunakan tab Network di detail app untuk koneksi persisten.');
+            return $back;
         }
 
         $container = trim((string) $request->post('container', ''));
         $alias = trim((string) $request->post('alias', ''));
 
         if ($container === '') {
-            flash_set('error', 'Pilih container untuk dihubungkan.');
-            return redirect('/networks/' . rawurlencode($id));
+            $this->flash('error', 'Pilih container untuk dihubungkan.');
+            return $back;
         }
+
+        try {
+            $this->assertContainerServer($container, $this->serverKeyOf($server));
+        } catch (\Throwable $e) {
+            $this->flash('error', $e->getMessage());
+            return $back;
+        }
+
         $endpointConfig = [];
         if ($alias !== '') {
             if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/', $alias)) {
-                flash_set('error', 'Alias tidak valid. Gunakan huruf/angka, titik, underscore, atau dash.');
-                return redirect('/networks/' . rawurlencode($id));
+                $this->flash('error', 'Alias tidak valid. Gunakan huruf/angka, titik, underscore, atau dash.');
+                return $back;
             }
             $endpointConfig['Aliases'] = [$alias];
         }
 
         try {
-            $this->docker()->connectContainerToNetwork($id, $container, $endpointConfig);
-            flash_set('success', "Container \"{$container}\" dihubungkan ke \"{$id}\".");
+            $agent = $server !== null ? $this->agentFor($server) : null;
+            if ($agent !== null) {
+                $agent->connectNetwork($id, $container, $alias);
+            } else {
+                $this->docker()->connectContainerToNetwork($id, $container, $endpointConfig);
+            }
+            $this->flash('success', "Container \"{$container}\" dihubungkan ke \"{$id}\".");
         } catch (\Throwable $e) {
-            flash_set('error', 'Gagal menghubungkan container: ' . $e->getMessage());
+            $this->flash('error', 'Gagal menghubungkan container: ' . $e->getMessage());
         }
-        return redirect('/networks/' . rawurlencode($id));
+
+        return $back;
     }
 
     /**
@@ -269,44 +419,75 @@ class NetworkController
      */
     public function disconnect(Request $request, string $id)
     {
-        if (!is_admin()) {
-            flash_set('error', 'Memutus container dari network bersifat global — hanya admin yang boleh melakukannya. Gunakan tab Network di detail app untuk koneksi persisten.');
+        $server = null;
+        try {
+            $server = $this->requestedServer($request, true);
+        } catch (\Throwable $e) {
+            $this->flash('error', $e->getMessage());
+
             return redirect('/networks');
+        }
+        $back = $this->redirectToNetworks($server, $id);
+
+        if (!$this->isAdmin()) {
+            $this->flash('error', 'Memutus container dari network bersifat global — hanya admin yang boleh melakukannya. Gunakan tab Network di detail app untuk koneksi persisten.');
+            return $back;
         }
 
         $container = trim((string) $request->post('container', ''));
         if ($container === '') {
-            flash_set('error', 'Container tidak valid.');
-            return redirect('/networks/' . rawurlencode($id));
+            $this->flash('error', 'Container tidak valid.');
+            return $back;
         }
 
         try {
-            $this->docker()->disconnectContainerFromNetwork($id, $container, false);
-            flash_set('success', "Container \"{$container}\" diputus dari \"{$id}\".");
+            $agent = $server !== null ? $this->agentFor($server) : null;
+            if ($agent !== null) {
+                $agent->disconnectNetwork($id, $container);
+            } else {
+                $this->docker()->disconnectContainerFromNetwork($id, $container, false);
+            }
+            $this->flash('success', "Container \"{$container}\" diputus dari \"{$id}\".");
         } catch (\Throwable $e) {
-            flash_set('error', 'Gagal memutus container: ' . $e->getMessage());
+            $this->flash('error', 'Gagal memutus container: ' . $e->getMessage());
         }
-        return redirect('/networks/' . rawurlencode($id));
+
+        return $back;
     }
 
     /**
      * Hapus network dengan proteksi berlapis (POST /networks/{id}/delete).
+     *
+     * Untuk server agent: daftar network & penghapusan dijalankan **di server
+     * itu**; proteksi "dikelola app"/"masih dipakai" tetap dinilai di sini
+     * (control plane memegang `AppStore` server tersebut).
      */
     public function delete(Request $request, string $id)
     {
-        if (!is_admin()) {
-            flash_set('error', 'Menghapus network bersifat global — hanya admin yang boleh melakukannya.');
+        $server = null;
+        try {
+            $server = $this->requestedServer($request, true);
+        } catch (\Throwable $e) {
+            $this->flash('error', $e->getMessage());
+
             return redirect('/networks');
         }
+        $back = $this->redirectToNetworks($server);
 
-        $docker = $this->docker();
-        $activeProjects = $this->activeProjects();
+        if (!$this->isAdmin()) {
+            $this->flash('error', 'Menghapus network bersifat global — hanya admin yang boleh melakukannya.');
+            return $back;
+        }
+
+        $serverId = $this->serverKeyOf($server);
 
         try {
-            $networks = $docker->listNetworks();
+            $agent = $server !== null ? $this->agentFor($server) : null;
+            $docker = $agent === null ? $this->docker() : null;
+            $networks = $agent !== null ? $agent->networks() : $docker->listNetworks();
         } catch (\Throwable $e) {
-            flash_set('error', 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage());
-            return redirect('/networks');
+            $this->flash('error', 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage());
+            return $back;
         }
 
         $target = null;
@@ -317,42 +498,54 @@ class NetworkController
             }
         }
         if ($target === null) {
-            flash_set('error', "Network \"{$id}\" tidak ditemukan (mungkin sudah dihapus).");
-            return redirect('/networks');
+            $this->flash('error', "Network \"{$id}\" tidak ditemukan (mungkin sudah dihapus).");
+            return $back;
         }
 
         $name = (string) ($target['Name'] ?? $id);
         if (in_array($name, self::PROTECTED_NAMES, true)) {
-            flash_set('error', "Network built-in \"{$name}\" tidak bisa dihapus.");
-            return redirect('/networks');
+            $this->flash('error', "Network built-in \"{$name}\" tidak bisa dihapus.");
+            return $back;
         }
 
         $project = (string) (($target['Labels'] ?? [])['com.docker.compose.project'] ?? '');
-        if ($project !== '' && isset($activeProjects[$project])) {
-            flash_set('error', "Network \"{$name}\" dikelola app \"{$project}\" (compose) — kelola lewat halaman app, bukan di sini.");
-            return redirect('/networks');
+        if ($project !== '' && isset($this->activeProjects($serverId)[$project])) {
+            $this->flash('error', "Network \"{$name}\" dikelola app \"{$project}\" (compose) — kelola lewat halaman app, bukan di sini.");
+            return $back;
         }
 
-        $count = $this->containerCount($docker, $target);
+        $inspect = $agent !== null
+            ? static fn (string $ref): array => $agent->networkDetail($ref)['network']
+            : fn (string $ref): array => $this->docker()->inspectNetwork($ref);
+        $count = $this->containerCount($target, $inspect);
         if ($count > 0) {
-            flash_set('error', "Network \"{$name}\" masih dipakai {$count} container. Hentikan/putuskan container dulu sebelum menghapus.");
-            return redirect('/networks');
+            $this->flash('error', "Network \"{$name}\" masih dipakai {$count} container. Hentikan/putuskan container dulu sebelum menghapus.");
+            return $back;
         }
 
         try {
-            $docker->removeNetwork($id);
-            flash_set('success', "Network \"{$name}\" dihapus.");
+            if ($agent !== null) {
+                $agent->deleteNetwork($name);
+            } else {
+                $this->docker()->removeNetwork($id);
+            }
+            $this->flash('success', "Network \"{$name}\" dihapus.");
         } catch (\Throwable $e) {
-            flash_set('error', 'Gagal menghapus network: ' . $e->getMessage());
+            $this->flash('error', 'Gagal menghapus network: ' . $e->getMessage());
         }
-        return redirect('/networks');
+
+        return $back;
     }
 
     /**
      * Jumlah container yang terhubung ke sebuah network. Memakai field Containers
-     * hasil list bila ada; fallback ke inspect untuk API yang tidak menyertakannya.
+     * hasil list bila ada; fallback ke inspect (lokal **atau** agent lewat
+     * `$inspect`).
+     *
+     * @param callable(string):array|null $inspect fallback inspect untuk Engine
+     *                                             server network itu
      */
-    private function containerCount(DockerClient $docker, array $network): int
+    private function containerCount(array $network, ?callable $inspect = null): int
     {
         $containers = $network['Containers'] ?? null;
         if (is_array($containers)) {
@@ -361,8 +554,12 @@ class NetworkController
         if (is_int($containers)) {
             return $containers;
         }
+        $id = (string) ($network['Id'] ?? '');
+        if ($inspect === null || $id === '') {
+            return 0;
+        }
         try {
-            $detail = $docker->inspectNetwork((string) ($network['Id'] ?? ''));
+            $detail = $inspect($id);
             $c = $detail['Containers'] ?? [];
             return is_array($c) ? count($c) : 0;
         } catch (\Throwable) {
@@ -371,41 +568,273 @@ class NetworkController
     }
 
     /**
-     * @return array<string,bool> nama project app yang masih ada di apps.json
+     * Flash message (seam uji: tanpa sesi/global webman).
      */
-    private function activeProjects(): array
+    protected function flash(string $type, string $message): void
+    {
+        flash_set($type, $message);
+    }
+
+    /**
+     * User dashboard saat ini (seam uji: tanpa sesi/global webman).
+     *
+     * @return array<string,mixed>|null
+     */
+    protected function currentUser(): ?array
+    {
+        return current_user();
+    }
+
+    /**
+     * Apakah user saat ini admin global (seam uji: tanpa sesi webman).
+     *
+     * Operasi network bersifat global per server, jadi keputusan admin ada di
+     * satu tempat ini — bukan tersebar sebagai `is_admin()` di tiap aksi.
+     */
+    protected function isAdmin(): bool
+    {
+        return is_admin($this->currentUser());
+    }
+
+    /**
+     * Store app control plane (seam uji: path temp tanpa `database/` nyata).
+     */
+    protected function appStore(): AppStore
+    {
+        return new AppStore();
+    }
+
+    /**
+     * Render view (seam uji — `view()` butuh konteks HTTP).
+     *
+     * @param array<string,mixed> $vars
+     */
+    protected function renderView(string $template, array $vars): \Webman\Http\Response
+    {
+        return view($template, $vars);
+    }
+
+    /**
+     * Registry server (seam uji: store temp tanpa `database/` nyata).
+     */
+    protected function serverResolver(): ServerResolver
+    {
+        return new ServerResolver();
+    }
+
+    /**
+     * Server yang dipilih halaman/aksi: `null` = server lokal (perilaku lama).
+     *
+     * `server` kosong ⇒ lokal. Id tak dikenal / konfigurasi agent cacat ⇒
+     * **melempar** (tidak pernah diam-diam jatuh ke server lokal — plan §3
+     * butir 4).
+     *
+     * @return array<string,mixed>|null
+     */
+    private function requestedServer(Request $request, bool $post = false): ?array
+    {
+        $id = trim((string) ($post ? $request->post('server', '') : $request->get('server', '')));
+        if ($id === '') {
+            return null;
+        }
+
+        $server = $this->serverResolver()->resolve($id);
+
+        return ServerResolver::isLocal($server) ? null : $server;
+    }
+
+    /**
+     * Deployer agent untuk server terpilih (seam uji; `null` ⇒ jalur lokal).
+     *
+     * @param array<string,mixed> $server
+     * @throws AgentError server agent yang konfigurasinya cacat
+     */
+    protected function agentFor(array $server): ?AgentDeployer
+    {
+        return AgentDeployer::forServer($server);
+    }
+
+    /**
+     * Kunci server untuk membandingkan kepemilikan app dengan network:
+     * `''` = server lokal, selain itu id server.
+     *
+     * @param array<string,mixed>|null $server
+     */
+    private function serverKeyOf(?array $server): string
+    {
+        if ($server === null) {
+            return '';
+        }
+
+        $id = (string) ($server['id'] ?? '');
+
+        return ServerResolver::isLocal($server) ? '' : $id;
+    }
+
+    /**
+     * `server_id` efektif sebuah app (`''` ⇒ server lokal).
+     *
+     * @param array<string,mixed> $app
+     */
+    private function serverKeyOfApp(array $app): string
+    {
+        $id = trim((string) ($app['server_id'] ?? ''));
+
+        return ($id === '' || $id === ServerStore::LOCAL_ID) ? '' : $id;
+    }
+
+    /**
+     * Container yang app-nya berjalan di server **lain** tidak boleh
+     * disambungkan ke network server ini — network Docker tidak lintas server
+     * (plan §5). Container eksternal (tanpa app di `apps.json`) tidak dibatasi:
+     * admin yang memutuskan, dan Engine tetap menolak bila memang tidak ada.
+     *
+     * @throws \RuntimeException pesan jelas untuk UI (flash)
+     */
+    protected function assertContainerServer(string $container, string $serverId): void
+    {
+        $app = $this->appOwningContainer($container);
+        if ($app === null) {
+            return;
+        }
+
+        $ownerServerId = $this->serverKeyOfApp($app);
+        if ($ownerServerId === $serverId) {
+            return;
+        }
+
+        $here = $serverId === '' ? 'server lokal' : 'server "' . $this->serverLabel($serverId) . '"';
+        $there = $ownerServerId === '' ? 'server lokal' : 'server "' . $this->serverLabel($ownerServerId) . '"';
+
+        throw new \RuntimeException(sprintf(
+            'Container "%s" milik app "%s" yang berjalan di %s — network ini ada di %s. '
+            . 'Shared network hanya berlaku dalam satu server; jalankan operasi dari %s.',
+            $container,
+            (string) ($app['name'] ?? ''),
+            $there,
+            $here,
+            $there
+        ));
+    }
+
+    /** Nama server untuk pesan (fallback: id). */
+    private function serverLabel(string $serverId): string
+    {
+        try {
+            $server = $this->serverResolver()->resolve($serverId);
+
+            return trim((string) ($server['name'] ?? '')) !== '' ? (string) $server['name'] : $serverId;
+        } catch (\Throwable) {
+            return $serverId;
+        }
+    }
+
+    /**
+     * App pemilik satu container (nama container dari `apps.json`), atau `null`.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function appOwningContainer(string $container): ?array
+    {
+        foreach ($this->appStore()->all() as $app) {
+            foreach (($app['containers'] ?? []) as $c) {
+                if (is_array($c) && (string) ($c['container_name'] ?? '') === $container) {
+                    return $app;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Redirect kembali ke halaman network server terpilih (mempertahankan cakupan
+     * server) — opsional ke halaman detail network.
+     *
+     * @param array<string,mixed>|null $server
+     */
+    private function redirectToNetworks(?array $server, string $network = ''): \Webman\Http\Response
+    {
+        $query = $server === null ? '' : '?server=' . rawurlencode((string) ($server['id'] ?? ''));
+
+        return redirect('/networks' . ($network !== '' ? '/' . rawurlencode($network) : '') . $query);
+    }
+
+    /**
+     * Pilihan server untuk view (tanpa token/PEM; display only).
+     *
+     * @return array<int,array{id:string,name:string}>
+     */
+    private function serverOptions(): array
+    {
+        $options = [];
+        try {
+            foreach ($this->serverResolver()->all() as $server) {
+                $options[] = [
+                    'id' => (string) ($server['id'] ?? ''),
+                    'name' => (string) ($server['name'] ?? ''),
+                ];
+            }
+        } catch (\Throwable) {
+            // registry tidak terbaca — halaman tetap tampil (tanpa pemilih server)
+        }
+
+        return $options;
+    }
+
+    /**
+     * `protected` = seam uji (subclass dapat memeriksa penyaringan per server).
+     *
+     * @param string $serverId kunci server (`''` = lokal)
+     * @return array<string,bool> nama project app di server itu
+     */
+    protected function activeProjects(string $serverId = ''): array
     {
         $names = [];
-        foreach ((new AppStore())->all() as $app) {
+        foreach ($this->appStore()->all() as $app) {
+            if ($this->serverKeyOfApp($app) !== $serverId) {
+                continue; // app server lain tidak relevan untuk network server ini
+            }
             $names[(string) ($app['name'] ?? '')] = true;
         }
         return $names;
     }
 
     /**
-     * Nama project app yang boleh diakses user saat ini (dasar filter halaman).
+     * Nama project app di server itu yang boleh diakses user saat ini.
      *
+     * @param string $serverId kunci server (`''` = lokal)
      * @return array<string,bool>
      */
-    private function accessibleProjects(): array
+    protected function accessibleProjects(string $serverId = ''): array
     {
         $names = [];
-        foreach (AppAccess::visible((new AppStore())->all(), current_user()) as $app) {
+        foreach (AppAccess::visible($this->appStore()->all(), $this->currentUser()) as $app) {
+            if ($this->serverKeyOfApp($app) !== $serverId) {
+                continue;
+            }
             $names[(string) ($app['name'] ?? '')] = true;
         }
         return $names;
     }
 
     /**
-     * Shared network yang terpasang di app yang boleh diakses user ini
+     * Shared network yang terpasang di app **server ini** yang boleh diakses user
      * (field `external_networks` di apps.json).
      *
+     * Network app di server lain **diabaikan**: nama network hanya bermakna pada
+     * server tempat ia dibuat (plan §5).
+     *
+     * @param string $serverId kunci server (`''` = lokal)
      * @return array<string,bool>
      */
-    private function sharedNetworkNames(): array
+    protected function sharedNetworkNames(string $serverId = ''): array
     {
         $names = [];
-        foreach (AppAccess::visible((new AppStore())->all(), current_user()) as $app) {
+        foreach (AppAccess::visible($this->appStore()->all(), $this->currentUser()) as $app) {
+            if ($this->serverKeyOfApp($app) !== $serverId) {
+                continue;
+            }
             foreach ((array) ($app['external_networks'] ?? []) as $net) {
                 $net = (string) $net;
                 if ($net !== '') {
@@ -416,7 +845,12 @@ class NetworkController
         return $names;
     }
 
-    private function docker(): DockerClient
+    /**
+     * Engine Docker **host ini** (jalur lokal) — seam uji (subclass dapat
+     * menyuntikkan daemon tiruan / daemon yang gagal keras untuk membuktikan app
+     * server agent tidak pernah menyentuhnya).
+     */
+    protected function docker(): DockerClient
     {
         return new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
     }

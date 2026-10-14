@@ -38,10 +38,13 @@ use RuntimeException;
  *    sertifikat = job `ssl_issue` (+ `ssl_revoke`), dan perakitan config
  *    (`renderNginxConfig()`) dibaca dari `GET /apps/{id}/nginx` — **tidak
  *    pernah** menyentuh direktori Nginx/certbot host control plane;
- *  - operasi yang hanya masuk akal di host dan belum server-aware (volume
- *    project) ⇒ **melempar** `AgentError('unsupported')`. DILARANG memakai
- *    `LocalDeployer` sebagai fallback: itu persis kesalahan "app remote
- *    dieksekusi lokal" yang harus dicegah.
+ *  - **volume project & resource server** (F3d, plan §5): daftar volume project
+ *    (`GET /volumes?project=…`), daftar container DB (`GET /database/containers`),
+ *    proxy Adminer (`/adminer/*`) dan operasi network (`GET /networks*`,
+ *    `POST /networks/*`) dibaca dari agent. Tidak ada jalur mundur ke
+ *    `LocalDeployer`: operasi yang belum server-aware melempar
+ *    `AgentError('unsupported')` (mis. metode yang tidak dipetakan) — itu persis
+ *    kesalahan "app remote dieksekusi lokal" yang harus dicegah.
  *
  * **Artefak app wajib ikut** (misi `ms-f1-artifacts`, plan §4.3/§11 catatan 4):
  * agent hanya memegang proyeksi metadata app, jadi tiga hal yang tidak bisa ia
@@ -110,6 +113,13 @@ final class AgentDeployer implements DeployerInterface
     /** Pemaket artefak app (control plane → agent). */
     private readonly AgentArtifactPackager $packager;
 
+    /**
+     * Direktori berkas sementara respons proxy Adminer (null ⇒ default
+     * `runtime/adminer-proxy`, sama dengan jalur lokal). Seam uji supaya uji
+     * proxy Adminer tidak menulis ke `runtime/` nyata.
+     */
+    private readonly ?string $adminerTempDir;
+
     /** @var \Closure(int):void */
     private readonly \Closure $sleep;
 
@@ -127,6 +137,8 @@ final class AgentDeployer implements DeployerInterface
      * @param callable|null       $clock   seam uji: `(): float` detik (monoton naik)
      * @param AgentArtifactPackager|null $packager pemaket artefak app (null ⇒ bawaan;
      *                                      seam uji supaya uji tidak menyentuh `apps/` nyata)
+     * @param string|null                 $adminerTempDir direktori berkas sementara proxy
+     *                                      Adminer (null ⇒ `runtime/adminer-proxy`); seam uji
      */
     public function __construct(
         array $server,
@@ -136,6 +148,7 @@ final class AgentDeployer implements DeployerInterface
         ?callable $sleep = null,
         ?callable $clock = null,
         ?AgentArtifactPackager $packager = null,
+        ?string $adminerTempDir = null,
     ) {
         $this->server = $server;
         $this->client = $client;
@@ -161,6 +174,7 @@ final class AgentDeployer implements DeployerInterface
         // Bawaan dibangun langsung (bukan lazy): konstruksinya hanya menyimpan
         // path — pembacaan config & disk terjadi saat `pack()` dipanggil.
         $this->packager = $packager ?? new AgentArtifactPackager();
+        $this->adminerTempDir = $adminerTempDir !== null ? rtrim($adminerTempDir, '/') : null;
     }
 
     /** Batas total waktu satu job (detik) — untuk diagnostik/uji. */
@@ -271,12 +285,47 @@ final class AgentDeployer implements DeployerInterface
     }
 
     /**
-     * Volume project **tidak tersedia** dari agent di fase ini (F1; plan §5) ⇒
-     * melempar, bukan membaca daemon lokal.
+     * Volume project **dari server agent** (`GET /volumes?project=…`, F3) —
+     * daftar nama named volume milik project compose app, dipakai modal
+     * konfirmasi delete di control plane (plan §5).
+     *
+     * Nama volume dibaca dari Engine **server agent**; daemon host control plane
+     * tidak pernah dibaca untuk app remote (plan §3 butir 4). Project diambil
+     * dari `apps.name` (label `com.docker.compose.project` di sana) — sama
+     * nilainya dengan jalur lokal.
+     *
+     * @return array<int,string> nama volume (kosong bila agent tidak melaporkan)
+     * @throws AgentError
      */
     public function getProjectVolumes(string $project): array
     {
-        throw $this->unsupported('getProjectVolumes', 'Daftar volume project app di server agent');
+        $project = trim($project);
+        if ($project === '' || preg_match(self::PROJECT_PATTERN, $project) !== 1) {
+            return [];
+        }
+
+        $data = $this->short(
+            'membaca volume project',
+            fn (): array => $this->client->getWithQuery('/volumes', ['project' => $project])
+        );
+        $data = $this->ok($data, 'membaca volume project');
+
+        $names = $data['data']['volumes'] ?? null;
+        if (!is_array($names)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan daftar volume (kontrak: `{code:0,data:{volumes}}`).'
+            );
+        }
+
+        $volumes = [];
+        foreach ($names as $name) {
+            $name = is_scalar($name) ? trim((string) $name) : '';
+            if ($name !== '') {
+                $volumes[] = $name;
+            }
+        }
+
+        return $volumes;
     }
 
     // ==================================================================
@@ -300,8 +349,20 @@ final class AgentDeployer implements DeployerInterface
      */
     private const CONTAINER_PATTERN = '/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/';
 
-    /** Bentuk token sesi terminal (pola yang dibuat `DockerExec::open()`). */
+    /** Bentuk nama token sesi terminal (pola yang dibuat `DockerExec::open()`). */
     private const TOKEN_PATTERN = '/^[a-f0-9]{32}$/';
+
+    /**
+     * Bentuk nama project compose / network / container yang boleh masuk URL &
+     * query ke agent (tanpa spasi, `/`, atau karakter kontrol).
+     */
+    private const PROJECT_PATTERN = '/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/';
+
+    /**
+     * Bentuk id network/volume (Engine memakai hash 64-hex untuk network; CLI
+     * juga menerima nama) — dibatasi tanpa `/` & karakter kontrol.
+     */
+    private const ENGINE_ID_PATTERN = '/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/';
 
     /**
      * Deployer **agent** untuk app, atau `null` bila app dilayani server lokal
@@ -320,6 +381,25 @@ final class AgentDeployer implements DeployerInterface
     public static function forApp(array $app, ?ServerResolver $resolver = null, ?AgentClient $client = null): ?self
     {
         $server = ($resolver ?? new ServerResolver())->resolveForApp($app);
+
+        return self::forServer($server, $client);
+    }
+
+    /**
+     * Deployer **agent** untuk dokumen server, atau `null` bila servernya lokal.
+     *
+     * Dipakai operasi yang **tidak terikat satu app** (mis. daftar volume
+     * project, daftar/daftar-ulang network, daftar container DB server itu) —
+     * halaman control plane memilih server lebih dulu, lalu memanggil endpoint
+     * agent lewat server yang sama dengan {@see self::forApp()} (satu pintu, satu
+     * pesan galat). Server `kind=agent` yang cacat tetap **melempar**
+     * (`AgentError`), bukan mengembalikan `null`.
+     *
+     * @param array<string,mixed> $server
+     * @throws AgentError|RuntimeException
+     */
+    public static function forServer(array $server, ?AgentClient $client = null): ?self
+    {
         if (ServerResolver::isLocal($server)) {
             return null;
         }
@@ -758,6 +838,284 @@ final class AgentDeployer implements DeployerInterface
             'totals' => is_array($payload['totals'] ?? null) ? $payload['totals'] : [],
             'error' => is_string($error) && trim($error) !== '' ? $error : null,
         ];
+    }
+
+    // ==================================================================
+    // F3d — operasional per server: container DB (Adminer), volume, network
+    // ==================================================================
+
+    /**
+     * Daftar container MySQL/MariaDB **server agent** (`GET /database/containers`)
+     * — dipakai halaman `/database` control plane supaya container DB app remote
+     * tampil (dan bisa dibuka Adminer-nya) walau daemon host control plane tidak
+     * pernah menyentuhnya.
+     *
+     * Kepemilikan (`owned`/`app_id`/`app_name`) **tidak** ditentukan di sini:
+     * hasil agent dikembalikan apa adanya (hanya deteksi container), lalu control
+     * plane memetakannya lewat `AppStore`-nya sendiri + `AppAccess::visible()` —
+     * agent tidak mengetahui identitas user dashboard.
+     *
+     * @return array<int,array<string,mixed>>
+     * @throws AgentError
+     */
+    public function dbContainers(): array
+    {
+        $data = $this->short('membaca container database', fn (): array => $this->client->get('/database/containers'));
+        $data = $this->ok($data, 'membaca container database');
+
+        $rows = $data['data']['rows'] ?? null;
+        if (!is_array($rows)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan daftar container DB (kontrak: `{code:0,data:{rows}}`).'
+            );
+        }
+
+        return array_values(array_filter($rows, 'is_array'));
+    }
+
+    /**
+     * Teruskan satu permintaan Adminer ke helper **di server agent** (F3d).
+     *
+     * Body `$body` = byte mentah dari browser (multipart import Adminer) dan
+     * respons helper ditulis ke berkas sementara di control plane (dibaca
+     * Workerman setelah handler kembali) — jalur ini **tidak** pernah menyentuh
+     * Docker/Nginx host control plane.
+     *
+     * @param array<string,mixed>  $app       app pemilik container (validasi id)
+     * @param string               $container nama container DB (divalidasi milik app)
+     * @param string               $path      path SETELAH prefix ('' = root Adminer)
+     * @param string               $query     query string mentah tanpa '?' (tidak ditandatangani)
+     * @param array<string,string> $headers   header terpilih ke helper (mis.
+     *                                        `Content-Type`, `X-Forwarded-Prefix`)
+     * @return array{status:int,headers:array<string,array<int,string>>,body_file:string,size:int,too_large:bool}
+     *         `body_file` wajib dihapus/dijadwalkan pembersihannya oleh pemanggil
+     * @throws AgentError
+     */
+    public function adminerForward(
+        array $app,
+        string $container,
+        string $method,
+        string $path,
+        string $query,
+        ?string $body,
+        array $headers,
+    ): array {
+        $container = $this->assertContainer($container);
+        $agentPath = self::adminerAgentPath($container, $path);
+
+        return $this->short('meneruskan permintaan Adminer', fn (): array => $this->client->forwardToFile(
+            $method,
+            $agentPath,
+            $body,
+            $query,
+            $headers,
+            $this->adminerTempDir(),
+            $this->adminerMaxBytes()
+        ));
+    }
+
+    /**
+     * Path route proxy Adminer sisi agent (`/adminer/{container}[/{path}]`).
+     *
+     * Segmen path dinormalkan (`rawurldecode` → `rawurlencode`) supaya byte yang
+     * sudah ter-encode tidak ter-encode dua kali, sementara spasi/karakter khusus
+     * tetap aman di URL. Path **tidak** pernah diterjemahkan di sini: batas
+     * direktori/alamat helper ditentukan `AdminerProxy` di agent.
+     *
+     * @throws AgentError path memuat karakter yang tidak diizinkan
+     */
+    public static function adminerAgentPath(string $container, string $path): string
+    {
+        if (preg_match('/[\r\n\0]/', $path) === 1) {
+            throw new AgentError('Path Adminer memuat karakter yang tidak diizinkan.', AgentError::BAD_RESPONSE);
+        }
+
+        $segments = [];
+        foreach (explode('/', trim($path, '/')) as $segment) {
+            if ($segment === '') {
+                continue;
+            }
+            $segments[] = rawurlencode(rawurldecode($segment));
+        }
+
+        return '/adminer/' . rawurlencode($container)
+            . ($segments === [] ? '' : '/' . implode('/', $segments));
+    }
+
+    /**
+     * Batas ukuran respons proxy Adminer jalur agent — **satu sumber** dengan
+     * jalur lokal (`config('deploy.adminer_proxy_max_bytes')`, default 64 MiB).
+     * DILARANG dinaikkan: batas ini menjaga satu respons tidak menahan disk/
+     * memori worker control plane.
+     */
+    public function adminerMaxBytes(): int
+    {
+        return max(1024, (int) config('deploy.adminer_proxy_max_bytes', 67108864));
+    }
+
+    /**
+     * Direktori berkas sementara respons proxy Adminer di control plane — sama
+     * dengan jalur lokal (`AdminerTempDir`) supaya pembersihan/pemangkasan satu
+     * jalur.
+     */
+    public function adminerTempDir(): string
+    {
+        return $this->adminerTempDir ?? runtime_path() . '/adminer-proxy';
+    }
+
+    /**
+     * Daftar network Docker **server agent** (`GET /networks`) — halaman
+     * `/networks` control plane memakainya untuk cakupan per server.
+     *
+     * @return array<int,array<string,mixed>>
+     * @throws AgentError
+     */
+    public function networks(): array
+    {
+        $data = $this->short('membaca daftar network', fn (): array => $this->client->get('/networks'));
+        $data = $this->ok($data, 'membaca daftar network');
+
+        $rows = $data['data']['networks'] ?? null;
+        if (!is_array($rows)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan daftar network (kontrak: `{code:0,data:{networks}}`).'
+            );
+        }
+
+        return array_values(array_filter($rows, 'is_array'));
+    }
+
+    /**
+     * Detail satu network **server agent** (`GET /networks/{id}`):
+     * `{network, attached, candidates}` — bentuknya sama dengan data yang
+     * dirakit jalur lokal (`NetworkController::detail()`).
+     *
+     * @return array{network:array<string,mixed>,attached:array<int,array<string,mixed>>,candidates:array<int,array<string,mixed>>}
+     * @throws AgentError
+     */
+    public function networkDetail(string $id): array
+    {
+        $data = $this->short('membaca detail network', fn (): array => $this->client->get(
+            '/networks/' . $this->assertEngineRef($id)
+        ));
+        $data = $this->ok($data, 'membaca detail network');
+
+        $payload = $data['data'] ?? null;
+        if (!is_array($payload) || !is_array($payload['network'] ?? null)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan detail network (kontrak: `{code:0,data:{network,…}}`).'
+            );
+        }
+
+        return [
+            'network' => $payload['network'],
+            'attached' => is_array($payload['attached'] ?? null) ? array_values($payload['attached']) : [],
+            'candidates' => is_array($payload['candidates'] ?? null) ? array_values($payload['candidates']) : [],
+        ];
+    }
+
+    /**
+     * Buat network **di server agent** (`POST /networks/create`).
+     *
+     * @param array<string,mixed> $config konfigurasi Engine (sudah divalidasi
+     *                                    control plane: nama/driver/IPAM)
+     * @throws AgentError
+     */
+    public function createNetwork(array $config): void
+    {
+        $name = trim((string) ($config['Name'] ?? ''));
+        if ($name === '' || preg_match(self::PROJECT_PATTERN, $name) !== 1) {
+            throw new AgentError($this->label() . ': nama network tidak sah.', AgentError::BAD_RESPONSE);
+        }
+
+        $data = $this->short('membuat network', fn (): array => $this->client->post('/networks/create', ['config' => $config]));
+        $this->ok($data, 'membuat network');
+    }
+
+    /**
+     * Sambungkan container ke network **di server agent** (`POST /networks/{id}/connect`).
+     *
+     * @throws AgentError
+     */
+    public function connectNetwork(string $id, string $container, string $alias = ''): void
+    {
+        $payload = ['container' => $this->assertContainerName($container)];
+        $alias = trim($alias);
+        if ($alias !== '') {
+            if (preg_match(self::PROJECT_PATTERN, $alias) !== 1) {
+                throw new AgentError($this->label() . ': alias network tidak sah.', AgentError::BAD_RESPONSE);
+            }
+            $payload['alias'] = $alias;
+        }
+
+        $data = $this->short('menghubungkan container ke network', fn (): array => $this->client->post(
+            '/networks/' . $this->assertEngineRef($id) . '/connect',
+            $payload
+        ));
+        $this->ok($data, 'menghubungkan container ke network');
+    }
+
+    /**
+     * Putuskan container dari network **di server agent**
+     * (`POST /networks/{id}/disconnect`).
+     *
+     * @throws AgentError
+     */
+    public function disconnectNetwork(string $id, string $container): void
+    {
+        $data = $this->short('memutus container dari network', fn (): array => $this->client->post(
+            '/networks/' . $this->assertEngineRef($id) . '/disconnect',
+            ['container' => $this->assertContainerName($container)]
+        ));
+        $this->ok($data, 'memutus container dari network');
+    }
+
+    /**
+     * Hapus network **di server agent** (`POST /networks/{id}/delete`) —
+     * proteksi berlapis (built-in / dikelola app / masih dipakai) tetap di
+     * control plane yang memegang `AppStore`; agent hanya mengeksekusi.
+     *
+     * @throws AgentError
+     */
+    public function deleteNetwork(string $id): void
+    {
+        $data = $this->short('menghapus network', fn (): array => $this->client->post(
+            '/networks/' . $this->assertEngineRef($id) . '/delete',
+            []
+        ));
+        $this->ok($data, 'menghapus network');
+    }
+
+    /**
+     * Bentuk id/nama network yang boleh masuk URL agent (anti path traversal).
+     *
+     * @throws AgentError
+     */
+    private function assertEngineRef(string $ref): string
+    {
+        $ref = trim($ref);
+        if ($ref === '' || preg_match(self::ENGINE_ID_PATTERN, $ref) !== 1) {
+            throw new AgentError($this->label() . ': id network tidak sah.', AgentError::BAD_RESPONSE);
+        }
+
+        return $ref;
+    }
+
+    /**
+     * Bentuk nama container dari permintaan connect/disconnect — validasi
+     * control plane tanpa I/O (keanggotaan container pada app tetap diputuskan
+     * halaman yang menyusun daftar kandidat dari server itu).
+     *
+     * @throws AgentError
+     */
+    private function assertContainerName(string $container): string
+    {
+        $container = trim($container);
+        if ($container === '' || preg_match(self::CONTAINER_PATTERN, $container) !== 1) {
+            throw new AgentError($this->label() . ': nama container tidak sah.', AgentError::BAD_RESPONSE);
+        }
+
+        return $container;
     }
 
     /**

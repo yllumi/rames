@@ -14,11 +14,13 @@
 
 use Webman\Route;
 
+use app\controller\AgentAdminerController;
 use app\controller\AgentController;
 use app\controller\AgentDockerController;
 use app\controller\AgentFilesController;
 use app\controller\AgentJobController;
 use app\controller\AgentLogController;
+use app\controller\AgentNetworkController;
 use app\controller\AgentTerminalController;
 use app\controller\AuthController;
 use app\controller\BackupController;
@@ -150,6 +152,28 @@ if ($ramesMode === 'agent') {
         // akses (`AppAccess::visible()`) dilakukan control plane, bukan di sini.
         Route::get('/system/host-usage', [AgentDockerController::class, 'hostUsage']);
         Route::get('/monitor/containers', [AgentDockerController::class, 'containers']);
+
+        // F3d multi-server (plan §4.1/§5): **database/Adminer** & **network/volume**
+        // app yang berjalan di server ini. Helper Adminer dijalankan di sini
+        // (`AgentAdminerController` ⇒ `AdminerHelper`/`AdminerProxy`, helper tanpa
+        // port publik) dan control plane mem-forward permintaannya dengan body
+        // mentah + `X-Forwarded-Prefix` — HTML Adminer tidak pernah disunting.
+        // Otorisasi (ability `database`) & kepemilikan container diputuskan control
+        // plane; agent hanya memvalidasi bentuk nama & memastikan container itu
+        // memang container DB server ini.
+        //
+        // Network & volume = resource Engine **server ini**; endpoint-nya dipakai
+        // control plane untuk cakupan per server (shared network hanya bermakna
+        // dalam satu server — penolakan lintas server ada di control plane).
+        Route::get('/database/containers', [AgentAdminerController::class, 'containers']);
+        Route::any('/adminer/{container}[/{path:.*}]', [AgentAdminerController::class, 'proxy']);
+        Route::get('/networks', [AgentNetworkController::class, 'index']);
+        Route::get('/networks/{id}', [AgentNetworkController::class, 'detail']);
+        Route::get('/volumes', [AgentNetworkController::class, 'volumes']);
+        Route::post('/networks/create', [AgentNetworkController::class, 'create']);
+        Route::post('/networks/{id}/connect', [AgentNetworkController::class, 'connect']);
+        Route::post('/networks/{id}/disconnect', [AgentNetworkController::class, 'disconnect']);
+        Route::post('/networks/{id}/delete', [AgentNetworkController::class, 'delete']);
     }
 
     // Berhenti di sini: route dashboard di bawah tidak pernah didaftarkan.

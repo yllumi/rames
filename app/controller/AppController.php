@@ -151,17 +151,18 @@ class AppController
             // engine tidak tersedia — modal tampil tanpa daftar volume
         }
 
-        // Network eksternal (shared) yang bisa di-join app ini. Kandidat:
-        // bukan built-in & bukan milik app aktif (compose) — biasanya shared
-        // network yang dibuat lewat halaman /networks.
-        //
-        // Server agent: daftar network host control plane BUKAN kandidat (app
-        // berjalan di server lain) — jalur baca network per-server belum ada
-        // (F3) ⇒ daftar DIBIARKAN KOSONG (lihat {@see self::availableNetworksFor()}).
-        $availableNetworks = $this->availableNetworksFor(
-            $store->all(),
-            $deployer instanceof AgentDeployer
-        );
+        // Network eksternal (shared) yang bisa di-join app ini. Kandidat dibaca
+        // dari **server tempat app berjalan** (F3c): network server lain BUKAN
+        // kandidat — satu network hanya bermakna di satu server, jadi
+        // menawarkannya adalah bug lintas-server.
+        $appServer = null;
+        try {
+            $appServer = (new ServerResolver())->resolveForApp($app);
+        } catch (\Throwable $e) {
+            // server tak dikenal: biarkan daftar kosong (jalur operasi lain yang
+            // melaporkan galatnya dengan pesan yang lebih tepat)
+        }
+        $availableNetworks = $this->availableNetworksFor($store->all(), $appServer);
 
         // Public key deploy key app (untuk repo private via SSH)
         $sshPubkey = null;
@@ -2107,32 +2108,45 @@ class AppController
     /**
      * Kandidat network eksternal yang boleh ditawarkan ke form app.
      *
-     * Untuk app di server **agent** selalu `[]`: daftar network host kontrol
-     * adalah network di host yang **salah** (app berjalan di server lain), dan
-     * jalur baca network per-server belum ada (fase F3). Menyembunyikan daftar
-     * aman; menawarkan network lokal adalah bug lintas-server. Pesan yang lebih
-     * spesifik untuk app agent perlu perubahan view (wilayah Frontend UI).
+     * Network kandidat dibaca dari **server tempat app berjalan** (F3c): server
+     * lokal ⇒ daemon lokal, server agent ⇒ `GET /networks` di server itu. Ini
+     * mencegah user memilih network yang tidak ada di server app (yang akan
+     * membuat `docker compose up` gagal atau — lebih buruk — menunjuk network
+     * host yang salah).
      *
      * @param array<int,array<string,mixed>> $allApps seluruh app (untuk mengecualikan
-     *                                               network milik app aktif)
-     * @param bool                           $agentApp app berjalan di server agent?
-     * @param DockerClient|null              $docker   seam uji (null = klien bawaan)
+     *                                               network milik app aktif di server
+     *                                               yang sama)
+     * @param array<string,mixed>|null       $server  dokumen server app (null = lokal)
+     * @param DockerClient|null              $docker  seam uji (null = klien bawaan)
      * @return array<int,string>
      */
-    private function availableNetworksFor(array $allApps, bool $agentApp, ?DockerClient $docker = null): array
+    private function availableNetworksFor(array $allApps, ?array $server = null, ?DockerClient $docker = null): array
     {
-        if ($agentApp) {
-            return [];
-        }
+        $isAgent = $server !== null && !ServerResolver::isLocal($server);
+        $serverKey = $isAgent ? (string) ($server['id'] ?? '') : '';
 
         $available = [];
         try {
-            $docker ??= new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+            if ($isAgent) {
+                $deployer = AgentDeployer::forServer($server);
+                $networks = $deployer !== null ? $deployer->networks() : [];
+            } else {
+                $docker ??= new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+                $networks = $docker->listNetworks();
+            }
+
             $activeNames = [];
             foreach ($allApps as $s) {
+                $appServerId = trim((string) ($s['server_id'] ?? ''));
+                $appServerId = ($appServerId === '' || $appServerId === ServerStore::LOCAL_ID) ? '' : $appServerId;
+                if ($appServerId !== $serverKey) {
+                    continue; // network app di server lain tidak relevan
+                }
                 $activeNames[(string) ($s['name'] ?? '')] = true;
             }
-            foreach ($docker->listNetworks() as $n) {
+
+            foreach ($networks as $n) {
                 $nname = (string) ($n['Name'] ?? '');
                 if ($nname === '' || in_array($nname, ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge'], true)) {
                     continue;
@@ -2145,7 +2159,7 @@ class AppController
             }
             sort($available);
         } catch (\Throwable $e) {
-            // engine tidak tersedia — form tampil tanpa daftar
+            // engine/agent tidak tersedia — form tampil tanpa daftar
         }
 
         return $available;
@@ -2429,22 +2443,38 @@ class AppController
             }
         }
 
-        // Validasi network benar-benar ada di Engine (bukan built-in).
+        // Validasi network benar-benar ada **di server app** (bukan built-in).
+        // Satu network hanya bermakna di satu server: untuk app di server agent
+        // daftarnya dibaca dari agent itu (`GET /networks`), untuk app lokal dari
+        // daemon lokal. Network yang hanya ada di server lain ⇒ ditolak dengan
+        // pesan jelas (bukan diteruskan sampai `compose up` gagal).
         if ($selected !== []) {
+            $server = null;
             try {
-                $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'));
+                $server = (new ServerResolver())->resolveForApp($app);
+            } catch (\Throwable $e) {
+                flash_set('error', $e->getMessage());
+                return redirect('/apps/' . $id);
+            }
+
+            try {
+                $deployer = DeployerFactory::createFor($server);
+                $networks = $deployer instanceof AgentDeployer
+                    ? $deployer->networks()
+                    : (new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock')))->listNetworks();
+
                 $existing = [];
-                foreach ($docker->listNetworks() as $n) {
+                foreach ($networks as $n) {
                     $existing[(string) ($n['Name'] ?? '')] = true;
                 }
                 foreach ($selected as $name) {
                     if (!isset($existing[$name]) || in_array($name, ['bridge', 'host', 'none', 'ingress', 'docker_gwbridge'], true)) {
-                        flash_set('error', "Network \"{$name}\" tidak ditemukan (atau built-in). Buat shared network dulu di halaman Networks.");
+                        flash_set('error', "Network \"{$name}\" tidak ditemukan di server app ini (atau built-in). Buat shared network dulu di halaman Networks server yang sama.");
                         return redirect('/apps/' . $id);
                     }
                 }
             } catch (\Throwable $e) {
-                flash_set('error', 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage());
+                flash_set('error', 'Tidak dapat membaca daftar network server app: ' . $e->getMessage());
                 return redirect('/apps/' . $id);
             }
         }

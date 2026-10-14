@@ -483,15 +483,26 @@ class AppControllerAgentHostIsolationTest extends TestCase
         $method->setAccessible(true);
         $controller = $this->controller();
 
+        // App agent (F3c): kandidat network dibaca **dari server agent**, bukan
+        // dari daemon host control plane. Server agent yang konfigurasinya cacat
+        // (base_url non-https) ⇒ daftar kosong — dan Engine host control plane
+        // tetap tidak boleh dibaca sama sekali.
+        $agentServer = [
+            'id' => 'srv-agent-2',
+            'name' => 'vps-jakarta-2',
+            'kind' => 'agent',
+            'base_url' => 'http://agent.test:8443',
+            'token' => 'tok-agent-uji',
+        ];
         $this->assertSame(
             [],
-            $method->invoke($controller, [], true, $docker),
+            $method->invoke($controller, [], $agentServer, $docker),
             'app agent tidak boleh ditawari network host control plane'
         );
         $this->assertSame(0, $docker->listCalls, 'Engine host control plane tidak boleh dibaca untuk app agent');
 
         // App lokal: perilaku lama (daftar network lokal tetap ditawarkan).
-        $this->assertSame(['shared-net'], $method->invoke($controller, [], false, $docker));
+        $this->assertSame(['shared-net'], $method->invoke($controller, [], null, $docker));
         $this->assertSame(1, $docker->listCalls);
     }
 

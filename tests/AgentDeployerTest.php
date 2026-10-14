@@ -107,8 +107,8 @@ final class AgentDeployerFakeHandler
  *  5. state eksekusi (status/containers/deploy_history/ssl_status) sesudah job
  *     **ditarik dari agent** dan digabung ke app yang dikembalikan — metadata
  *     control plane tidak ikut tertimpa;
- *  6. operasi Nginx/volume **melempar** (`unsupported`) dan **tidak** menulis
- *     apa pun ke host ini (tidak ada fallback `LocalDeployer`).
+ *  6. volume project/network/DB-agent **dibaca dari** server agent (F3d: `/volumes`,
+ *     `/networks*`, `/database/containers`) — tidak ada fallback `LocalDeployer`.
  *
  * Seluruh uji tanpa jaringan: `AgentClient` ber-handler tiruan; sertifikat TLS
  * ditulis ke `/tmp`. Tidak ada Docker, `apps/`, atau `database/rames.sqlite`
@@ -434,35 +434,42 @@ class AgentDeployerTest extends TestCase
     }
 
     // ==================================================================
-    // (vi) operasi host yang BELUM server-aware — TIDAK BOLEH jatuh ke lokal
+    // (vi) volume project per server (F3d) — dibaca DARI AGENT, tidak dari lokal
     // ==================================================================
 
     /**
-     * Volume project masih belum server-aware (F3) ⇒ `unsupported`, dan operasi
-     * itu **tidak boleh** menyentuh host ini. Operasi Nginx/SSL sudah pindah ke
-     * jalur job agent (F2) — diuji `AgentDeployerNginxTest`.
+     * `getProjectVolumes()` sudah server-aware (F3d): nama volume dibaca dari
+     * Engine **server agent** (`GET /volumes?project=…`), bukan daemon host
+     * control plane. Jalur lokal diuji `LocalDeployerTeardownTest`.
      */
-    public function testHostOperationsAreUnsupportedAndNeverTouchLocalHost(): void
+    public function testProjectVolumesAreReadFromTheAgent(): void
     {
         $handler = new AgentDeployerFakeHandler();
-        $deployer = $this->deployer($handler);
+        $handler->reply(200, json_encode([
+            'code' => 0,
+            'data' => ['volumes' => ['demo_db', 'demo_uploads', '']],
+        ]));
 
-        $cases = [
-            'getProjectVolumes' => static fn (AgentDeployer $d) => $d->getProjectVolumes('demo'),
-        ];
+        $volumes = $this->deployer($handler)->getProjectVolumes('demo');
 
-        foreach ($cases as $name => $call) {
-            try {
-                $call($deployer);
-                $this->fail("{$name}() harus melempar untuk server agent (bukan menulis ke host ini)");
-            } catch (AgentError $e) {
-                $this->assertSame(AgentError::UNSUPPORTED, $e->reason, $name);
-                $this->assertStringContainsString('server agent', $e->getMessage(), $name);
-                $this->assertStringContainsString('BUKAN di server lokal', $e->getMessage(), $name);
-            }
-        }
+        $this->assertSame(['demo_db', 'demo_uploads'], $volumes);
+        $call = $handler->call(0);
+        $this->assertSame('GET', $call['method']);
+        $this->assertSame('/volumes', $call['path']);
+        $this->assertSame('project=demo', $call['query']);
+    }
 
-        $this->assertSame(0, $handler->count(), 'operasi tak didukung tidak boleh memanggil agent/lokal sama sekali');
+    /**
+     * Project kosong/tidak sah ⇒ **tanpa** panggilan HTTP apa pun (tidak ada
+     * permintaan aneh ke agent, dan tidak ada fallback ke daemon lokal).
+     */
+    public function testProjectVolumesRejectsInvalidProjectWithoutHttpCall(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+
+        $this->assertSame([], $this->deployer($handler)->getProjectVolumes(''));
+        $this->assertSame([], $this->deployer($handler)->getProjectVolumes('../etc'));
+        $this->assertSame(0, $handler->count(), 'project tidak sah tidak boleh memanggil agent/lokal sama sekali');
     }
 
     public function testGetContainersReadsFromAgentByAppId(): void

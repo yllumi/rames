@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 namespace app\library\Agent;
 
+use app\library\Adminer\AdminerProxyLimitExceeded;
+use app\library\Adminer\AdminerTempDir;
+use app\library\Adminer\LimitedTempSink;
 use Closure;
 use GuzzleHttp\Client;
 use GuzzleHttp\Handler\CurlHandler;
@@ -559,6 +562,146 @@ final class AgentClient
         }
 
         return $this->decode($raw);
+    }
+
+    /**
+     * Satu panggilan HTTP bertanda tangan dengan body **mentah** dan respons
+     * ditulis bertahap ke berkas sementara (F3d: proxy Adminer per server).
+     *
+     * Kenapa jalur tersendiri (bukan `send()`/`postFile()`):
+     *  - body request adalah **byte apa adanya** dari browser (multipart import
+     *    Adminer) — tidak boleh di-decode/parse/di-encode ulang, dan
+     *    `Content-Type`-nya harus tetap milik pemanggil (bukan `application/json`);
+     *  - respons helper Adminer (HTML/halaman besar) ditulis bertahap ke berkas
+     *    nyata lewat `LimitedTempSink` + {@see AdminerTempDir}, persis pola jalur
+     *    lokal (`AdminerProxy::send()`), sehingga Workerman bisa mengirimkannya
+     *    dengan `Response::withFile()` tanpa menahan byte di memori worker;
+     *  - status HTTP non-2xx **tidak** melempar: pemanggil (controller) memetakan
+     *    status/kode domain ke respons yang sama dengan jalur lokal. Galat
+     *    transport/setup tetap `AgentError`.
+     *
+     * Timeout tetap ≤30 s (aturan repo) — helper dipanggil sebagai permintaan
+     * pendek, bukan stream panjang.
+     *
+     * @param string               $query   query string **mentah** (tanpa `?`),
+     *                                      diteruskan apa adanya supaya parameter
+     *                                      Adminer tidak berubah bentuk; tidak
+     *                                      ikut ditandatangani (kontrak = path)
+     * @param array<string,string> $headers header tambahan (`Content-Type`,
+     *                                      `X-Forwarded-Prefix`, …)
+     * @return array{status:int,headers:array<string,array<int,string>>,body_file:string,size:int,too_large:bool}
+     * @throws AgentError transport / berkas sementara tidak bisa dibuat
+     */
+    public function forwardToFile(
+        string $method,
+        string $path,
+        ?string $body,
+        string $query,
+        array $headers,
+        string $tempDir,
+        int $maxBytes,
+    ): array {
+        $method = strtoupper(trim($method));
+        $path = $this->normalizePath($path);
+        self::assertQuery($query);
+
+        $created = AdminerTempDir::create($tempDir);
+        if ($created === null) {
+            throw AgentError::invalidConfig(
+                'Tidak bisa membuat berkas sementara untuk penerusan ke agent di "' . $tempDir . '".'
+            );
+        }
+        [$file, $handle] = $created;
+        $sink = new LimitedTempSink($handle, max(0, $maxBytes));
+
+        $url = $path . ($query !== '' ? '?' . $query : '');
+        $raw = $body ?? '';
+        $options = [
+            // `signedHeadersForHash()` — bukan `signedHeaders()` yang selalu
+            // menulis `Content-Type: application/json` (akan merusak multipart).
+            'headers' => $this->signedHeadersForHash($method, $path, hash('sha256', $raw), $headers),
+            'stream' => true,
+            'sink' => $sink,
+            'http_errors' => false,
+            'allow_redirects' => false,
+            'decode_content' => false,
+            'timeout' => $this->timeout,
+            'connect_timeout' => min(self::CONNECT_TIMEOUT, $this->timeout),
+            'verify' => $this->verify,
+            'expect' => false,
+            // Tolak lebih awal bila `Content-Length` sudah melewati batas.
+            'on_headers' => static function ($response) use ($maxBytes): void {
+                $length = (int) $response->getHeaderLine('Content-Length');
+                if ($maxBytes > 0 && $length > 0 && $length > $maxBytes) {
+                    throw new AdminerProxyLimitExceeded(
+                        'Respons server agent melebihi batas ' . $maxBytes . ' byte.'
+                    );
+                }
+            },
+        ];
+        if ($body !== null) {
+            $options['body'] = $body;
+        }
+
+        try {
+            $response = $this->client->request($method, $url, $options);
+        } catch (\Throwable $e) {
+            $sink->close();
+            @unlink($file);
+            if (self::isLimitExceeded($e)) {
+                return ['status' => 0, 'headers' => [], 'body_file' => '', 'size' => 0, 'too_large' => true];
+            }
+            throw $this->transportError($e);
+        }
+
+        $sink->close();
+
+        $size = @filesize($file);
+        $size = $size === false ? 0 : (int) $size;
+        if ($maxBytes > 0 && $size > $maxBytes) {
+            @unlink($file);
+
+            return ['status' => 0, 'headers' => [], 'body_file' => '', 'size' => 0, 'too_large' => true];
+        }
+
+        return [
+            'status' => (int) $response->getStatusCode(),
+            'headers' => $response->getHeaders(),
+            'body_file' => $file,
+            'size' => $size,
+            'too_large' => false,
+        ];
+    }
+
+    /**
+     * Rantai `query` yang diteruskan diterima apa adanya — hanya bentuk yang
+     * jelas berbahaya (CR/LF/fragment) yang ditolak, supaya parameter Adminer
+     * (`?username=&db=…`) tidak berubah makna.
+     *
+     * @throws AgentError
+     */
+    private static function assertQuery(string $query): void
+    {
+        if ($query === '') {
+            return;
+        }
+        if (preg_match('/[\r\n\0#]/', $query) === 1) {
+            throw AgentError::invalidConfig('Query penerusan ke agent memuat karakter yang tidak diizinkan.');
+        }
+    }
+
+    /**
+     * Apakah kegagalan berasal dari guard batas ukuran (langsung atau dibungkus).
+     */
+    private static function isLimitExceeded(\Throwable $e): bool
+    {
+        for ($current = $e; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof AdminerProxyLimitExceeded) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

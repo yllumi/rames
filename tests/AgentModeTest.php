@@ -3,13 +3,17 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use app\controller\AgentAdminerController;
 use app\controller\AgentController;
 use app\controller\AgentDockerController;
 use app\controller\AgentFilesController;
 use app\controller\AgentJobController;
 use app\controller\AgentLogController;
+use app\controller\AgentNetworkController;
 use app\controller\AgentTerminalController;
 use app\controller\HealthController;
+use app\controller\NetworkController;
+use app\controller\VolumeController;
 use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
 use RuntimeException;
@@ -150,9 +154,12 @@ class AgentModeTest extends TestCase
         sort($pairs);
         $this->assertSame(
             [
+                'DELETE /adminer/{container}[/{path:.*}]',
+                'GET /adminer/{container}[/{path:.*}]',
                 'GET /apps/{id}',
                 'GET /apps/{id}/logs',
                 'GET /apps/{id}/nginx',
+                'GET /database/containers',
                 'GET /files/download',
                 'GET /files/list',
                 'GET /files/read',
@@ -160,9 +167,16 @@ class AgentModeTest extends TestCase
                 'GET /jobs/{id}',
                 'GET /jobs/{id}/log',
                 'GET /monitor/containers',
+                'GET /networks',
+                'GET /networks/{id}',
                 'GET /system/host-usage',
                 'GET /terminal/{token}/stream',
                 'GET /version',
+                'GET /volumes',
+                'HEAD /adminer/{container}[/{path:.*}]',
+                'OPTIONS /adminer/{container}[/{path:.*}]',
+                'PATCH /adminer/{container}[/{path:.*}]',
+                'POST /adminer/{container}[/{path:.*}]',
                 'POST /files/delete',
                 'POST /files/extract',
                 'POST /files/mkdir',
@@ -171,10 +185,15 @@ class AgentModeTest extends TestCase
                 'POST /files/upload',
                 'POST /files/write',
                 'POST /jobs',
+                'POST /networks/create',
+                'POST /networks/{id}/connect',
+                'POST /networks/{id}/delete',
+                'POST /networks/{id}/disconnect',
                 'POST /nginx/check',
                 'POST /terminal/open',
                 'POST /terminal/{token}/close',
                 'POST /terminal/{token}/input',
+                'PUT /adminer/{container}[/{path:.*}]',
             ],
             $pairs
         );
@@ -287,6 +306,45 @@ class AgentModeTest extends TestCase
             [AgentDockerController::class, 'containers'],
             $routes['pairs']['GET /monitor/containers']->getCallback()
         );
+        // Operasional per server (F3d): database/Adminer & network/volume app
+        // yang berjalan di server ini (helper Adminer hidup di sini; control plane
+        // mem-forward permintaannya).
+        $this->assertSame(
+            [AgentAdminerController::class, 'containers'],
+            $routes['pairs']['GET /database/containers']->getCallback()
+        );
+        $this->assertSame(
+            [AgentAdminerController::class, 'proxy'],
+            $routes['pairs']['POST /adminer/{container}[/{path:.*}]']->getCallback()
+        );
+        $this->assertSame(
+            [AgentNetworkController::class, 'index'],
+            $routes['pairs']['GET /networks']->getCallback()
+        );
+        $this->assertSame(
+            [AgentNetworkController::class, 'detail'],
+            $routes['pairs']['GET /networks/{id}']->getCallback()
+        );
+        $this->assertSame(
+            [AgentNetworkController::class, 'volumes'],
+            $routes['pairs']['GET /volumes']->getCallback()
+        );
+        $this->assertSame(
+            [AgentNetworkController::class, 'create'],
+            $routes['pairs']['POST /networks/create']->getCallback()
+        );
+        $this->assertSame(
+            [AgentNetworkController::class, 'connect'],
+            $routes['pairs']['POST /networks/{id}/connect']->getCallback()
+        );
+        $this->assertSame(
+            [AgentNetworkController::class, 'disconnect'],
+            $routes['pairs']['POST /networks/{id}/disconnect']->getCallback()
+        );
+        $this->assertSame(
+            [AgentNetworkController::class, 'delete'],
+            $routes['pairs']['POST /networks/{id}/delete']->getCallback()
+        );
     }
 
     public function testAgentModeDropsEveryDashboardRoute(): void
@@ -304,10 +362,10 @@ class AgentModeTest extends TestCase
             $routes['pairs']['GET /healthz']->getCallback()
         );
         $this->assertCount(
-            25,
+            34,
             $routes['definitions'],
             'route agent F0 (diagnostik) + F1 (3 job + proyeksi app) + F2 (nginx) + F3a (log + 4 terminal)'
-            . ' + F3b/F3c (10 file manager + 2 monitoring)'
+            . ' + F3b/F3c (10 file manager + 2 monitoring) + F3d (1 database + 1 adminer + 7 network/volume)'
         );
     }
 
@@ -382,6 +440,22 @@ class AgentModeTest extends TestCase
         ] as $agentPair) {
             $this->assertArrayNotHasKey($agentPair, $routes['pairs'], "route agent {$agentPair} bocor ke mode dashboard");
         }
+
+        // F3d: route mesin DB/Adminer & network/volume tidak boleh terdaftar di
+        // dashboard. Path yang memang dipakai UI dashboard (`GET /networks`,
+        // `/volumes`, `POST /networks/*`) tetap ada — tetapi handler-nya harus
+        // handler dashboard, BUKAN controller agent.
+        foreach ([
+            'GET /database/containers',
+            'GET /adminer/{container}[/{path:.*}]',
+            'POST /adminer/{container}[/{path:.*}]',
+        ] as $agentPair) {
+            $this->assertArrayNotHasKey($agentPair, $routes['pairs'], "route agent {$agentPair} bocor ke mode dashboard");
+        }
+        $this->assertSame([NetworkController::class, 'index'], $routes['pairs']['GET /networks']->getCallback());
+        $this->assertSame([VolumeController::class, 'index'], $routes['pairs']['GET /volumes']->getCallback());
+        $this->assertSame([NetworkController::class, 'connect'], $routes['pairs']['POST /networks/{id}/connect']->getCallback());
+        $this->assertSame([NetworkController::class, 'delete'], $routes['pairs']['POST /networks/{id}/delete']->getCallback());
     }
 
     public function testDashboardModeIgnoresAgentToken(): void
