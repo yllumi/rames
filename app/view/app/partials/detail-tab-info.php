@@ -14,6 +14,18 @@
           <?php endif; ?>
         </dd>
       </div>
+      <div class="app-info-item">
+        <dt class="k">Server</dt>
+        <dd class="v mb-0">
+          <?php if ($isRemoteServer): ?>
+            <span class="badge text-bg-info">agent</span> <span class="mono"><?= e($appServerName) ?></span>
+            <span class="text-muted fw-normal small">· app berjalan di server agent — deploy, terminal, log, &amp; backup dijalankan di sana, bukan di host dashboard</span>
+          <?php else: ?>
+            <span class="text-muted">lokal</span>
+            <span class="text-muted small">— server ini (host dashboard)</span>
+          <?php endif; ?>
+        </dd>
+      </div>
       <?php if ($isCompose): ?>
       <?php $tplTitle = is_array($app['template'] ?? null) ? (string) ($app['template']['title'] ?? $app['template']['slug'] ?? '') : ''; ?>
       <div class="app-info-item">

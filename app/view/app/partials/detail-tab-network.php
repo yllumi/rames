@@ -9,6 +9,12 @@
         <span class="text-muted small">shared network lintas-app (via compose external)</span>
       </div>
       <div class="card-body">
+        <p class="text-muted small mb-2">
+          Daftar network di halaman ini berasal dari
+          <strong>server tempat app ini berjalan<?= $isRemoteServer ? ' (' . e($appServerName) . ')' : ' (server lokal)' ?></strong>.
+          Network Docker bersifat <strong>per server</strong> — container di server lain
+          <strong>tidak</strong> dapat bergabung ke network ini, dan sebaliknya.
+        </p>
         <p class="text-muted small mb-3">
           Hubungkan app ini ke <strong>shared network</strong> agar container-nya bisa
           saling berkomunikasi dengan app lain. Buat network lewat halaman

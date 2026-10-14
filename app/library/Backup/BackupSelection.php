@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\library\Backup;
 
 use app\library\Storage\SchemaMigrations;
+use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteStore;
 
 /**
@@ -13,7 +14,12 @@ use app\library\Storage\SqliteStore;
  * store `apps` tidak berubah (PLAN_VOLUME_BACKUP.md).
  *
  * Bentuk data (per volume):
- *   {"scheduled":bool,"updated_at":"<ISO>","updated_by":"<userId>"}
+ *   {"scheduled":bool,"updated_at":"<ISO>","updated_by":"<userId>","server_id":"<id>"?}
+ *
+ * **Dimensi server (multi-server F4, plan §4.2/§4.3)**: nama volume bisa sama di
+ * dua server ⇒ kunci seleksi di-scope server lewat
+ * {@see BackupRegistry::scopeKey()} (server lokal tanpa prefiks — data lama tetap
+ * valid), dan `server_id` disimpan di dokumen entri (tanpa perubahan skema).
  *
  * Default **OFF** (opt-in): volume tanpa entri / tanpa kunci `scheduled`
  * dianggap **tidak** terjadwal, sehingga volume baru harus dinyalakan secara
@@ -79,11 +85,13 @@ final class BackupSelection
      * Apakah volume ikut run backup berkala.
      *
      * Entri absen / kunci `scheduled` absen ⇒ **false** (default OFF/opt-in).
+     *
+     * @param string $serverId server pemilik volume (`''`/`local` = server ini)
      */
-    public function isScheduled(string $name): bool
+    public function isScheduled(string $name, string $serverId = ''): bool
     {
         $data = $this->data();
-        $entry = $data['volumes'][$name] ?? null;
+        $entry = $data['volumes'][BackupRegistry::scopeKey($serverId, $name)] ?? null;
         if (!is_array($entry) || !array_key_exists('scheduled', $entry)) {
             return false;
         }
@@ -105,23 +113,27 @@ final class BackupSelection
     /**
      * Set flag jadwal sebuah volume (nama divalidasi fail-fast).
      *
-     * @param string $actorId userId pelaku (untuk jejak audit ringan; boleh kosong)
+     * @param string $actorId  userId pelaku (untuk jejak audit ringan; boleh kosong)
+     * @param string $serverId server pemilik volume (`''`/`local` = server ini)
      */
-    public function setScheduled(string $name, bool $scheduled, string $actorId = ''): void
+    public function setScheduled(string $name, bool $scheduled, string $actorId = '', string $serverId = ''): void
     {
         VolumeStateGuard::assertVolumeName($name);
+        $serverId = trim($serverId) === '' ? ServerStore::LOCAL_ID : trim($serverId);
+        $key = BackupRegistry::scopeKey($serverId, $name);
 
-        $this->store->update(function (array &$data) use ($name, $scheduled, $actorId): void {
+        $this->store->update(function (array &$data) use ($key, $scheduled, $actorId, $serverId): void {
             if (!isset($data['version'])) {
                 $data['version'] = 1;
             }
             if (!isset($data['volumes']) || !is_array($data['volumes'])) {
                 $data['volumes'] = [];
             }
-            $data['volumes'][$name] = [
+            $data['volumes'][$key] = [
                 'scheduled' => $scheduled,
                 'updated_at' => date('c'),
                 'updated_by' => $actorId,
+                'server_id' => $serverId,
             ];
         });
 
@@ -166,6 +178,7 @@ final class BackupSelection
                 $data['volumes'] = [];
             }
             foreach (array_keys($names) as $name) {
+                // Backfill jalur lokal: kunci = nama volume apa adanya (server ini).
                 $existing = $data['volumes'][$name] ?? null;
                 if (is_array($existing) && array_key_exists('scheduled', $existing)) {
                     continue; // hormati entri eksplisit (ON/OFF) — idempotent
@@ -174,6 +187,7 @@ final class BackupSelection
                     'scheduled' => true,
                     'updated_at' => date('c'),
                     'updated_by' => 'system',
+                    'server_id' => ServerStore::LOCAL_ID,
                 ];
             }
         });
@@ -187,18 +201,40 @@ final class BackupSelection
      * Entri **eksplisit** saja (yang pernah ditulis lewat UI), untuk memulihkan
      * status toggle di frontend — volume default (tanpa entri) tidak muncul.
      *
+     * Kunci hasil = **nama volume** (bukan kunci ber-`server_id`), sesuai kontrak
+     * JSON UI lama. `$serverId` membatasi ke satu server (`''`/`local` = server
+     * ini, perilaku lama); entri server lain tidak ikut agar toggle satu server
+     * tidak mengubah baris server lain.
+     *
      * @return array<string,bool>
      */
-    public function explicit(): array
+    public function explicit(string $serverId = ''): array
     {
+        $wanted = trim($serverId) === '' ? ServerStore::LOCAL_ID : trim($serverId);
+
         $data = $this->data();
         $out = [];
-        foreach ((array) ($data['volumes'] ?? []) as $name => $entry) {
-            if (is_array($entry) && array_key_exists('scheduled', $entry)) {
-                $out[(string) $name] = (bool) $entry['scheduled'];
+        foreach ((array) ($data['volumes'] ?? []) as $key => $entry) {
+            if (!is_array($entry) || !array_key_exists('scheduled', $entry)) {
+                continue;
             }
+            $key = (string) $key;
+            if (BackupRegistry::serverOfKey($key) !== $wanted) {
+                continue;
+            }
+            $out[BackupRegistry::volumeOfKey($key)] = (bool) $entry['scheduled'];
         }
 
         return $out;
+    }
+
+    /**
+     * Entri seleksi **semua server** (kunci apa adanya) — dipakai `backfill()`.
+     *
+     * @return array<string,mixed>
+     */
+    public function raw(): array
+    {
+        return (array) ($this->data()['volumes'] ?? []);
     }
 }

@@ -9,7 +9,10 @@ use app\library\Billing\BackupUsage;
 use app\library\Billing\BillingStore;
 use app\library\Billing\Pricing;
 use app\library\Billing\UsageMeter;
+use app\library\Billing\UsageProbe;
+use app\library\Deploy\ServerResolver;
 use app\library\Storage\AppStore;
+use app\library\Storage\ServerStore;
 use PHPUnit\Framework\TestCase;
 use Tests\Support\SqliteFixture;
 
@@ -19,6 +22,13 @@ use Tests\Support\SqliteFixture;
  *
  * Sejak biaya backup: akrual CPU/RAM **dan** backup (GB ditagih dari
  * `BackupRegistry`, tarif per bulan, floor minimum per app) dihitung per tick.
+ *
+ * Sejak multi-server F4: akrual menuntut bukti container dari **server app**
+ * (`UsageProbe`). Kelas uji ini menguji jalur server **lokal** (perilaku lama):
+ * probe disuntik dengan sumber stats palsu yang melaporkan semua app teramati
+ * `running`, sehingga seluruh aturan kelayakan lama (running + non-admin)
+ * diuji apa adanya. Jalur agent/offline/atribusi `server_id` diuji
+ * `tests/UsageMeterServerScopeTest.php`.
  */
 class UsageMeterTest extends TestCase
 {
@@ -33,6 +43,9 @@ class UsageMeterTest extends TestCase
     private BillingStore $billing;
     private UsageMeter $meter;
 
+    /** @var array<int,string> */
+    private array $meterLogs = [];
+
     protected function setUp(): void
     {
         $this->tmp = sys_get_temp_dir() . '/usagemeter_' . bin2hex(random_bytes(4));
@@ -46,11 +59,46 @@ class UsageMeterTest extends TestCase
 
         $this->apps = new AppStore($db);
         $this->billing = new BillingStore($db);
-        $this->meter = new UsageMeter(
+        $this->meterLogs = [];
+        $this->meter = $this->meterWith($this->probeAllRunning($db));
+    }
+
+    /**
+     * Meteran dengan probe uji disuntik (seam path temp; tidak menyentuh Engine
+     * host, jaringan, maupun store runtime nyata).
+     */
+    private function meterWith(UsageProbe $probe): UsageMeter
+    {
+        return new UsageMeter(
             $this->apps,
             $this->billing,
-            new UserStore($db),
-            new BackupUsage(new BackupRegistry($db))
+            new UserStore($this->tmp . '/rames.sqlite'),
+            new BackupUsage(new BackupRegistry($this->tmp . '/rames.sqlite')),
+            $probe,
+            function (string $message): void {
+                $this->meterLogs[] = $message;
+            }
+        );
+    }
+
+    /**
+     * Probe uji: server lokal terjangkau & **semua** app yang dinilai teramati
+     * `running` (setara syarat lama: `status` running ⇒ layak akru). Registry
+     * server dibaca dari basis data temp (baris `local` di-seed migrasi).
+     */
+    private function probeAllRunning(string $db): UsageProbe
+    {
+        return new UsageProbe(
+            new ServerResolver(new ServerStore($db)),
+            static fn (array $apps): array => [
+                'containers' => array_map(static fn (array $app): array => [
+                    'app_id' => (string) ($app['id'] ?? ''),
+                    'project' => (string) ($app['name'] ?? ''),
+                    'state' => 'running',
+                ], $apps),
+                'error' => null,
+            ],
+            static fn (array $server): array => ['containers' => [], 'error' => null]
         );
     }
 
@@ -166,6 +214,7 @@ class UsageMeterTest extends TestCase
 
         $this->assertSame('u2', $row['owner_id']);
         $this->assertSame('sum', $row['name']);
+        $this->assertSame('local', $row['server_id'], 'atribusi server ikut di ringkasan');
         $this->assertSame(300, $row['seconds_pending']);
         $this->assertEqualsWithDelta(5.0, $row['credits_pending'], 0.0001);
         $this->assertEqualsWithDelta(60.0, $row['hourly'], 0.0001);

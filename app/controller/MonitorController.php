@@ -5,6 +5,7 @@ namespace app\controller;
 
 use app\library\Agent\AgentError;
 use app\library\Auth\AppAccess;
+use app\library\Auth\ServerAccess;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\ServerResolver;
@@ -44,6 +45,12 @@ use Throwable;
  * (dipakai misi Frontend UI berikutnya). Server agent yang mati ⇒ entri-nya
  * berstatus `offline` dan **tidak** menggagalkan seluruh halaman (satu server
  * rusak tidak boleh mematikan `/monitor`).
+ *
+ * **Hak akses server (keputusan §9.3 / plan §4.3)**: `servers[]` disaring di
+ * **server** lewat `ServerAccess::visibleServers()` — admin menerima semua
+ * server, non-admin hanya server yang menaungi app yang boleh ia lihat.
+ * Penyaringan di `public/js/monitor.js` hanya lapisan kedua (kosmetik), bukan
+ * pengaman: JSON mentah tidak pernah memuat server milik orang lain.
  */
 class MonitorController
 {
@@ -80,7 +87,7 @@ class MonitorController
         $local = ResourceCollector::collect($this->localApps($visible), $isAdmin, $this->dockerClient());
 
         $servers = [$this->localEntry($local)];
-        foreach ($this->agentServers() as $server) {
+        foreach ($this->visibleAgentServers($visible) as $server) {
             $servers[] = $this->agentEntry($server, $visible, $isAdmin);
         }
 
@@ -236,11 +243,23 @@ class MonitorController
 
     /**
      * Apakah user saat ini admin — seam uji (pola `NginxController::isAdmin()`);
-     * produksi tidak berubah.
+     * produksi tidak berubah. Diturunkan dari {@see self::currentUser()} supaya
+     * keputusan admin & penyaringan server (`ServerAccess`) memakai user yang
+     * sama (satu sumber kebenaran, tidak ada dua tafsir role).
      */
     protected function isAdmin(): bool
     {
-        return is_admin();
+        return is_admin($this->currentUser());
+    }
+
+    /**
+     * User dashboard saat ini (seam uji: tanpa sesi/global webman).
+     *
+     * @return array<string,mixed>|null
+     */
+    protected function currentUser(): ?array
+    {
+        return current_user();
     }
 
     /**
@@ -253,7 +272,7 @@ class MonitorController
      */
     protected function visibleApps(): array
     {
-        return AppAccess::visible((new AppStore())->all(), current_user());
+        return AppAccess::visible((new AppStore())->all(), $this->currentUser());
     }
 
     /**
@@ -302,6 +321,25 @@ class MonitorController
         }
 
         return $servers;
+    }
+
+    /**
+     * Server agent yang boleh **dilihat** user saat ini — satu pintu
+     * {@see ServerAccess::visibleServers()} (jangan menyalin aturannya):
+     * admin menerima semua server, non-admin hanya server yang menaungi app yang
+     * boleh ia lihat; tanpa app terlihat ⇒ daftar kosong (fail-closed).
+     *
+     * Inilah pengaman sebenarnya untuk `servers[]` (plan §4.3): penyaringan di
+     * `public/js/monitor.js` hanya lapisan kedua. Server yang tidak boleh
+     * dilihat **tidak pernah dihubungi** (entri-nya tidak dirakit sama sekali),
+     * jadi nama/kind/status/host-nya tak mungkin bocor lewat JSON.
+     *
+     * @param array<int,array> $visibleApps app yang boleh dilihat user
+     * @return array<int,array<string,mixed>>
+     */
+    private function visibleAgentServers(array $visibleApps): array
+    {
+        return ServerAccess::visibleServers($this->agentServers(), $this->currentUser(), $visibleApps);
     }
 
     /**

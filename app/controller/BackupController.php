@@ -5,6 +5,8 @@ namespace app\controller;
 
 use app\library\Auth\UserStore;
 use app\library\Backup\BackupAccess;
+use app\library\Backup\BackupCatalog;
+use app\library\Backup\BackupDispatcher;
 use app\library\Backup\BackupRegistry;
 use app\library\Backup\BackupReport;
 use app\library\Backup\BackupSelection;
@@ -18,9 +20,12 @@ use app\library\Billing\BackupUsage;
 use app\library\Billing\BillingGate;
 use app\library\Billing\InsufficientCredits;
 use app\library\Billing\Pricing;
+use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\ServerResolver;
 use app\library\Docker\DockerClient;
 use app\library\Storage\AppStore;
 use app\library\Storage\DbBackup;
+use app\library\Storage\ServerStore;
 use app\library\Support\Markdown;
 use support\Request;
 use Webman\Http\Response;
@@ -56,6 +61,16 @@ use Webman\Http\Response;
  * non-admin selalu menerima `[]`; tiap baris diberi `restorable:bool`. Lihat
  * `archivedRows()`.
  * Error akses → 404 (via `AppAccessDenied`), bukan 403.
+ *
+ * **Multi-server F4** (plan §4.2/§4.3/§5): daftar target volume kini menggabungkan
+ * volume server **lokal** (Engine host ini) dengan volume **server agent** yang
+ * dibaca dari server itu (`agentVolumeTargets()` ⇒ `AgentDeployer::backupVolumes()`),
+ * masing-masing ber-`server_id`. Pekerjaan backup/restore/dump untuk target server
+ * agent diteruskan ke server itu oleh `cli/backup.php` **di sana** (`server_id`
+ * ikut sebagai argumen worker; rinciannya di `BackupDispatcher`) — host control
+ * plane tidak pernah menjalankan restic/helper terhadap volume server agent.
+ * Riwayat/registri tetap milik control plane (`BackupRegistry`, kunci ter-scope
+ * `server_id`), sedangkan seleksi jadwal per volume juga ter-scope server.
  */
 class BackupController
 {
@@ -137,9 +152,11 @@ class BackupController
         $status = self::publicStatus((new BackupReport())->readStatus());
 
         // `container_state` LIVE: satu panggilan Engine read-only untuk seluruh
-        // baris (gagal ⇒ nilai cache dipertahankan, lihat overlay).
+        // baris **lokal** (gagal ⇒ nilai cache dipertahankan, lihat overlay).
+        // Baris server agent TIDAK di-overlay: state-nya milik server itu (dikirim
+        // apa adanya dari sana) — Engine host ini tidak tahu apa-apa soal volume itu.
         $rows = self::withScheduled($visible, null, $apps, $user);
-        $rows = $service->overlayLiveContainerStates($rows);
+        $rows = self::overlayLocalRows($service, $rows);
 
         return json(['code' => 0, 'data' => [
             'running' => $service->isRunning(),
@@ -183,6 +200,17 @@ class BackupController
             $rows = $service->refreshCatalog();
         } catch (\Throwable $e) {
             return json(['code' => 500, 'msg' => 'Gagal menyegarkan status backup: ' . $e->getMessage()]);
+        }
+
+        // Multi-server F4: volume server **agent** dibaca dari server itu lalu
+        // ikut disimpan di cache control plane (satu sumber untuk polling status;
+        // agent tidak pernah dihubungi oleh `GET /api/backups/status`).
+        $rows = array_merge($rows, $this->agentVolumeRows());
+
+        try {
+            (new BackupCatalog((new BackupReport())->dir() . '/catalog.json'))->write($rows);
+        } catch (\Throwable $e) {
+            // Cache bersifat best-effort: baris live tetap dikembalikan.
         }
 
         $apps = (new AppStore())->all();
@@ -233,7 +261,11 @@ class BackupController
             return json(['code' => 500, 'msg' => 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()]);
         }
 
-        $target = $this->findTarget($targets, $volume);
+        try {
+            $target = $this->findTarget($targets, $volume, trim((string) $request->post('server_id', '')));
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
         if ($target === null) {
             // Termasuk volume DB dashboard (§8i.7) yang bukan target backup app.
             return $this->notFound();
@@ -260,16 +292,18 @@ class BackupController
 
         $selection = new BackupSelection();
         $actorId = (string) ($actor['id'] ?? '');
+        $targetServerId = self::serverIdOf($target);
         try {
-            $selection->setScheduled($volume, $scheduled, $actorId);
+            $selection->setScheduled($volume, $scheduled, $actorId, $targetServerId);
         } catch (\Throwable $e) {
             return json(['code' => 500, 'msg' => 'Gagal menyimpan pengaturan jadwal: ' . $e->getMessage()]);
         }
 
         return json(['code' => 0, 'data' => [
             'volume' => $volume,
+            'server_id' => $targetServerId,
             'scheduled' => $scheduled,
-            'explicit' => $selection->explicit(),
+            'explicit' => $selection->explicit($targetServerId),
             'backup_gb' => $gb,
             'required' => $usage->requiredDeposit($gb),
         ]]);
@@ -362,6 +396,10 @@ class BackupController
 
     /**
      * Daftar snapshot restic sebuah volume.
+     *
+     * Multi-server F4: volume milik **server agent** dibaca dari repo restic
+     * server itu (`AgentDeployer::backupSnapshots()`), volume lokal dari repo host
+     * ini seperti sebelumnya.
      */
     public function snapshots(Request $request)
     {
@@ -372,23 +410,29 @@ class BackupController
             return $this->notFound();
         }
 
-        $service = new VolumeBackupService();
+        $service = $this->backupService();
         try {
-            $targets = $service->targets();
+            $targets = $this->volumeTargets();
         } catch (\Throwable $e) {
             return json(['code' => 500, 'msg' => 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()]);
         }
 
-        $target = $this->findTarget($targets, $volume);
+        try {
+            $target = $this->findTarget($targets, $volume, trim((string) $request->get('server_id', '')));
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
         if ($target === null) {
             return $this->notFound();
         }
 
         $apps = (new AppStore())->all();
-        BackupAccess::require('view', $target, $this->findApp($apps, (string) ($target['app_id'] ?? '')), current_user());
+        BackupAccess::require('view', $target, $this->findApp($apps, (string) ($target['app_id'] ?? '')), $this->currentUser());
 
         try {
-            $snapshots = $service->snapshotsFor($volume);
+            $snapshots = BackupDispatcher::isLocalServer(self::serverIdOf($target))
+                ? $service->snapshotsFor($volume)
+                : $this->agentDeployerForTarget($target)->backupSnapshots($volume);
         } catch (\Throwable $e) {
             return json(['code' => 500, 'msg' => 'Gagal membaca snapshot: ' . $e->getMessage()]);
         }
@@ -398,6 +442,12 @@ class BackupController
 
     /**
      * Jalankan backup satu volume (worker detached, ability `backup`).
+     *
+     * Multi-server F4: `server_id` (opsional, dari baris volume) memilih server
+     * pemilik volume. Worker `cli/backup.php` di control plane meneruskan
+     * pekerjaan ke **server agent** bila `server_id` bukan server ini
+     * (`BackupDispatcher`) — host ini tidak pernah menjalankan restic untuk
+     * volume server agent.
      */
     public function run(Request $request)
     {
@@ -406,22 +456,32 @@ class BackupController
             return json(['code' => 422, 'msg' => 'Nama volume tidak valid.'])->withStatus(422);
         }
 
-        $service = new VolumeBackupService();
         try {
-            $targets = $service->targets();
+            $targets = $this->volumeTargets();
         } catch (\Throwable $e) {
             return json(['code' => 500, 'msg' => 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()]);
         }
 
-        $target = $this->findTarget($targets, $volume);
+        try {
+            $target = $this->findTarget($targets, $volume, trim((string) $request->post('server_id', '')));
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
         if ($target === null) {
             return $this->notFound();
         }
 
         $apps = (new AppStore())->all();
-        BackupAccess::require('backup', $target, $this->findApp($apps, (string) ($target['app_id'] ?? '')), current_user());
+        BackupAccess::require('backup', $target, $this->findApp($apps, (string) ($target['app_id'] ?? '')), $this->currentUser());
 
-        if (!$this->spawnWorker(['run', $volume, 'manual'])) {
+        $serverId = self::serverIdOf($target);
+        try {
+            $this->assertAgentSupports($serverId, 'backup_run');
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
+
+        if (!$this->spawnWorker(['run', $volume, 'manual', $serverId])) {
             return json(['code' => 500, 'msg' => 'Gagal menjalankan worker backup.'])->withStatus(500);
         }
 
@@ -431,6 +491,11 @@ class BackupController
     /**
      * Pulihkan satu volume dari snapshot (worker detached, ability `restore`;
      * konfirmasi = nama volume).
+     *
+     * Multi-server F4: sama seperti {@see self::run()} — `server_id` menentukan
+     * server pemilik volume; restore volume server agent dieksekusi **di server
+     * itu** (job `restore`), termasuk validasi kepemilikan volume oleh worker di
+     * sana.
      */
     public function restore(Request $request)
     {
@@ -450,29 +515,91 @@ class BackupController
             return json(['code' => 422, 'msg' => 'Konfirmasi tidak cocok — ketik nama volume persis.'])->withStatus(422);
         }
 
-        $service = new VolumeBackupService();
         try {
-            $targets = $service->targets();
+            $targets = $this->volumeTargets();
         } catch (\Throwable $e) {
             return json(['code' => 500, 'msg' => 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()]);
         }
 
-        $target = $this->findTarget($targets, $volume);
+        try {
+            $target = $this->findTarget($targets, $volume, trim((string) $request->post('server_id', '')));
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
         if ($target === null) {
             return $this->notFound();
         }
 
         $apps = (new AppStore())->all();
-        BackupAccess::require('restore', $target, $this->findApp($apps, (string) ($target['app_id'] ?? '')), current_user());
+        BackupAccess::require('restore', $target, $this->findApp($apps, (string) ($target['app_id'] ?? '')), $this->currentUser());
+
+        $serverId = self::serverIdOf($target);
+        try {
+            $this->assertAgentSupports($serverId, 'restore');
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
 
         // Volume yatim tidak punya appId → worker menerima '-' dan memetakan
         // project dari label volume (hanya admin yang bisa sampai di sini).
         $appArg = ($target['app_id'] !== null && $target['app_id'] !== '') ? (string) $target['app_id'] : '-';
-        if (!$this->spawnWorker(['restore', $appArg, $volume, $snapshot])) {
+        if (!$this->spawnWorker(['restore', $appArg, $volume, $snapshot, $serverId])) {
             return json(['code' => 500, 'msg' => 'Gagal menjalankan worker restore.'])->withStatus(500);
         }
 
         return json(['code' => 0, 'msg' => 'Restore dijalankan.']);
+    }
+
+    /**
+     * Dump logis DB satu volume (worker detached, ability `backup`).
+     *
+     * Multi-server F4: volume server agent di-dump **di server itu** (job
+     * `db_dump`, kredensial DB dibaca di sana); volume lokal memakai jalur worker
+     * host ini. Tidak ada UI khusus untuk aksi ini (dipakai operator/admin lewat
+     * API) — berkas `.sql` tetap di staging server yang menjalankannya.
+     */
+    public function dbDump(Request $request)
+    {
+        if (config('deploy.volume_backup_enabled', true) === false) {
+            return json(['code' => 422, 'msg' => 'Fitur backup volume dimatikan.'])->withStatus(422);
+        }
+
+        $volume = trim((string) $request->post('volume', ''));
+        if (!$this->validVolume($volume)) {
+            return json(['code' => 422, 'msg' => 'Nama volume tidak valid.'])->withStatus(422);
+        }
+
+        try {
+            $targets = $this->volumeTargets();
+        } catch (\Throwable $e) {
+            return json(['code' => 500, 'msg' => 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()]);
+        }
+
+        try {
+            $target = $this->findTarget($targets, $volume, trim((string) $request->post('server_id', '')));
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
+        if ($target === null) {
+            return $this->notFound();
+        }
+
+        $apps = (new AppStore())->all();
+        BackupAccess::require('backup', $target, $this->findApp($apps, (string) ($target['app_id'] ?? '')), $this->currentUser());
+
+        $serverId = self::serverIdOf($target);
+        try {
+            $this->assertAgentSupports($serverId, 'db_dump');
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
+
+        $appArg = ($target['app_id'] !== null && $target['app_id'] !== '') ? (string) $target['app_id'] : '-';
+        if (!$this->spawnWorker(['db-dump', $appArg, $volume, $serverId])) {
+            return json(['code' => 500, 'msg' => 'Gagal menjalankan worker dump.'])->withStatus(500);
+        }
+
+        return json(['code' => 0, 'msg' => 'Dump database dijalankan.']);
     }
 
     /**
@@ -492,6 +619,18 @@ class BackupController
         $volume = trim((string) $request->get('volume', ''));
         if (!$this->validVolume($volume)) {
             return json(['code' => 422, 'msg' => 'Nama volume tidak valid.'])->withStatus(422);
+        }
+
+        // Volume server agent: repo restic-nya ada di server itu. Daftar snapshot
+        // arsip volume agent dibaca lewat endpoint `snapshots` agent, bukan dari
+        // repo control plane (yang bisa saja punya volume bernama sama).
+        $serverId = trim((string) $request->get('server_id', ''));
+        if (!BackupDispatcher::isLocalServer($serverId)) {
+            return json([
+                'code' => 422,
+                'msg' => "Daftar snapshot arsip untuk server agent ({$serverId}) dibaca dari server itu "
+                    . '(pakai `GET /api/backups/snapshots?volume=…&server_id=…`) — bukan dari repo control plane.',
+            ])->withStatus(422);
         }
 
         try {
@@ -535,9 +674,32 @@ class BackupController
         }
 
         try {
-            $entry = (new BackupRegistry())->read()[$volume] ?? null;
+            $registry = (new BackupRegistry())->read();
+            $entry = $registry[$volume] ?? null;
         } catch (\Throwable $e) {
             return json(['code' => 500, 'msg' => 'Gagal membaca arsip backup: ' . $e->getMessage()])->withStatus(500);
+        }
+
+        // Restore arsip volume **server agent** belum didukung (volume target harus
+        // dibuat di server itu, jalur restic-nya repo server itu). Ditolak tegas —
+        // bukan dijalankan di control plane dengan repo/volume yang salah.
+        $agentEntryKey = null;
+        foreach ($registry as $key => $candidate) {
+            if (BackupRegistry::volumeOfKey((string) $key) !== $volume) {
+                continue;
+            }
+            if (!BackupDispatcher::isLocalServer(BackupRegistry::serverOfKey((string) $key))) {
+                $agentEntryKey = (string) $key;
+                break;
+            }
+        }
+        if ($agentEntryKey !== null) {
+            return json([
+                'code' => 422,
+                'msg' => "Restore arsip volume \"{$volume}\" milik server \""
+                    . BackupRegistry::serverOfKey($agentEntryKey)
+                    . '" belum didukung (volume target harus dibuat di server itu; jalankan di server tersebut).',
+            ])->withStatus(422);
         }
 
         // Cek keberadaan volume target hanya bila entri ada (hemat Engine call
@@ -591,6 +753,17 @@ class BackupController
             ResticRunner::assertSnapshotId($snapshot);
         } catch (\Throwable $e) {
             return json(['code' => 422, 'msg' => 'Id snapshot tidak valid.'])->withStatus(422);
+        }
+
+        // Arsip volume server agent ada di repo restic **server itu**; ekstraksi di
+        // control plane akan membaca repo yang salah. Ditolak tegas (bukan 500
+        // setelah beberapa detik menunggu restic).
+        if (!BackupDispatcher::isLocalServer(trim((string) $request->get('server_id', '')))) {
+            return json([
+                'code' => 422,
+                'msg' => 'Unduh `.sql` dari arsip server agent harus dijalankan di server itu (job `db_dump`), '
+                    . 'bukan dari control plane.',
+            ])->withStatus(422);
         }
 
         $dir = null;
@@ -838,6 +1011,109 @@ class BackupController
     }
 
     /**
+     * Terapkan overlay `container_state` **live** hanya pada baris volume server
+     * lokal; baris server agent dibiarkan apa adanya (state-nya dikirim dari
+     * server itu — Engine host ini tidak tahu apa-apa soal volume tersebut).
+     *
+     * Statik murni kecuali pemanggilan overlay service (seam `backupService()`).
+     *
+     * @param array<int,array<string,mixed>> $rows
+     * @return array<int,array<string,mixed>>
+     */
+    private static function overlayLocalRows(VolumeBackupService $service, array $rows): array
+    {
+        $local = [];
+        $agent = [];
+        foreach ($rows as $index => $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            if (BackupDispatcher::isLocalServer(self::serverIdOf($row))) {
+                $local[$index] = $row;
+            } else {
+                $agent[$index] = $row;
+            }
+        }
+
+        if ($local === []) {
+            return $rows;
+        }
+
+        $overlaid = $service->overlayLiveContainerStates($local);
+        foreach ($overlaid as $index => $row) {
+            $local[$index] = $row;
+        }
+
+        // Urutan asli dipertahankan (baris lokal di-overlay, baris agent apa adanya).
+        $out = [];
+        foreach ($rows as $index => $row) {
+            $out[] = $local[$index] ?? $agent[$index] ?? $row;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Baris ringkasan volume **server agent** (multi-server F4) — dibaca dari
+     * server itu (`AgentDeployer::backupVolumes()`), lengkap dengan `server_id`
+     * dan nama app dari control plane.
+     *
+     * Best-effort: server tak terjangkau ⇒ dilewati (halaman & cache tetap jalan).
+     * Baris mentah dari agent disanitasi ke kunci yang dikenal `BackupCatalog`
+     * ({@see BackupCatalog::write()} menyaring ulang), jadi tidak ada kunci asing
+     * yang masuk cache.
+     *
+     * `protected` supaya tes dapat meng-override tanpa jaringan.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    protected function agentVolumeRows(): array
+    {
+        $apps = (new AppStore())->all();
+        $byId = [];
+        foreach ($apps as $app) {
+            if (is_array($app) && (string) ($app['id'] ?? '') !== '') {
+                $byId[(string) $app['id']] = $app;
+            }
+        }
+
+        $rows = [];
+        foreach ($this->agentServers() as $server) {
+            $serverId = (string) ($server['id'] ?? '');
+            $agent = $this->agentDeployerForServer($server);
+            if ($agent === null) {
+                continue;
+            }
+
+            try {
+                $listing = $agent->backupVolumes();
+            } catch (\Throwable $e) {
+                continue;
+            }
+
+            foreach ($listing['volumes'] as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $name = (string) ($row['name'] ?? '');
+                if ($name === '') {
+                    continue;
+                }
+                $appId = (string) ($row['app_id'] ?? '');
+                $app = $appId !== '' ? ($byId[$appId] ?? null) : null;
+
+                $row['app_id'] = $app !== null ? $appId : null;
+                $row['app_name'] = $app !== null ? (string) ($app['name'] ?? '') : null;
+                $row['orphaned'] = $app === null;
+                $row['server_id'] = $serverId;
+                $rows[] = $row;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
      * Sisipkan flag `scheduled` **segar** (dari `BackupSelection`) + data hak &
      * biaya backup ke tiap baris volume yang dikirim ke UI.
      *
@@ -889,7 +1165,10 @@ class BackupController
             // `BackupUsage::chargedGigabytes('')`).
             $gb = $chargedGbByApp[$appId] ?? 0.0;
 
-            $row['scheduled'] = $selection->isScheduled((string) ($row['name'] ?? ''));
+            $row['scheduled'] = $selection->isScheduled(
+                (string) ($row['name'] ?? ''),
+                (string) ($row['server_id'] ?? '')
+            );
             $row['can_schedule'] = BackupAccess::can('backup', $row, $app, $user);
             $row['backup_gb'] = $gb;
             $row['backup_credits_month'] = Pricing::backupMonthlyEstimate($gb);
@@ -1021,14 +1300,73 @@ class BackupController
      * @param array<int,array{name:string}> $targets
      * @return array|null
      */
-    private function findTarget(array $targets, string $volume): ?array
+    /**
+     * Cari target volume berdasarkan nama (dan opsional server).
+     *
+     * Nama volume bisa sama di dua server (keunikan bersifat per server, plan
+     * §4.2), jadi:
+     *  - `$serverId` diisi ⇒ hanya target server itu;
+     *  - `$serverId` kosong dan hanya ada satu kandidat ⇒ kandidat itu (perilaku
+     *    lama untuk instalasi satu server);
+     *  - lebih dari satu kandidat di server berbeda ⇒ **RuntimeException** dengan
+     *    pesan yang meminta pemanggil menyebut server (fail-fast; tidak menebak).
+     *
+     * @param array<int,array<string,mixed>> $targets
+     * @throws \RuntimeException volume ada di beberapa server tanpa `server_id`
+     */
+    private function findTarget(array $targets, string $volume, string $serverId = ''): ?array
     {
+        $serverId = trim($serverId);
+
+        $matches = [];
         foreach ($targets as $target) {
-            if ((string) ($target['name'] ?? '') === $volume) {
-                return $target;
+            if ((string) ($target['name'] ?? '') !== $volume) {
+                continue;
             }
+            if ($serverId !== '' && self::serverIdOf($target) !== $serverId) {
+                continue;
+            }
+            $matches[] = $target;
         }
-        return null;
+
+        if ($matches === []) {
+            return null;
+        }
+
+        $serverIds = [];
+        foreach ($matches as $match) {
+            $serverIds[self::serverIdOf($match)] = true;
+        }
+        if (count($serverIds) > 1) {
+            throw new \RuntimeException(
+                "Volume \"{$volume}\" ada di lebih dari satu server (" . implode(', ', array_keys($serverIds)) . '). '
+                . 'Sebutkan `server_id` untuk memilih server yang benar — operasi tidak dijalankan.'
+            );
+        }
+
+        return $matches[0];
+    }
+
+    /**
+     * Deployer agent untuk target volume (multi-server F4).
+     *
+     * `null`/server lokal tidak pernah sampai di sini; server agent yang tidak
+     * dapat dipakai ⇒ exception (bukan fallback lokal).
+     *
+     * @param array<string,mixed> $target
+     * @throws \RuntimeException
+     */
+    private function agentDeployerForTarget(array $target): AgentDeployer
+    {
+        $serverId = self::serverIdOf($target);
+        $agent = $this->agentDeployerForServer($this->serverResolver()->resolve($serverId));
+        if ($agent === null) {
+            throw new \RuntimeException(
+                "Server \"{$serverId}\" bukan server agent — operasi volume server itu dibatalkan (tidak dijalankan lokal)."
+            );
+        }
+
+        return $agent;
     }
 
     /**
@@ -1094,7 +1432,164 @@ class BackupController
     {
         $volumes = (new DockerClient())->listVolumes(['label' => [VolumeTargetMap::LABEL_PROJECT]]);
 
-        return VolumeTargetMap::build($volumes, (new AppStore())->all());
+        $apps = (new AppStore())->all();
+        $local = VolumeTargetMap::build($volumes, $apps);
+        foreach ($local as $index => $target) {
+            $local[$index]['server_id'] = ServerStore::LOCAL_ID;
+        }
+
+        return array_merge($local, $this->agentVolumeTargets($apps));
+    }
+
+    /**
+     * Target volume yang hidup di **server agent** (multi-server F4) — dibaca dari
+     * server itu (`AgentDeployer::backupVolumes()`), bukan dari Engine host ini.
+     *
+     * Nama app diambil dari **control plane** (sumber metadata, plan §4.3): baris
+     * agent hanya memberi `app_id`; app yang tidak ada di control plane ditandai
+     * `orphaned` (perlakukan seperti volume yatim — admin-only).
+     *
+     * Best-effort: server agent yang tidak dapat dihubungi **dilewati** (halaman
+     * `/backups` tetap jalan) — ia tidak pernah membuat control plane menjalankan
+     * operasi lokal sebagai pengganti.
+     *
+     * `protected` supaya tes dapat meng-override tanpa jaringan.
+     *
+     * @param array<int,array> $apps daftar app control plane
+     * @return array<int,array{name:string,project:string,app_id:?string,app_name:?string,orphaned:bool,server_id:string}>
+     */
+    protected function agentVolumeTargets(array $apps = []): array
+    {
+        $byId = [];
+        foreach ($apps as $app) {
+            if (is_array($app) && (string) ($app['id'] ?? '') !== '') {
+                $byId[(string) $app['id']] = $app;
+            }
+        }
+
+        $out = [];
+        foreach ($this->agentServers() as $server) {
+            $serverId = (string) ($server['id'] ?? '');
+            $agent = $this->agentDeployerForServer($server);
+            if ($agent === null) {
+                continue;
+            }
+
+            try {
+                $listing = $agent->backupVolumes();
+            } catch (\Throwable $e) {
+                continue; // server agent tak terjangkau: jangan jatuhkan halaman
+            }
+
+            foreach ($listing['volumes'] as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $name = (string) ($row['name'] ?? '');
+                if ($name === '') {
+                    continue;
+                }
+                $appId = (string) ($row['app_id'] ?? '');
+                $app = $appId !== '' ? ($byId[$appId] ?? null) : null;
+
+                $out[] = [
+                    'name' => $name,
+                    'project' => (string) ($row['project'] ?? ($app['name'] ?? '')),
+                    'app_id' => $app !== null ? $appId : null,
+                    'app_name' => $app !== null ? (string) ($app['name'] ?? '') : null,
+                    'orphaned' => $app === null,
+                    'server_id' => $serverId,
+                ];
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Dokumen server **agent** yang aktif (bukan server lokal, bukan yang
+     * dimatikan). Best-effort: registry server tak terbaca ⇒ daftar kosong.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function agentServers(): array
+    {
+        try {
+            $servers = $this->serverResolver()->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($servers as $server) {
+            if (!is_array($server) || ServerResolver::isLocal($server) || !ServerResolver::isEnabled($server)) {
+                continue;
+            }
+            $out[] = $server;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Resolver registry server (seam uji) — produksi: store bawaan
+     * (`config('deploy.sqlite_file')`).
+     */
+    protected function serverResolver(): ServerResolver
+    {
+        return new ServerResolver();
+    }
+
+    /**
+     * Deployer agent untuk satu dokumen server (seam uji) — `null` = server lokal.
+     *
+     * @param array<string,mixed> $server
+     */
+    protected function agentDeployerForServer(array $server): ?AgentDeployer
+    {
+        return AgentDeployer::forServer($server);
+    }
+
+    /**
+     * Fail-fast: op yang belum didukung server agent ⇒ pesan jelas (plan §5).
+     *
+     * Bila server agent belum pernah melaporkan `capabilities` (daftar kosong),
+     * op **tidak** ditolak di sini: worker di server itu sendiri yang memutuskan
+     * (`AgentJobController::OPS`), sehingga control plane tidak menebak-nebak
+     * kemampuan agent. Yang dipastikan: **tidak** ada fallback ke eksekusi lokal.
+     *
+     * @throws \RuntimeException
+     */
+    private function assertAgentSupports(string $serverId, string $op): void
+    {
+        if (BackupDispatcher::isLocalServer($serverId)) {
+            return;
+        }
+
+        $server = $this->serverResolver()->resolve($serverId);
+        $capabilities = $server['capabilities'] ?? [];
+        if (!is_array($capabilities) || $capabilities === []) {
+            return; // kemampuan belum diketahui — keputusan di server agent
+        }
+
+        if (!in_array($op, array_map('strval', $capabilities), true)) {
+            throw new \RuntimeException(
+                "Server \"{$serverId}\" belum mendukung op `{$op}` — backup/restore volume di server itu belum tersedia. "
+                . 'Operasi dibatalkan (tidak dijalankan di server lokal).'
+            );
+        }
+    }
+
+    /**
+     * Id server sebuah baris volume (`''`/`local` = server ini).
+     *
+     * @param array<string,mixed> $row
+     */
+    private static function serverIdOf(array $row): string
+    {
+        $serverId = isset($row['server_id']) && is_scalar($row['server_id']) ? trim((string) $row['server_id']) : '';
+
+        return $serverId === '' ? ServerStore::LOCAL_ID : $serverId;
     }
 
     /**
@@ -1129,9 +1624,13 @@ class BackupController
      * `proc_open`/`proc_close` BLOCKING sampai worker selesai sehingga tidak
      * dipakai untuk run backup/restore yang bisa berjalan lama.
      *
+     * `protected` (bukan private) semata agar unit test dapat meng-override-nya
+     * dan memeriksa argumen worker (mis. `server_id` untuk volume server agent)
+     * tanpa membuat proses nyata — perilaku produksi tidak berubah.
+     *
      * @param array<int,string> $args argumen setelah `cli/backup.php`
      */
-    private function spawnWorker(array $args): bool
+    protected function spawnWorker(array $args): bool
     {
         if (!function_exists('pcntl_fork')) {
             return false;

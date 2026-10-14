@@ -6,6 +6,9 @@ namespace app\controller;
 use app\library\Agent\AgentAppProjection;
 use app\library\Agent\AgentArtifactMaterializer;
 use app\library\Agent\AgentJobStore;
+use app\library\Backup\BackupJobRunner;
+use app\library\Backup\ResticRunner;
+use app\library\Backup\VolumeStateGuard;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Storage\AppStore;
@@ -173,13 +176,27 @@ class AgentJobController
      * Field payload job yang diteruskan ke rekaman job (whitelist ketat).
      *
      * Payload **tidak pernah** disalin apa adanya: hanya field di bawah yang
-     * boleh masuk rekaman. Jadi kredensial (mis. `cloudflare_creds`) yang
-     * diselipkan klien tidak akan pernah tersimpan di `runtime/agent-jobs/` —
-     * aturan "kredensial DNS tidak ke JSON/log/UI" ditegakkan di sini, bukan
-     * hanya mengandalkan redaksi kunci.
+     * boleh masuk rekaman. Jadi kredensial (mis. `cloudflare_creds`, kunci S3,
+     * passphrase restic, `MYSQL_PWD`) yang diselipkan klien tidak akan pernah
+     * tersimpan di `runtime/agent-jobs/` — aturan "kredensial tidak ke
+     * JSON/log/UI" ditegakkan di sini, bukan hanya mengandalkan redaksi kunci.
+     *
+     * F4: `volume`/`snapshot`/`trigger` (backup/restore/dump volume) ikut
+     * diizinkan — semuanya nama/penanda, **bukan** kredensial: server agent
+     * memakai konfigurasi & berkas kredensialnya sendiri.
      */
-    private const PAYLOAD_FIELDS = ['ref', 'actor_id', 'preserve_volumes', 'domain'];
+    private const PAYLOAD_FIELDS = ['ref', 'actor_id', 'preserve_volumes', 'domain', 'volume', 'snapshot', 'trigger'];
 
+    /**
+     * Op data F4 (plan §4.1): backup/restore/dump volume dijalankan di server
+     * ini. Semua butuh `volume`; `restore` tambahan butuh `snapshot`.
+     */
+    public const DATA_OPS = ['backup_run', 'restore', 'db_dump'];
+
+    /** Trigger run backup yang dikenal (selain itu → `manual`, bukan galat). */
+    private const TRIGGERS = ['manual', 'schedule'];
+
+    private ?BackupJobRunner $backup;
 
     private ?AgentJobStore $jobs;
 
@@ -194,11 +211,13 @@ class AgentJobController
         ?DeployWorkerLauncher $launcher = null,
         ?AgentAppProjection $projection = null,
         ?AgentArtifactMaterializer $materializer = null,
+        ?BackupJobRunner $backup = null,
     ) {
         $this->jobs = $jobs;
         $this->launcher = $launcher;
         $this->projection = $projection;
         $this->materializer = $materializer;
+        $this->backup = $backup;
     }
 
     /**
@@ -241,6 +260,45 @@ class AgentJobController
         }
         if ($domain === '' && in_array($op, self::SSL_OPS, true)) {
             return $this->error('`domain` wajib untuk operasi SSL.', 'invalid_request', 400);
+        }
+
+        // Volume/snapshot/trigger (F4, op data): `volume` wajib untuk semua op
+        // data; `restore` tambahan butuh `snapshot`. Bentuknya divalidasi library
+        // yang sama dengan jalur lokal (`VolumeStateGuard` / `ResticRunner`) —
+        // tidak ada jalur tebakan, dan pesan galat tidak menggemakan isinya.
+        $volume = '';
+        if (array_key_exists('volume', $payload) && is_scalar($payload['volume'])) {
+            $volume = trim((string) $payload['volume']);
+        }
+        $snapshot = '';
+        if (array_key_exists('snapshot', $payload) && is_scalar($payload['snapshot'])) {
+            $snapshot = trim((string) $payload['snapshot']);
+        }
+        $trigger = 'manual';
+        if (array_key_exists('trigger', $payload) && is_scalar($payload['trigger'])) {
+            $candidate = trim((string) $payload['trigger']);
+            if (in_array($candidate, self::TRIGGERS, true)) {
+                $trigger = $candidate;
+            }
+        }
+
+        if (in_array($op, self::DATA_OPS, true)) {
+            try {
+                VolumeStateGuard::assertVolumeName($volume);
+            } catch (\Throwable) {
+                return $this->error('`volume` wajib/tidak sah untuk operasi backup.', 'invalid_request', 400);
+            }
+            if ($op === 'restore') {
+                try {
+                    ResticRunner::assertSnapshotId($snapshot);
+                } catch (\Throwable) {
+                    return $this->error('`snapshot` wajib/tidak sah untuk operasi restore.', 'invalid_request', 400);
+                }
+            }
+        } else {
+            // Op lain tidak boleh membawa penanda volume (kontrak payload sempit).
+            $volume = '';
+            $snapshot = '';
         }
 
         // Artefak app (file compose / deploy key / template) divalidasi di
@@ -287,6 +345,13 @@ class AgentJobController
         ];
         if ($domain !== '') {
             $jobPayload['domain'] = $domain;
+        }
+        if ($volume !== '') {
+            $jobPayload['volume'] = $volume;
+            $jobPayload['trigger'] = $trigger;
+        }
+        if ($snapshot !== '') {
+            $jobPayload['snapshot'] = $snapshot;
         }
 
         $job = $this->jobs()->create($op, $appId, $jobPayload);
@@ -445,6 +510,59 @@ class AgentJobController
         return json(['code' => 0, 'op' => 'nginx_check', 'ok' => true]);
     }
 
+    /**
+     * `GET /backups/volumes` (F4) — baris ringkasan volume backup **server ini**
+     * (target + strategi + state container + jumlah snapshot), dibaca dari daemon
+     * & repo restic server ini (`BackupJobRunner::volumeRows()` ⇒ library yang
+     * sama dengan jalur lokal).
+     *
+     * Control plane memakainya untuk menampilkan volume yang hidup di server
+     * agent tanpa menyentuh Engine control plane. Bacaan murni: **tanpa** menulis
+     * cache/registry (riwayat & seleksi adalah milik control plane, plan §4.3) dan
+     * **tanpa** kredensial di respons (baris hanya metadata volume).
+     */
+    public function backupVolumes(Request $request): Response
+    {
+        try {
+            $rows = $this->backupRunner()->volumeRows();
+        } catch (\Throwable $e) {
+            return $this->error($this->sanitizeMessage($e->getMessage()), 'backup_list_failed', 500);
+        }
+
+        return json(['code' => 0, 'op' => 'backup_volumes', 'data' => [
+            'volumes' => $rows,
+            'status' => new \stdClass(),
+        ]]);
+    }
+
+    /**
+     * `GET /backups/snapshots?volume=…` (F4) — daftar snapshot restic sebuah
+     * volume **di server ini** (repo restic & kredensial milik server ini).
+     *
+     * Nama volume divalidasi lebih dulu (`VolumeStateGuard`) — nama dari klien
+     * tidak pernah dipercaya. Volume tanpa snapshot ⇒ daftar kosong (bukan galat).
+     */
+    public function backupSnapshots(Request $request): Response
+    {
+        $volume = trim((string) $request->get('volume', ''));
+        try {
+            VolumeStateGuard::assertVolumeName($volume);
+        } catch (\Throwable) {
+            return $this->error('Nama volume tidak valid.', 'invalid_request', 400);
+        }
+
+        try {
+            $snapshots = $this->backupRunner()->snapshotsFor($volume);
+        } catch (\Throwable $e) {
+            return $this->error($this->sanitizeMessage($e->getMessage()), 'backup_snapshots_failed', 500);
+        }
+
+        return json(['code' => 0, 'op' => 'backup_snapshots', 'data' => [
+            'volume' => $volume,
+            'snapshots' => $snapshots,
+        ]]);
+    }
+
     // ==================================================================
     // Helper (mediator — tanpa logika bisnis)
     // ==================================================================
@@ -580,5 +698,11 @@ class AgentJobController
     private function logReader(): AgentJobStore
     {
         return new AgentJobStore($this->launcher()->logDir());
+    }
+
+    /** Eksekutor backup/restore/dump server ini (seam uji; null ⇒ bawaan). */
+    private function backupRunner(): BackupJobRunner
+    {
+        return $this->backup ??= new BackupJobRunner();
     }
 }

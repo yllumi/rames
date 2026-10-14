@@ -7,7 +7,10 @@ use app\library\Auth\UserStore;
 use app\library\Billing\AppStopper;
 use app\library\Billing\BillingRunner;
 use app\library\Billing\BillingStore;
+use app\library\Billing\UsageProbe;
+use app\library\Deploy\ServerResolver;
 use app\library\Storage\AppStore;
+use app\library\Storage\ServerStore;
 use FilesystemIterator;
 use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
@@ -110,7 +113,29 @@ class BillingRunnerTest extends TestCase
             $stopper,
             $reconcileOrders,
             $expireOrders,
-            $logger
+            $logger,
+            $this->probe()
+        );
+    }
+
+    /**
+     * Probe uji (multi-server F4): server lokal terjangkau & semua app teramati
+     * `running` — tanpa Engine host, tanpa jaringan, registry server dari basis
+     * data temp. Jalur agent/offline diuji `tests/UsageMeterServerScopeTest.php`.
+     */
+    private function probe(): UsageProbe
+    {
+        return new UsageProbe(
+            new ServerResolver(new ServerStore($this->tmp . '/rames.sqlite')),
+            static fn (array $apps): array => [
+                'containers' => array_map(static fn (array $app): array => [
+                    'app_id' => (string) ($app['id'] ?? ''),
+                    'project' => (string) ($app['name'] ?? ''),
+                    'state' => 'running',
+                ], $apps),
+                'error' => null,
+            ],
+            static fn (array $server): array => ['containers' => [], 'error' => null]
         );
     }
 

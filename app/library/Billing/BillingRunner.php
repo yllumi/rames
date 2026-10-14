@@ -18,8 +18,11 @@ use app\library\Storage\AppStore;
  * Kelas ini **stateless** (tanpa properti statik / cache lintas-request) dan
  * **tidak** menyentuh Docker maupun jaringan secara langsung: auto-stop
  * diserahkan ke `AppStopper`, sedangkan konsiliasi/kedaluwarsa order diserahkan
- * ke callable yang di-inject pemanggil (proses timer / CLI). Dengan begitu
- * seluruh tick dapat diuji tanpa daemon Docker dan tanpa jaringan.
+ * ke callable yang di-inject pemanggil (proses timer / CLI). Pembacaan metrik
+ * server (multi-server F4) diserahkan ke `UsageProbe` — boleh disuntik lewat
+ * parameter terakhir konstruktor `$probe` (seam uji; produksi memakai probe
+ * bawaan yang sadar server). Dengan begitu seluruh tick dapat diuji tanpa daemon
+ * Docker dan tanpa jaringan.
  *
  * `tick()` boleh melempar exception — pemanggil (proses/CLI) yang menangkap &
  * mencatatnya (proses persistent tidak boleh mati karena error).
@@ -30,6 +33,7 @@ class BillingRunner
     private AppStore $apps;
     private UserStore $users;
     private ?AppStopper $stopper;
+    private ?UsageProbe $probe;
 
     /** @var callable|null fn(int $max, ?string $now): int */
     private $reconcileOrders;
@@ -48,11 +52,13 @@ class BillingRunner
         ?callable $reconcileOrders = null,
         ?callable $expireOrders = null,
         ?callable $logger = null,
+        ?UsageProbe $probe = null,
     ) {
         $this->store = $store ?? new BillingStore();
         $this->apps = $apps ?? new AppStore();
         $this->users = $users ?? new UserStore();
         $this->stopper = $stopper;
+        $this->probe = $probe;
         $this->reconcileOrders = $reconcileOrders;
         $this->expireOrders = $expireOrders;
         $this->logger = $logger;
@@ -87,9 +93,18 @@ class BillingRunner
 
         // 2. Akrual meteran (dilewati bila interval ≤ 0).
         $interval = $this->meterInterval();
+        $skipped = 0;
         if ($interval > 0) {
-            $sampled = (new UsageMeter($this->apps, $this->store, $this->users))->sample($interval, $now);
-            $summary['sampled'] = count($sampled);
+            // Meteran membaca bukti container dari **server pemilik app**
+            // (`UsageProbe`): Engine host ini untuk server lokal, agent untuk
+            // `server_id` agent. App di server yang tak terjangkau / containernya
+            // tidak teramati running **dilewati** tick ini — alasannya dicatat
+            // meteran ke log/report (tidak ada akrual ganda pada tick berikutnya
+            // karena akrual bersifat inkremental per tick).
+            $report = (new UsageMeter($this->apps, $this->store, $this->users, null, $this->probe, $this->logger))
+                ->sampleReport($interval, $now);
+            $summary['sampled'] = count($report['accrued']);
+            $skipped = count($report['skipped']);
         }
 
         // 3. Penagihan periode tertunggak + auto-stop (kebijakan di Invoicer).
@@ -115,11 +130,12 @@ class BillingRunner
             $summary['reconciled'] = (int) ($this->reconcileOrders)($max, $now);
         }
 
-        if ($summary['expired'] > 0 || $summary['sampled'] > 0
+        if ($summary['expired'] > 0 || $summary['sampled'] > 0 || $skipped > 0
             || $summary['invoiced'] !== [] || $summary['reconciled'] > 0) {
             $this->log(sprintf(
-                'tick sampled=%d expired=%d invoiced=%d reconciled=%d',
+                'tick sampled=%d skipped=%d expired=%d invoiced=%d reconciled=%d',
                 $summary['sampled'],
+                $skipped,
                 $summary['expired'],
                 count($summary['invoiced']),
                 $summary['reconciled']

@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * Background worker deploy app.
  *
- *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke] [ref] [actorId]
+ *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump] [ref] [actorId]
  *
  * Dipanggil detached oleh AppController (pcntl_fork + pcntl_exec) supaya request
  * HTTP tidak terblokir oleh operasi build yang lama. Pipeline:
@@ -33,6 +33,13 @@ declare(strict_types=1);
  * jadi mode ini tidak melewati gerbang kredit. Domain SSL dibaca dari
  * **payload job** (`domain`), dan kredensial DNS tidak pernah ikut payload —
  * agent memakai berkas kredensialnya sendiri.
+ *
+ * F4 multi-server (data): mode `backup_run|restore|db_dump` menjalankan backup
+ * volume (restic/helper container), restore sadar-strategi, dan dump logis DB
+ * **di daemon server itu** lewat `BackupJobRunner`. Payload job hanya memuat
+ * `volume`/`snapshot`/`trigger` — kredensial restic/S3/DB/Cloudflare **tidak
+ * pernah** dikirim control plane: server ini memakai env & berkas
+ * kredensialnya sendiri.
  */
 
 use app\library\Agent\AgentJobStore;
@@ -57,8 +64,8 @@ $ref = $argv[3] ?? '';
 
 // Daftar mode = satu sumber untuk `DeployWorkerLauncher::MODES` (capabilities
 // agent) — jangan menyalinnya di tempat lain.
-if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback', 'apply', 'stop', 'start', 'teardown', 'apply_env', 'nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue', 'ssl_revoke'], true) || ($mode === 'rollback' && $ref === '')) {
-    fwrite(STDERR, "Usage: php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke] [ref] [actorId]\n");
+if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback', 'apply', 'stop', 'start', 'teardown', 'apply_env', 'nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue', 'ssl_revoke', 'backup_run', 'restore', 'db_dump'], true) || ($mode === 'rollback' && $ref === '')) {
+    fwrite(STDERR, "Usage: php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump] [ref] [actorId]\n");
     exit(1);
 }
 
@@ -242,6 +249,76 @@ if (in_array($mode, ['nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue',
         }
 
         $markJob(['status' => 'done', 'stage' => null, 'message' => 'Selesai', 'finished_at' => date('c')]);
+        file_put_contents($logFile, '[' . date('c') . "] done\n", FILE_APPEND);
+        exit(0);
+    } catch (\Throwable $e) {
+        $msg = $e->getMessage();
+        file_put_contents($logFile, '[' . date('c') . "] ERROR: {$msg}\n", FILE_APPEND);
+        $markJob(['status' => 'error', 'stage' => null, 'message' => $msg, 'error' => $msg, 'finished_at' => date('c')]);
+        exit(1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Backup/restore/dump volume (multi-server F4, plan §4.3/§5) — dijalankan **DI
+// server tempat worker ini berjalan** (di server agent: server itu sendiri),
+// memakai daemon & kredensial server itu (`VolumeBackupService`/
+// `VolumeRestoreService`/`DumpRunner` lewat `BackupJobRunner`).
+//
+// Kredensial: payload job **tidak pernah** memuat kredensial restic/S3/DB —
+// hanya `volume` (dan `snapshot`/`trigger`). Server ini memakai env/berkas
+// kredensialnya sendiri (`CredentialEnvFile`, 0600), sama seperti jalur lokal.
+// Nama volume & id snapshot divalidasi library (`VolumeStateGuard`,
+// `ResticRunner::assertSnapshotId`) sebelum efek samping apa pun.
+//
+// Tidak melewati gerbang kredit: gerbang itu menilai operasi build/up container
+// app, sedangkan backup/restore memakai jalur `cli/backup.php` yang juga tidak
+// digerbang (biaya backup ditagih lewat `BackupUsage` dari registry).
+// ---------------------------------------------------------------------------
+if (in_array($mode, ['backup_run', 'restore', 'db_dump'], true)) {
+    /** @var callable(string,string):void */
+    $logOp = function (string $stage, string $message) use ($logFile, $markJob): void {
+        file_put_contents($logFile, '[' . date('c') . "] [{$stage}] {$message}" . PHP_EOL, FILE_APPEND);
+        $markJob(['status' => 'running', 'stage' => $stage, 'message' => $message]);
+    };
+
+    try {
+        $volume = trim((string) ($jobPayload['volume'] ?? ''));
+        $trigger = trim((string) ($jobPayload['trigger'] ?? 'manual'));
+        $snapshot = trim((string) ($jobPayload['snapshot'] ?? ''));
+        if ($volume === '') {
+            throw new RuntimeException('Payload job tidak memuat `volume` — operasi backup/restore dibatalkan.');
+        }
+
+        // Seam uji (pola `DEPLOYER_CLASS`): kelas pengganti `BackupJobRunner`
+        // supaya uji CLI tidak menuntut Docker/restic nyata. Produksi: kosong.
+        $runnerClass = trim((string) getenv('RAMES_BACKUP_RUNNER_CLASS'));
+        /** @var app\library\Backup\BackupJobRunner $runner */
+        $runner = ($runnerClass !== '' && class_exists($runnerClass))
+            ? new $runnerClass()
+            : new \app\library\Backup\BackupJobRunner();
+
+        /** @var callable(string,string):void $projectLog */
+        $projectLog = static function (string $project, string $message) use ($logOp): void {
+            $logOp('backup', $message);
+        };
+
+        if ($mode === 'backup_run') {
+            $logOp('backup', "Menjalankan backup volume {$volume} (trigger {$trigger}) ...");
+            $result = $runner->runBackup($volume, $trigger, $projectLog);
+        } elseif ($mode === 'restore') {
+            if ($snapshot === '') {
+                throw new RuntimeException('Payload job tidak memuat `snapshot` — restore dibatalkan.');
+            }
+            $logOp('restore', "Memulihkan volume {$volume} dari snapshot {$snapshot} ...");
+            $result = $runner->restoreVolume($volume, $snapshot, $appId, $projectLog);
+        } else {
+            $logOp('dump', "Dump database volume {$volume} ...");
+            $result = $runner->dbDump($volume, $appId, $projectLog);
+        }
+
+        $message = (string) ($result['message'] ?? 'Selesai');
+        $markJob(['status' => 'done', 'stage' => null, 'message' => $message, 'error' => '', 'finished_at' => date('c')]);
         file_put_contents($logFile, '[' . date('c') . "] done\n", FILE_APPEND);
         exit(0);
     } catch (\Throwable $e) {

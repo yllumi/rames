@@ -5,9 +5,10 @@ declare(strict_types=1);
 /**
  * Worker backup/restore volume (PLAN_VOLUME_BACKUP.md §5.3).
  *
- *   php cli/backup.php run [volume] [trigger]
- *   php cli/backup.php restore <appId|-> <volume> <snapshot>
+ *   php cli/backup.php run [volume] [trigger] [serverId]
+ *   php cli/backup.php restore <appId|-> <volume> <snapshot> [serverId]
  *   php cli/backup.php restore-archived <volume> <snapshot> <targetName>
+ *   php cli/backup.php db-dump <appId|-> <volume> [serverId]
  *
  * `run` dipanggil timer host (systemd, `trigger=schedule`) atau tombol "Backup
  * sekarang" (detached, `trigger=manual`), `restore` dipanggil tombol "Restore"
@@ -17,10 +18,19 @@ declare(strict_types=1);
  * sebelum worker di-spawn; worker ini berjalan sebagai proses tepercaya (tanpa
  * session user).
  *
+ * **Multi-server F4**: `serverId` (opsional) menentukan **di mana** pekerjaan
+ * dijalankan. Kosong/`local` ⇒ jalur lokal (perilaku lama, tidak berubah).
+ * Selain itu ⇒ `BackupDispatcher` mengirim job ke **server agent** itu
+ * (`backup_run`/`restore`/`db_dump`) sehingga daemon & volume server itu yang
+ * bekerja; worker ini **tidak** menyentuh Docker/restic host control plane
+ * (plan §3 butir 4). Op yang belum didukung di agent (`restore-archived`)
+ * ditolak dengan pesan jelas — bukan dijalankan lokal.
+ *
  * Log ke runtime/logs/backup/ (per-project + cli.log). **Tidak ada kredensial**
  * di log (nilai S3/passphrase hanya lewat file 0600 milik restic/helper).
  */
 
+use app\library\Backup\BackupDispatcher;
 use app\library\Backup\BackupRegistry;
 use app\library\Backup\ResticRunner;
 use app\library\Backup\VolumeBackupService;
@@ -39,8 +49,8 @@ require __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../support/bootstrap.php';
 
 $mode = (string) ($argv[1] ?? '');
-if (!in_array($mode, ['run', 'restore', 'restore-archived'], true)) {
-    fwrite(STDERR, "Usage:\n  php cli/backup.php run [volume] [trigger]\n  php cli/backup.php restore <appId|-> <volume> <snapshot>\n  php cli/backup.php restore-archived <volume> <snapshot> <targetName>\n");
+if (!in_array($mode, ['run', 'restore', 'restore-archived', 'db-dump'], true)) {
+    fwrite(STDERR, "Usage:\n  php cli/backup.php run [volume] [trigger] [serverId]\n  php cli/backup.php restore <appId|-> <volume> <snapshot> [serverId]\n  php cli/backup.php restore-archived <volume> <snapshot> <targetName>\n  php cli/backup.php db-dump <appId|-> <volume> [serverId]\n");
     exit(1);
 }
 
@@ -53,6 +63,102 @@ if (!is_dir($logDir)) {
 $cliLog = static function (string $message) use ($logDir): void {
     @file_put_contents($logDir . '/cli.log', '[' . date('c') . '] ' . $message . PHP_EOL, FILE_APPEND);
 };
+
+/** @var callable(string,string):void $projectLog */
+$projectLog = static function (string $project, string $message) use ($logDir, $cliLog): void {
+    $name = $project !== '' ? $project : 'orphan';
+    @file_put_contents(
+        $logDir . '/' . $name . '.log',
+        '[' . date('c') . '] ' . $message . PHP_EOL,
+        FILE_APPEND
+    );
+    $cliLog($name . ' ' . $message);
+};
+
+// ---------------------------------------------------------------------------
+// Server agent (multi-server F4): jalankan pekerjaan DI server itu lewat job
+// agent. Ditempatkan SEBELUM jalur lokal mana pun supaya worker ini tidak
+// menyentuh Docker/restic host control plane untuk volume server agent.
+// ---------------------------------------------------------------------------
+$targetServerId = '';
+if ($mode === 'run') {
+    $targetServerId = (string) ($argv[4] ?? '');
+} elseif ($mode === 'restore') {
+    $targetServerId = (string) ($argv[5] ?? '');
+} elseif ($mode === 'db-dump') {
+    $targetServerId = (string) ($argv[4] ?? '');
+}
+
+try {
+    BackupDispatcher::assertSupported($mode, $targetServerId);
+} catch (\Throwable $e) {
+    $cliLog($mode . ' DITOLAK: ' . $e->getMessage());
+    fwrite(STDERR, $e->getMessage() . PHP_EOL);
+    exit(1);
+}
+
+if (!BackupDispatcher::isLocalServer($targetServerId)) {
+    $dispatcher = BackupDispatcher::create();
+    $serverId = trim($targetServerId);
+
+    try {
+        if ($mode === 'run') {
+            $volume = (string) ($argv[2] ?? '');
+            $trigger = (string) ($argv[3] ?? '');
+            if (!in_array($trigger, ['schedule', 'manual'], true)) {
+                $trigger = 'schedule';
+            }
+            $cliLog("run (agent {$serverId}) mulai volume={$volume} trigger={$trigger}");
+            $result = $dispatcher->runBackup($serverId, $volume, $trigger, $projectLog);
+        } elseif ($mode === 'restore') {
+            $appArg = (string) ($argv[2] ?? '');
+            $volume = (string) ($argv[3] ?? '');
+            $snapshot = (string) ($argv[4] ?? '');
+            $cliLog("restore (agent {$serverId}) mulai volume={$volume} snapshot={$snapshot}");
+            $result = $dispatcher->restore($serverId, $appArg, $volume, $snapshot, $projectLog);
+        } else {
+            $appArg = (string) ($argv[2] ?? '');
+            $volume = (string) ($argv[3] ?? '');
+            $cliLog("db-dump (agent {$serverId}) mulai volume={$volume}");
+            $result = $dispatcher->dbDump($serverId, $appArg, $volume, $projectLog);
+        }
+
+        $cliLog($mode . " (agent {$serverId}) selesai: " . (string) ($result['message'] ?? 'ok'));
+        exit(0);
+    } catch (\Throwable $e) {
+        $cliLog($mode . " (agent {$serverId}) GAGAL: " . $e->getMessage());
+        fwrite(STDERR, $mode . ' GAGAL: ' . $e->getMessage() . PHP_EOL);
+        exit(1);
+    }
+}
+
+// mode db-dump (lokal): dump logis DB sebuah volume DI HOST INI. Jalur server
+// agent sudah ditangani blok dispatcher di atas (`serverId` diisi).
+if ($mode === 'db-dump') {
+    $appArg = (string) ($argv[2] ?? '');
+    $volume = (string) ($argv[3] ?? '');
+    if ($volume === '') {
+        fwrite(STDERR, "Usage: php cli/backup.php db-dump <appId|-> <volume> [serverId]\n");
+        exit(1);
+    }
+
+    try {
+        // Kredensial DB dibaca dari container (lewat `MYSQL_PWD`), berkas `.sql`
+        // ditinggal di staging host ini — tidak ada kredensial di log/argv.
+        $runnerClass = trim((string) getenv('RAMES_BACKUP_RUNNER_CLASS'));
+        /** @var \app\library\Backup\BackupJobRunner $runner */
+        $runner = ($runnerClass !== '' && class_exists($runnerClass))
+            ? new $runnerClass()
+            : new \app\library\Backup\BackupJobRunner();
+        $result = $runner->dbDump($volume, $appArg === '-' ? null : $appArg, $projectLog);
+        $cliLog('db-dump selesai: ' . (string) ($result['message'] ?? 'ok'));
+        exit(0);
+    } catch (\Throwable $e) {
+        $cliLog('db-dump GAGAL: ' . $e->getMessage());
+        fwrite(STDERR, 'db-dump GAGAL: ' . $e->getMessage() . PHP_EOL);
+        exit(1);
+    }
+}
 
 if ($mode === 'run') {
     $volume = (string) ($argv[2] ?? '');

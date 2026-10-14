@@ -7,6 +7,7 @@ use app\controller\FileController;
 use app\controller\MonitorController;
 use app\library\Agent\AgentClient;
 use app\library\Agent\TlsPinMaterializer;
+use app\library\Auth\AppAccess;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ServerResolver;
 use app\library\Docker\DockerClient;
@@ -353,19 +354,22 @@ final class FileMonitorProxyMonitorController extends MonitorController
     /**
      * @param array<int,array>          $apps     app yang "boleh dilihat" user
      * @param array<string,AgentDeployer> $agents  deployer agent per server id
+     * @param ?array                   $user     user dashboard (`null` = belum login;
+     *                                           admin ditentukan dari `role` — satu
+     *                                           sumber dengan `ServerAccess`)
      */
     public function __construct(
         private array $apps,
         private ServerResolver $resolver,
         private DockerClient $docker,
         private array $agents,
-        private bool $admin = true,
+        private ?array $user = null,
     ) {
     }
 
-    protected function isAdmin(): bool
+    protected function currentUser(): ?array
     {
-        return $this->admin;
+        return $this->user;
     }
 
     protected function visibleApps(): array
@@ -416,6 +420,12 @@ class FileMonitorServerProxyTest extends TestCase
     private const APP_ID = 'app-a1';
 
     private const TOKEN = 'tok-uji-file-monitor-1a2b3c';
+
+    /** @var array<string,mixed> */
+    private const ADMIN = ['id' => 'u-admin', 'username' => 'admin', 'role' => AppAccess::ROLE_ADMIN];
+
+    /** @var array<string,mixed> */
+    private const MEMBER = ['id' => 'u-member', 'username' => 'budi', 'role' => 'member'];
 
     private string $tmp;
 
@@ -826,6 +836,7 @@ class FileMonitorServerProxyTest extends TestCase
             ]),
             $docker,
             ['srv-a' => $agentOk, 'srv-b' => $agentDown],
+            self::ADMIN,
         );
 
         $response = $controller->overview($this->get('/api/monitor/overview'));
@@ -884,13 +895,13 @@ class FileMonitorServerProxyTest extends TestCase
 
         $docker = new FileMonitorProxyDocker();
         $controller = new FileMonitorProxyMonitorController(
-            [['id' => self::APP_ID, 'name' => 'demo', 'server_id' => 'local']],
+            [['id' => self::APP_ID, 'name' => 'demo', 'server_id' => 'srv-a', 'owner_id' => self::MEMBER['id']]],
             $this->resolver([
                 ['id' => 'srv-a', 'name' => 'agent-a', 'kind' => 'agent', 'base_url' => 'https://agent-a.test', 'token' => self::TOKEN, 'tls_cert_pem' => self::selfSignedPem()],
             ]),
             $docker,
             ['srv-a' => $agent],
-            false
+            self::MEMBER
         );
 
         $body = $this->payload($controller->overview($this->get('/api/monitor/overview')));
@@ -899,6 +910,102 @@ class FileMonitorServerProxyTest extends TestCase
         $agentEntry = $body['data']['servers'][1];
         $this->assertSame(['demo-web-1'], array_column($agentEntry['containers'], 'name'), 'member hanya melihat app yang boleh diakses');
         $this->assertSame(1, $agentEntry['totals']['containers'], 'total dihitung ulang dari baris yang lolos penyaringan');
+    }
+
+    /**
+     * **Kebocoran yang ditutup (keputusan §9.3 / plan §4.3)**: member tidak boleh
+     * menerima server yang tidak menaungi app-nya di `data.servers[]` — penyaringan
+     * harus di **server** (`ServerAccess::visibleServers()`), bukan hanya di
+     * `public/js/monitor.js`. Server orang lain bahkan **tidak pernah dihubungi**.
+     */
+    public function testNonAdminNeverReceivesServersThatHostNoVisibleApp(): void
+    {
+        [$agentMine, $handlerMine] = $this->agent('srv-mine', 'agent-mine');
+        $handlerMine
+            ->replyJson(['code' => 0, 'data' => ['host' => ['available' => true]]])
+            ->replyJson(['code' => 0, 'data' => [
+                'containers' => [$this->row('demo-web-1', 'demo', self::APP_ID, true)],
+                'totals' => [],
+                'error' => null,
+            ]]);
+
+        [$agentOther, $handlerOther] = $this->agent('srv-other', 'agent-other');
+
+        $docker = new FileMonitorProxyDocker();
+        $controller = new FileMonitorProxyMonitorController(
+            [['id' => self::APP_ID, 'name' => 'demo', 'server_id' => 'srv-mine', 'owner_id' => self::MEMBER['id']]],
+            $this->resolver([
+                ['id' => 'srv-mine', 'name' => 'agent-mine', 'kind' => 'agent', 'base_url' => 'https://agent-mine.test', 'token' => self::TOKEN, 'tls_cert_pem' => self::selfSignedPem()],
+                ['id' => 'srv-other', 'name' => 'agent-other', 'kind' => 'agent', 'base_url' => 'https://agent-other.test', 'token' => 'tok-rahasia-other', 'tls_cert_pem' => self::selfSignedPem()],
+            ]),
+            $docker,
+            ['srv-mine' => $agentMine, 'srv-other' => $agentOther],
+            self::MEMBER
+        );
+
+        $body = $this->payload($controller->overview($this->get('/api/monitor/overview')));
+        $servers = $body['data']['servers'];
+
+        $this->assertSame(['local', 'srv-mine'], array_column($servers, 'id'), 'hanya server yang menaungi app member');
+        $json = (string) json_encode($body);
+        $this->assertStringNotContainsString('srv-other', $json, 'id server orang lain tidak boleh muncul di JSON');
+        $this->assertStringNotContainsString('agent-other', $json, 'nama server orang lain tidak boleh muncul di JSON');
+        $this->assertSame(0, $handlerOther->count(), 'server yang tidak boleh dilihat tidak pernah dihubungi');
+        $this->assertSame(2, $handlerMine->count(), 'server yang boleh dilihat tetap diambil metriknya');
+    }
+
+    /** Member tanpa app sama sekali: hanya entri server lokal, tanpa panggilan agent. */
+    public function testNonAdminWithoutAnyAppGetsLocalEntryOnly(): void
+    {
+        [$agent, $handler] = $this->agent('srv-a', 'agent-a');
+
+        $docker = new FileMonitorProxyDocker();
+        $controller = new FileMonitorProxyMonitorController(
+            [],
+            $this->resolver([
+                ['id' => 'srv-a', 'name' => 'agent-a', 'kind' => 'agent', 'base_url' => 'https://agent-a.test', 'token' => self::TOKEN, 'tls_cert_pem' => self::selfSignedPem()],
+            ]),
+            $docker,
+            ['srv-a' => $agent],
+            self::MEMBER
+        );
+
+        $body = $this->payload($controller->overview($this->get('/api/monitor/overview')));
+
+        $this->assertSame(['local'], array_column($body['data']['servers'], 'id'));
+        $this->assertSame(0, $handler->count(), 'tanpa app terlihat, server agent tidak dipanggil (fail-closed)');
+        $this->assertSame(1, $docker->listCalls, 'jalur lokal tidak berubah');
+    }
+
+    /** Admin tetap menerima seluruh server (termasuk yang tidak menaungi app-nya). */
+    public function testAdminStillReceivesEveryServer(): void
+    {
+        [$agentA, $handlerA] = $this->agent('srv-a', 'agent-a');
+        $handlerA
+            ->replyJson(['code' => 0, 'data' => ['host' => ['available' => true]]])
+            ->replyJson(['code' => 0, 'data' => ['containers' => [], 'totals' => [], 'error' => null]]);
+
+        [$agentB, $handlerB] = $this->agent('srv-b', 'agent-b');
+        $handlerB
+            ->replyJson(['code' => 0, 'data' => ['host' => ['available' => true]]])
+            ->replyJson(['code' => 0, 'data' => ['containers' => [], 'totals' => [], 'error' => null]]);
+
+        $controller = new FileMonitorProxyMonitorController(
+            [],
+            $this->resolver([
+                ['id' => 'srv-a', 'name' => 'agent-a', 'kind' => 'agent', 'base_url' => 'https://agent-a.test', 'token' => self::TOKEN, 'tls_cert_pem' => self::selfSignedPem()],
+                ['id' => 'srv-b', 'name' => 'agent-b', 'kind' => 'agent', 'base_url' => 'https://agent-b.test', 'token' => self::TOKEN, 'tls_cert_pem' => self::selfSignedPem()],
+            ]),
+            new FileMonitorProxyDocker(),
+            ['srv-a' => $agentA, 'srv-b' => $agentB],
+            self::ADMIN
+        );
+
+        $body = $this->payload($controller->overview($this->get('/api/monitor/overview')));
+
+        $this->assertSame(['local', 'srv-a', 'srv-b'], array_column($body['data']['servers'], 'id'));
+        $this->assertSame(2, $handlerA->count());
+        $this->assertSame(2, $handlerB->count());
     }
 
     public function testLocalOnlyOverviewIsUnchanged(): void
@@ -913,7 +1020,8 @@ class FileMonitorServerProxyTest extends TestCase
             [['id' => self::APP_ID, 'name' => 'demo', 'server_id' => 'local']],
             $this->resolver([]),
             $docker,
-            []
+            [],
+            self::ADMIN,
         );
 
         $body = $this->payload($controller->overview($this->get('/api/monitor/overview')));

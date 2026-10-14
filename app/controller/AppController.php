@@ -214,8 +214,15 @@ class AppController
         $viewApp['subdomain_label'] = app_subdomain_label($app);
         $viewApp['subdomain_custom'] = app_subdomain_is_custom($app);
 
+        // Nama server tempat app berjalan (badge header & baris Info). Hanya
+        // `name` server yang dikirim — kolom rahasia registry tidak pernah masuk
+        // konteks view (`serverNameForApp()` juga mengembalikan `''` untuk app di
+        // server lokal supaya view tetap menampilkan "lokal" seperti sebelumnya).
+        $serverName = $this->serverNameForApp($appServer);
+
         return view('app/detail', [
             'app' => $viewApp,
+            'serverName' => $serverName,
             'live' => $live,
             'volumes' => $volumes,
             'availableNetworks' => $availableNetworks,
@@ -237,6 +244,32 @@ class AppController
                 $this->billingPayerFor($app, current_user())
             ),
         ]);
+    }
+
+    /**
+     * Nama server pemilik app untuk konteks view (badge header & baris Info di
+     * `app/detail`). **Hanya** `name` (fallback `id`) yang keluar: token, PEM,
+     * `base_url`, dan `notes` tidak pernah ikut — pola sama dengan
+     * `ServerResolver::option()` yang dipakai form create.
+     *
+     * `''` (string kosong) berarti "tidak ada nama server yang perlu ditampilkan":
+     * `null` (registry/server tak terbaca) **dan** server lokal — untuk app lokal
+     * view sudah menampilkan "lokal" seperti sebelum multi-server, jadi perilaku
+     * lama tidak berubah.
+     *
+     * `protected` = seam uji (dipanggil langsung tanpa HTTP/store).
+     *
+     * @param array<string,mixed>|null $server baris registry server (boleh memuat rahasia)
+     */
+    protected function serverNameForApp(?array $server): string
+    {
+        if ($server === null || ServerResolver::isLocal($server)) {
+            return '';
+        }
+
+        $name = trim((string) ($server['name'] ?? ''));
+
+        return $name !== '' ? $name : trim((string) ($server['id'] ?? ''));
     }
 
     /**

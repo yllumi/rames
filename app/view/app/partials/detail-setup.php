@@ -75,6 +75,18 @@ $hasHostPort = \app\library\Docker\AppPorts::hasHostPort($portContext);
 // Container default untuk modal log (service primary, else container pertama)
 $logContainer = $canLogs ? \app\library\Docker\AppContainers::defaultContainer($app) : null;
 
+// Server tempat app ini berjalan (multi-server, plan §4.2 field `server_id`).
+// View hanya MEMBACA data yang sudah ada di dokumen app + variabel dari
+// controller — tidak membuka store/registry sendiri. `$serverName` dari
+// controller dipakai bila ada; bila belum dikirim, id server ditampilkan apa
+// adanya (jangan menampilkan "lokal" palsu untuk app remote).
+$appServerId = trim((string) ($app['server_id'] ?? ''));
+$isRemoteServer = $appServerId !== '' && $appServerId !== 'local';
+$appServerName = trim((string) ($serverName ?? ($app['server_name'] ?? '')));
+if ($appServerName === '') {
+    $appServerName = $isRemoteServer ? $appServerId : 'lokal';
+}
+
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
     ['label' => $app['name'], 'href' => null],

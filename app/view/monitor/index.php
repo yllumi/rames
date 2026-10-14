@@ -45,6 +45,9 @@ $breadcrumbs = [
   <div class="alert alert-info py-2 small" role="alert">
     Sebagai <strong>admin</strong>, panel ini menampilkan <strong>semua</strong> container di host —
     termasuk yang bukan app dashboard (ditandai <em>eksternal</em>).
+    Bila dashboard mengendalikan lebih dari satu server, tabel <strong>Semua Server</strong>
+    merangkum tiap server (metrik server agent dibaca dari server itu sendiri); server yang
+    tidak dapat dihubungi tampil sebagai <strong>offline</strong> tanpa mengganggu server lain.
   </div>
 <?php endif; ?>
 
@@ -52,5 +55,5 @@ $breadcrumbs = [
 include app_path() . '/view/monitor/partials/panel.php';
 ?>
 
-<script src="/js/monitor.js?v=1"></script>
+<script src="/js/monitor.js?v=2"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

@@ -665,13 +665,23 @@ class AgentJobControllerTest extends TestCase
         $this->assertSame(DeployWorkerLauncher::MODES, $body['capabilities']);
 
         foreach ($body['capabilities'] as $op) {
+            $payload = [
+                'op' => $op,
+                'app' => $this->appPayload(),
+                // Op SSL (F2) wajib membawa domain — kontrak `SSL_OPS`.
+                'domain' => 'demo.example.test',
+            ];
+            // Op data F4 (backup/restore/dump) wajib membawa penanda volume
+            // (dan id snapshot untuk `restore`) — kontrak `DATA_OPS`.
+            if (in_array($op, AgentJobController::DATA_OPS, true)) {
+                $payload['volume'] = 'demo_data';
+                if ($op === 'restore') {
+                    $payload['snapshot'] = 'abcdef12';
+                }
+            }
+
             [$status, , $created] = $this->decode($this->controller->create(
-                $this->request('POST', '/jobs', json_encode([
-                    'op' => $op,
-                    'app' => $this->appPayload(),
-                    // Op SSL (F2) wajib membawa domain — kontrak `SSL_OPS`.
-                    'domain' => 'demo.example.test',
-                ]))
+                $this->request('POST', '/jobs', json_encode($payload))
             ));
             $this->assertSame(200, $status, "op {$op} dilaporkan sebagai capability ⇒ harus diterima");
             $this->assertSame($op, $created['op']);
@@ -748,7 +758,7 @@ class AgentJobControllerTest extends TestCase
         }
 
         $this->assertEqualsCanonicalizing(
-            ['__construct', 'create', 'show', 'log', 'showApp', 'renderNginx', 'checkNginx'],
+            ['__construct', 'create', 'show', 'log', 'showApp', 'renderNginx', 'checkNginx', 'backupVolumes', 'backupSnapshots'],
             get_class_methods(AgentJobController::class)
         );
 

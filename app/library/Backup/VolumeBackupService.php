@@ -81,6 +81,16 @@ class VolumeBackupService
     /** Riwayat volume yang pernah ter-backup (restore volume yang sudah dihapus). */
     private BackupRegistry $registry;
 
+    /**
+     * Menulis riwayat (`BackupRegistry`) setelah run sukses?
+     *
+     * `true` (default) = host **control plane** (satu-satunya penulis riwayat,
+     * plan §4.3). Server **agent** menjalankan run lewat `false`: di sana riwayat
+     * bukan miliknya (control plane mencatatnya), sehingga store `backup` agent
+     * tidak ikut tumbuh.
+     */
+    private bool $recordHistory = true;
+
     private \Closure $logger;
 
     /**
@@ -113,7 +123,9 @@ class VolumeBackupService
         ?BackupSelection $selection = null,
         ?BackupCatalog $catalog = null,
         ?BackupRegistry $registry = null,
+        ?bool $recordHistory = null,
     ) {
+        $this->recordHistory = $recordHistory ?? true;
         $this->docker = $docker ?? new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'), 30);
         $this->apps = $apps ?? new AppStore();
         $this->guard = $guard ?? new VolumeStateGuard($this->docker, null, $this->apps);
@@ -359,16 +371,26 @@ class VolumeBackupService
         $active = [];
         foreach ($this->catalog->read()['volumes'] as $row) {
             if (is_array($row) && isset($row['name'])) {
-                $active[(string) $row['name']] = true;
+                // Kunci aktif ikut dimensi server (F4): volume server agent tidak
+                // boleh dianggap "masih ada" hanya karena namanya cocok dengan
+                // volume lokal, dan sebaliknya.
+                $serverId = isset($row['server_id']) && is_scalar($row['server_id'])
+                    ? (string) $row['server_id']
+                    : '';
+                $active[BackupRegistry::scopeKey($serverId, (string) $row['name'])] = true;
             }
         }
 
         $rows = [];
-        foreach ($this->registry->read() as $name => $entry) {
-            if (isset($active[$name])) {
+        foreach ($this->registry->read() as $key => $entry) {
+            $key = (string) $key;
+            if (isset($active[$key])) {
                 continue;
             }
-            $entry['name'] = $name;
+            $entry['name'] = BackupRegistry::volumeOfKey($key);
+            $entry['server_id'] = is_array($entry) && isset($entry['server_id']) && is_scalar($entry['server_id'])
+                ? (string) $entry['server_id']
+                : BackupRegistry::serverOfKey($key);
             $rows[] = $entry;
         }
 
@@ -648,8 +670,11 @@ class VolumeBackupService
         $this->report->writeStatus($run);
         $this->report->appendRun($run);
 
-        // Riwayat permanen: catat volume yang sukses (best-effort).
-        $this->recordRegistry($rows);
+        // Riwayat permanen: catat volume yang sukses (best-effort) — hanya di host
+        // pemilik riwayat (control plane); server agent tidak menulis riwayat.
+        if ($this->recordHistory) {
+            $this->recordRegistry($rows);
+        }
 
         // Segarkan cache ringkasan dari data live (satu pass tambahan; run harian,
         // bukan polling). Fail-safe: kegagalan cache tidak menggagalkan run.

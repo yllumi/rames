@@ -1,8 +1,16 @@
 <?php $pageTitle = 'Network · ' . $name; $active = 'networks'; ?>
 <?php
+// Cakupan server (multi-server F3c): semua aksi Engine di halaman ini dijalankan
+// di server terpilih, jadi setiap form POST **wajib** ikut mengirim `server`
+// (controller membacanya dari body). Pemilih/nama server hanya dirender untuk
+// admin — non-admin tidak boleh dibocorkan keberadaan server lain.
+$__serverId = (string) ($serverId ?? '');
+$__serverName = trim((string) ($serverName ?? ''));
+$__serverQuery = $__serverId !== '' ? '?server=' . rawurlencode($__serverId) : '';
+
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
-    ['label' => 'Networks', 'href' => '/networks'],
+    ['label' => 'Networks', 'href' => '/networks' . $__serverQuery],
     ['label' => $name, 'href' => null],
 ];
 ?>
@@ -27,6 +35,14 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
 
 <?php if ($engineError): ?>
   <div class="alert alert-warning" role="alert"><?= e($engineError) ?></div>
+<?php endif; ?>
+
+<?php if (is_admin() && $__serverName !== ''): ?>
+  <div class="alert alert-info py-2 small" role="alert">
+    Network ini berada di server <strong><?= e($__serverName) ?></strong> — daftar container, koneksi,
+    dan penghapusan di halaman ini dijalankan di server tersebut. Network Docker <strong>tidak</strong>
+    dapat dipakai lintas server: container di server lain tidak bisa bergabung ke network ini.
+  </div>
 <?php endif; ?>
 
 <?php if ($network !== null): ?>
@@ -81,6 +97,7 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
         <form method="post" action="/networks/<?= e(rawurlencode($name)) ?>/delete"
               onsubmit="return confirm('Hapus network <?= e($name) ?>? Pastikan tidak dipakai container lain.');">
           <?= csrf_field() ?>
+          <input type="hidden" name="server" value="<?= e($__serverId) ?>">
           <button class="btn btn-outline-danger btn-sm">✕ Hapus network</button>
           <span class="text-muted small ms-2">Network yang masih dipakai container akan ditolak.</span>
         </form>
@@ -103,6 +120,7 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
         <?php else: ?>
         <form method="post" action="/networks/<?= e(rawurlencode($name)) ?>/connect" class="vstack gap-3">
           <?= csrf_field() ?>
+          <input type="hidden" name="server" value="<?= e($__serverId) ?>">
           <div>
             <label class="form-label small fw-semibold">Container</label>
             <select name="container" class="form-select form-select-sm" required>
@@ -154,6 +172,7 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
           <form method="post" action="/networks/<?= e(rawurlencode($name)) ?>/disconnect" class="d-inline"
                 onsubmit="return confirm('Putuskan container <?= e($c['name']) ?> dari network <?= e($name) ?>?');">
             <?= csrf_field() ?>
+            <input type="hidden" name="server" value="<?= e($__serverId) ?>">
             <input type="hidden" name="container" value="<?= e($c['name']) ?>">
             <button class="btn btn-outline-secondary btn-sm">Putus</button>
           </form>

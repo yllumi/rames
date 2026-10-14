@@ -66,10 +66,10 @@ class AgentModeTest extends TestCase
      * `GET /api/servers` — semuanya admin-only (non-admin ⇒ 404) dan **tidak**
      * boleh terdaftar di mode agent.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 113;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 114;
 
     /** Definisi di atas menghasilkan 119 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 119;
+    private const DASHBOARD_ROUTE_PAIRS = 120;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -159,6 +159,8 @@ class AgentModeTest extends TestCase
                 'GET /apps/{id}',
                 'GET /apps/{id}/logs',
                 'GET /apps/{id}/nginx',
+                'GET /backups/snapshots',
+                'GET /backups/volumes',
                 'GET /database/containers',
                 'GET /files/download',
                 'GET /files/list',
@@ -362,10 +364,11 @@ class AgentModeTest extends TestCase
             $routes['pairs']['GET /healthz']->getCallback()
         );
         $this->assertCount(
-            34,
+            36,
             $routes['definitions'],
             'route agent F0 (diagnostik) + F1 (3 job + proyeksi app) + F2 (nginx) + F3a (log + 4 terminal)'
             . ' + F3b/F3c (10 file manager + 2 monitoring) + F3d (1 database + 1 adminer + 7 network/volume)'
+            . ' + F4 (2 route data: daftar volume backup + daftar snapshot)'
         );
     }
 

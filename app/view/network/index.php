@@ -1,5 +1,15 @@
 <?php $pageTitle = 'Networks'; $active = 'networks'; ?>
 <?php
+// Cakupan server (multi-server F3c). Pemilihan server = **admin-only** (keputusan
+// plan §9.3): non-admin tidak melihat pemilih DAN tidak pernah melihat nama
+// server (daftar `$servers` dari controller tidak dirender sama sekali), supaya
+// keberadaan server lain tidak bocor lewat halaman ini.
+$__isAdmin = is_admin();
+$__servers = is_array($servers ?? null) ? array_values(array_filter($servers, 'is_array')) : [];
+$__serverId = (string) ($serverId ?? '');
+$__serverName = trim((string) ($serverName ?? ''));
+$__serverQuery = $__serverId !== '' ? '?server=' . rawurlencode($__serverId) : '';
+
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
     ['label' => 'Networks', 'href' => null],
@@ -16,7 +26,7 @@ foreach ($rows as $r) {
 }
 ?>
 
-<div class="page-head mb-4">
+<div class="page-head d-flex flex-wrap justify-content-between align-items-end gap-3 mb-4">
   <div>
     <h1 class="h3 mb-1">Networks</h1>
     <p class="text-muted mb-0">
@@ -28,7 +38,31 @@ foreach ($rows as $r) {
       <?php endif; ?>
     </p>
   </div>
+  <?php // Pemilih hanya untuk admin, dan hanya bermakna bila ada server lain
+        // (instalasi satu server tidak perlu dropdown berisi satu opsi). ?>
+  <?php if ($__isAdmin && count($__servers) > 1): ?>
+  <form method="get" action="/networks" class="d-flex align-items-end gap-2">
+    <div>
+      <label class="form-label small fw-semibold mb-1" for="network-server">Server</label>
+      <select class="form-select form-select-sm" id="network-server" name="server" onchange="this.form.submit()">
+        <?php foreach ($__servers as $__srv): ?>
+          <?php $__srvId = (string) ($__srv['id'] ?? ''); $__srvName = trim((string) ($__srv['name'] ?? '')); ?>
+          <?php $__srvSelected = $__srvId === $__serverId || ($__serverId === '' && in_array($__srvId, ['', 'local'], true)); ?>
+          <option value="<?= e($__srvId) ?>"<?= $__srvSelected ? ' selected' : '' ?>><?= e($__srvName !== '' ? $__srvName : $__srvId) ?></option>
+        <?php endforeach; ?>
+      </select>
+    </div>
+    <noscript><button class="btn btn-outline-secondary btn-sm">Tampilkan</button></noscript>
+  </form>
+  <?php endif; ?>
 </div>
+
+<?php if ($__isAdmin && $__serverName !== ''): ?>
+  <div class="alert alert-info py-2 small" role="alert">
+    Menampilkan network di server <strong><?= e($__serverName) ?></strong>. Network Docker bersifat
+    <strong>per server</strong> — container di server lain tidak dapat bergabung ke network di sini.
+  </div>
+<?php endif; ?>
 
 <?php if ($engineError): ?>
   <div class="alert alert-warning" role="alert"><?= e($engineError) ?></div>
@@ -62,7 +96,7 @@ foreach ($rows as $r) {
           <?php foreach ($rows as $r): ?>
           <tr>
             <td>
-              <a class="mono" href="/networks/<?= e(rawurlencode($r['name'])) ?>"><?= e($r['name']) ?></a>
+              <a class="mono" href="/networks/<?= e(rawurlencode($r['name'])) ?><?= $__serverQuery ?>"><?= e($r['name']) ?></a>
               <?php if ($r['project'] !== ''): ?>
                 <span class="text-muted small d-block">project: <span class="mono"><?= e($r['project']) ?></span></span>
               <?php endif; ?>
@@ -85,11 +119,12 @@ foreach ($rows as $r) {
               <?php if ($r['attachable']): ?><span class="badge badge-deploying ms-1">attachable</span><?php endif; ?>
             </td>
             <td class="text-end">
-              <a class="btn btn-outline-secondary btn-sm" href="/networks/<?= e(rawurlencode($r['name'])) ?>">Detail</a>
+              <a class="btn btn-outline-secondary btn-sm" href="/networks/<?= e(rawurlencode($r['name'])) ?><?= $__serverQuery ?>">Detail</a>
               <?php if ($r['can_delete']): ?>
                 <form method="post" action="/networks/<?= e(rawurlencode($r['name'])) ?>/delete" class="d-inline"
                       onsubmit="return confirm('Hapus network <?= e($r['name']) ?>? Pastikan tidak dipakai container lain.');">
                   <?= csrf_field() ?>
+                  <input type="hidden" name="server" value="<?= e($__serverId) ?>">
                   <button class="btn btn-outline-danger btn-sm" title="Hapus network">✕</button>
                 </form>
               <?php endif; ?>
@@ -108,8 +143,12 @@ foreach ($rows as $r) {
     <div class="card">
       <div class="card-header"><h2 class="h6 mb-0">Buat Network</h2></div>
       <div class="card-body">
+        <?php if ($__isAdmin && $__serverName !== ''): ?>
+          <p class="text-muted small mb-2">Network baru dibuat di server <strong><?= e($__serverName) ?></strong>.</p>
+        <?php endif; ?>
         <form method="post" action="/networks/create" class="vstack gap-3">
           <?= csrf_field() ?>
+          <input type="hidden" name="server" value="<?= e($__serverId) ?>">
           <div>
             <label class="form-label small fw-semibold">Nama</label>
             <input type="text" name="name" class="form-control form-control-sm mono" placeholder="mis. shared-app" required>

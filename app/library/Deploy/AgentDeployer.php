@@ -1385,6 +1385,209 @@ final class AgentDeployer implements DeployerInterface
         return $this->pullApp($app);
     }
 
+    // ==================================================================
+    // F4 — data: backup/restore/dump volume di server agent
+    // ==================================================================
+
+    /**
+     * Baris ringkasan volume backup **server agent** (`GET /backups/volumes`) —
+     * target volume (name/project/app/orphaned) + strategi + state container +
+     * jumlah snapshot, seluruhnya dibaca di server itu.
+     *
+     * Dipakai control plane agar volume yang hidup di server agent terlihat di
+     * halaman `/backups` **tanpa** menyentuh Engine control plane (plan §3
+     * butir 4). Baris di sini murni bacaan; otorisasi tetap di control plane
+     * (`BackupAccess`).
+     *
+     * @return array{volumes:array<int,array<string,mixed>>,status:array<string,mixed>}
+     * @throws AgentError
+     */
+    public function backupVolumes(): array
+    {
+        $data = $this->short(
+            'membaca daftar volume backup',
+            fn (): array => $this->client->get('/backups/volumes')
+        );
+        $data = $this->ok($data, 'membaca daftar volume backup');
+
+        $volumes = $data['data']['volumes'] ?? null;
+        if (!is_array($volumes)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan daftar volume backup '
+                . '(kontrak: `{code:0,data:{volumes,status}}`).'
+            );
+        }
+
+        $rows = [];
+        foreach ($volumes as $row) {
+            if (is_array($row)) {
+                $rows[] = $row;
+            }
+        }
+
+        $status = $data['data']['status'] ?? [];
+
+        return ['volumes' => $rows, 'status' => is_array($status) ? $status : []];
+    }
+
+    /**
+     * Daftar snapshot restic satu volume **di server agent**
+     * (`GET /backups/snapshots?volume=…`) — repo restic milik server itu.
+     *
+     * @return array<int,array<string,mixed>>
+     * @throws AgentError
+     */
+    public function backupSnapshots(string $volume): array
+    {
+        $volume = self::assertVolumeName($volume);
+
+        $data = $this->short(
+            'membaca snapshot volume',
+            fn (): array => $this->client->getWithQuery('/backups/snapshots', ['volume' => $volume])
+        );
+        $data = $this->ok($data, 'membaca snapshot volume');
+
+        $snapshots = $data['data']['snapshots'] ?? null;
+        if (!is_array($snapshots)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan daftar snapshot (kontrak: `{code:0,data:{snapshots}}`).'
+            );
+        }
+
+        $rows = [];
+        foreach ($snapshots as $row) {
+            if (is_array($row)) {
+                $rows[] = $row;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Jalankan backup satu volume **di server agent** (job `backup_run`).
+     *
+     * Payload job hanya memuat `volume` + `trigger` — **tidak pernah** kredensial
+     * restic/S3: server agent memakai konfigurasi/env-nya sendiri (plan §10.5).
+     * Job ditunggu sampai `done`/`error` (pemanggil jalur ini adalah worker
+     * detached control plane, bukan request UI), lalu rekaman job terakhir
+     * dikembalikan supaya pemanggil dapat mencatat hasilnya di registry
+     * **control plane** (agent tidak mengirim riwayat).
+     *
+     * @param array<string,mixed> $app
+     * @return array{message:string,status:string}
+     * @throws RuntimeException|AgentError job gagal / timeout
+     */
+    public function backupRun(array $app, string $volume, string $trigger = 'manual', ?callable $logger = null): array
+    {
+        $volume = self::assertVolumeName($volume);
+        $trigger = in_array($trigger, ['manual', 'schedule'], true) ? $trigger : 'manual';
+
+        return $this->dataJob('backup_run', $app, $logger, ['volume' => $volume, 'trigger' => $trigger]);
+    }
+
+    /**
+     * Pulihkan satu volume di server agent dari snapshot (job `restore`).
+     *
+     * `snapshot` divalidasi bentuknya di control plane (fail-fast sebelum HTTP);
+     * kepemilikan volume terhadap app diputuskan worker di server agent yang
+     * memegang label Engine & proyeksi app-nya.
+     *
+     * @param array<string,mixed> $app
+     * @return array{message:string,status:string}
+     * @throws RuntimeException|AgentError
+     */
+    public function restoreVolume(array $app, string $volume, string $snapshot, ?callable $logger = null): array
+    {
+        $volume = self::assertVolumeName($volume);
+        $snapshot = self::assertSnapshotRef($snapshot);
+
+        return $this->dataJob('restore', $app, $logger, ['volume' => $volume, 'snapshot' => $snapshot]);
+    }
+
+    /**
+     * Dump logis DB sebuah volume **di server agent** (job `db_dump`) — kredensial
+     * DB dibaca di server itu (`DbCredentialResolver` + `MYSQL_PWD`), berkas `.sql`
+     * tetap di staging server agent.
+     *
+     * @param array<string,mixed> $app
+     * @return array{message:string,status:string}
+     * @throws RuntimeException|AgentError
+     */
+    public function dbDump(array $app, string $volume, ?callable $logger = null): array
+    {
+        $volume = self::assertVolumeName($volume);
+
+        return $this->dataJob('db_dump', $app, $logger, ['volume' => $volume]);
+    }
+
+    /**
+     * Jalankan op data (backup/restore/dump) sebagai job agent lalu kembalikan
+     * ringkasan rekaman job. Tidak ada artefak app (op ini tidak menyentuh file
+     * compose/deploy key) dan **tidak** menarik state eksekusi app (status app
+     * tidak berubah karena backup/restore).
+     *
+     * @param array<string,mixed> $app
+     * @return array{message:string,status:string}
+     * @throws RuntimeException|AgentError
+     */
+    private function dataJob(string $op, array $app, ?callable $logger, array $payload): array
+    {
+        $appId = $this->appId($app);
+        $body = $payload;
+        $body['op'] = $op;
+        $body['app'] = $app;
+
+        $data = $this->client->post('/jobs', $body);
+        $jobId = trim((string) ($data['job_id'] ?? $data['data']['job_id'] ?? ''));
+        if (preg_match(self::ID_PATTERN, $jobId) !== 1) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan `job_id` yang valid untuk op `' . $op . '`.'
+            );
+        }
+
+        $offset = $this->initialOffset($data, $appId, $logger);
+        if ($logger !== null) {
+            $logger('agent', "Job `{$op}` dikirim ke {$this->label()} (job {$jobId}).");
+        }
+
+        $job = $this->pollJob($jobId, $op, $offset, $logger);
+
+        return [
+            'status' => 'done',
+            'message' => trim((string) ($job['message'] ?? '')),
+        ];
+    }
+
+    /**
+     * Validasi bentuk nama volume sebelum masuk payload/HTTP (fail-fast, satu
+     * sumber aturan dengan sisi agent: `VolumeStateGuard::assertVolumeName()`).
+     *
+     * @throws RuntimeException
+     */
+    private static function assertVolumeName(string $volume): string
+    {
+        $volume = trim($volume);
+        \app\library\Backup\VolumeStateGuard::assertVolumeName($volume);
+
+        return $volume;
+    }
+
+    /**
+     * Validasi bentuk id snapshot restic sebelum masuk payload/HTTP.
+     *
+     * @throws RuntimeException
+     */
+    private static function assertSnapshotRef(string $snapshot): string
+    {
+        $snapshot = trim($snapshot);
+        try {
+            return \app\library\Backup\ResticRunner::assertSnapshotId($snapshot);
+        } catch (\Throwable $e) {
+            throw new RuntimeException($e->getMessage(), 0, $e);
+        }
+    }
+
     /**
      * Fail-fast kontrak F2 §5: server `kind=agent` **wajib** punya `domain`
      * (`APP_DOMAIN` server itu) sebelum vhost/SSL dibuat untuk app yang memakai
@@ -1616,9 +1819,10 @@ final class AgentDeployer implements DeployerInterface
      * @param callable|null $logger
      * @throws RuntimeException job error / timeout
      */
-    private function pollJob(string $jobId, string $op, int $offset, ?callable $logger): void
+    private function pollJob(string $jobId, string $op, int $offset, ?callable $logger): array
     {
         $deadline = ($this->clock)() + $this->timeout;
+        $job = [];
 
         while (true) {
             $job = $this->jobRecord($jobId);
@@ -1651,6 +1855,8 @@ final class AgentDeployer implements DeployerInterface
 
         // Sisa baris terakhir sesudah job selesai (jangan ada log yang hilang).
         $this->drainLog($jobId, $offset, $logger);
+
+        return $job;
     }
 
     /**

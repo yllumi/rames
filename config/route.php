@@ -174,6 +174,16 @@ if ($ramesMode === 'agent') {
         Route::post('/networks/{id}/connect', [AgentNetworkController::class, 'connect']);
         Route::post('/networks/{id}/disconnect', [AgentNetworkController::class, 'disconnect']);
         Route::post('/networks/{id}/delete', [AgentNetworkController::class, 'delete']);
+
+        // F4 multi-server (plan §4.3/§5): **data** — daftar volume backup & daftar
+        // snapshot restic yang HIDUP di server ini. Control plane memakainya untuk
+        // menampilkan volume server ini di halaman `/backups` dan memilih snapshot
+        // untuk restore **tanpa** menyentuh daemon/repo restic control plane.
+        // Operasi backup/restore/dump-nya sendiri bukan route tersendiri: semuanya
+        // job di `POST /jobs` (op `backup_run|restore|db_dump`) supaya pipeline &
+        // log tetap satu jalur.
+        Route::get('/backups/volumes', [AgentJobController::class, 'backupVolumes']);
+        Route::get('/backups/snapshots', [AgentJobController::class, 'backupSnapshots']);
     }
 
     // Berhenti di sini: route dashboard di bawah tidak pernah didaftarkan.
@@ -324,6 +334,9 @@ Route::get('/api/backups/status', [BackupController::class, 'status']);
 Route::get('/api/backups/snapshots', [BackupController::class, 'snapshots']);
 Route::post('/backups/run', [BackupController::class, 'run']);
 Route::post('/backups/restore', [BackupController::class, 'restore']);
+// Dump logis DB sebuah volume (multi-server F4: di server agent dijalankan **di
+// server itu** lewat job `db_dump`; volume lokal memakai jalur worker setempat).
+Route::post('/backups/db-dump', [BackupController::class, 'dbDump']);
 // Segarkan cache status (live Engine/restic) & seleksi backup berkala per volume
 Route::post('/backups/refresh', [BackupController::class, 'refresh']);
 Route::post('/backups/schedule', [BackupController::class, 'setScheduled']);

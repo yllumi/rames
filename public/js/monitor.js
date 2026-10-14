@@ -154,6 +154,123 @@
     return 'Hanya container app yang bisa Anda akses';
   }
 
+  // ------------------------------------------------------------------
+  // Kartu "Semua Server" (multi-server F3c) — satu baris per `data.servers[]`.
+  //
+  // Rangka baris (termasuk badge online/offline/unknown) hidup di `<template>`
+  // view: nilai server dipetakan ke varian badge baku (tanpa merakit class dari
+  // data), teks diisi `textContent` (anti-XSS). Pesan galat mentah dari server
+  // SENGAJA tidak dirender — bisa memuat host/token; cukup status "offline".
+  // ------------------------------------------------------------------
+
+  function ms(frag, key) {
+    return frag.querySelector('[data-ms="' + key + '"]');
+  }
+
+  function showNode(node, visible) {
+    if (node) node.classList.toggle('d-none', !visible);
+  }
+
+  function setNode(node, text) {
+    if (node) node.textContent = text;
+  }
+
+  function serverRowNode(panel, server, diskText) {
+    var tpl = panel.querySelector('template[data-m="server-row"]');
+    if (!tpl || !tpl.content) return null;
+
+    var frag = tpl.content.cloneNode(true);
+    var row = ms(frag, 'row');
+    if (!row) return null;
+
+    var isLocal = String(server.kind || '').toLowerCase() === 'local';
+    var status = String(server.status || '').toLowerCase();
+    var statusKey = status === 'online' ? 'online' : (status === 'offline' ? 'offline' : 'unknown');
+    var totals = server.totals || null;
+    var host = server.host || {};
+
+    setNode(ms(frag, 'name'), String(server.name || server.id || ''));
+
+    var kindNode = ms(frag, 'kind');
+    if (kindNode) {
+      kindNode.textContent = isLocal ? 'lokal' : 'agent';
+      kindNode.className = 'badge ' + (isLocal ? 'badge-stopped' : 'badge-deploying');
+    }
+
+    showNode(ms(frag, 'badge-self'), isLocal);
+    showNode(ms(frag, 'badge-disabled'), server.enabled === false);
+
+    if (statusKey === 'offline') {
+      setNode(ms(frag, 'note'), 'server tidak dapat dihubungi — metrik tidak tersedia');
+    } else if (server.error) {
+      setNode(ms(frag, 'note'), 'sebagian metrik tidak tersedia');
+    }
+    showNode(ms(frag, 'note'), statusKey === 'offline' || !!server.error);
+
+    ['online', 'offline', 'unknown'].forEach(function (key) {
+      showNode(ms(frag, 'status-' + key), key === statusKey);
+    });
+
+    if (statusKey === 'online') {
+      var containers = totals ? Number(totals.containers || 0) : 0;
+      var running = totals ? Number(totals.running || 0) : 0;
+      setNode(ms(frag, 'containers'), containers + (running > 0 ? ' (' + running + ' jalan)' : ''));
+      setNode(ms(frag, 'cpu'), fmtPercent(totals ? totals.cpu_percent : null));
+      setNode(ms(frag, 'mem'), (totals && totals.mem_used !== null && totals.mem_used !== undefined)
+        ? fmtBytes(totals.mem_used) + (totals.mem_limit ? ' / ' + fmtBytes(totals.mem_limit) : '')
+        : EMPTY);
+      setNode(ms(frag, 'mem-host'), (host.mem_used === null || host.mem_used === undefined)
+        ? 'host ' + EMPTY
+        : 'host ' + fmtBytes(host.mem_used) + (host.mem_total ? ' / ' + fmtBytes(host.mem_total) : '') +
+          (host.mem_percent === null || host.mem_percent === undefined ? '' : ' (' + host.mem_percent + '%)'));
+      setNode(ms(frag, 'at'), String(server.at || EMPTY));
+    }
+
+    var diskNode = ms(frag, 'disk');
+    if (isLocal) {
+      if (diskNode) {
+        diskNode.setAttribute('data-local-disk', '1');
+        diskNode.textContent = diskText === null ? EMPTY : diskText;
+      }
+    } else if (diskNode) {
+      diskNode.textContent = EMPTY;
+      diskNode.title = 'Pemakaian disk per server belum tersedia di sini';
+    }
+
+    return row;
+  }
+
+  function renderServers(panel, servers, diskText) {
+    var card = panel.querySelector('[data-m="servers-card"]');
+    var body = panel.querySelector('[data-m="servers"]');
+    if (!card || !body || !Array.isArray(servers)) return;
+
+    var isAdmin = panel.getAttribute('data-is-admin') === '1';
+    var visible = servers.filter(function (server) {
+      if (!server || typeof server !== 'object') return false;
+      // Non-admin: nama server lain tidak boleh bocor — hanya server lokal dan
+      // server tempat ia memang punya container yang bisa ia lihat.
+      if (isAdmin) return true;
+      if (String(server.kind || '').toLowerCase() === 'local') return true;
+      return Array.isArray(server.containers) && server.containers.length > 0;
+    });
+
+    // Satu server saja tidak perlu tabel tambahan (kartu host sudah mewakilinya).
+    card.classList.toggle('d-none', visible.length < 2);
+    if (visible.length < 2) return;
+
+    body.innerHTML = '';
+    var offline = 0;
+    visible.forEach(function (server) {
+      if (String(server.status || '').toLowerCase() === 'offline') offline++;
+      var row = serverRowNode(panel, server, diskText);
+      if (row) body.appendChild(row);
+    });
+
+    setText(panel, 'servers-note', visible.length + ' server · ' +
+      (visible.length - offline) + ' online' + (offline > 0 ? ' · ' + offline + ' offline' : ''));
+  }
+
   function initPanel(panel) {
     var endpoint = panel.getAttribute('data-endpoint');
     var hostEndpoint = panel.getAttribute('data-host-endpoint');
@@ -162,11 +279,13 @@
     var refreshBtn = panel.querySelector('[data-m="refresh"]');
     var errorEl = panel.querySelector('[data-m="error"]');
     var rowsEl = panel.querySelector('[data-m="rows"]');
+    var serversEl = panel.querySelector('[data-m="servers"]');
     var loaded = false;
     var busy = false;
     var fullBusy = false;
     var timer = null;
     var lastAt = '';
+    var diskText = null;
 
     if (!endpoint) return;
 
@@ -185,14 +304,22 @@
     function loadDisk() {
       // Total volume terpakai: endpoint yang sama dengan halaman /volumes
       // (sudah disaring sesuai hak akses user) — `GET /system/df` mahal, jadi
-      // dimuat terpisah tanpa menahan kartu lain.
+      // dimuat terpisah tanpa menahan kartu lain. Angka ini hanya milik server
+      // lokal (control plane ini), jadi hanya diisi pada baris server lokal.
       fetch('/api/volumes/usage', { headers: { 'Accept': 'application/json' } })
         .then(function (r) { return r.json(); })
         .then(function (d) {
           if (!d || d.code !== 0) throw new Error((d && d.msg) ? d.msg : 'gagal');
-          setText(panel, 'disk', (d.data && d.data.total_human) ? d.data.total_human : EMPTY);
+          diskText = (d.data && d.data.total_human) ? d.data.total_human : EMPTY;
         })
-        .catch(function () { setText(panel, 'disk', 'tidak tersedia'); });
+        .catch(function () { diskText = 'tidak tersedia'; })
+        .then(applyDisk);
+    }
+
+    function applyDisk() {
+      setText(panel, 'disk', diskText === null ? '…' : diskText);
+      var cell = panel.querySelector('[data-local-disk="1"]');
+      if (cell) cell.textContent = diskText === null ? EMPTY : diskText;
     }
 
     function footerNote(count) {
@@ -208,6 +335,8 @@
       renderTotals(panel, payload.totals || { containers: 0, running: 0, cpu_percent: null, mem_used: null, mem_limit: null });
       setText(panel, 'scope', scopeLabel(payload.scope));
       lastAt = payload.at || '';
+
+      renderServers(panel, Array.isArray(payload.servers) ? payload.servers : [], diskText);
 
       var rows = payload.containers || [];
       if (rows.length === 0) {
@@ -232,6 +361,7 @@
       setText(panel, 'status', 'Memuat metrik …');
       if (!loaded) {
         rowsEl.innerHTML = '<tr><td colspan="8" class="text-muted small">Memuat …</td></tr>';
+        if (serversEl) serversEl.innerHTML = '<tr><td colspan="8" class="text-muted small">Memuat …</td></tr>';
       }
 
       fetch(endpoint, { headers: { 'Accept': 'application/json' } })

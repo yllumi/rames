@@ -12,7 +12,8 @@ $active = 'database';
 <?php if (!($isAdmin ?? false)): ?>
   <div class="alert alert-info py-2 small" role="alert">
     Hanya container database dari <strong>app milik Anda</strong> dan <strong>app yang dibagikan</strong> kepada Anda
-    yang ditampilkan di sini.
+    yang ditampilkan di sini. Kolom <strong>Server</strong> menandai container yang berjalan di
+    <strong>server agent</strong> (bukan server dashboard ini).
   </div>
 <?php endif; ?>
 
@@ -44,6 +45,7 @@ $active = 'database';
           <th>Container</th>
           <th>Image</th>
           <th>Status</th>
+          <th>Server</th>
           <th>Kepemilikan</th>
           <?php if ($isAdmin ?? false): ?><th>Owner</th><?php endif; ?>
           <th class="text-end">Aksi</th>
@@ -51,10 +53,26 @@ $active = 'database';
       </thead>
       <tbody>
         <?php foreach ($rows as $r): ?>
+        <?php
+          // Asal server baris ini (multi-server F3d): controller mengisi
+          // `server_id`/`server_name` hanya untuk baris dari server agent; baris
+          // server lokal (Engine host ini) tidak punya kedua field tersebut.
+          $__srvId = trim((string) ($r['server_id'] ?? ''));
+          $__srvName = trim((string) ($r['server_name'] ?? ''));
+          $__isAgent = $__srvId !== '' && $__srvId !== 'local';
+        ?>
         <tr>
           <td><span class="mono"><?= e($r['container_name']) ?></span></td>
           <td class="small"><?= e($r['image']) ?></td>
           <td><span class="badge badge-<?= e($r['state'] ?? 'unknown') ?>"><?= e($r['state'] ?? 'unknown') ?></span></td>
+          <td class="small">
+            <?php if ($__isAgent): ?>
+              <span class="badge badge-deploying" title="Container berjalan di server agent, bukan di host dashboard">agent</span>
+              <span class="mono d-block"><?= e($__srvName !== '' ? $__srvName : $__srvId) ?></span>
+            <?php else: ?>
+              <span class="text-muted" title="Container berjalan di host dashboard (server lokal)">lokal</span>
+            <?php endif; ?>
+          </td>
           <td>
             <?php if ($r['owned']): ?>
               <a class="badge text-bg-primary text-decoration-none" href="/apps/<?= e($r['app_id']) ?>"><?= e($r['app_name']) ?></a>
@@ -83,8 +101,11 @@ $active = 'database';
 
 <p class="text-muted small mt-3 mb-0">
   Adminer disajikan dari helper internal Rames (tanpa port publik), tetap di balik login dan hak akses app.
-  Untuk impor/ekspor <em>dump</em> berukuran besar, pakai fitur <strong>Volume/backup</strong> atau tab
-  <strong>Terminal</strong> &mdash; proxy Adminer punya batas waktu (&le;30&nbsp;detik) dan ukuran respons.
+  Untuk container di <strong>server agent</strong>, dashboard meneruskan permintaan Adminer ke helper
+  <em>di server itu</em> (helper tetap tanpa port publik).
+  Untuk impor/ekspor <em>dump</em> berukuran besar, pakai fitur
+  <strong>Volume/backup</strong> atau tab <strong>Terminal</strong> &mdash; proxy Adminer punya batas
+  waktu (&le;30&nbsp;detik) dan ukuran respons.
 </p>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

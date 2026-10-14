@@ -213,7 +213,7 @@ class CliDeployJobAwarenessTest extends TestCase
 
     public function testUnknownModeIsRejectedWithUsage(): void
     {
-        $result = $this->worker('backup_run');
+        $result = $this->worker('self_update');
 
         $this->assertSame(1, $result['code']);
         $this->assertStringContainsString('Usage:', $result['stderr']);

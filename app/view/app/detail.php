@@ -44,6 +44,9 @@ include app_path() . '/view/app/partials/detail-setup.php'; ?>
       <span class="badge text-bg-<?= $isOwner || $role === 'admin' ? 'primary' : 'secondary' ?>"
             title="Hak akses Anda pada app ini"><?= e(app_role_label($role)) ?></span>
     <?php endif; ?>
+    <?php if ($isRemoteServer): ?>
+      <span class="badge text-bg-info" title="App berjalan di server agent — deploy, terminal, log, dan backup dijalankan di server itu">Server: <?= e($appServerName) ?></span>
+    <?php endif; ?>
   </div>
   <?php if ((($guideHtml ?? '') !== '') || ($logContainer !== null && $logContainer !== '')): ?>
   <div class="d-flex flex-wrap gap-2 align-items-center">

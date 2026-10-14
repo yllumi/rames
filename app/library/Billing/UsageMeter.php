@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\Billing;
 
+use app\library\Agent\AgentError;
 use app\library\Auth\UserStore;
 use app\library\Deploy\ResourceLimits;
 use app\library\Storage\AppStore;
@@ -17,6 +18,14 @@ use Throwable;
  * Aturan:
  * - hanya app `status === 'running'` yang diakru;
  * - app milik owner ber-role global **admin** dilewati (admin gratis);
+ * - **bukti container dari server app** (multi-server F4, misi
+ *   `ms-f4b-metering-server`): `status` di control plane saja tidak cukup —
+ *   container app wajib **teramati hidup (`running`/`paused`/`restarting`) di
+ *   server tempat app itu hidup**
+ *   (`UsageProbe`: Engine host ini untuk `kind=local`, `AgentDeployer::containerStats()`
+ *   untuk `kind=agent`). Tanpa bukti itu (container mati / server tidak
+ *   terjangkau), app **dilewati** dan alasannya dicatat ke log/report — lihat
+ *   `sampleReport()`;
  * - `credits_pending += (seconds / 3600) × harga_per_jam(limits app)`;
  * - `backup_credits_pending += gb_ditagih × tarif_backup × (seconds / periode)`
  *   — akumulasi disimpan **4 desimal** (bukan 2) agar bias pembulatan per tick
@@ -36,6 +45,22 @@ use Throwable;
  *
  * Harga memakai `Pricing`; parsing `limits` memakai `ResourceLimits` (satu
  * sumber kebenaran validasi & penulisan limit CPU/RAM).
+ *
+ * **Kebijakan server tidak terjangkau (dipilih sadar).** Bila metrik satu server
+ * gagal dibaca (offline/timeout/config cacat), seluruh app di server itu
+ * **dilewati pada tick ini** — tidak ada akrual, dan alasannya ditulis ke log
+ * billing + dilaporkan `sampleReport()`. Alasan memilih "lewati" ketimbang
+ * "pakai nilai terakhir / tetap menagih penuh":
+ *  1. akrual menuntut bukti container berjalan; menagih saat tak teramati bisa
+ *     menagih app yang sudah mati (over-count) — jebakan yang justru dilarang;
+ *  2. akrual bersifat **inkremental per tick** (tidak menyimpan utang detik),
+ *     jadi interval yang dilewati **tidak pernah** ditagihkan kemudian —
+ *     tick berikutnya hanya menambah detiknya sendiri. Tidak ada akrual ganda
+ *     maupun tunggakan tersembunyi;
+ *  3. melewati tanpa menulis log akan jadi "menagih nol secara diam-diam" —
+ *     karena itu setiap server yang dilewati **selalu** dicatat (log/report).
+ * Interval yang hilang karena server mati adalah kerugian terukur yang diterima
+ * operator; alternatifnya (menebak "tetap berjalan") menagih tanpa bukti.
  */
 class UsageMeter
 {
@@ -43,31 +68,66 @@ class UsageMeter
     private BillingStore $store;
     private UserStore $users;
     private BackupUsage $backup;
+    private UsageProbe $probe;
+
+    /** @var callable|null fn(string $message): void */
+    private $logger;
 
     public function __construct(
         ?AppStore $apps = null,
         ?BillingStore $store = null,
         ?UserStore $users = null,
         ?BackupUsage $backup = null,
+        ?UsageProbe $probe = null,
+        ?callable $logger = null,
     ) {
         $this->apps = $apps ?? new AppStore();
         $this->store = $store ?? new BillingStore();
         $this->users = $users ?? new UserStore();
         $this->backup = $backup ?? new BackupUsage();
+        $this->probe = $probe ?? new UsageProbe();
+        $this->logger = $logger;
     }
 
     /**
      * Akrual `$seconds` detik pemakaian untuk seluruh app yang memenuhi syarat.
      *
+     * Pintasan dari {@see self::sampleReport()} (bentuk lama `array<int,string>`
+     * dipertahankan: `cli/billing.php usage`/pemanggil lama tidak berubah).
+     *
      * @return array<int,string> daftar appId yang diakru
      */
     public function sample(int $seconds, ?string $now = null): array
     {
+        return $this->sampleReport($seconds, $now)['accrued'];
+    }
+
+    /**
+     * Varian `sample()` yang mengembalikan laporan lengkap satu tick: app yang
+     * diakru, app yang **dilewati beserta alasannya**, dan ringkasan per server.
+     *
+     * Dipakai `BillingRunner` (log alasan) & tes. Inilah satu-satunya tempat
+     * keputusan "boleh diakru" diambil: app harus (a) `status === running`,
+     * (b) owner non-admin, dan (c) container-nya **teramati hidup di server
+     * pemilik app** (`UsageProbe`). Syarat (c) berlaku untuk CPU/RAM **dan**
+     * backup (aturan kelayakan yang sama), sehingga app yang hidup di server
+     * agent tidak lagi luput dari akrual hanya karena container-nya tidak ada di
+     * host control plane.
+     *
+     * @return array{
+     *   accrued: array<int,string>,
+     *   skipped: array<string,array{server_id:string,cause:string,detail:string}>,
+     *   servers: array<string,array<string,mixed>>
+     * }
+     */
+    public function sampleReport(int $seconds, ?string $now = null): array
+    {
+        $report = ['accrued' => [], 'skipped' => [], 'servers' => []];
         if ($seconds <= 0) {
-            return [];
+            return $report;
         }
         if (!(bool) config('deploy.billing_enabled', true)) {
-            return [];
+            return $report;
         }
 
         $current = BillingPeriod::current($now);
@@ -75,10 +135,11 @@ class UsageMeter
         // Dihitung sekali per tick: jumlah hari periode & GB ditagih per app.
         $daysInPeriod = BillingPeriod::daysIn($current);
         $chargedGb = $this->backup->chargedGigabytesByApp();
-        $pending = [];
 
+        // 1. Calon: app yang layak menurut status + owner (syarat lama).
+        $candidates = [];
         foreach ($this->apps->all() as $app) {
-            if ((string) ($app['status'] ?? '') !== 'running') {
+            if (!is_array($app) || (string) ($app['status'] ?? '') !== 'running') {
                 continue;
             }
             $appId = (string) ($app['id'] ?? '');
@@ -92,60 +153,93 @@ class UsageMeter
             }
 
             $gb = (float) ($chargedGb[$appId] ?? 0.0);
-            $pending[$appId] = [
+            $candidates[$appId] = [
                 'name' => (string) ($app['name'] ?? ''),
                 'owner_id' => $ownerId,
+                'server_id' => AppStore::serverIdOf($app),
                 'credits' => ($seconds / 3600) * Pricing::hourlyCredits(ResourceLimits::of($app), $rates),
                 'backup_gb' => $gb,
                 'backup_credits' => Pricing::backupCredits($gb, (float) $seconds, $daysInPeriod),
             ];
         }
 
-        if ($pending === []) {
-            return [];
+        if ($candidates === []) {
+            return $report;
         }
 
-        $sampledAt = $this->timestamp($now);
-        $this->store->update(function (array &$data) use ($pending, $current, $sampledAt, $seconds): void {
-            $usage = is_array($data['usage'] ?? null) ? $data['usage'] : [];
-            foreach ($pending as $appId => $row) {
-                $existing = is_array($usage[$appId] ?? null) ? $usage[$appId] : [];
-                $period = (string) ($existing['period'] ?? '');
-                if ($period === '') {
-                    // Baris pertama bulan ini: mulai dari nol, tanpa tagihan retroaktif.
-                    $period = $current;
-                }
-                $usage[$appId] = [
-                    'name' => $row['name'],
-                    'owner_id' => $row['owner_id'],
-                    'period' => $period,
-                    'seconds_pending' => (int) ($existing['seconds_pending'] ?? 0) + $seconds,
-                    'credits_pending' => round((float) ($existing['credits_pending'] ?? 0.0) + $row['credits'], 2),
-                    'backup_gb' => round((float) $row['backup_gb'], 4),
-                    // Backup diakru per tick: pembulatan 4 desimal (bukan 2) agar
-                    // bias naik per tick tidak terakumulasi jadi drift nyata
-                    // (uang tetap 2 desimal saat ditagih — `Invoicer`).
-                    'backup_credits_pending' => round((float) ($existing['backup_credits_pending'] ?? 0.0) + $row['backup_credits'], 4),
-                    'sampled_at' => $sampledAt,
-                ];
-            }
-            $data['usage'] = $usage;
-        });
+        // 2. Bukti dari server app (satu pembacaan per server, bukan per app).
+        [$verdicts, $servers] = $this->observe($candidates);
 
-        return array_keys($pending);
+        $pending = [];
+        foreach ($candidates as $appId => $row) {
+            $verdict = is_array($verdicts[$appId] ?? null) ? $verdicts[$appId] : null;
+            if ($verdict === null || ($verdict['container_running'] ?? false) !== true) {
+                // Tidak ada bukti container berjalan → lewati (dengan alasan).
+                $report['skipped'][$appId] = [
+                    'server_id' => (string) ($verdict['server_id'] ?? $row['server_id']),
+                    'cause' => (string) ($verdict['cause'] ?? UsageProbe::CAUSE_UNREACHABLE),
+                    'detail' => (string) ($verdict['detail'] ?? 'tidak ada bukti container berjalan dari server app'),
+                ];
+                continue;
+            }
+            $pending[$appId] = $row;
+        }
+        $report['servers'] = $servers;
+
+        // 3. Tulis akrual (satu transaksi atomik, seperti sebelumnya).
+        if ($pending !== []) {
+            $sampledAt = $this->timestamp($now);
+            $this->store->update(function (array &$data) use ($pending, $current, $sampledAt, $seconds): void {
+                $usage = is_array($data['usage'] ?? null) ? $data['usage'] : [];
+                foreach ($pending as $appId => $row) {
+                    $existing = is_array($usage[$appId] ?? null) ? $usage[$appId] : [];
+                    $period = (string) ($existing['period'] ?? '');
+                    if ($period === '') {
+                        // Baris pertama bulan ini: mulai dari nol, tanpa tagihan retroaktif.
+                        $period = $current;
+                    }
+                    $usage[$appId] = [
+                        'name' => $row['name'],
+                        'owner_id' => $row['owner_id'],
+                        // Atribusi per server (pelaporan/agregasi); arti kolom
+                        // lain tidak berubah. `server_id` dipertahankan saat
+                        // penagihan mereset baris (`Invoicer`).
+                        'server_id' => $row['server_id'],
+                        'period' => $period,
+                        'seconds_pending' => (int) ($existing['seconds_pending'] ?? 0) + $seconds,
+                        'credits_pending' => round((float) ($existing['credits_pending'] ?? 0.0) + $row['credits'], 2),
+                        'backup_gb' => round((float) $row['backup_gb'], 4),
+                        // Backup diakru per tick: pembulatan 4 desimal (bukan 2) agar
+                        // bias naik per tick tidak terakumulasi jadi drift nyata
+                        // (uang tetap 2 desimal saat ditagih — `Invoicer`).
+                        'backup_credits_pending' => round((float) ($existing['backup_credits_pending'] ?? 0.0) + $row['backup_credits'], 4),
+                        'sampled_at' => $sampledAt,
+                    ];
+                }
+                $data['usage'] = $usage;
+            });
+        }
+
+        $report['accrued'] = array_keys($pending);
+        if ($report['skipped'] !== []) {
+            $this->logSkipped($report['skipped'], $servers);
+        }
+
+        return $report;
     }
 
     /**
      * Ringkasan pemakaian berjalan per app (untuk UI): `owner_id`, `name`,
-     * `seconds_pending`, `credits_pending`, `hourly`, `estimate_month`, plus
-     * rincian backup `backup_gb`, `backup_credits`, `backup_monthly`.
+     * `server_id`, `seconds_pending`, `credits_pending`, `hourly`,
+     * `estimate_month`, plus rincian backup `backup_gb`, `backup_credits`,
+     * `backup_monthly`.
      *
-     * Dikunci berdasarkan appId (kunci sama dengan `usage` di billing.json).
+     * Dikunci berdasarkan appId (kunci sama dengan `usage` di store billing).
      * `estimate_month` = estimasi CPU/RAM bulan berjalan **+** estimasi backup
      * bulan berjalan. Baris lama tanpa field backup diperlakukan `0` (tidak
-     * error).
+     * error); baris lama tanpa `server_id` memakai server app saat ini.
      *
-     * @return array<string,array{owner_id:string,name:string,seconds_pending:int,credits_pending:float,hourly:float,estimate_month:float,backup_gb:float,backup_credits:float,backup_monthly:float}>
+     * @return array<string,array{owner_id:string,name:string,server_id:string,seconds_pending:int,credits_pending:float,hourly:float,estimate_month:float,backup_gb:float,backup_credits:float,backup_monthly:float}>
      */
     public function summary(): array
     {
@@ -172,6 +266,7 @@ class UsageMeter
             $summary[$appId] = [
                 'owner_id' => (string) ($row['owner_id'] ?? ''),
                 'name' => (string) ($row['name'] ?? ''),
+                'server_id' => $this->serverIdOf($row, $app),
                 'seconds_pending' => (int) ($row['seconds_pending'] ?? 0),
                 'credits_pending' => round((float) ($row['credits_pending'] ?? 0.0), 2),
                 'hourly' => $hourly,
@@ -183,6 +278,136 @@ class UsageMeter
         }
 
         return $summary;
+    }
+
+    /**
+     * `server_id` satu baris usage: dari baris (ditulis meteran), atau — untuk
+     * baris lama (data sebelum F4) — diturunkan dari app saat ini (satu app
+     * terikat satu server; tidak ada pemindahan app antar server).
+     *
+     * @param array<string,mixed>      $row
+     * @param array<string,mixed>|null $app
+     */
+    private function serverIdOf(array $row, ?array $app): string
+    {
+        $serverId = trim((string) ($row['server_id'] ?? ''));
+        if ($serverId !== '') {
+            return $serverId;
+        }
+
+        return $app !== null ? AppStore::serverIdOf($app) : '';
+    }
+
+    /**
+     * Ambil bukti container dari `UsageProbe` dengan pengaman berlapis: kegagalan
+     * pengamat (bug/IO tak terduga) **tidak** mematikan tick dan **tidak**
+     * menagih tanpa bukti — semua app dianggap "tak teramati" (dilewati, dengan
+     * alasan yang tetap dicatat).
+     *
+     * @param array<string,array<string,mixed>> $candidates appId => baris calon
+     * @return array{0:array<string,array<string,mixed>>,1:array<string,array<string,mixed>>}
+     */
+    private function observe(array $candidates): array
+    {
+        try {
+            $observation = $this->probe->observe($candidates);
+            $servers = is_array($observation['servers'] ?? null) ? $observation['servers'] : [];
+            $apps = is_array($observation['apps'] ?? null) ? $observation['apps'] : [];
+        } catch (Throwable $e) {
+            $detail = 'pengamat container gagal: '
+                . AgentError::sanitize($e->getMessage());
+            $verdicts = [];
+            foreach ($candidates as $appId => $row) {
+                $verdicts[$appId] = [
+                    'server_id' => $row['server_id'],
+                    'container_running' => false,
+                    'cause' => UsageProbe::CAUSE_UNREACHABLE,
+                    'detail' => $detail,
+                ];
+            }
+
+            return [$verdicts, []];
+        }
+
+        $verdicts = [];
+        foreach ($apps as $appId => $verdict) {
+            if (is_array($verdict)) {
+                $verdicts[(string) $appId] = $verdict;
+            }
+        }
+        // Jaring pengaman: app yang tidak dijawab probe tidak pernah diakru.
+        foreach ($candidates as $appId => $row) {
+            if (!isset($verdicts[$appId])) {
+                $verdicts[$appId] = [
+                    'server_id' => $row['server_id'],
+                    'container_running' => false,
+                    'cause' => UsageProbe::CAUSE_UNREACHABLE,
+                    'detail' => 'server app tidak melaporkan status app ini',
+                ];
+            }
+        }
+
+        return [$verdicts, $servers];
+    }
+
+    /**
+     * Catat alasan pelewatan akrual — satu baris per server (bukan per app) agar
+     * log tidak membanjir saat satu server mati.
+     *
+     * @param array<string,array{server_id:string,cause:string,detail:string}> $skipped
+     * @param array<string,array<string,mixed>>                                $servers
+     */
+    private function logSkipped(array $skipped, array $servers): void
+    {
+        $byServer = [];
+        foreach ($skipped as $appId => $row) {
+            $byServer[$row['server_id']][$row['cause']][] = (string) $appId;
+        }
+
+        foreach ($byServer as $serverId => $byCause) {
+            $server = is_array($servers[$serverId] ?? null) ? $servers[$serverId] : [];
+            $reasons = [];
+            $apps = [];
+            foreach ($byCause as $cause => $appIds) {
+                $reasons[] = $cause;
+                $apps = array_merge($apps, $appIds);
+            }
+            $this->log(sprintf(
+                'metering: %d app di server "%s" (%s) dilewati tanpa akrual — alasan: %s%s [%s]',
+                count($apps),
+                $serverId,
+                (string) ($server['kind'] ?? 'unknown'),
+                implode(', ', array_unique($reasons)),
+                ($server['error'] ?? null) !== null ? ' — ' . (string) $server['error'] : '',
+                implode(', ', $apps)
+            ));
+        }
+    }
+
+    /**
+     * Tulis satu baris ke log billing. Default `$logger` menulis ke
+     * `runtime/logs/billing/{Y-m-d}.log` (konvensi `AppStopper`; `billing_log_path`
+     * dapat mengarahkannya saat tes). Kegagalan menulis log diabaikan — log
+     * bukan jalur uang.
+     */
+    private function log(string $message): void
+    {
+        if ($this->logger !== null) {
+            ($this->logger)($message);
+
+            return;
+        }
+
+        $configured = trim((string) config('deploy.billing_log_path', ''));
+        $dir = $configured !== '' ? rtrim($configured, '/') : runtime_path('logs/billing');
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            return;
+        }
+        @file_put_contents(
+            $dir . '/' . date('Y-m-d') . '.log',
+            '[' . date('c') . '] ' . $message . PHP_EOL,
+            FILE_APPEND | LOCK_EX
+        );
     }
 
     /**

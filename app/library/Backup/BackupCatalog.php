@@ -31,6 +31,9 @@ final class BackupCatalog
     private const ROW_KEYS = [
         'name', 'project', 'app_id', 'app_name', 'orphaned', 'strategy',
         'container_state', 'last_run_at', 'last_ok', 'last_message', 'snapshots',
+        // Dimensi server (F4): baris volume server agent ikut cache control plane;
+        // tanpa kunci ini dua volume bernama sama di dua server tak bisa dibedakan.
+        'server_id',
     ];
 
     private JsonStore $store;

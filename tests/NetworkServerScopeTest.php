@@ -7,6 +7,8 @@ use app\controller\NetworkController;
 use app\library\Agent\AgentClient;
 use app\library\Agent\TlsPinMaterializer;
 use app\library\Auth\AppAccess;
+use app\library\Auth\AppAccessDenied;
+use app\library\Auth\ServerAccess;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ServerResolver;
 use app\library\Docker\DockerClient;
@@ -139,6 +141,8 @@ final class NetworkScopeController extends NetworkController
         private ServerResolver $resolver,
         private DockerClient $docker,
         private ?AgentDeployer $agent,
+        /** User dashboard uji; `null` ⇒ admin (perilaku uji lama). */
+        private ?array $user = null,
     ) {
     }
 
@@ -171,12 +175,12 @@ final class NetworkScopeController extends NetworkController
 
     protected function currentUser(): ?array
     {
-        return ['id' => 'u-admin', 'username' => 'admin', 'role' => AppAccess::ROLE_ADMIN];
+        return $this->user ?? ['id' => 'u-admin', 'username' => 'admin', 'role' => AppAccess::ROLE_ADMIN];
     }
 
     protected function isAdmin(): bool
     {
-        return true;
+        return (string) ($this->currentUser()['role'] ?? '') === AppAccess::ROLE_ADMIN;
     }
 
     protected function flash(string $type, string $message): void
@@ -193,6 +197,20 @@ final class NetworkScopeController extends NetworkController
     public function assertCrossServerTest(string $container, string $serverId): void
     {
         $this->assertContainerServer($container, $serverId);
+    }
+
+    /**
+     * `NetworkController::serverOptions()` privat — dibuka lewat refleksi supaya
+     * permukaan produksi tidak berubah hanya demi uji.
+     *
+     * @return array<int,array{id:string,name:string}>
+     */
+    public function serverOptionsTest(): array
+    {
+        $method = new \ReflectionMethod(NetworkController::class, 'serverOptions');
+        $method->setAccessible(true);
+
+        return $method->invoke($this);
     }
 }
 
@@ -290,6 +308,110 @@ final class NetworkServerScopeTest extends TestCase
         $this->assertStringContainsString('Server tidak dikenal', (string) $controller->rendered[0]['vars']['engineError']);
         $this->assertSame([], $docker->listed);
         $this->assertSame(0, $handler->count());
+    }
+
+    // ==================================================================
+    // (vi) Pemilihan server = admin-only (keputusan §9.3): non-admin hanya
+    //      server yang menaungi app yang boleh ia lihat, selain itu 404.
+    // ==================================================================
+
+    public function testNonAdminRequestingForeignServerIsDeniedWith404AndNoSideEffects(): void
+    {
+        $handler = new NetworkScopeFakeHandler(); // tidak boleh dipakai
+        $docker = new NetworkScopeLocalDocker();
+        $docker->networks = [['Id' => 'n', 'Name' => 'lokal', 'Driver' => 'bridge', 'Scope' => 'local', 'Containers' => []]];
+        $docker->explode = true; // server lokal TIDAK boleh jadi pengganti
+
+        $controller = $this->controller($handler, $docker, $this->member());
+
+        try {
+            $controller->index($this->get('/networks?server=srv-agent-2'));
+            $this->fail('server di luar jangkauan user harus ditolak (fail-closed)');
+        } catch (AppAccessDenied $e) {
+            $this->assertSame(404, $e->getCode(), 'penolakan 404 — bukan 403 (keberadaan server tidak bocor)');
+            $this->assertSame(ServerAccess::ABILITY_SELECT, $e->ability);
+        }
+
+        $this->assertSame([], $controller->rendered, 'halaman tidak dirender dengan data server orang lain');
+        $this->assertSame(0, $handler->count(), 'tidak ada operasi network di server itu');
+        $this->assertSame([], $docker->listed, 'daemon lokal tidak dipakai sebagai pengganti');
+    }
+
+    public function testNonAdminMutationOnForeignServerIsDeniedWithoutExecutingAnything(): void
+    {
+        $handler = new NetworkScopeFakeHandler();
+        $docker = new NetworkScopeLocalDocker();
+        $docker->explode = true;
+
+        $controller = $this->controller($handler, $docker, $this->member());
+
+        foreach (['delete', 'disconnect', 'connect'] as $action) {
+            try {
+                $controller->{$action}(
+                    $this->post('/networks/net-1/' . $action, 'server=srv-agent-2&container=demo-db-1'),
+                    'net-1'
+                );
+                $this->fail("{$action} di server orang lain harus ditolak sebelum efek samping");
+            } catch (AppAccessDenied $e) {
+                $this->assertSame(404, $e->getCode());
+            }
+        }
+
+        $this->assertSame(0, $handler->count(), 'tidak ada operasi network di server itu');
+        $this->assertSame([], $docker->listed);
+        $this->assertSame([], $controller->flashes, 'penolakan bukan flash pesan yang membocorkan keberadaan server');
+    }
+
+    public function testNonAdminKeepsAccessToServerHostingTheirVisibleApp(): void
+    {
+        $handler = new NetworkScopeFakeHandler();
+        $handler->replyJson(['code' => 0, 'data' => ['networks' => []]]);
+
+        $docker = new NetworkScopeLocalDocker();
+        $docker->explode = true;
+
+        $controller = $this->controller(
+            $handler,
+            $docker,
+            $this->member(),
+            [$this->memberAppOnAgent()]
+        );
+
+        $response = $controller->index($this->get('/networks?server=srv-agent-2'));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame('srv-agent-2', $controller->rendered[0]['vars']['serverId']);
+        $this->assertSame(['GET /networks'], $handler->paths(), 'network dibaca di server itu (bukan daemon lokal)');
+        $this->assertSame([], $docker->listed);
+    }
+
+    public function testServerOptionsAreFilteredPerUserOnTheServer(): void
+    {
+        // Admin: seluruh registry (tanpa token/PEM — hanya id + name).
+        $admin = $this->controller(new NetworkScopeFakeHandler(), new NetworkScopeLocalDocker(), null, [], 'opt-admin');
+        $adminOptions = $admin->serverOptionsTest();
+        $this->assertSame(['local', 'srv-agent-2'], array_column($adminOptions, 'id'));
+        $this->assertSame(['id', 'name'], array_keys($adminOptions[0]));
+
+        // Member tanpa app terlihat: daftar kosong (fail-closed, bukan semua server).
+        $none = $this->controller(
+            new NetworkScopeFakeHandler(),
+            new NetworkScopeLocalDocker(),
+            $this->member(),
+            [],
+            'opt-none'
+        );
+        $this->assertSame([], $none->serverOptionsTest());
+
+        // Member dengan app di server agent: hanya server itu yang terlihat.
+        $member = $this->controller(
+            new NetworkScopeFakeHandler(),
+            new NetworkScopeLocalDocker(),
+            $this->member(),
+            [$this->memberAppOnAgent()],
+            'opt-member'
+        );
+        $this->assertSame(['srv-agent-2'], array_column($member->serverOptionsTest(), 'id'));
     }
 
     // ==================================================================
@@ -423,9 +545,14 @@ final class NetworkServerScopeTest extends TestCase
     // Helper
     // ==================================================================
 
-    private function controller(NetworkScopeFakeHandler $handler, DockerClient $docker): NetworkScopeController
-    {
-        $apps = new AppStore($this->tmp . '/apps.sqlite');
+    private function controller(
+        NetworkScopeFakeHandler $handler,
+        DockerClient $docker,
+        ?array $user = null,
+        array $extraApps = [],
+        string $storeKey = 'default'
+    ): NetworkScopeController {
+        $apps = new AppStore($this->tmp . '/' . $storeKey . '-apps.sqlite');
         $apps->create([
             'id' => 'app-demo',
             'name' => 'demo',
@@ -441,7 +568,11 @@ final class NetworkServerScopeTest extends TestCase
             'containers' => [['service_name' => 'web', 'container_name' => 'lokal-web-1']],
         ]);
 
-        $store = new ServerStore($this->tmp . '/servers.sqlite');
+        foreach ($extraApps as $extraApp) {
+            $apps->create($extraApp);
+        }
+
+        $store = new ServerStore($this->tmp . '/' . $storeKey . '-servers.sqlite');
         $store->create([
             'id' => 'srv-agent-2',
             'name' => 'vps-jakarta-2',
@@ -458,7 +589,24 @@ final class NetworkServerScopeTest extends TestCase
         $client = new AgentClient($server, $handler, 25, new TlsPinMaterializer($this->tmp . '/tls'));
         $agent = new AgentDeployer($server, $client);
 
-        return new NetworkScopeController($apps, $resolver, $docker, $agent);
+        return new NetworkScopeController($apps, $resolver, $docker, $agent, $user);
+    }
+
+    /** @return array<string,mixed> */
+    private function member(): array
+    {
+        return ['id' => 'u-member', 'username' => 'budi', 'role' => 'member'];
+    }
+
+    /** App milik member di server agent — dasar izin "pilih server". */
+    private function memberAppOnAgent(): array
+    {
+        return [
+            'id' => 'app-anggota',
+            'name' => 'anggota',
+            'server_id' => 'srv-agent-2',
+            'owner_id' => 'u-member',
+        ];
     }
 
     private function get(string $path): Request

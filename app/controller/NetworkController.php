@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Auth\AppAccess;
+use app\library\Auth\AppAccessDenied;
+use app\library\Auth\ServerAccess;
 use app\library\Agent\AgentError;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ServerResolver;
@@ -29,6 +31,13 @@ use support\Request;
  *    pesan jelas (`assertContainerServer()`), bukan dieksekusi ke server salah.
  *
  * Controller hanya mediator — tanpa state di properti (Webman persistent).
+ *
+ * **Hak akses server (keputusan §9.3)**: memilih server = admin-only. Non-admin
+ * hanya boleh memakai server yang menaungi app yang boleh ia lihat
+ * (`ServerAccess::visibleServers()`); server lain **ditolak 404** lewat
+ * `AppAccessDenied` (bukan 403, bukan fallback diam-diam ke server lokal) supaya
+ * keberadaan server itu tidak bocor — lihat `requestedServer()`/`assertServerVisible()`.
+ * Penyembunyian pemilih server di view hanya lapisan kedua, bukan pengaman.
  *
  * Proteksi hapus network (berlapis, di controller BUKAN hanya di UI):
  *  - Network built-in/system (bridge, host, none, ingress, docker_gwbridge) → blok.
@@ -56,6 +65,8 @@ class NetworkController
         try {
             $server = $this->requestedServer($request);
             $agent = $server !== null ? $this->agentFor($server) : null;
+        } catch (AppAccessDenied $e) {
+            throw $e; // server di luar jangkauan user ⇒ 404 (jangan ditelan jadi pesan halaman)
         } catch (\Throwable $e) {
             // Server tak dikenal / konfigurasi agent cacat: **jangan** diam-diam
             // menampilkan network server lokal (itu server yang salah) — tampilkan
@@ -150,6 +161,8 @@ class NetworkController
         $server = null;
         try {
             $server = $this->requestedServer($request, true);
+        } catch (AppAccessDenied $e) {
+            throw $e; // server di luar jangkauan user ⇒ 404, tanpa efek samping
         } catch (\Throwable $e) {
             $this->flash('error', $e->getMessage());
             return redirect('/networks');
@@ -234,6 +247,8 @@ class NetworkController
         try {
             $server = $this->requestedServer($request);
             $agent = $server !== null ? $this->agentFor($server) : null;
+        } catch (AppAccessDenied $e) {
+            throw $e; // server di luar jangkauan user ⇒ 404 (fail-closed)
         } catch (\Throwable $e) {
             $this->flash('error', $e->getMessage());
 
@@ -363,6 +378,8 @@ class NetworkController
         $server = null;
         try {
             $server = $this->requestedServer($request, true);
+        } catch (AppAccessDenied $e) {
+            throw $e; // server di luar jangkauan user ⇒ 404, tanpa efek samping
         } catch (\Throwable $e) {
             $this->flash('error', $e->getMessage());
 
@@ -422,6 +439,8 @@ class NetworkController
         $server = null;
         try {
             $server = $this->requestedServer($request, true);
+        } catch (AppAccessDenied $e) {
+            throw $e; // server di luar jangkauan user ⇒ 404, tanpa efek samping
         } catch (\Throwable $e) {
             $this->flash('error', $e->getMessage());
 
@@ -467,6 +486,8 @@ class NetworkController
         $server = null;
         try {
             $server = $this->requestedServer($request, true);
+        } catch (AppAccessDenied $e) {
+            throw $e; // server di luar jangkauan user ⇒ 404, tanpa efek samping
         } catch (\Throwable $e) {
             $this->flash('error', $e->getMessage());
 
@@ -627,9 +648,16 @@ class NetworkController
      *
      * `server` kosong ⇒ lokal. Id tak dikenal / konfigurasi agent cacat ⇒
      * **melempar** (tidak pernah diam-diam jatuh ke server lokal — plan §3
-     * butir 4).
+     * butir 4). Server yang tidak boleh diakses user ⇒ `AppAccessDenied` (**404**,
+     * keputusan §9.3): non-admin hanya boleh memakai server yang menaungi app
+     * yang boleh ia lihat; server milik orang lain tidak pernah dilayani.
+     *
+     * `?server=local` bukan pemilihan server (hasilnya sama dengan tanpa
+     * parameter: cakupan server lokal yang tetap disaring per app) sehingga tetap
+     * boleh untuk semua user yang login.
      *
      * @return array<string,mixed>|null
+     * @throws AppAccessDenied server di luar jangkauan user
      */
     private function requestedServer(Request $request, bool $post = false): ?array
     {
@@ -639,8 +667,32 @@ class NetworkController
         }
 
         $server = $this->serverResolver()->resolve($id);
+        if (ServerResolver::isLocal($server)) {
+            return null;
+        }
 
-        return ServerResolver::isLocal($server) ? null : $server;
+        $this->assertServerVisible($server);
+
+        return $server;
+    }
+
+    /**
+     * Gerbang "pilih server" — **fail-closed**: server yang tidak terlihat user
+     * (non-admin tanpa app di sana) ditolak `AppAccessDenied` ⇒ 404, bukan 403
+     * (keberadaan server tidak bocor) dan bukan operasi di server yang salah.
+     *
+     * Satu pintu: keputusan diserahkan ke `ServerAccess::visibleServers()`
+     * (aturan tidak disalin di controller). Dipakai sebelum efek samping apa pun.
+     *
+     * @param array<string,mixed> $server
+     * @throws AppAccessDenied
+     */
+    private function assertServerVisible(array $server): void
+    {
+        $visible = ServerAccess::visibleServers([$server], $this->currentUser(), $this->appStore()->all());
+        if ($visible === []) {
+            throw new AppAccessDenied(ServerAccess::ABILITY_SELECT);
+        }
     }
 
     /**
@@ -763,13 +815,22 @@ class NetworkController
     /**
      * Pilihan server untuk view (tanpa token/PEM; display only).
      *
+     * Disaring `ServerAccess::visibleServers()` — non-admin **tidak** menerima
+     * daftar server lengkap (hanya server yang menaungi app yang boleh ia lihat),
+     * jadi menyembunyikan pemilih di view bukan lagi satu-satunya pengaman.
+     *
      * @return array<int,array{id:string,name:string}>
      */
     private function serverOptions(): array
     {
         $options = [];
         try {
-            foreach ($this->serverResolver()->all() as $server) {
+            $servers = ServerAccess::visibleServers(
+                $this->serverResolver()->all(),
+                $this->currentUser(),
+                $this->appStore()->all()
+            );
+            foreach ($servers as $server) {
                 $options[] = [
                     'id' => (string) ($server['id'] ?? ''),
                     'name' => (string) ($server['name'] ?? ''),

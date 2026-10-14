@@ -59,6 +59,11 @@ final class DeployWorkerLauncher
      * + `NginxReloader`/`SslIssuer` di sana). Preflight `ensureWritable()`
      * memakai endpoint app-less `POST /nginx/check` (bukan job) — lihat
      * `AgentDeployer::ensureWritable()`.
+     *
+     * F4 multi-server (data): `backup_run|restore|db_dump` — worker **di server
+     * agent** menjalankan backup/restore/dump volume lewat `BackupJobRunner`
+     * (restic + helper container di daemon server itu, kredensial milik server
+     * itu). Control plane tidak pernah menjalankan restic pada volume agent.
      */
     public const MODES = [
         'deploy',
@@ -74,6 +79,9 @@ final class DeployWorkerLauncher
         'nginx_reload',
         'ssl_issue',
         'ssl_revoke',
+        'backup_run',
+        'restore',
+        'db_dump',
     ];
 
     /** Skrip worker (relatif `base_path()`). */

@@ -1160,6 +1160,75 @@ class AppControllerServerScopeTest extends TestCase
     }
 
     // ==================================================================
+    // (5) detail app: nama server dikirim ke view, tanpa rahasia
+    // ==================================================================
+
+    /**
+     * Badge server di detail app butuh **nama** server, bukan id-nya. Controller
+     * hanya boleh mengirim `name` (fallback `id`) — token/PEM/base_url tidak
+     * pernah masuk konteks view (rencana §4.3; penyembunyian di view bukan
+     * pengaman, jadi rahasianya memang tidak dikirim).
+     */
+    public function testServerNameForAgentAppCarriesNoSecret(): void
+    {
+        $row = [
+            'id' => 'vps-jakarta',
+            'name' => 'vps-jakarta',
+            'kind' => 'agent',
+            'base_url' => 'https://10.0.0.12:8443',
+            'token' => self::AGENT_TOKEN,
+            'tls_cert_pem' => $this->selfSignedPem(),
+            'tls_fingerprint' => str_repeat('ab', 32),
+            'notes' => 'rahasia internal',
+        ];
+
+        $name = $this->invoke('serverNameForApp', [$row]);
+
+        $this->assertSame('vps-jakarta', $name);
+        $this->assertStringNotContainsString(self::AGENT_TOKEN, $name);
+        $this->assertStringNotContainsString('10.0.0.12', $name);
+        $this->assertStringNotContainsString('BEGIN CERTIFICATE', $name);
+        $this->assertStringNotContainsString('rahasia internal', $name);
+    }
+
+    public function testServerNameFallsBackToIdWhenNameIsEmpty(): void
+    {
+        $this->assertSame('vps-tanpa-nama', $this->invoke('serverNameForApp', [[
+            'id' => 'vps-tanpa-nama',
+            'name' => '   ',
+            'kind' => 'agent',
+            'token' => self::AGENT_TOKEN,
+        ]]));
+    }
+
+    /** App lokal & server tak terbaca ⇒ `''` (view menampilkan "lokal" seperti dulu). */
+    public function testLocalAndUnknownServerYieldEmptyName(): void
+    {
+        $this->assertSame('', $this->invoke('serverNameForApp', [null]));
+        $this->assertSame('', $this->invoke('serverNameForApp', [[
+            'id' => 'local',
+            'name' => 'local',
+            'kind' => 'local',
+        ]]));
+    }
+
+    /**
+     * Kontrak statik: `detail()` benar-benar mengoper nama server ke view dan
+     * tidak menyelundupkan kolom rahasia ke konteks view (dicek pada sumber
+     * karena `detail()` menyentuh Engine/view dan tak bisa dijalankan utuh di sini).
+     */
+    public function testDetailPassesServerNameToTheViewWithoutSecretFields(): void
+    {
+        $body = $this->methodBody('detail');
+
+        $this->assertStringContainsString('$this->serverNameForApp($appServer)', $body);
+        $this->assertStringContainsString("'serverName' => \$serverName", $body);
+        $this->assertStringNotContainsString('tls_cert_pem', $body);
+        $this->assertStringNotContainsString("'token'", $body);
+        $this->assertStringNotContainsString('base_url', $body);
+    }
+
+    // ==================================================================
     // Helper
     // ==================================================================
 

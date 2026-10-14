@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\library\Backup;
 
 use app\library\Storage\SchemaMigrations;
+use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteStore;
 
 /**
@@ -22,10 +23,19 @@ use app\library\Storage\SqliteStore;
  * merusak.
  *
  * Bentuk entri registry:
- *   {"<nama>":{
+ *   {"<kunci>":{
  *        "project":string,"app_id":?string,"app_name":?string,"strategy":string,
+ *        "server_id":string?,
  *        "first_backed_up_at":string,"last_backed_up_at":string,
  *        "last_snapshot":?string,"snapshots":int,"bytes":int}}
+ *
+ * **Dimensi server (multi-server F4, plan §4.2/§4.3)**: nama volume Docker bisa
+ * sama di dua server, jadi kunci registry di-*scope* server lewat
+ * {@see self::scopeKey()} — server lokal memakai nama volume apa adanya
+ * (kompatibilitas penuh dengan data lama), server agent memakai
+ * `"<server_id>::<volume>"`. Kolom turunan `server_id` disimpan **di dalam
+ * dokumen JSON** entri (bukan kolom SQL), sehingga **tidak** ada perubahan skema
+ * store `backup` yang perlu migrasi.
  *
  * `first_backed_up_at` dipertahankan sekali (lihat `upsertMany()`), `snapshots`
  * & prune dikelola `syncCounts()` (keputusan 3b: entri dihapus begitu snapshot
@@ -39,6 +49,41 @@ use app\library\Storage\SqliteStore;
 final class BackupRegistry
 {
     private SqliteStore $store;
+
+    /**
+     * Kunci registry untuk satu volume pada satu server.
+     *
+     * Server lokal (`''`/`local`) memakai nama volume apa adanya supaya seluruh
+     * entri lama (dan `VolumeBackupService` jalur lokal) tetap valid tanpa
+     * migrasi; server lain memakai prefiks id server.
+     */
+    public static function scopeKey(string $serverId, string $volume): string
+    {
+        $serverId = trim($serverId);
+        $volume = trim($volume);
+
+        return ($serverId === '' || $serverId === ServerStore::LOCAL_ID) ? $volume : $serverId . '::' . $volume;
+    }
+
+    /**
+     * Nama volume dari kunci registry (kebalikan {@see self::scopeKey()}).
+     */
+    public static function volumeOfKey(string $key): string
+    {
+        $position = strpos($key, '::');
+
+        return $position === false ? $key : substr($key, $position + 2);
+    }
+
+    /**
+     * Id server dari kunci registry — `ServerStore::LOCAL_ID` bila tanpa prefiks.
+     */
+    public static function serverOfKey(string $key): string
+    {
+        $position = strpos($key, '::');
+
+        return $position === false ? ServerStore::LOCAL_ID : substr($key, 0, $position);
+    }
 
     /**
      * @param string|null $path path berkas .sqlite store `backup`; null =
@@ -95,14 +140,19 @@ final class BackupRegistry
      * tidak disuplai mempertahankan nilai lama (agar `snapshots`/`bytes` tidak
      * ter-reset ke 0 oleh upsert).
      *
-     * Nama volume divalidasi fail-fast **sebelum** menulis apa pun.
+     * Nama volume divalidasi fail-fast **sebelum** menulis apa pun; kunci registry
+     * di-scope ke `$serverId` ({@see self::scopeKey()}) dan `server_id` disimpan di
+     * dokumen entri supaya laporan/arsip dapat dipisah per server.
      *
      * @param array<string,array<string,mixed>> $entries kunci = nama volume
      *        (entri boleh memuat `project`,`app_id`,`app_name`,`strategy`,
      *        `last_snapshot`,`bytes`,`snapshots`,`last_backed_up_at`)
+     * @param string $serverId id server pemilik volume (`''`/`local` = server ini)
      */
-    public function upsertMany(array $entries): void
+    public function upsertMany(array $entries, string $serverId = ''): void
     {
+        $serverId = trim($serverId) === '' ? ServerStore::LOCAL_ID : trim($serverId);
+
         $normalized = [];
         foreach ($entries as $key => $entry) {
             if (!is_array($entry)) {
@@ -113,26 +163,27 @@ final class BackupRegistry
                 continue;
             }
             VolumeStateGuard::assertVolumeName($name);
-            $normalized[$name] = $entry;
+            $normalized[self::scopeKey($serverId, $name)] = $entry;
         }
         if ($normalized === []) {
             return;
         }
 
-        $this->store->update(function (array &$data) use ($normalized): void {
+        $this->store->update(function (array &$data) use ($normalized, $serverId): void {
             if (!isset($data['version'])) {
                 $data['version'] = 1;
             }
             $registry = is_array($data['registry'] ?? null) ? $data['registry'] : [];
             $now = date('c');
 
-            foreach ($normalized as $name => $entry) {
-                $existing = is_array($registry[$name] ?? null) ? $registry[$name] : [];
-                $registry[$name] = [
+            foreach ($normalized as $key => $entry) {
+                $existing = is_array($registry[$key] ?? null) ? $registry[$key] : [];
+                $registry[$key] = [
                     'project' => (string) ($entry['project'] ?? ($existing['project'] ?? '')),
                     'app_id' => $entry['app_id'] ?? ($existing['app_id'] ?? null),
                     'app_name' => $entry['app_name'] ?? ($existing['app_name'] ?? null),
                     'strategy' => (string) ($entry['strategy'] ?? ($existing['strategy'] ?? '')),
+                    'server_id' => (string) ($existing['server_id'] ?? $serverId),
                     'first_backed_up_at' => (string) ($existing['first_backed_up_at'] ?? $now),
                     'last_backed_up_at' => (string) ($entry['last_backed_up_at'] ?? $now),
                     'last_snapshot' => $entry['last_snapshot'] ?? ($existing['last_snapshot'] ?? null),
@@ -203,6 +254,7 @@ final class BackupRegistry
                     'app_id' => $entry['app_id'] ?? null,
                     'app_name' => $entry['app_name'] ?? null,
                     'strategy' => (string) ($entry['strategy'] ?? ''),
+                    'server_id' => ServerStore::LOCAL_ID,
                     'first_backed_up_at' => $at,
                     'last_backed_up_at' => $at,
                     'last_snapshot' => null,
@@ -221,7 +273,9 @@ final class BackupRegistry
      *
      * Entri yang namanya tidak ada di `$countsByName` dianggap snapshot-nya `0`
      * → dibuang. Karena itu **hanya** prune bila jumlah snapshot benar-benar
-     * diketahui.
+     * diketahui — dan **hanya** entri milik server lokal: `$countsByName` dihitung
+     * dari repo restic control plane, sehingga entri server agent (kunci
+     * ber-`server_id`) tidak boleh dipangkas olehnya.
      *
      * **Peta kosong (`[]`) TIDAK memicu prune** (guard): repo restic yang
      * terjangkau tetapi kosong / salah bucket mengembalikan `[]`, yang tidak
@@ -263,6 +317,11 @@ final class BackupRegistry
                     unset($registry[$name]);
                     continue;
                 }
+                // Entri milik server lain (agent) tidak dipangkas: counts di sini
+                // berasal dari repo restic server lokal.
+                if (self::serverOfKey((string) $name) !== ServerStore::LOCAL_ID) {
+                    continue;
+                }
                 $live = $counts[(string) $name] ?? 0;
                 if ($live <= 0) {
                     unset($registry[$name]);
@@ -279,19 +338,22 @@ final class BackupRegistry
     /**
      * Hapus satu entri registry (mis. setelah restore arsip yang tidak lagi
      * relevan). Idempotent.
+     *
+     * @param string $name     nama volume
+     * @param string $serverId server pemilik (`''`/`local` = server ini)
      */
-    public function remove(string $name): void
+    public function remove(string $name, string $serverId = ''): void
     {
-        $name = trim($name);
-        if ($name === '') {
+        $key = self::scopeKey($serverId, trim($name));
+        if (trim($name) === '') {
             return;
         }
 
-        $this->store->update(function (array &$data) use ($name): void {
+        $this->store->update(function (array &$data) use ($key): void {
             if (!is_array($data['registry'] ?? null)) {
                 return;
             }
-            unset($data['registry'][$name]);
+            unset($data['registry'][$key]);
         });
     }
 }
