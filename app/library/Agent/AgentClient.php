@@ -288,6 +288,24 @@ final class AgentClient
     }
 
     /**
+     * `GET {path}?{query}` → respons **mentah** (body + header), untuk endpoint
+     * yang isinya bukan JSON — mis. unduhan potongan berkas `.sql` hasil
+     * `db_dump` server agent (`GET /backups/dump`).
+     *
+     * Satu panggilan tetap dibatasi `timeout` klien (≤30 s, aturan repo) dan
+     * pemanggil wajib membatasi ukuran lewat query (offset + limit), sehingga
+     * tidak ada respons tanpa batas.
+     *
+     * @param array<string,mixed> $query query string (tidak ditandatangani)
+     * @return array{status:int,body:string,headers:array<string,mixed>}
+     * @throws AgentError transport/HTTP non-2xx
+     */
+    public function getRaw(string $path, array $query = []): array
+    {
+        return $this->send('GET', $path, null, $query);
+    }
+
+    /**
      * Buka **respons streaming** dari agent (mis. SSE terminal) — aditif, jalur
      * pendek di atas tetap memakai cURL handler & timeout ≤30 s.
      *
@@ -709,7 +727,7 @@ final class AgentClient
      *
      * @param array<string,mixed> $payload null = tanpa body (GET)
      * @param array<string,mixed> $query   query string (tidak ditandatangani)
-     * @return array{status:int,body:string}
+     * @return array{status:int,body:string,headers:array<string,mixed>}
      * @throws AgentError
      */
     private function send(string $method, string $path, ?array $payload = null, array $query = []): array
@@ -743,7 +761,7 @@ final class AgentClient
             throw $this->httpError($status, $raw);
         }
 
-        return ['status' => $status, 'body' => $raw];
+        return ['status' => $status, 'body' => $raw, 'headers' => $response->getHeaders()];
     }
 
     /**

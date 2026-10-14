@@ -13,6 +13,9 @@ use app\library\Git\GitService;
 use app\library\Storage\AppStore;
 use app\library\Storage\ServerStore;
 use app\library\Template\TemplateCatalog;
+use app\library\Template\TemplatePullService;
+use app\library\Template\TemplatePullState;
+use app\library\Update\AgentVersionGate;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use RuntimeException;
@@ -91,6 +94,9 @@ class AgentJobControllerTest extends TestCase
 {
     private const APP_ID = 'a1b2c3d4e5f60718';
 
+    /** Slug template nyata (repo `templates/`) untuk op tingkat server `template_pull`. */
+    private const TEMPLATE_SLUG = 'outline';
+
     private string $tmp = '';
     private string $logDir = '';
     private AgentJobStore $jobs;
@@ -134,7 +140,14 @@ class AgentJobControllerTest extends TestCase
             $this->jobs,
             $this->launcher(),
             $this->projection,
-            $this->materializer()
+            $this->materializer(),
+            null,
+            // Preflight tarik image diarahkan ke temp (katalog: template repo,
+            // hanya dibaca) supaya uji tidak menulis `runtime/logs/template-pull`.
+            new TemplatePullService(
+                new TemplateCatalog(dirname(__DIR__) . '/templates'),
+                new TemplatePullState($this->tmp . '/pull')
+            )
         );
     }
 
@@ -150,7 +163,7 @@ class AgentJobControllerTest extends TestCase
     public function testUnsupportedOpIsRejectedWith501AndNeverSpawns(): void
     {
         [$status, , $body, $raw] = $this->decode($this->controller->create(
-            $this->request('POST', '/jobs', json_encode(['op' => 'template_pull', 'app' => $this->appPayload()]))
+            $this->request('POST', '/jobs', json_encode(['op' => 'save_compose', 'app' => $this->appPayload()]))
         ));
 
         $this->assertSame(501, $status);
@@ -442,6 +455,100 @@ class AgentJobControllerTest extends TestCase
     }
 
     // ==================================================================
+    // Op tingkat server (F4 lanjutan): template_pull / self_update
+    // ==================================================================
+
+    public function testServerOpRecordsTargetAndSpawnsWorker(): void
+    {
+        [$status, , $body] = $this->decode($this->controller->create(
+            $this->request('POST', '/jobs', json_encode(['op' => 'template_pull', 'target' => self::TEMPLATE_SLUG]))
+        ));
+
+        $this->assertSame(200, $status, json_encode($body));
+        $this->assertSame(0, $body['code']);
+        $this->assertSame('template_pull', $body['op']);
+        $this->assertArrayHasKey('log_offset', $body);
+
+        // Worker menerima target di slot argv[1] (posisi yang sama dengan id app).
+        $this->assertSame(
+            [PHP_BINARY, $this->tmp . '/cli/deploy.php', self::TEMPLATE_SLUG, 'template_pull'],
+            $this->spawned[0]
+        );
+
+        $record = $this->jobs->find((string) $body['job_id']);
+        $this->assertSame('template_pull', $record['op']);
+        $this->assertSame(self::TEMPLATE_SLUG, $record['app_id'], 'target dipakai sebagai kunci log job');
+
+        // Op tingkat server tidak memproyeksikan app & tidak menulis artefak.
+        $this->assertSame([], (new AppStore($this->tmp . '/rames.sqlite'))->all());
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/' . self::TEMPLATE_SLUG);
+    }
+
+    public function testSelfUpdateCarriesModeAndControlPlaneVersionOnly(): void
+    {
+        [$status, , $body] = $this->decode($this->controller->create($this->request('POST', '/jobs', json_encode([
+            'op' => 'self_update',
+            'target' => 'agent',
+            'update_mode' => 'rollback',
+            'control_plane_version' => AgentVersionGate::CODEBASE_VERSION,
+            'token' => 'agt_rahasia',
+        ]))));
+
+        $this->assertSame(200, $status, json_encode($body));
+
+        $record = $this->jobs->find((string) $body['job_id']);
+        $this->assertSame('rollback', $record['payload']['update_mode']);
+        $this->assertSame(AgentVersionGate::CODEBASE_VERSION, $record['payload']['control_plane_version']);
+        $this->assertArrayNotHasKey('token', $record['payload'], 'kunci asing tidak masuk rekaman job');
+    }
+
+    public function testServerOpsAreRejectedWhenPayloadIsIncomplete(): void
+    {
+        $cases = [
+            'template_pull tanpa target' => ['op' => 'template_pull'],
+            'template_pull slug tak ada' => ['op' => 'template_pull', 'target' => 'tidak-ada'],
+            'self_update target salah' => ['op' => 'self_update', 'target' => 'bukan-agent'],
+            'self_update mode tak dikenal' => ['op' => 'self_update', 'target' => 'agent', 'update_mode' => 'pwn', 'control_plane_version' => AgentVersionGate::CODEBASE_VERSION],
+        ];
+
+        foreach ($cases as $label => $payload) {
+            [$status, , $body, $raw] = $this->decode($this->controller->create(
+                $this->request('POST', '/jobs', json_encode($payload))
+            ));
+
+            $this->assertSame(400, $status, $label);
+            $this->assertSame(1, $body['code'], $label);
+            $this->assertSame('invalid_request', $body['reason'], $label);
+            $this->assertStringNotContainsString('agt_rahasia', $raw);
+        }
+
+        // Slug tak dikenal: pesan menyebut template itu tidak ditemukan.
+        [, , $body] = $this->decode($this->controller->create(
+            $this->request('POST', '/jobs', json_encode(['op' => 'template_pull', 'target' => 'tidak-ada']))
+        ));
+        $this->assertStringContainsString('tidak ditemukan', (string) $body['error']);
+
+        $this->assertSame([], $this->spawned, 'payload cacat tidak boleh meluncurkan worker');
+        $this->assertSame([], $this->jobs->all(), 'payload cacat tidak boleh mencatat job');
+    }
+
+    public function testSelfUpdateIsRefusedWhenControlPlaneIsTooOld(): void
+    {
+        [$status, , $body] = $this->decode($this->controller->create($this->request('POST', '/jobs', json_encode([
+            'op' => 'self_update',
+            'target' => 'agent',
+            'update_mode' => 'update',
+            'control_plane_version' => '0.0.1',
+        ]))));
+
+        $this->assertSame(501, $status);
+        $this->assertSame('unsupported', $body['reason']);
+        $this->assertStringContainsString('control plane', strtolower((string) $body['error']));
+        $this->assertSame([], $this->spawned);
+        $this->assertSame([], $this->jobs->all());
+    }
+
+    // ==================================================================
     // GET /apps/{id} — proyeksi app (F1)
     // ==================================================================
 
@@ -665,18 +772,35 @@ class AgentJobControllerTest extends TestCase
         $this->assertSame(DeployWorkerLauncher::MODES, $body['capabilities']);
 
         foreach ($body['capabilities'] as $op) {
-            $payload = [
-                'op' => $op,
-                'app' => $this->appPayload(),
-                // Op SSL (F2) wajib membawa domain — kontrak `SSL_OPS`.
-                'domain' => 'demo.example.test',
-            ];
-            // Op data F4 (backup/restore/dump) wajib membawa penanda volume
-            // (dan id snapshot untuk `restore`) — kontrak `DATA_OPS`.
-            if (in_array($op, AgentJobController::DATA_OPS, true)) {
-                $payload['volume'] = 'demo_data';
-                if ($op === 'restore') {
+            if (in_array($op, AgentJobController::SERVER_OPS, true)) {
+                // Op tingkat server (F4 lanjutan): `target` menggantikan `app`
+                // (tidak ada proyeksi app/artefak).
+                $payload = [
+                    'op' => $op,
+                    'target' => $op === 'template_pull' ? self::TEMPLATE_SLUG : ($op === 'restore_archived' ? 'demo_data' : 'agent'),
+                ];
+                if ($op === 'self_update') {
+                    $payload['update_mode'] = 'update';
+                    $payload['control_plane_version'] = AgentVersionGate::CODEBASE_VERSION;
+                }
+                if ($op === 'restore_archived') {
                     $payload['snapshot'] = 'abcdef12';
+                    $payload['target_name'] = 'demo_data_restored';
+                }
+            } else {
+                $payload = [
+                    'op' => $op,
+                    'app' => $this->appPayload(),
+                    // Op SSL (F2) wajib membawa domain — kontrak `SSL_OPS`.
+                    'domain' => 'demo.example.test',
+                ];
+                // Op data F4 (backup/restore/dump) wajib membawa penanda volume
+                // (dan id snapshot untuk `restore`) — kontrak `DATA_OPS`.
+                if (in_array($op, AgentJobController::DATA_OPS, true)) {
+                    $payload['volume'] = 'demo_data';
+                    if ($op === 'restore') {
+                        $payload['snapshot'] = 'abcdef12';
+                    }
                 }
             }
 
@@ -690,7 +814,7 @@ class AgentJobControllerTest extends TestCase
         $this->assertCount(count($body['capabilities']), $this->spawned);
 
         [$status, , $rejected] = $this->decode($this->controller->create(
-            $this->request('POST', '/jobs', json_encode(['op' => 'self_update', 'app' => $this->appPayload()]))
+            $this->request('POST', '/jobs', json_encode(['op' => 'save_compose', 'app' => $this->appPayload()]))
         ));
         $this->assertSame(501, $status, 'op di luar capabilities wajib ditolak, bukan didiamkan');
         $this->assertSame('unsupported', $rejected['reason']);
@@ -758,7 +882,7 @@ class AgentJobControllerTest extends TestCase
         }
 
         $this->assertEqualsCanonicalizing(
-            ['__construct', 'create', 'show', 'log', 'showApp', 'renderNginx', 'checkNginx', 'backupVolumes', 'backupSnapshots'],
+            ['__construct', 'create', 'show', 'log', 'showApp', 'renderNginx', 'checkNginx', 'backupVolumes', 'backupSnapshots', 'backupDump'],
             get_class_methods(AgentJobController::class)
         );
 

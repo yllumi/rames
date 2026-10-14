@@ -348,8 +348,10 @@ final class LogTerminalProxyTerminalController extends TerminalController
  *  6. batas ukuran teks log ditegakkan di control plane (jaring pengaman kedua);
  *  7. koneksi SSE drop **tidak** menutup sesi di agent (aturan repo) — tidak ada
  *     `POST /terminal/{token}/close` yang dikirim karena klien pergi;
- *  8. `run` (one-shot) untuk app server agent ditolak eksplisit (501), bukan
- *     diam-diam dijalankan di server lokal.
+ *  8. `run` (one-shot) untuk app server agent **dijalankan di agent** dengan
+ *     mekanisme yang sama seperti jalur lokal (`POST /terminal/run` ⇒
+ *     `DockerExec::runCommand()` di sana), bukan di server lokal dan bukan sesi
+ *     interaktif.
  *
  * Semua uji tanpa jaringan, tanpa Docker, tanpa `apps/`/`runtime/` nyata.
  */
@@ -674,9 +676,16 @@ class LogTerminalServerProxyTest extends TestCase
         $this->assertSame(1, $connection->closeCalls);
     }
 
-    public function testRunIsRejectedForAgentAppsInsteadOfRunningLocally(): void
+    public function testRunIsDelegatedToTheAgentInsteadOfRunningLocally(): void
     {
         $handler = new LogTerminalProxyFakeHandler();
+        $handler->replyJson(['code' => 0, 'data' => [
+            'code' => 0,
+            'stdout' => "ok dari agent\n",
+            'stderr' => '',
+            'timedOut' => false,
+        ]]);
+
         $exec = new LogTerminalProxyExec();
         $exec->explode = true;
         $controller = new LogTerminalProxyTerminalController($this->deployer($handler), $exec);
@@ -686,8 +695,20 @@ class LogTerminalServerProxyTest extends TestCase
             self::APP_ID
         ));
 
-        $this->assertSame(501, $body['code']);
-        $this->assertSame(0, $handler->count(), 'fitur yang belum server-aware tidak boleh dikirim ke agent');
+        $this->assertSame(0, $body['code']);
+        $this->assertSame('ok dari agent', trim((string) $body['data']['stdout']));
+        $this->assertSame(
+            ['POST /terminal/run'],
+            $handler->paths(),
+            'perintah satu-kali wajib dijalankan DI server agent'
+        );
+        $sent = $handler->jsonBody(0);
+        $this->assertSame(self::APP_ID, $sent['app_id']);
+        $this->assertSame('demo-web-1', $sent['container']);
+        $this->assertSame('uptime', $sent['command']);
+        // Timeout dipangkas ke anggaran HTTP klien agent (≤30 s, aturan repo).
+        $this->assertLessThanOrEqual(20, (int) $sent['timeout']);
+        $this->assertGreaterThan(0, (int) $sent['timeout']);
         $this->assertSame([], $exec->openCalls, 'dan tidak boleh dijalankan di server lokal');
     }
 

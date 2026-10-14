@@ -110,7 +110,7 @@ class DeployWorkerLauncherTest extends TestCase
         $launcher = $this->launcher();
 
         foreach ([
-            ['app1', 'self_update'],                 // op plan §4.1 yang belum ada di cli/deploy.php
+            ['app1', 'save_compose'],                // op plan §4.1 yang belum ada di cli/deploy.php
             ['app1', 'deploy_env'],
             ['app1', '  '],
             ['', 'deploy'],

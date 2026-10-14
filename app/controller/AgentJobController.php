@@ -5,13 +5,19 @@ namespace app\controller;
 
 use app\library\Agent\AgentAppProjection;
 use app\library\Agent\AgentArtifactMaterializer;
+use app\library\Agent\AgentError;
 use app\library\Agent\AgentJobStore;
 use app\library\Backup\BackupJobRunner;
+use app\library\Backup\DumpStaging;
 use app\library\Backup\ResticRunner;
 use app\library\Backup\VolumeStateGuard;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Storage\AppStore;
+use app\library\Template\TemplateCatalog;
+use app\library\Template\TemplatePullService;
+use app\library\Template\TemplatePullState;
+use app\library\Update\AgentVersionGate;
 use InvalidArgumentException;
 use support\Request;
 use Webman\Http\Response;
@@ -23,11 +29,14 @@ use Webman\Http\Response;
  * ```
  * POST /jobs              {op, app:{…}, ref?, actor_id?, preserve_volumes?, artifacts:{…}, domain?}
  *                         → {code:0, job_id, op, log_offset}
+ * POST /jobs              {op: template_pull|self_update, target, …}   (op tingkat server, F4 lanjutan)
+ *                         → {code:0, job_id, op, log_offset}
  * GET  /jobs/{id}                                        → {code:0, job:{…}}
  * GET  /jobs/{id}/log?offset=N                           → teks log (polling)
  * GET  /apps/{id}                                        → {code:0, app:{…}} | 404
  * GET  /apps/{id}/nginx                                  → {code:0, config} (F2)
  * POST /nginx/check                                      → {code:0, op:'nginx_check'} (F2)
+ * GET  /backups/dump?volume=…&offset=N&limit=M           → potongan berkas .sql (F4 lanjutan)
  * ```
  *
  * F2 multi-server (Nginx/SSL, plan §5) — op baru di jalur job yang sama
@@ -68,6 +77,14 @@ use Webman\Http\Response;
  *      langsung kembali; pekerjaan build berjalan sendiri (timeout HTTP ≤ 30 s,
  *      plan §3 butir 1). Spawn **gagal** ⇒ job ditandai `error` dan respons
  *      `{code:1}` — tidak pernah mengaku sukses.
+ *
+ * **Op tingkat server** ({@see self::SERVER_OPS}, F4 lanjutan) memakai endpoint
+ * yang sama tetapi tanpa app: payload memuat `target` (slug template / `agent`),
+ * bukan `app`. Karena itu langkah 2–3 (proyeksi app & materialisasi artefak)
+ * tidak berlaku; yang tetap: validasi op, preflight op di library
+ * (`template_pull` ⇒ {@see TemplatePullService::preflight()}; `self_update` ⇒
+ * gerbang kompatibilitas {@see AgentVersionGate::assertControlPlaneCompatibleWithAgent()}),
+ * pencatatan job, spawn worker, dan `log_offset`.
  *
  * `log_offset` pada respons = **ukuran berkas log deploy app** saat job dibuat
  * ({@see DeployWorkerLauncher::logPath()}). Wajib dipakai control plane
@@ -167,6 +184,27 @@ class AgentJobController
      */
     public const SSL_OPS = ['ssl_issue', 'ssl_revoke'];
 
+    /**
+     * Op **tingkat server** (F4 lanjutan): tidak terikat satu app, jadi payload
+     * membawa `target` (bukan `app`) — slug template untuk `template_pull`,
+     * `agent` untuk `self_update`, nama volume arsip untuk `restore_archived`
+     * ({@see DeployWorkerLauncher::SERVER_OPS}, satu sumber). Semuanya tetap op
+     * job normal: dicatat di {@see AgentJobStore}, diluncurkan
+     * {@see DeployWorkerLauncher}, dan log-nya dibaca `GET /jobs/{id}/log`
+     * (kunci log = target).
+     */
+    public const SERVER_OPS = DeployWorkerLauncher::SERVER_OPS;
+
+    /** Bentuk `target` yang boleh masuk argv/log (anti path traversal). */
+    private const TARGET_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/';
+
+    /**
+     * Op tingkat server yang `target`-nya **nama volume** (bukan slug) — bentuknya
+     * divalidasi aturan volume yang sama dengan jalur lokal, bukan
+     * {@see self::TARGET_PATTERN} (batas panjang slug).
+     */
+    private const VOLUME_TARGET_OPS = ['restore_archived'];
+
     /** Bentuk domain yang boleh masuk payload (FQDN huruf kecil, tanpa skema/path/port). */
     private const DOMAIN_PATTERN = '/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/';
 
@@ -184,8 +222,15 @@ class AgentJobController
      * F4: `volume`/`snapshot`/`trigger` (backup/restore/dump volume) ikut
      * diizinkan — semuanya nama/penanda, **bukan** kredensial: server agent
      * memakai konfigurasi & berkas kredensialnya sendiri.
+     *
+     * F4 lanjutan: `target` (slug template / `agent` / nama volume arsip),
+     * `update_mode` (`update|rollback`), dan `control_plane_version` (versi
+     * control plane pemanggil, dipakai gerbang kompatibilitas sisi agen) —
+     * semuanya bukan kredensial. `target_name` = nama volume BARU pada
+     * `restore_archived` (nama volume, bukan kredensial). Token/PEM tetap tidak
+     * pernah masuk rekaman job.
      */
-    private const PAYLOAD_FIELDS = ['ref', 'actor_id', 'preserve_volumes', 'domain', 'volume', 'snapshot', 'trigger'];
+    private const PAYLOAD_FIELDS = ['ref', 'actor_id', 'preserve_volumes', 'domain', 'volume', 'snapshot', 'trigger', 'target', 'target_name', 'update_mode', 'control_plane_version'];
 
     /**
      * Op data F4 (plan §4.1): backup/restore/dump volume dijalankan di server
@@ -206,18 +251,28 @@ class AgentJobController
 
     private ?AgentArtifactMaterializer $materializer;
 
+    /**
+     * Preflight tarik image template (seam uji; null ⇒ bawaan yang membaca
+     * `deploy.templates_path` + `deploy.template_pull_run_dir` server ini).
+     * Dipakai op tingkat server `template_pull` — jalur lokal `/nginx` memakai
+     * kelas yang sama, jadi aturan preflight tidak digandakan.
+     */
+    private ?TemplatePullService $templatePull;
+
     public function __construct(
         ?AgentJobStore $jobs = null,
         ?DeployWorkerLauncher $launcher = null,
         ?AgentAppProjection $projection = null,
         ?AgentArtifactMaterializer $materializer = null,
         ?BackupJobRunner $backup = null,
+        ?TemplatePullService $templatePull = null,
     ) {
         $this->jobs = $jobs;
         $this->launcher = $launcher;
         $this->projection = $projection;
         $this->materializer = $materializer;
         $this->backup = $backup;
+        $this->templatePull = $templatePull;
     }
 
     /**
@@ -235,6 +290,13 @@ class AgentJobController
         if (!in_array($op, self::OPS, true)) {
             // Pesan sengaja tidak menggemakan nilai op yang dikirim klien.
             return $this->error('Op tidak didukung agent ini.', 'unsupported', 501);
+        }
+
+        // Op tingkat server (F4 lanjutan: `template_pull`, `self_update`) tidak
+        // terikat satu app ⇒ jalur terpisah: `target` + payload op, tanpa
+        // proyeksi app & tanpa artefak.
+        if (in_array($op, self::SERVER_OPS, true)) {
+            return $this->createServerJob($op, $payload);
         }
 
         $app = $payload['app'] ?? null;
@@ -390,6 +452,140 @@ class AgentJobController
             });
 
             return $this->error('Gagal menjalankan worker deploy di server agent.', 'spawn_failed', 500, $jobId);
+        }
+
+        return json(['code' => 0, 'job_id' => $jobId, 'op' => $op, 'log_offset' => $logOffset]);
+    }
+
+    /**
+     * Job **tingkat server** ({@see self::SERVER_OPS}) — mediator: validasi
+     * target/payload, preflight op di library, catat job, materialisasi tidak
+     * ada (tanpa app), luncurkan worker.
+     *
+     * Kenapa jalur terpisah: `POST /jobs` versi app selalu butuh `app.id`/
+     * `app.name` (proyeksi + log per-app), sedangkan `template_pull`/`self_update`/
+     * `restore_archived` hanya butuh target. Yang **tidak** berubah: job tetap
+     * tercatat di {@see AgentJobStore}, worker tetap di-spawn detached
+     * ({@see DeployWorkerLauncher}), dan `log_offset` tetap dikembalikan supaya
+     * control plane tidak mengulang baris log lama.
+     *
+     * `restore_archived` (plan §5): volume arsip sudah **tidak punya app**, jadi
+     * op ini tidak boleh menuntut proyeksi app — `target` = nama volume arsip
+     * (divalidasi aturan volume, bukan pola slug) dan payload membawa
+     * `snapshot` + `target_name`. Worker di agent yang membuat volume target &
+     * menjalankan restic, dengan `VolumeStateGuard` tetap ditegakkan di sana.
+     *
+     * @param array<string,mixed> $payload payload mentah dari klien (whitelist di {@see self::PAYLOAD_FIELDS} untuk rekaman)
+     */
+    private function createServerJob(string $op, array $payload): Response
+    {
+        $target = is_scalar($payload['target'] ?? null) ? trim((string) $payload['target']) : '';
+        $volumeTarget = in_array($op, self::VOLUME_TARGET_OPS, true);
+
+        if ($volumeTarget) {
+            try {
+                VolumeStateGuard::assertVolumeName($target);
+            } catch (\Throwable) {
+                return $this->error('`target` op `' . $op . '` wajib nama volume yang sah.', 'invalid_request', 400);
+            }
+        } elseif ($target === '' || preg_match(self::TARGET_PATTERN, $target) !== 1) {
+            return $this->error('`target` wajib diisi untuk op tingkat server.', 'invalid_request', 400);
+        }
+
+        $actorId = is_string($payload['actor_id'] ?? null) ? trim($payload['actor_id']) : '';
+        $jobPayload = ['target' => $target];
+
+        if ($op === 'restore_archived') {
+            // Dua penanda saja (`snapshot`, `target_name`) — bentuknya divalidasi
+            // library yang sama dengan jalur lokal (`ResticRunner` /
+            // `VolumeStateGuard`), jadi worker di agent tidak perlu menebak.
+            $snapshot = is_scalar($payload['snapshot'] ?? null) ? trim((string) $payload['snapshot']) : '';
+            $targetName = is_scalar($payload['target_name'] ?? null) ? trim((string) $payload['target_name']) : '';
+            try {
+                ResticRunner::assertSnapshotId($snapshot);
+                VolumeStateGuard::assertVolumeName($targetName);
+            } catch (\Throwable) {
+                return $this->error(
+                    'Op `restore_archived` butuh `snapshot` dan `target_name` (nama volume baru) yang sah.',
+                    'invalid_request',
+                    400
+                );
+            }
+
+            $jobPayload['snapshot'] = $snapshot;
+            $jobPayload['target_name'] = $targetName;
+
+            return $this->launchServerJob($op, $target, $jobPayload, $actorId);
+        }
+
+        if ($op === 'template_pull') {
+            // Fail-fast: slug wajib ada di checkout template **server ini**
+            // (preflight library yang sama dengan jalur lokal `/nginx` tab
+            // Template: slug dikenal, template valid, ada image, tidak ada run
+            // yang masih berjalan). Pesan galatnya sudah menjelaskan sebabnya.
+            $preflight = $this->templatePull()->preflight($target);
+            if (!$preflight['ok']) {
+                return $this->error((string) $preflight['error'], 'invalid_request', 400);
+            }
+        } else {
+            // `self_update`: mode update + gerbang kompatibilitas **sisi agen**
+            // (control plane yang terlalu tua tidak boleh memperbarui agen ini).
+            if ($target !== DeployWorkerLauncher::AGENT_UPDATE_TARGET) {
+                return $this->error(
+                    '`target` op `self_update` wajib "' . DeployWorkerLauncher::AGENT_UPDATE_TARGET . '".',
+                    'invalid_request',
+                    400
+                );
+            }
+
+            $updateMode = is_scalar($payload['update_mode'] ?? null) ? trim((string) $payload['update_mode']) : 'update';
+            if (!in_array($updateMode, \app\library\Update\UpdateService::MODES, true)) {
+                return $this->error('`update_mode` tidak dikenal (update|rollback).', 'invalid_request', 400);
+            }
+
+            $controlPlaneVersion = is_scalar($payload['control_plane_version'] ?? null)
+                ? trim((string) $payload['control_plane_version'])
+                : '';
+
+            try {
+                AgentVersionGate::assertControlPlaneCompatibleWithAgent($controlPlaneVersion);
+            } catch (AgentError $e) {
+                return $this->error($e->getMessage(), 'unsupported', 501);
+            }
+
+            $jobPayload['update_mode'] = $updateMode;
+            $jobPayload['control_plane_version'] = $controlPlaneVersion;
+        }
+
+        return $this->launchServerJob($op, $target, $jobPayload, $actorId);
+    }
+
+    /**
+     * Catat & luncurkan job tingkat server — bagian ekor {@see self::createServerJob()},
+     * satu implementasi untuk **semua** op tingkat server (termasuk yang targetnya
+     * nama volume).
+     *
+     * @param array<string,mixed> $jobPayload payload yang sudah tervalidasi (hanya penanda)
+     */
+    private function launchServerJob(string $op, string $target, array $jobPayload, string $actorId): Response
+    {
+        $job = $this->jobs()->create($op, $target, $jobPayload);
+        $jobId = (string) $job['id'];
+
+        // Log job = log worker (`runtime/logs/deploy/{target}.log`) — sama seperti
+        // op app, hanya kuncinya target (bukan id app). Offset dipakai control
+        // plane supaya baris run sebelumnya tidak terulang.
+        $logOffset = $this->logOffset($target);
+
+        if (!$this->launcher()->launch($target, $op, null, $actorId, $jobId)) {
+            $this->jobs()->update($jobId, static function (array &$record): void {
+                $record['status'] = 'error';
+                $record['message'] = 'Gagal menjalankan worker di server agent.';
+                $record['error'] = 'Gagal spawn worker.';
+                $record['finished_at'] = date('c');
+            });
+
+            return $this->error('Gagal menjalankan worker di server agent.', 'spawn_failed', 500, $jobId);
         }
 
         return json(['code' => 0, 'job_id' => $jobId, 'op' => $op, 'log_offset' => $logOffset]);
@@ -563,6 +759,68 @@ class AgentJobController
         ]]);
     }
 
+    /**
+     * `GET /backups/dump?volume=…&offset=N&limit=M` (F4 lanjutan) — unduh
+     * **bertahap** berkas `.sql` hasil `db_dump` terakhir sebuah volume **di
+     * server ini** (staging server ini).
+     *
+     * Bentuk respons **bukan JSON**: body = potongan berkas apa adanya (dibatasi
+     * `limit`, plafon `DumpStaging::MAX_READ_BYTES`) dengan header
+     * `X-Rames-File`/`X-Rames-Offset`/`X-Rames-Size`/`X-Rames-Eof` — kontrolnya
+     * offset, jadi control plane dapat meneruskan isi berkas ke pengguna tanpa
+     * satu respons raksasa (≤30 s per panggilan HTTP, aturan repo).
+     *
+     * Otorisasi sudah ditegakkan control plane (`BackupAccess`) sebelum
+     * memanggil; nama volume dari klien tetap divalidasi di sini
+     * (`VolumeStateGuard`) dan berkas selalu di-resolve dari staging server ini
+     * (bukan path dari klien).
+     */
+    public function backupDump(Request $request): Response
+    {
+        $volume = trim((string) $request->get('volume', ''));
+        try {
+            VolumeStateGuard::assertVolumeName($volume);
+        } catch (\Throwable) {
+            return $this->error('Nama volume tidak valid.', 'invalid_request', 400);
+        }
+
+        $offset = max(0, $this->intQuery($request, 'offset'));
+        $limit = $this->intQuery($request, 'limit', DumpStaging::MAX_READ_BYTES);
+        $limit = max(1, min($limit, DumpStaging::MAX_READ_BYTES));
+
+        try {
+            $chunk = $this->backupRunner()->dumpChunk($volume, $offset, $limit);
+        } catch (\Throwable $e) {
+            // Belum ada dump untuk volume itu ⇒ 404 (bukan 500): control plane
+            // membedakan "belum pernah dump" dari "dump gagal dibaca".
+            return $this->error($this->sanitizeMessage($e->getMessage()), 'backup_dump_failed', 404);
+        }
+
+        $next = (int) $chunk['offset'] + strlen((string) $chunk['data']);
+
+        return response((string) $chunk['data'], 200, [
+            'Content-Type' => 'application/sql; charset=utf-8',
+            'X-Rames-File' => (string) $chunk['name'],
+            'X-Rames-Offset' => (string) $next,
+            'X-Rames-Size' => (string) $chunk['size'],
+            'X-Rames-Eof' => $chunk['eof'] ? 'true' : 'false',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
+
+    /**
+     * Nilai query numerik ≥ 0 (nilai tak sah ⇒ `$default`).
+     */
+    private function intQuery(Request $request, string $key, int $default = 0): int
+    {
+        $raw = $request->get($key);
+        if (is_array($raw) || !is_numeric($raw)) {
+            return $default;
+        }
+
+        return max(0, (int) $raw);
+    }
+
     // ==================================================================
     // Helper (mediator — tanpa logika bisnis)
     // ==================================================================
@@ -704,5 +962,19 @@ class AgentJobController
     private function backupRunner(): BackupJobRunner
     {
         return $this->backup ??= new BackupJobRunner();
+    }
+
+    /**
+     * Preflight tarik image template **server ini** (seam uji; null ⇒ bawaan
+     * dengan path dari config) — dipakai op `template_pull` sebelum job dicatat,
+     * supaya slug yang tidak ada di checkout template server ini ditolak lebih
+     * awal dengan pesan jelas (bukan job yang gagal di tengah).
+     */
+    private function templatePull(): TemplatePullService
+    {
+        return $this->templatePull ??= new TemplatePullService(
+            new TemplateCatalog(),
+            new TemplatePullState((string) config('deploy.template_pull_run_dir', runtime_path('logs/template-pull')))
+        );
     }
 }

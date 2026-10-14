@@ -3,14 +3,17 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Agent\AgentError;
 use app\library\Auth\UserStore;
 use app\library\Backup\BackupAccess;
 use app\library\Backup\BackupCatalog;
 use app\library\Backup\BackupDispatcher;
+use app\library\Backup\BackupJobRunner;
 use app\library\Backup\BackupRegistry;
 use app\library\Backup\BackupReport;
 use app\library\Backup\BackupSelection;
 use app\library\Backup\BackupStrategyResolver;
+use app\library\Backup\DumpStaging;
 use app\library\Backup\ResticRunner;
 use app\library\Backup\VolumeBackupService;
 use app\library\Backup\VolumeRestoreService;
@@ -603,6 +606,130 @@ class BackupController
     }
 
     /**
+     * Unduh berkas `.sql` hasil `db_dump` (staging) sebuah volume — ability
+     * `backup` (operator+).
+     *
+     * Multi-server F4 lanjutan: volume server **agent** diunduh **dari server
+     * itu** lewat `AgentDeployer::downloadDump()` (potongan bertahap, setiap
+     * panggilan HTTP ≤30 s, total dibatasi plafon); volume lokal dibaca dari
+     * staging host ini lewat `BackupJobRunner::dumpChunk()` — kontrol plane tidak
+     * pernah membaca staging server agent secara langsung.
+     *
+     * Respons = `Webman\Http\Response` (unduhan), bukan helper `json()`.
+     */
+    public function downloadDumpSql(Request $request)
+    {
+        if (config('deploy.volume_backup_enabled', true) === false) {
+            return json(['code' => 422, 'msg' => 'Fitur backup volume dimatikan.'])->withStatus(422);
+        }
+
+        $volume = trim((string) $request->get('volume', ''));
+        if (!$this->validVolume($volume)) {
+            return json(['code' => 422, 'msg' => 'Nama volume tidak valid.'])->withStatus(422);
+        }
+
+        try {
+            $targets = $this->volumeTargets();
+        } catch (\Throwable $e) {
+            return json(['code' => 500, 'msg' => 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()])->withStatus(500);
+        }
+
+        try {
+            $target = $this->findTarget($targets, $volume, trim((string) $request->get('server_id', '')));
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
+        if ($target === null) {
+            return $this->notFound();
+        }
+
+        $apps = (new AppStore())->all();
+        BackupAccess::require('backup', $target, $this->findApp($apps, (string) ($target['app_id'] ?? '')), $this->currentUser());
+
+        $maxBytes = max(1, (int) config('deploy.volume_backup_dump_download_max_bytes', 134217728));
+        $serverId = self::serverIdOf($target);
+
+        if (!BackupDispatcher::isLocalServer($serverId)) {
+            try {
+                $this->assertAgentSupports($serverId, 'db_dump');
+                $dump = $this->agentDeployerForTarget($target)->downloadDump($volume);
+            } catch (\RuntimeException $e) {
+                return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+            } catch (\Throwable $e) {
+                $code = AgentDeployer::failureCode($e);
+
+                return json(['code' => $code, 'msg' => AgentError::sanitize($e->getMessage())])->withStatus($code);
+            }
+        } else {
+            try {
+                $dump = $this->readLocalDump($volume, $maxBytes);
+            } catch (\RuntimeException $e) {
+                return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+            } catch (\Throwable $e) {
+                return json(['code' => 500, 'msg' => 'Gagal menyiapkan dump: ' . $e->getMessage()])->withStatus(500);
+            }
+        }
+
+        $content = (string) ($dump['content'] ?? '');
+        $name = (string) ($dump['name'] ?? '');
+        if (strlen($content) > $maxBytes) {
+            return json(['code' => 422, 'msg' => 'Berkas dump melebihi batas unduh.'])->withStatus(422);
+        }
+
+        return new Response(200, [
+            'Content-Type' => 'application/sql; charset=utf-8',
+            'Content-Disposition' => 'attachment; filename="' . self::safeDownloadName($volume, $name !== '' ? $name : 'dump') . '"',
+            'Content-Length' => (string) strlen($content),
+            'X-Content-Type-Options' => 'nosniff',
+        ], $content);
+    }
+
+    /**
+     * Baca berkas dump staging **host ini** (jalur lokal) secara bertahap —
+     * memakai `BackupJobRunner::dumpChunk()` (satu sumber dengan endpoint agent),
+     * dibatasi `$maxBytes` supaya satu permintaan tidak menahan data tanpa batas.
+     *
+     * `protected` (bukan `private`) semata agar unit test dapat menyuntikkan isi
+     * dump tanpa menyentuh staging `runtime/` nyata — perilaku produksi tidak
+     * berubah (pola yang sama dengan `volumeTargets()`).
+     *
+     * @return array{name:string,bytes:int,content:string}
+     * @throws \RuntimeException belum ada dump / melebihi batas / berkas tak terbaca
+     */
+    protected function readLocalDump(string $volume, int $maxBytes): array
+    {
+        $runner = new BackupJobRunner();
+        $content = '';
+        $name = '';
+        $offset = 0;
+
+        while (true) {
+            $chunk = $runner->dumpChunk($volume, $offset, DumpStaging::MAX_READ_BYTES);
+            if ($name === '') {
+                $name = (string) $chunk['name'];
+            }
+            $content .= (string) $chunk['data'];
+            $offset += strlen((string) $chunk['data']);
+
+            if (strlen($content) > $maxBytes) {
+                throw new \RuntimeException('Berkas dump melebihi batas unduh — unduh langsung di server tersebut.');
+            }
+            if ($chunk['eof'] === true) {
+                break;
+            }
+            if ((string) $chunk['data'] === '') {
+                throw new \RuntimeException('Berkas dump tidak dapat dibaca sepenuhnya.');
+            }
+        }
+
+        if ($content === '') {
+            throw new \RuntimeException('Berkas dump kosong — tidak ada yang bisa diunduh.');
+        }
+
+        return ['name' => $name, 'bytes' => strlen($content), 'content' => $content];
+    }
+
+    /**
      * Daftar snapshot restic sebuah volume **arsip** (admin-only, keputusan 4a).
      *
      * Berbeda dari `snapshots()`, ia **tidak** membutuhkan volume di Docker
@@ -650,10 +777,19 @@ class BackupController
      * yang membuat volume target & menjalankan restic (lihat CLI). Controller
      * hanya memvalidasi & memutuskan kelayakan lewat satu sumber kebenaran
      * `VolumeRestoreService::planArchiveRestore()`.
+     *
+     * **Multi-server F4 lanjutan**: volume arsip milik server agent dipulihkan
+     * **di server itu** — worker menerima `serverId` dan meneruskan pekerjaan ke
+     * `AgentDispatcher`/`AgentDeployer` (job `restore_archived`): volume target
+     * dibuat & restic dijalankan di sana, dengan `VolumeStateGuard` tetap
+     * ditegakkan. Tidak ada jalur mundur ke control plane.
      */
     public function restoreArchived(Request $request)
     {
-        if (!is_admin()) {
+        // Seam `isAdmin()` (produksi identik dengan helper `is_admin()`) — satu
+        // pola dengan endpoint admin lain di controller ini, sehingga routing
+        // arsip dapat diuji tanpa sesi nyata.
+        if (!$this->isAdmin()) {
             return $this->notFound();
         }
 
@@ -675,46 +811,58 @@ class BackupController
 
         try {
             $registry = (new BackupRegistry())->read();
-            $entry = $registry[$volume] ?? null;
         } catch (\Throwable $e) {
             return json(['code' => 500, 'msg' => 'Gagal membaca arsip backup: ' . $e->getMessage()])->withStatus(500);
         }
 
-        // Restore arsip volume **server agent** belum didukung (volume target harus
-        // dibuat di server itu, jalur restic-nya repo server itu). Ditolak tegas —
-        // bukan dijalankan di control plane dengan repo/volume yang salah.
-        $agentEntryKey = null;
-        foreach ($registry as $key => $candidate) {
-            if (BackupRegistry::volumeOfKey((string) $key) !== $volume) {
-                continue;
-            }
-            if (!BackupDispatcher::isLocalServer(BackupRegistry::serverOfKey((string) $key))) {
-                $agentEntryKey = (string) $key;
+        // Server pemilik arsip: `server_id` eksplisit bila dikirim; selain itu
+        // entri **lokal** (`<volume>`) lebih diutamakan, dan bila hanya ada entri
+        // server agent yang volumenya cocok, entri itulah yang dipakai.
+        $serverId = trim((string) $request->post('server_id', ''));
+        $entry = $serverId !== ''
+            ? ($registry[BackupRegistry::scopeKey($serverId, $volume)] ?? null)
+            : ($registry[$volume] ?? null);
+
+        if ($entry === null && $serverId === '') {
+            foreach ($registry as $key => $candidate) {
+                $key = (string) $key;
+                if (BackupRegistry::volumeOfKey($key) !== $volume) {
+                    continue;
+                }
+                $owner = BackupRegistry::serverOfKey($key);
+                if (BackupDispatcher::isLocalServer($owner)) {
+                    continue;
+                }
+                $entry = is_array($candidate) ? $candidate : null;
+                $serverId = $owner;
                 break;
             }
         }
-        if ($agentEntryKey !== null) {
-            return json([
-                'code' => 422,
-                'msg' => "Restore arsip volume \"{$volume}\" milik server \""
-                    . BackupRegistry::serverOfKey($agentEntryKey)
-                    . '" belum didukung (volume target harus dibuat di server itu; jalankan di server tersebut).',
-            ])->withStatus(422);
+
+        $serverId = $serverId === '' ? ServerStore::LOCAL_ID : $serverId;
+        $isAgent = !BackupDispatcher::isLocalServer($serverId);
+
+        if ($isAgent) {
+            try {
+                $this->assertAgentSupports($serverId, 'restore_archived');
+            } catch (\RuntimeException $e) {
+                return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+            }
         }
 
-        // Cek keberadaan volume target hanya bila entri ada (hemat Engine call
-        // pada 404). Filter `name` Docker bersifat fuzzy → cocokkan persis.
+        // Cek keberadaan volume target hanya bisa dilakukan untuk server lokal
+        // (Engine host ini). Untuk server agent, keberadaannya diperiksa di server
+        // itu oleh worker/job — control plane tidak menebak.
         $targetExists = false;
-        if ($entry !== null) {
+        if (!$isAgent && $entry !== null) {
             try {
-                $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'), 30);
-                $targetExists = self::volumeListed($docker->listVolumes(['name' => [$targetName]]), $targetName);
+                $targetExists = $this->volumeNameExists($targetName);
             } catch (\Throwable $e) {
                 return json(['code' => 500, 'msg' => 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()])->withStatus(500);
             }
         }
 
-        $plan = VolumeRestoreService::planArchiveRestore($entry, $targetExists);
+        $plan = VolumeRestoreService::planArchiveRestore(is_array($entry) ? $entry : null, $targetExists);
         if (!$plan['ok']) {
             if ($plan['code'] === 404) {
                 return $this->notFound();
@@ -722,7 +870,7 @@ class BackupController
             return json(['code' => $plan['code'], 'msg' => $plan['msg']])->withStatus($plan['code']);
         }
 
-        if (!$this->spawnWorker(['restore-archived', $volume, $snapshot, $targetName])) {
+        if (!$this->spawnWorker(['restore-archived', $volume, $snapshot, $targetName, $serverId])) {
             return json(['code' => 500, 'msg' => 'Gagal menjalankan worker restore.'])->withStatus(500);
         }
 
@@ -1294,6 +1442,22 @@ class BackupController
         }
 
         return false;
+    }
+
+    /**
+     * Apakah nama volume sudah dipakai Docker Engine **server ini** — satu-satunya
+     * jalur `restoreArchived()` yang menyentuh Engine lokal, dan hanya untuk server
+     * **lokal** (server agent diperiksa di server itu oleh worker).
+     *
+     * `protected` (bukan `private`) semata agar unit test dapat meng-override-nya:
+     * menguji routing arsip tidak boleh menuntut Docker Engine nyata (pola yang
+     * sama dengan `volumeTargets()`).
+     */
+    protected function volumeNameExists(string $name): bool
+    {
+        $docker = new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'), 30);
+
+        return self::volumeListed($docker->listVolumes(['name' => [$name]]), $name);
     }
 
     /**

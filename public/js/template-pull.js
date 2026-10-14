@@ -3,9 +3,15 @@
  * (`docker pull` di host) dengan progres + log live.
  *
  * Kontrak yang dikonsumsi (JANGAN diubah dari sisi UI):
- *   POST /nginx/templates/pull         body `_token` + `slug` → {code:0|400|403,msg,data:{id,images}}
- *   GET  /nginx/templates/pull/status                        → {code:0,msg,data:{running,run,log_tail,logs}}
- *   run = {id,slug,title,stage,message,result,error,started_at,finished_at,actor,images,results,log,pid}
+ *   POST /nginx/templates/pull         body `_token` + `slug` (+ `server` hanya bila server agent) → {code:0|400|403,msg,data:{id,images}}
+ *   GET  /nginx/templates/pull/status  (+ `?server=<id>` untuk server agent) → {code:0,msg,data:{running,run,log_tail,logs}}
+ *   run = {id,slug,title,stage,message,result,error,started_at,finished_at,actor,images,results,log,pid,job}
+ *
+ * Multi-server: pemilih server (`#template-server-picker`, admin-only) hanya
+ * mengubah **target** permintaan — status & aksi selalu memakai server terpilih.
+ * Untuk server lokal tidak ada parameter/field `server` yang dikirim, jadi
+ * perilakunya identik dengan sebelum fitur multi-server. Pemilihan server di
+ * browser **bukan** otorisasi: controller tetap menolak non-admin (403/404).
  *
  * Semua aksi = POST + token CSRF dari `meta[name="csrf-token"]` (pola
  * `public/js/update.js`; middleware CSRF hanya membaca `_token` pada POST).
@@ -34,6 +40,10 @@
   var resultsEl = document.getElementById('template-pull-results');
   var errorEl = document.getElementById('template-pull-error');
   var logEl = document.getElementById('template-pull-log');
+  var serverLabelEl = document.getElementById('template-pull-server');
+  var serverNoteEl = document.getElementById('template-server-note');
+  var pickerEl = document.getElementById('template-server-picker');
+  var serverButtons = pickerEl ? Array.prototype.slice.call(pickerEl.querySelectorAll('.js-template-server')) : [];
 
   var POLL_MS = 2000;
   var STAGE_LABELS = {
@@ -49,6 +59,50 @@
   var timer = null;
   var running = panel.getAttribute('data-running') === '1';
   var activeBtn = null;
+
+  // Server terpilih. Tanpa pemilih (instalasi satu server) nilainya selalu
+  // "server lokal", jadi semua permintaan berjalan seperti sebelumnya.
+  var selectedServerId = '';
+  var selectedServerName = '';
+
+  (function initServer() {
+    var chosen = null;
+    for (var i = 0; i < serverButtons.length; i++) {
+      if (serverButtons[i].classList.contains('active')) { chosen = serverButtons[i]; break; }
+    }
+    if (!chosen && serverButtons.length) chosen = serverButtons[0];
+    if (chosen) {
+      selectedServerId = chosen.getAttribute('data-server-id') || '';
+      selectedServerName = chosen.getAttribute('data-server-name') || selectedServerId;
+    }
+  })();
+
+  /** Target server lokal = tanpa id / id `local` (kontrak controller). */
+  function isLocalTarget() {
+    return selectedServerId === '' || selectedServerId === 'local';
+  }
+
+  function targetLabel() {
+    return isLocalTarget() ? 'server lokal (dashboard ini)' : 'server “' + selectedServerName + '”';
+  }
+
+  /** URL status untuk server terpilih (parameter `server` hanya untuk agent). */
+  function statusUrl() {
+    return isLocalTarget()
+      ? '/nginx/templates/pull/status'
+      : '/nginx/templates/pull/status?server=' + encodeURIComponent(selectedServerId);
+  }
+
+  function setServerLabel() {
+    if (serverLabelEl) serverLabelEl.textContent = '\u2014 ' + targetLabel();
+    if (serverNoteEl) {
+      serverNoteEl.textContent = isLocalTarget()
+        ? 'Tarik image dijalankan di host dashboard ini.'
+        : 'Tarik image dijalankan di ' + targetLabel() + '.';
+    }
+    panel.setAttribute('data-server-local', isLocalTarget() ? '1' : '0');
+    panel.setAttribute('data-server-id', isLocalTarget() ? '' : selectedServerId);
+  }
 
   // ------------------------------------------------------------------
   // Notifikasi (selalu textContent — tidak ada HTML dari data server)
@@ -157,10 +211,14 @@
   }
 
   function metaLine(run) {
-    if (!run.started_at) return '';
-    var line = 'Run ' + (run.id || '') + ' oleh ' + (run.actor || '?') + ' (' + run.started_at
-      + (run.finished_at ? ' → ' + run.finished_at : '') + ')';
-    return run.title ? 'Template ' + run.title + ' — ' + line : line;
+    var parts = [];
+    if (run.job) parts.push('Job ' + run.job);
+    if (run.started_at) {
+      var line = 'Run ' + (run.id || '') + ' oleh ' + (run.actor || '?') + ' (' + run.started_at
+        + (run.finished_at ? ' → ' + run.finished_at : '') + ')';
+      parts.push(run.title ? 'Template ' + run.title + ' — ' + line : line);
+    }
+    return parts.join(' · ');
   }
 
   function renderRun(data) {
@@ -243,7 +301,7 @@
 
   function poll() {
     if (document.hidden) return;
-    fetch('/nginx/templates/pull/status', {
+    fetch(statusUrl(), {
       credentials: 'same-origin',
       headers: { 'X-Requested-With': 'XMLHttpRequest' }
     }).then(function (r) {
@@ -254,7 +312,7 @@
         running = false;
         activeBtn = null;
         setButtonsBusy(false);
-        notify((res && res.msg) || 'Status tarik image tidak dapat dibaca.', 'danger');
+        notify((res && res.msg) || ('Status tarik image di ' + targetLabel() + ' tidak dapat dibaca.'), 'danger');
         return;
       }
       renderRun(res.data);
@@ -263,6 +321,59 @@
       schedulePoll();
     });
   }
+
+  // ------------------------------------------------------------------
+  // Pemilih server: ganti target panel + aksi (tanpa reload halaman)
+  // ------------------------------------------------------------------
+
+  /** Kosongkan panel saat pindah server — state run tidak boleh tercampur. */
+  function resetPanel() {
+    panel.classList.add('d-none');
+    panel.setAttribute('data-run-id', '');
+    if (badgeEl) {
+      badgeEl.className = 'badge text-bg-info';
+      badgeEl.textContent = 'Menunggu';
+    }
+    if (messageEl) messageEl.textContent = '';
+    if (stageEl) stageEl.textContent = '';
+    if (metaEl) metaEl.textContent = '';
+    if (errorEl) {
+      errorEl.textContent = '';
+      errorEl.classList.add('d-none');
+    }
+    if (logEl) logEl.textContent = '';
+    renderResults({ images: [], results: [] });
+  }
+
+  function selectServer(btn) {
+    var id = btn.getAttribute('data-server-id') || '';
+    if (btn.classList.contains('active') && id === selectedServerId) return;
+
+    selectedServerId = id;
+    selectedServerName = btn.getAttribute('data-server-name') || id;
+
+    serverButtons.forEach(function (candidate) {
+      var on = candidate === btn;
+      candidate.classList.toggle('active', on);
+      candidate.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+
+    stopPolling();
+    running = false;
+    activeBtn = null;
+    setButtonsBusy(false);
+    resetPanel();
+    setServerLabel();
+    clearNotify();
+    notify('Menampilkan status tarik image di ' + targetLabel() + '…', 'info');
+    // Status diambil dari server itu (agent bisa perlu beberapa saat menjawab);
+    // panel muncul sendiri bila di sana ada run berjalan atau run terakhir.
+    poll();
+  }
+
+  serverButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () { selectServer(btn); });
+  });
 
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
@@ -286,13 +397,18 @@
     activeBtn = btn;
     clearNotify();
     setButtonsBusy(true);
-    notify('Menarik image template “' + title + '”…', 'info');
+    notify('Menarik image template “' + title + '” di ' + targetLabel() + '…', 'info');
+
+    // Field `server` hanya dikirim untuk server agent; server lokal tetap
+    // memakai permintaan lama (`_token` + `slug`) tanpa perubahan apa pun.
+    var body = new URLSearchParams({ _token: CSRF, slug: slug });
+    if (!isLocalTarget()) body.set('server', selectedServerId);
 
     fetch('/nginx/templates/pull', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
-      body: new URLSearchParams({ _token: CSRF, slug: slug })
+      body: body
     }).then(function (r) {
       return r.json().catch(function () {
         return { code: 400, msg: 'Respons server tidak valid.' };
@@ -306,7 +422,7 @@
       }
       running = true;
       panel.classList.remove('d-none');
-      if (res.data && Array.isArray(res.data.images)) {
+      if (res.data && Array.isArray(res.data.images) && res.data.images.length > 0) {
         renderResults({ images: res.data.images, results: [] });
       }
       notify(res.msg || 'Tarik image dimulai…', 'info');
@@ -321,6 +437,8 @@
   buttons.forEach(function (btn) {
     btn.addEventListener('click', function () { startPull(btn); });
   });
+
+  setServerLabel();
 
   if (running) {
     setButtonsBusy(true);

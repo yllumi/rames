@@ -5,7 +5,11 @@ declare(strict_types=1);
 /**
  * Background worker deploy app.
  *
- *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump] [ref] [actorId]
+ *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]
+ *
+ * Untuk op **tingkat server** (`template_pull`, `self_update` — op yang tidak
+ * terikat satu app) slot `appId` berisi *target*: slug template (pull) atau
+ * `agent` (self-update). Keduanya dijalankan SEBELUM pemuatan app di store.
  *
  * Dipanggil detached oleh AppController (pcntl_fork + pcntl_exec) supaya request
  * HTTP tidak terblokir oleh operasi build yang lama. Pipeline:
@@ -40,6 +44,12 @@ declare(strict_types=1);
  * `volume`/`snapshot`/`trigger` — kredensial restic/S3/DB/Cloudflare **tidak
  * pernah** dikirim control plane: server ini memakai env & berkas
  * kredensialnya sendiri.
+ *
+ * F4 lanjutan (op tingkat server): mode `restore_archived` memulihkan volume
+ * **arsip** (volume yang sudah dihapus, tanpa app) ke volume target BARU **di
+ * server ini** — `VolumeArchiveRestore` (restic + `docker volume create`),
+ * `VolumeStateGuard` tetap ditegakkan. Slot `appId` berisi **nama volume arsip**
+ * dan `snapshot`/`target_name` dibaca dari payload job.
  */
 
 use app\library\Agent\AgentJobStore;
@@ -50,6 +60,7 @@ use app\library\Deploy\DeployerFactory;
 use app\library\Nginx\NginxReloader;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
+use app\library\Support\ProcessRunner;
 
 if (PHP_SAPI !== 'cli') {
     exit(1);
@@ -64,8 +75,8 @@ $ref = $argv[3] ?? '';
 
 // Daftar mode = satu sumber untuk `DeployWorkerLauncher::MODES` (capabilities
 // agent) — jangan menyalinnya di tempat lain.
-if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback', 'apply', 'stop', 'start', 'teardown', 'apply_env', 'nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue', 'ssl_revoke', 'backup_run', 'restore', 'db_dump'], true) || ($mode === 'rollback' && $ref === '')) {
-    fwrite(STDERR, "Usage: php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump] [ref] [actorId]\n");
+if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback', 'apply', 'stop', 'start', 'teardown', 'apply_env', 'nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue', 'ssl_revoke', 'backup_run', 'restore', 'db_dump', 'restore_archived', 'template_pull', 'self_update'], true) || ($mode === 'rollback' && $ref === '')) {
+    fwrite(STDERR, "Usage: php cli/deploy.php <appId|target> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]\n");
     exit(1);
 }
 
@@ -120,6 +131,182 @@ if ($jobStore !== null && $jobId !== '') {
         $jobPayload = is_array($record['payload'] ?? null) ? $record['payload'] : [];
     } catch (\Throwable $ignored) {
         $jobPayload = [];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Op **tingkat server** (F4 lanjutan): tarik image template, self-update agen,
+// dan restore volume arsip. Tidak terikat satu app ⇒ slot `appId` berisi *target*
+// (slug template / `agent` / nama volume arsip) dan blok ini berjalan SEBELUM
+// pemuatan app di store. Semuanya adalah mode nyata
+// `DeployWorkerLauncher::MODES` (capabilities agent ikut otomatis).
+// ---------------------------------------------------------------------------
+if ($mode === 'template_pull' || $mode === 'self_update' || $mode === 'restore_archived') {
+    $target = trim($appId);
+    $serverOpActor = trim((string) ($argv[4] ?? ''));
+
+    $logDir = runtime_path('logs/deploy');
+    if (!is_dir($logDir)) {
+        @mkdir($logDir, 0775, true);
+    }
+    $logFile = $logDir . '/' . $target . '.log';
+    file_put_contents($logFile, '[' . date('c') . "] start mode={$mode} target={$target}\n", FILE_APPEND);
+
+    /** @var callable(string,string):void $logServerOp */
+    $logServerOp = static function (string $stage, string $message) use ($logFile, $markJob): void {
+        file_put_contents($logFile, '[' . date('c') . "] [{$stage}] {$message}" . PHP_EOL, FILE_APPEND);
+        $markJob(['status' => 'running', 'stage' => $stage, 'message' => $message]);
+    };
+
+    try {
+        if ($mode === 'template_pull') {
+            // Mekanisme SAMA dengan jalur lokal (`/nginx` tab Template): preflight
+            // `TemplatePullService` + worker `cli/pull.php` (TemplateCatalog +
+            // `docker pull` per image). Bedanya di sini worker dijalankan
+            // **sinkron** karena kita sendiri adalah worker job-nya — image tetap
+            // masuk ke daemon server INI, bukan daemon control plane.
+            $runDir = (string) config('deploy.template_pull_run_dir', runtime_path('logs/template-pull'));
+            $pullScript = base_path(\app\library\Template\TemplatePullService::WORKER_SCRIPT);
+            $service = new \app\library\Template\TemplatePullService(
+                new \app\library\Template\TemplateCatalog(),
+                new \app\library\Template\TemplatePullState($runDir),
+                null,
+                $pullScript
+            );
+
+            $preflight = $service->preflight($target);
+            if (!$preflight['ok']) {
+                throw new RuntimeException((string) $preflight['error']);
+            }
+
+            $images = $preflight['images'];
+            $timeout = (int) config('deploy.template_pull_timeout', 1800);
+            $logServerOp('template', 'Menarik ' . count($images) . ' image template "' . $target . '" di server ini …');
+
+            $result = (new ProcessRunner())->run(
+                [PHP_BINARY, $pullScript, $target, $serverOpActor],
+                null,
+                // Batas total = batas PER image × jumlah image + kelonggaran;
+                // batas per image ditegakkan worker `cli/pull.php` sendiri.
+                max(60, count($images) * ($timeout + 30))
+            );
+
+            // Laporan worker pull (state + log mentah `docker pull`) dicerminkan
+            // ke log job supaya control plane melihat keluaran yang sesungguhnya.
+            $pullState = new \app\library\Template\TemplatePullState($runDir);
+            $pullRun = $pullState->run();
+            if ($pullRun['log'] !== null) {
+                $raw = $pullState->logTail($pullRun['log'], 200000);
+                if ($raw !== '') {
+                    file_put_contents($logFile, $raw, FILE_APPEND);
+                }
+            }
+            foreach ($pullRun['results'] as $image) {
+                $logServerOp('template', 'image ' . $image['image'] . ': ' . ($image['ok'] ? 'OK' : $image['message']));
+            }
+
+            if ($result['code'] !== 0 || $pullRun['result'] !== 'success') {
+                $why = (string) ($pullRun['error'] ?? '');
+                if ($why === '') {
+                    $why = trim($result['stderr']) !== ''
+                        ? trim($result['stderr'])
+                        : 'worker tarik image keluar dengan kode ' . $result['code'] . ($result['timedOut'] ? ' (timeout)' : '');
+                }
+                throw new RuntimeException($why);
+            }
+
+            $markJob(['status' => 'done', 'stage' => null, 'message' => 'Selesai', 'error' => '', 'finished_at' => date('c')]);
+            file_put_contents($logFile, '[' . date('c') . "] done\n", FILE_APPEND);
+            exit(0);
+        }
+
+        // --- restore_archived ------------------------------------------------
+        // Restore volume ARSIP (volume yang sudah dihapus, tanpa app) ke volume
+        // target BARU — dijalankan DI SINI (worker di server agent), memakai repo
+        // restic & daemon server ini. `VolumeStateGuard` tetap ditegakkan:
+        // snapshot filesystem hanya sah bila tidak ada container yang me-mount
+        // volume itu. Kelas yang sama dipakai jalur lokal (`cli/backup.php`).
+        if ($mode === 'restore_archived') {
+            $snapshot = trim((string) ($jobPayload['snapshot'] ?? ''));
+            $targetName = trim((string) ($jobPayload['target_name'] ?? ''));
+            if ($snapshot === '' || $targetName === '') {
+                throw new RuntimeException('Payload job tidak memuat `snapshot`/`target_name` — restore arsip dibatalkan.');
+            }
+
+            /** @var callable(string,string):void $projectLog */
+            $projectLog = static function (string $project, string $message) use ($logServerOp): void {
+                $logServerOp('restore', $message);
+            };
+
+            // Seam uji (pola `RAMES_BACKUP_RUNNER_CLASS`): kelas pengganti
+            // `VolumeArchiveRestore` supaya uji CLI tidak menuntut Docker/restic
+            // nyata. Produksi: kosong.
+            $restorerClass = trim((string) getenv('RAMES_BACKUP_ARCHIVE_RESTORE_CLASS'));
+            /** @var app\library\Backup\VolumeArchiveRestore $restorer */
+            $restorer = ($restorerClass !== '' && class_exists($restorerClass))
+                ? new $restorerClass(null, null, null, null, null, $projectLog)
+                : new \app\library\Backup\VolumeArchiveRestore(null, null, null, null, null, $projectLog);
+
+            $logServerOp('restore', "Memulihkan volume arsip {$target} → {$targetName} di server ini (snapshot {$snapshot}) ...");
+            $result = $restorer->run($target, $snapshot, $targetName);
+
+            $markJob([
+                'status' => 'done',
+                'stage' => null,
+                'message' => (string) ($result['message'] ?? 'Selesai'),
+                'error' => '',
+                'finished_at' => date('c'),
+            ]);
+            file_put_contents($logFile, '[' . date('c') . "] done\n", FILE_APPEND);
+            exit(0);
+        }
+
+        // --- self_update -----------------------------------------------------
+        // Self-update agen dijalankan DI SINI (pola yang sama dengan self-update
+        // dashboard): helper container di luar compose project lewat
+        // `UpdateService` — proses ini tidak pernah me-recreate container yang
+        // menjalankannya sendiri, dan control plane tidak pernah menjalankannya.
+        if ((string) config('deploy.mode') !== 'agent') {
+            throw new RuntimeException(
+                'Op `self_update` hanya berlaku di server agent (RAMES_MODE=agent); dashboard diperbarui lewat '
+                . 'halaman Config → tab Update.'
+            );
+        }
+
+        // Gerbang kompatibilitas: control plane yang terlalu tua tidak boleh
+        // memperbarui agen ini (satu sumber: AgentVersionGate).
+        \app\library\Update\AgentVersionGate::assertControlPlaneCompatibleWithAgent(
+            (string) ($jobPayload['control_plane_version'] ?? '')
+        );
+
+        $updateMode = trim((string) ($jobPayload['update_mode'] ?? 'update'));
+        if (!in_array($updateMode, selfUpdateModes(), true)) {
+            throw new RuntimeException('Mode self-update tidak dikenal: ' . $updateMode . '.');
+        }
+
+        $updater = selfUpdateRunner();
+        $preflight = $updater->preflight();
+        if (!$preflight['ok']) {
+            throw new RuntimeException('Prasyarat self-update belum terpenuhi: ' . implode(' ', $preflight['errors']));
+        }
+
+        $logServerOp('update', 'Menjalankan self-update agen (mode ' . $updateMode . ') lewat helper container …');
+        $started = $updater->start($updateMode, $serverOpActor);
+
+        $markJob([
+            'status' => 'done',
+            'stage' => null,
+            'message' => 'Self-update agen dijalankan (helper ' . (string) ($started['container'] ?? '-') . ').',
+            'error' => '',
+            'finished_at' => date('c'),
+        ]);
+        file_put_contents($logFile, '[' . date('c') . "] done\n", FILE_APPEND);
+        exit(0);
+    } catch (\Throwable $e) {
+        $msg = $e->getMessage();
+        file_put_contents($logFile, '[' . date('c') . "] ERROR: {$msg}\n", FILE_APPEND);
+        $markJob(['status' => 'error', 'stage' => null, 'message' => $msg, 'error' => $msg, 'finished_at' => date('c')]);
+        exit(1);
     }
 }
 
@@ -477,4 +664,45 @@ try {
     }
     $markJob(['status' => 'error', 'stage' => null, 'message' => $msg, 'error' => $msg, 'finished_at' => date('c')]);
     exit(1);
+}
+
+/**
+ * Mode self-update yang didukung — dibaca dari kelas produksi
+ * ({@see \app\library\Update\UpdateService::MODES}) supaya daftarnya tidak
+ * disalin ke worker.
+ *
+ * @return array<int,string>
+ */
+function selfUpdateModes(): array
+{
+    return \app\library\Update\UpdateService::MODES;
+}
+
+/**
+ * Runner self-update agen — seam uji `RAMES_SELF_UPDATE_CLASS` (pola sama
+ * `DEPLOYER_CLASS` / `RAMES_BACKUP_RUNNER_CLASS`): kelas pengganti supaya uji
+ * tidak menuntut helper container / `docker` nyata. Produksi: `UpdateService`
+ * dengan path dari config server ini (`update_path`, `update_run_dir`) sehingga
+ * update benar-benar berjalan di repo agen.
+ */
+function selfUpdateRunner(): \app\library\Update\UpdateRunner
+{
+    $override = trim((string) getenv('RAMES_SELF_UPDATE_CLASS'));
+    if ($override !== '' && class_exists($override)) {
+        $runner = new $override();
+        if ($runner instanceof \app\library\Update\UpdateRunner) {
+            return $runner;
+        }
+    }
+
+    return new \app\library\Update\UpdateService(
+        new \app\library\Update\RepoInfo((string) config('deploy.update_path', base_path())),
+        new \app\library\Update\UpdateState(
+            (string) config('deploy.update_check_file', runtime_path('update/check.json')),
+            (string) config('deploy.update_run_dir', runtime_path('logs/update'))
+        ),
+        null,
+        null,
+        (string) config('deploy.update_branch', '')
+    );
 }

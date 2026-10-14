@@ -8,8 +8,12 @@ use app\library\Agent\AgentError;
 use app\library\Agent\TlsPinMaterializer;
 use app\library\Auth\AppAccessDenied;
 use app\library\Auth\ServerAccess;
+use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Deploy\ServerResolver;
 use app\library\Storage\ServerStore;
+use app\library\Update\AgentVersionGate;
+use app\library\Update\UpdateService;
 use RuntimeException;
 use support\Request;
 use Webman\Http\Response;
@@ -257,7 +261,12 @@ class ServerController
 
                 if ($identityChanged) {
                     $row['status'] = 'unknown';
-                    unset($row['agent_version'], $row['capabilities'], $row['last_seen_at']);
+                    unset(
+                        $row['agent_version'],
+                        $row['capabilities'],
+                        $row['min_control_plane_version'],
+                        $row['last_seen_at']
+                    );
                 }
             });
         } catch (RuntimeException $e) {
@@ -329,7 +338,7 @@ class ServerController
 
         if (ServerResolver::isLocal($server)) {
             // Dashboard berjalan di server ini; tidak ada agent untuk dihubungi.
-            return json(['code' => 0, 'server' => $this->recordResult($id, 'online', null, [])]);
+            return json(['code' => 0, 'server' => $this->recordResult($id, 'online', null, [], null)]);
         }
 
         try {
@@ -337,7 +346,7 @@ class ServerController
             $health = $client->health();
             $version = $client->version();
         } catch (AgentError $e) {
-            $this->recordResult($id, 'offline', null, null);
+            $this->recordResult($id, 'offline', null, null, null);
 
             return json([
                 'code' => 1,
@@ -345,7 +354,7 @@ class ServerController
                 'reason' => $e->reason,
             ]);
         } catch (RuntimeException $e) {
-            $this->recordResult($id, 'offline', null, null);
+            $this->recordResult($id, 'offline', null, null, null);
 
             return json([
                 'code' => 1,
@@ -356,8 +365,109 @@ class ServerController
 
         $agentVersion = trim((string) ($version['agent_version'] ?? $health['version'] ?? ''));
         $capabilities = $this->capabilities($version['capabilities'] ?? []);
+        // Versi control plane minimum yang diminta agen (F4 lanjutan): disimpan
+        // per server supaya gerbang versi (`AgentVersionGate`) bisa menolak op
+        // sebelum efek samping, tanpa memanggil agen tiap kali.
+        $minControlPlane = is_scalar($version['min_control_plane_version'] ?? null)
+            ? trim((string) $version['min_control_plane_version'])
+            : '';
 
-        return json(['code' => 0, 'server' => $this->recordResult($id, 'online', $agentVersion, $capabilities)]);
+        return json([
+            'code' => 0,
+            'server' => $this->recordResult($id, 'online', $agentVersion, $capabilities, $minControlPlane),
+        ]);
+    }
+
+    /**
+     * `POST /servers/{id}/agent-update` — perbarui **agen** di server itu
+     * (F4 lanjutan; JSON, admin-only).
+     *
+     * Update dijalankan **di agen** (job async `self_update` → worker
+     * `cli/deploy.php self_update` di sana, yang memakai helper container di luar
+     * compose project — pola self-update dashboard). Control plane **tidak
+     * pernah** me-recreate container agen dan tidak menjalankan update apa pun
+     * untuk server itu di sini.
+     *
+     * Urutan penjagaan (fail-fast sebelum efek samping):
+     *  1. otorisasi (`guard()` ⇒ 404 untuk non-admin);
+     *  2. server ada & `kind=agent` (baris lokal ditolak: dashboard-nya diupdate
+     *     lewat `Config → Update`);
+     *  3. `mode` ∈ `update|rollback`;
+     *  4. gerbang versi & kapabilitas ({@see AgentVersionGate::check()} dengan op
+     *     `self_update`): agen yang terlalu tua, control plane yang terlalu tua
+     *     untuk agen itu, atau agen yang belum melaporkan dukungan `self_update`
+     *     ditolak dengan pesan jelas — agen **tidak** akan diperbarui ke versi
+     *     yang tidak kompatibel dengan dashboard ini.
+     *
+     * Respons: `{code:0, data:{job_id, server_id, mode}, msg}` — pesannya
+     * mengingatkan bahwa agen akan restart (proses job bisa terputus saat
+     * container di-recreate) sehingga verifikasi versi baru dilakukan lewat
+     * **Test connection**.
+     */
+    public function agentUpdate(Request $request, string $id): Response
+    {
+        $denied = $this->guard($request);
+        if ($denied !== null) {
+            return $denied;
+        }
+
+        $server = $this->servers()->find($id);
+        if ($server === null) {
+            return json(['code' => 1, 'error' => 'Server tidak ditemukan.'])->withStatus(404);
+        }
+
+        if (ServerResolver::isLocal($server)) {
+            return json([
+                'code' => 400,
+                'msg' => 'Server lokal adalah dashboard ini sendiri — perbarui lewat halaman Config → tab Update, bukan lewat agen.',
+            ]);
+        }
+
+        $mode = trim((string) $request->post('mode', 'update'));
+        if (!in_array($mode, UpdateService::MODES, true)) {
+            return json(['code' => 400, 'msg' => 'Mode update tidak dikenal (update|rollback).']);
+        }
+
+        $compat = AgentVersionGate::check($server, DeployWorkerLauncher::AGENT_UPDATE_OP);
+        if (!$compat['ok']) {
+            return json(['code' => 400, 'msg' => implode(' ', $compat['errors'])]);
+        }
+
+        try {
+            $deployer = $this->agentDeployerForServer($server);
+            if (!$deployer instanceof AgentDeployer) {
+                throw new RuntimeException('Update agen membutuhkan server `kind=agent` yang valid.');
+            }
+
+            $result = $deployer->startServerJob(
+                DeployWorkerLauncher::AGENT_UPDATE_OP,
+                DeployWorkerLauncher::AGENT_UPDATE_TARGET,
+                [
+                    'update_mode' => $mode,
+                    // Versi control plane pemanggil: gerbang kompatibilitas sisi
+                    // agen (bukan kredensial) — agen menolak perintah dari
+                    // dashboard yang terlalu tua untuknya.
+                    'control_plane_version' => AgentVersionGate::CODEBASE_VERSION,
+                ]
+            );
+        } catch (AgentError $e) {
+            return json(['code' => 400, 'msg' => $e->getMessage(), 'reason' => $e->reason]);
+        } catch (RuntimeException $e) {
+            return json(['code' => 400, 'msg' => $e->getMessage()]);
+        }
+
+        return json([
+            'code' => 0,
+            'data' => [
+                'job_id' => $result['job_id'],
+                'server_id' => $id,
+                'mode' => $mode,
+                'agent_version' => (string) ($server['agent_version'] ?? ''),
+            ],
+            'msg' => 'Update agen dimulai di server "' . (string) ($server['name'] ?? $id)
+                . '" (job ' . $result['job_id'] . '). Agen akan restart; jalankan Test connection setelahnya '
+                . 'untuk memverifikasi versi baru.',
+        ]);
     }
 
     /**
@@ -488,6 +598,10 @@ class ServerController
         $hasToken = trim((string) ($server['token'] ?? $server['token_ref'] ?? '')) !== '';
         unset($server['token'], $server['token_ref'], $server['tls_cert_pem']);
         $server['has_token'] = $hasToken;
+        // Ringkasan kompatibilitas versi (F4 lanjutan) untuk halaman Servers:
+        // `ok`/`errors`/`warnings` + versi yang terlibat. Murni turunan dokumen
+        // server (tanpa jaringan, tanpa rahasia) — server lokal selalu `ok`.
+        $server['agent_compat'] = AgentVersionGate::check($server);
 
         return $server;
     }
@@ -609,17 +723,25 @@ class ServerController
      * @param array<int,string>|null $capabilities
      * @return array<string,mixed>
      */
-    private function recordResult(string $id, string $status, ?string $agentVersion, ?array $capabilities): array
-    {
+    private function recordResult(
+        string $id,
+        string $status,
+        ?string $agentVersion,
+        ?array $capabilities,
+        ?string $minControlPlaneVersion = null,
+    ): array {
         $seenAt = date('c');
 
-        $this->servers()->update($id, static function (array &$row) use ($status, $agentVersion, $capabilities, $seenAt): void {
+        $this->servers()->update($id, static function (array &$row) use ($status, $agentVersion, $capabilities, $minControlPlaneVersion, $seenAt): void {
             $row['status'] = $status;
             if ($agentVersion !== null && $agentVersion !== '') {
                 $row['agent_version'] = $agentVersion;
             }
             if ($capabilities !== null) {
                 $row['capabilities'] = $capabilities;
+            }
+            if ($minControlPlaneVersion !== null && $minControlPlaneVersion !== '') {
+                $row['min_control_plane_version'] = $minControlPlaneVersion;
             }
             if ($status === 'online') {
                 $row['last_seen_at'] = $seenAt;
@@ -633,6 +755,7 @@ class ServerController
             'status' => $status,
             'agent_version' => (string) ($stored['agent_version'] ?? ''),
             'capabilities' => $this->capabilities($stored['capabilities'] ?? []),
+            'min_control_plane_version' => (string) ($stored['min_control_plane_version'] ?? ''),
             'last_seen_at' => (string) ($stored['last_seen_at'] ?? ''),
         ];
     }
@@ -717,6 +840,21 @@ class ServerController
     protected function agentClient(array $server): AgentClient
     {
         return new AgentClient($server, null, AgentClient::DEFAULT_TIMEOUT, $this->pinMaterializer());
+    }
+
+    /**
+     * Deployer agent untuk satu dokumen server (seam pengujian) — pola yang sama
+     * dengan `BackupController::agentDeployerForServer()`. `null` = server lokal.
+     *
+     * @param array<string,mixed> $server
+     */
+    protected function agentDeployerForServer(array $server): ?AgentDeployer
+    {
+        if (ServerResolver::isLocal($server)) {
+            return null;
+        }
+
+        return AgentDeployer::forServer($server, $this->agentClient($server));
     }
 
     /** Materializer sertifikat pin (seam pengujian: direktori temp). */

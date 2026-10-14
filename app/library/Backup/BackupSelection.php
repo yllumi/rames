@@ -229,6 +229,45 @@ final class BackupSelection
     }
 
     /**
+     * Nama volume yang **terjadwal (ON)** dikelompokkan per server — dipakai
+     * pemicu berkala (`cli/backup.php run` tanpa `serverId`) supaya volume milik
+     * server agent juga ter-backup terjadwal, masing-masing dikirim ke **server
+     * pemiliknya** (plan §4.3: satu clock di control plane, pekerjaan di server).
+     *
+     * Kunci hasil = id server (`local` untuk server ini); nilainya nama volume
+     * unik (terurut sesuai penyimpanan). Entri tanpa kunci `scheduled` atau
+     * bernilai OFF **tidak** ikut (default OFF/opt-in, sama dengan
+     * {@see self::isScheduled()}).
+     *
+     * @return array<string,array<int,string>>
+     */
+    public function scheduledByServer(): array
+    {
+        $data = $this->data();
+
+        /** @var array<string,array<string,true>> $grouped */
+        $grouped = [];
+        foreach ((array) ($data['volumes'] ?? []) as $key => $entry) {
+            if (!is_array($entry) || !array_key_exists('scheduled', $entry) || (bool) $entry['scheduled'] !== true) {
+                continue;
+            }
+            $key = (string) $key;
+            $name = BackupRegistry::volumeOfKey($key);
+            if ($name === '') {
+                continue;
+            }
+            $grouped[BackupRegistry::serverOfKey($key)][$name] = true;
+        }
+
+        $out = [];
+        foreach ($grouped as $serverId => $names) {
+            $out[$serverId] = array_keys($names);
+        }
+
+        return $out;
+    }
+
+    /**
      * Entri seleksi **semua server** (kunci apa adanya) — dipakai `backfill()`.
      *
      * @return array<string,mixed>

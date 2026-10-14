@@ -18,6 +18,10 @@ use app\library\Support\SigchldGuard;
  * php cli/deploy.php <appId> <mode> [ref] [actorId]
  * ```
  *
+ * Untuk op tingkat server ({@see self::SERVER_OPS}) slot `appId` berisi *target*
+ * (slug template / `agent`) — bentuk argv-nya identik; hanya pemaknaan slot itu
+ * yang berbeda (didokumentasikan juga di `cli/deploy.php`).
+ *
  * `ref` selalu menempati slot ke-4 (string kosong bila bukan rollback) supaya
  * `actorId` (argv[4]) tidak bergeser; worker memakai aktor untuk pengecualian
  * kredit yang sama dengan controller.
@@ -64,6 +68,19 @@ final class DeployWorkerLauncher
      * agent** menjalankan backup/restore/dump volume lewat `BackupJobRunner`
      * (restic + helper container di daemon server itu, kredensial milik server
      * itu). Control plane tidak pernah menjalankan restic pada volume agent.
+     *
+     * F4 lanjutan (op **tingkat server**, {@see self::SERVER_OPS}):
+     * `template_pull` — worker di agent menjalankan mekanisme tarik image
+     * template yang sama dengan jalur lokal (`cli/pull.php`: `TemplateCatalog` +
+     * `docker pull` per image via `ProcessRunner`), sehingga image masuk ke
+     * daemon **server itu**; `self_update` — worker di agent menjalankan
+     * self-update agen lewat helper container di luar compose project
+     * (`UpdateService`, pola yang sama dengan self-update dashboard), tidak
+     * pernah dari control plane; `restore_archived` — worker di agent memulihkan
+     * volume **arsip** ke volume target baru di server itu
+     * (`VolumeArchiveRestore`, `VolumeStateGuard` tetap ditegakkan). Ketiga op ini
+     * **tidak terikat app** sehingga `argv[1]` berisi *target* (slug template /
+     * `agent` / nama volume), bukan id app — lihat {@see self::SERVER_OPS}.
      */
     public const MODES = [
         'deploy',
@@ -82,7 +99,41 @@ final class DeployWorkerLauncher
         'backup_run',
         'restore',
         'db_dump',
+        'restore_archived',
+        'template_pull',
+        'self_update',
     ];
+
+    /**
+     * Mode yang **tidak terikat satu app** (op tingkat server) — pemanggilnya
+     * (`AgentJobController::createServerJob()`) mengisi `argv[1]`/rekaman job
+     * dengan *target*, bukan id app:
+     *
+     *  - `template_pull`: target = slug template (checkout `templates/<slug>`
+     *    server itu);
+     *  - `self_update`  : target = `agent` (tidak ada arti lain; nilai tetap
+     *    supaya bentuk argv/rekaman job seragam);
+     *  - `restore_archived`: target = **nama volume arsip** (tanpa app; payload
+     *    membawa `snapshot` + `target_name`). Volume arsip memang sudah tidak
+     *    punya app, jadi op ini tidak boleh menuntut proyeksi app.
+     *
+     * Karena semuanya tetap mode `cli/deploy.php` yang nyata, daftar ini bagian
+     * dari {@see self::MODES} ⇒ otomatis ikut `AgentJobController::OPS` dan
+     * `capabilities` (`GET /version`) — tidak ada op "senyap".
+     *
+     * @var array<int,string>
+     */
+    public const SERVER_OPS = ['template_pull', 'self_update', 'restore_archived'];
+
+    /** Op tingkat server untuk **self-update agen** (nama op job di agent). */
+    public const AGENT_UPDATE_OP = 'self_update';
+
+    /**
+     * Target tetap op {@see self::AGENT_UPDATE_OP} — nilai semantik (bukan nama
+     * app): tidak ada arti lain, dipakai supaya bentuk argv/rekaman job seragam
+     * dengan op tingkat server lain.
+     */
+    public const AGENT_UPDATE_TARGET = 'agent';
 
     /** Skrip worker (relatif `base_path()`). */
     public const WORKER_SCRIPT = 'cli/deploy.php';
@@ -140,7 +191,8 @@ final class DeployWorkerLauncher
      * worker yang pasti ditolak `cli/deploy.php` hanya akan menghasilkan proses
      * mubazir + status app `error`.
      *
-     * @param string      $appId   id app
+     * @param string      $appId   id app, atau **target** untuk op tingkat server
+     *                             ({@see self::SERVER_OPS}: slug template / `agent`)
      * @param string      $mode    mode `cli/deploy.php` — lihat {@see self::MODES} (satu sumber)
      * @param string|null $ref     ref rollback (mode lain: null/'' ⇒ slot dibiarkan kosong)
      * @param string      $actorId id user penekan tombol (`argv[4]`), '' bila tak ada konteks login

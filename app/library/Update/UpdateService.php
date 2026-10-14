@@ -38,7 +38,7 @@ use RuntimeException;
  * Network dipilih lewat `chooseHelperNetwork()` — TIDAK boleh diambil sembarang
  * dari `NetworkSettings.Networks` (lihat method tersebut).
  */
-final class UpdateService
+final class UpdateService implements UpdateRunner
 {
     /** Aksi yang didukung. */
     public const MODES = ['update', 'rollback'];

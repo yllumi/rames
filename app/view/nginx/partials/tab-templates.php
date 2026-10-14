@@ -12,10 +12,35 @@
  *   $templates: array<int,array{slug,title,description,category,icon,docs_url,valid,error,images,apps}>
  *   $pull     : null | array{failed:string} | array{enabled,running,run,log_tail,logs}
  *   $pull['run']: {id,slug,title,stage,message,result,error,started_at,finished_at,
- *                  actor,images,results,log,pid}
+ *                  actor,images,results,log,pid,job}
+ *   $servers  : array<int,array{id,name,kind,domain,enabled,status,capabilities}>
+ *               (`ServerResolver::option()` — **tanpa** token/PEM/base_url).
+ *
+ * Multi-server (F4 lanjutan): panel di bawah bisa diarahkan ke **server terpilih**
+ * lewat pemilih di atasnya. Pemilih itu (**admin-only**) hanya mengubah target
+ * panel & aksi:
+ *   - status dipoll dari `GET /nginx/templates/pull/status?server=<id>`;
+ *   - aksi tarik image mengirim field `server` yang sama.
+ * Untuk **server lokal** tidak ada parameter/kiriman `server` sama sekali —
+ * perilakunya identik dengan sebelum fitur multi-server (jalur lama di
+ * `TemplatePullService`). State/riwayat pull terpisah per server di sisi
+ * controller, jadi panel ini selalu menampilkan run server yang sedang dipilih.
  */
 $templates = is_array($templates ?? null) ? $templates : [];
 $pull = is_array($pull ?? null) ? $pull : null;
+
+// Pemilih server. **Admin-only** — untuk non-admin daftar `$servers` dari
+// controller TIDAK dirender sama sekali supaya keberadaan server lain tidak
+// bocor (pola `app/view/network/index.php`). Halaman ini memang admin-only di
+// controller; penjagaan di sini adalah lapisan kedua, bukan pengaman.
+$__isAdmin = is_admin();
+$__servers = $__isAdmin && is_array($servers ?? null)
+    ? array_values(array_filter($servers, 'is_array'))
+    : [];
+// Pemilih hanya bermakna bila ada lebih dari satu server (instalasi satu server
+// tidak perlu dropdown/tombol berisi satu opsi) — pola `/networks`.
+$__showServerPicker = count($__servers) > 1;
+$__localServerLabel = 'server lokal (dashboard ini)';
 
 $pullFailed = is_string($pull['failed'] ?? null) ? trim((string) $pull['failed']) : '';
 $pullRun = is_array($pull['run'] ?? null) ? $pull['run'] : [];
@@ -74,8 +99,58 @@ if (!empty($pullRun['started_at'])) {
         $pullMeta = 'Template ' . (string) $pullRun['title'] . ' — ' . $pullMeta;
     }
 }
+// Id job di server tempat pull dijalankan (kosong untuk run lokal). Ditampilkan
+// supaya admin bisa mencocokkan job ini dengan log agen di server itu.
+$pullJob = is_string($pullRun['job'] ?? null) ? trim((string) $pullRun['job']) : '';
+if ($pullJob !== '') {
+    $pullMeta = 'Job ' . $pullJob . ($pullMeta !== '' ? ' · ' . $pullMeta : '');
+}
 ?>
 <div id="template-pull-flash" class="mb-0"></div>
+
+<?php if ($__showServerPicker): ?>
+<?php // Pemilih server: hanya admin (lihat catatan di atas) dan hanya bila ada
+      // lebih dari satu server. Nilainya dibaca `public/js/template-pull.js` —
+      // keberadaan/pemilihan server tidak pernah ditentukan dari nama/id di DOM
+      // sebagai otorisasi (controller tetap menolak non-admin: 403/404). ?>
+<div class="card mb-3" id="template-server-picker">
+  <div class="card-body py-2">
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <span class="small fw-semibold">Server</span>
+      <div class="btn-group btn-group-sm" role="group" aria-label="Pilih server tempat image ditarik">
+        <?php foreach ($__servers as $__srv): ?>
+        <?php
+        $__srvId = (string) ($__srv['id'] ?? '');
+        $__srvName = trim((string) ($__srv['name'] ?? ''));
+        $__srvName = $__srvName !== '' ? $__srvName : $__srvId;
+        $__srvLocal = strtolower(trim((string) ($__srv['kind'] ?? ''))) === 'local';
+        $__srvStatus = strtolower(trim((string) ($__srv['status'] ?? '')));
+        $__srvStatus = $__srvStatus !== '' ? $__srvStatus : 'unknown';
+        $__srvEnabled = !empty($__srv['enabled']);
+        $__srvBadge = $__srvStatus === 'online' ? 'badge-running' : ($__srvStatus === 'offline' ? 'badge-error' : 'badge-unknown');
+        ?>
+        <button type="button" class="btn btn-outline-secondary js-template-server<?= $__srvLocal ? ' active' : '' ?>"
+                data-server-id="<?= e($__srvId) ?>"
+                data-server-name="<?= e($__srvName) ?>"
+                data-server-local="<?= $__srvLocal ? '1' : '0' ?>"
+                data-server-status="<?= e($__srvStatus) ?>"
+                aria-pressed="<?= $__srvLocal ? 'true' : 'false' ?>"
+                title="<?= $__srvLocal ? 'Server lokal: docker pull di host dashboard ini' : 'Server agent: docker pull dijalankan di server itu' ?>">
+          <?= e($__srvName) ?>
+          <span class="badge <?= e($__srvBadge) ?> ms-1"><?= e($__srvLocal ? 'lokal' : 'agen') ?></span>
+          <?php if (!$__srvEnabled): ?><span class="badge badge-stopped ms-1">nonaktif</span><?php endif; ?>
+        </button>
+        <?php endforeach; ?>
+      </div>
+      <span class="small text-muted" id="template-server-note"></span>
+    </div>
+    <div class="small text-muted mt-1">
+      Progres, job, dan riwayat tarik image ditampilkan <strong>per server</strong> — status diambil langsung dari
+      server yang dipilih (server agent bisa perlu beberapa saat untuk menjawab).
+    </div>
+  </div>
+</div>
+<?php endif; ?>
 
 <?php if ($pull === null): ?>
 <div class="alert alert-secondary py-2 small mb-3" role="alert">
@@ -92,9 +167,13 @@ if (!empty($pullRun['started_at'])) {
      belum ada run supaya daftar template tetap jadi fokus awal. -->
 <div class="card mb-3<?= $pullShowPanel ? '' : ' d-none' ?>" id="template-pull-panel"
      data-running="<?= $pullRunning ? '1' : '0' ?>"
+     data-server-local="1"
+     data-server-id=""
      data-run-id="<?= e((string) ($pullRun['id'] ?? '')) ?>">
   <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-    <h2 class="h6 mb-0">Progres Tarik Image</h2>
+    <h2 class="h6 mb-0">Progres Tarik Image
+      <span class="text-muted fw-normal small" id="template-pull-server">&mdash; <?= e($__localServerLabel) ?></span>
+    </h2>
     <div class="d-flex align-items-center gap-2 flex-wrap">
       <span class="badge <?= e($pullBadge[0]) ?>" id="template-pull-badge"><?= e($pullBadge[1]) ?></span>
       <span class="small text-muted" id="template-pull-stage"><?= $pullStageLabel !== '' ? 'Tahap: ' . e($pullStageLabel) : '' ?></span>

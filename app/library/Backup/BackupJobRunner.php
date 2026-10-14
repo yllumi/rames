@@ -179,8 +179,10 @@ final class BackupJobRunner
     /**
      * Dump logis DB volume **di server ini** (strategi A) ke direktori staging
      * server ini. Berkas `.sql` dibiarkan di staging agar bisa diperiksa/diunduh
-     * operator di server itu; **tidak** ada kredensial di nama berkas, log, atau
-     * argv (pola `DumpRunner`).
+     * operator di server itu (unduhan bertahap jalur agent: `GET /backups/dump`);
+     * **tidak** ada kredensial di nama berkas, log, atau argv (pola
+     * `DumpRunner`). Setelah dump sukses, retensi staging dijalankan
+     * ({@see self::pruneStaging()}) sehingga berkas lama tidak menumpuk.
      *
      * @throws RuntimeException tidak ada container DB pada volume / dump gagal
      */
@@ -210,6 +212,15 @@ final class BackupJobRunner
         $file = (string) ($result['file'] ?? '');
         $message = sprintf('Dump DB volume %s → %s (%d byte).', $volume, $file, (int) ($result['bytes'] ?? 0));
 
+        // Retensi staging: dump lama dibersihkan **di server ini** supaya berkas
+        // `.sql` tidak menumpuk tanpa batas (berkas baru selalu yang terbaru ⇒
+        // tidak pernah ikut terhapus). Best-effort: kegagalan pembersihan tidak
+        // membatalkan dump yang sudah sukses.
+        $retained = $this->pruneStaging();
+        if ($retained['removed'] > 0) {
+            $message .= sprintf(' Retensi staging: %d dump lama dihapus (%d byte).', $retained['removed'], $retained['bytes']);
+        }
+
         if ($log !== null) {
             $log($project, $message);
         }
@@ -221,7 +232,74 @@ final class BackupJobRunner
             'file' => $file,
             'bytes' => (int) ($result['bytes'] ?? 0),
             'database' => $result['database'] ?? null,
+            'pruned' => $retained['removed'],
         ];
+    }
+
+    /**
+     * Potongan berkas `.sql` hasil dump **terakhir** sebuah volume di server ini
+     * — dipakai endpoint unduhan agent (`GET /backups/dump`) supaya control plane
+     * dapat menarik hasil `db_dump` bertahap (offset + batas per panggilan HTTP),
+     * bukan sekaligus.
+     *
+     * Project pemilik volume dipetakan dari label Engine server ini (sama dengan
+     * {@see self::targetFor()}), bukan dari parameter pemanggil.
+     *
+     * @param int $offset byte awal (≥ 0)
+     * @param int $limit  byte maksimum per panggilan (dibatasi `DumpStaging`)
+     * @return array{project:string,name:string,offset:int,size:int,eof:bool,data:string}
+     * @throws RuntimeException volume tak dikenal / belum ada dump
+     */
+    public function dumpChunk(string $volume, int $offset, int $limit): array
+    {
+        VolumeStateGuard::assertVolumeName($volume);
+
+        $target = $this->targetFor($volume);
+        $project = (string) ($target['project'] ?? '');
+        VolumeStateGuard::assertProjectName($project);
+
+        $staging = new DumpStaging($this->dumper->stagingRoot());
+        $latest = $staging->latest($project);
+        if ($latest === null) {
+            throw new RuntimeException(
+                "Belum ada berkas dump untuk volume \"{$volume}\" di server ini — jalankan dump terlebih dahulu."
+            );
+        }
+
+        $offset = max(0, $offset);
+        $limit = max(1, min($limit, DumpStaging::MAX_READ_BYTES));
+
+        $data = $staging->read($latest['file'], $offset, $limit);
+        $size = $latest['bytes'];
+        $next = $offset + strlen($data);
+
+        return [
+            'project' => $project,
+            'name' => $latest['name'],
+            'offset' => $offset,
+            'size' => $size,
+            'eof' => $next >= $size,
+            'data' => $data,
+        ];
+    }
+
+    /**
+     * Retensi staging dump (best-effort) — batas dari konfigurasi server ini:
+     * `deploy.volume_backup_dump_keep` (jumlah dump terbaru per project) dan
+     * `deploy.volume_backup_dump_max_age_days` (umur maksimum di luar itu).
+     *
+     * @return array{removed:int,kept:int,bytes:int}
+     */
+    private function pruneStaging(): array
+    {
+        try {
+            return (new DumpStaging($this->dumper->stagingRoot()))->prune(
+                (int) config('deploy.volume_backup_dump_keep', DumpStaging::DEFAULT_KEEP),
+                (int) config('deploy.volume_backup_dump_max_age_days', DumpStaging::DEFAULT_MAX_AGE_SECONDS / 86400) * 86400,
+            );
+        } catch (\Throwable $e) {
+            return ['removed' => 0, 'kept' => 0, 'bytes' => 0];
+        }
     }
 
     /**

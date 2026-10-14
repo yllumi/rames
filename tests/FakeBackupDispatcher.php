@@ -73,4 +73,30 @@ class FakeBackupDispatcher extends BackupDispatcher
 
         return ['volume' => $volume, 'status' => 'ok', 'message' => 'Dump (fake) dikirim ke ' . $serverId . '.', 'server_id' => $serverId];
     }
+
+    /**
+     * @param callable(string,string):void|null $log
+     * @return array<string,mixed>
+     */
+    #[\Override]
+    public function restoreArchived(
+        string $serverId,
+        string $volume,
+        string $snapshot,
+        string $targetName,
+        ?callable $log = null,
+    ): array {
+        $this->note('restoreArchived:' . $serverId . ':' . $volume . ':' . $snapshot . ':' . $targetName);
+
+        if ((string) getenv('FAKE_BACKUP_DISPATCH_FAIL') !== '') {
+            throw new RuntimeException('fake dispatcher gagal (uji)');
+        }
+
+        return [
+            'volume' => $volume,
+            'status' => 'ok',
+            'message' => 'Restore arsip (fake) dikirim ke ' . $serverId . '.',
+            'server_id' => $serverId,
+        ];
+    }
 }

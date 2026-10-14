@@ -7,14 +7,25 @@
  *   $servers — array dokumen server **tanpa** `token`/`tls_cert_pem`, ditambah
  *              penanda `has_token` (field: id, name, kind, base_url, domain,
  *              notes, enabled, port_range?, status, agent_version?,
- *              capabilities?, last_seen_at?, tls_fingerprint?);
+ *              min_control_plane_version?, capabilities?, last_seen_at?,
+ *              tls_fingerprint?, agent_compat?);
+ *              `agent_compat` = `AgentVersionGate::check()` (turunan murni
+ *              dokumen server): {ok, errors[], warnings[], agent_version,
+ *              min_control_plane_version, min_agent_version,
+ *              control_plane_version, capabilities[]};
  *   $localId — id baris server lokal (`'local'`);
  *   $active  — `'servers'` (penanda menu aktif).
  *
  * View hanya merender: tidak memanggil store/library dan tidak menghitung apa pun
  * yang bersifat bisnis. Pemetaan status → kelas badge di sini **sama** dengan yang
  * dipakai `public/js/server.js` saat tombol Test connection memperbarui baris
- * (jaga keduanya tetap sinkron).
+ * (jaga keduanya tetap sinkron); hal yang sama berlaku untuk badge
+ * kompatibilitas versi agen (kolom "Versi & kompatibilitas").
+ *
+ * Aksi "Perbarui agen" (server agent saja) dijalankan AJAX oleh `server.js` ke
+ * `POST /servers/{id}/agent-update` dengan `_token` di body (middleware CSRF
+ * hanya membaca body). Tombol = lapisan kedua; controller tetap fail-fast
+ * (404 non-admin, 400 untuk baris lokal / agen yang tidak kompatibel).
  *
  * Halaman ini admin-only di sisi server (non-admin ⇒ 404); nav di header hanya
  * lapisan kedua.
@@ -47,6 +58,9 @@ $breadcrumbs = [
       (dikelola dari <span class="mono">.env</span>/config), sedangkan <strong>server agent</strong> dihubungi
       lewat HTTPS dengan <strong>pinning sertifikat</strong> (URL + token + PEM).
       Hanya admin yang bisa mengelola daftar ini.
+      <br><span class="small">Versi agen &amp; kompatibilitasnya dengan dashboard ini tampil di kolom
+      <strong>Versi &amp; kompatibilitas</strong>; agen yang tertinggal bisa diperbarui dari baris server itu
+      (<strong>Perbarui agen</strong> — agen akan restart).</span>
     </p>
   </div>
   <a class="btn btn-primary" href="/servers/create">+ Tambah Server</a>
@@ -105,6 +119,7 @@ $breadcrumbs = [
           <th>Server</th>
           <th>Endpoint</th>
           <th>Status</th>
+          <th>Versi &amp; kompatibilitas</th>
           <th>Rentang port</th>
           <th class="text-end">Aksi</th>
         </tr>
@@ -137,6 +152,44 @@ $breadcrumbs = [
           $__seen = trim((string) ($s['last_seen_at'] ?? ''));
           $__domain = trim((string) ($s['domain'] ?? ''));
           $__baseUrl = trim((string) ($s['base_url'] ?? ''));
+
+          // Kompatibilitas versi (turunan murni dari `AgentVersionGate::check()` di
+          // controller — view tidak menghitung ulang aturan versinya). Server lokal
+          // selalu `ok` tanpa versi agen; kolomnya ditampilkan sebagai "tidak berlaku".
+          $__compat = is_array($s['agent_compat'] ?? null) ? $s['agent_compat'] : [];
+          $__compatOk = !empty($__compat['ok']);
+          $__compatErrors = array_values(array_filter(
+              is_array($__compat['errors'] ?? null) ? $__compat['errors'] : [],
+              'is_scalar'
+          ));
+          $__compatWarnings = array_values(array_filter(
+              is_array($__compat['warnings'] ?? null) ? $__compat['warnings'] : [],
+              'is_scalar'
+          ));
+          $__minControlPlane = trim((string) ($s['min_control_plane_version'] ?? ''));
+          $__minAgent = trim((string) ($__compat['min_agent_version'] ?? ''));
+          $__controlPlane = trim((string) ($__compat['control_plane_version'] ?? ''));
+          if (!$__compatOk) {
+              $__compatBadge = ['badge-error', 'tidak kompatibel'];
+          } elseif ($__compatWarnings !== []) {
+              $__compatBadge = ['badge-deploying', 'kompatibel (peringatan)'];
+          } else {
+              $__compatBadge = ['badge-running', 'kompatibel'];
+          }
+          // Tombol "Perbarui agen": server agent saja, dan hanya bila server aktif
+          // serta kompatibel — kalau tidak, tombol tampil nonaktif dengan alasan
+          // (controller tetap menolak walau tombol dipaksa aktif).
+          $__canAgentUpdate = !$__isLocal && $__enabled && $__compatOk;
+          $__compatTitle = 'Kompatibilitas versi agen dengan dashboard ini';
+          if ($__controlPlane !== '' || $__minAgent !== '') {
+              $__compatTitle .= ' (dashboard ' . ($__controlPlane !== '' ? $__controlPlane : '?')
+                  . ', agen minimum ' . ($__minAgent !== '' ? $__minAgent : '?') . ')';
+          }
+          $__updateTitle = $__canAgentUpdate
+              ? 'Perbarui agen di server ini — agen akan restart, jalankan Test connection setelahnya'
+              : (!$__enabled
+                  ? 'Perbarui agen tidak tersedia: server ini nonaktif'
+                  : 'Perbarui agen tidak tersedia: versi agen belum kompatibel dengan dashboard ini — lihat kolom Versi & kompatibilitas');
         ?>
         <tr>
           <td>
@@ -183,6 +236,33 @@ $breadcrumbs = [
             <span class="text-muted small d-block" data-server-result="<?= e($__id) ?>" aria-live="polite"></span>
           </td>
           <td class="small">
+            <?php if ($__isLocal): ?>
+              <span class="text-muted">tidak berlaku — dashboard ini sendiri</span>
+            <?php else: ?>
+              <span class="d-block">agen <span class="mono"><?= e($__version !== '' ? $__version : 'belum diketahui') ?></span></span>
+              <span class="text-muted d-block">
+                butuh control plane ≥
+                <span class="mono"><?= e($__minControlPlane !== '' ? $__minControlPlane : 'belum diketahui') ?></span>
+              </span>
+              <span class="badge <?= e($__compatBadge[0]) ?>" data-server-compat="<?= e($__id) ?>"
+                    title="<?= e($__compatTitle) ?>"><?= e($__compatBadge[1]) ?></span>
+              <?php if ($__compatErrors !== []): ?>
+                <ul class="mb-0 ps-3 text-danger">
+                  <?php foreach ($__compatErrors as $__message): ?>
+                    <li><?= e((string) $__message) ?></li>
+                  <?php endforeach; ?>
+                </ul>
+              <?php endif; ?>
+              <?php if ($__compatWarnings !== []): ?>
+                <ul class="mb-0 ps-3 text-warning-emphasis">
+                  <?php foreach ($__compatWarnings as $__message): ?>
+                    <li><?= e((string) $__message) ?></li>
+                  <?php endforeach; ?>
+                </ul>
+              <?php endif; ?>
+            <?php endif; ?>
+          </td>
+          <td class="small">
             <?php if ($__rangeText !== ''): ?>
               <span class="mono"><?= e($__rangeText) ?></span>
             <?php else: ?>
@@ -190,6 +270,17 @@ $breadcrumbs = [
             <?php endif; ?>
           </td>
           <td class="text-end">
+            <span class="d-block small text-muted" data-server-update="<?= e($__id) ?>" aria-live="polite"></span>
+            <?php if (!$__isLocal): ?>
+              <button type="button" class="btn btn-outline-primary btn-sm js-server-agent-update"
+                      data-id="<?= e($__id) ?>"
+                      data-name="<?= e($__name) ?>"
+                      data-version="<?= e($__version) ?>"
+                      <?= $__canAgentUpdate ? '' : 'disabled' ?>
+                      title="<?= e($__updateTitle) ?>">
+                <span class="spinner-border spinner-border-sm me-1 d-none" aria-hidden="true"></span><span class="js-agent-update-label">⟳ Perbarui agen</span>
+              </button>
+            <?php endif; ?>
             <button type="button" class="btn btn-outline-secondary btn-sm js-server-test"
                     data-id="<?= e($__id) ?>"
                     title="Hubungi /healthz + /version agent ini">Test connection</button>
@@ -210,6 +301,6 @@ $breadcrumbs = [
   <?php endif; ?>
 </section>
 
-<script src="/js/server.js?v=1"></script>
+<script src="/js/server.js?v=2"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

@@ -65,11 +65,17 @@ class AgentModeTest extends TestCase
      * `POST /servers/{id}`, `POST /servers/{id}/delete`, `POST /servers/{id}/test`,
      * `GET /api/servers` — semuanya admin-only (non-admin ⇒ 404) dan **tidak**
      * boleh terdaftar di mode agent.
+     *
+     * +1 (F4 lanjutan: update agen dari control plane): `POST /servers/{id}/agent-update`
+     * — admin-only (non-admin ⇒ 404) dan sama-sama **tidak** boleh ada di mode agent.
+     *
+     * +1 (F4 lanjutan: unduh hasil `db_dump`): `GET /backups/dump/sql` — ability
+     * `backup` (operator+); volume server agent dibaca dari server itu.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 114;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 116;
 
-    /** Definisi di atas menghasilkan 119 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 120;
+    /** Definisi di atas menghasilkan 122 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 122;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -159,6 +165,7 @@ class AgentModeTest extends TestCase
                 'GET /apps/{id}',
                 'GET /apps/{id}/logs',
                 'GET /apps/{id}/nginx',
+                'GET /backups/dump',
                 'GET /backups/snapshots',
                 'GET /backups/volumes',
                 'GET /database/containers',
@@ -193,6 +200,7 @@ class AgentModeTest extends TestCase
                 'POST /networks/{id}/disconnect',
                 'POST /nginx/check',
                 'POST /terminal/open',
+                'POST /terminal/run',
                 'POST /terminal/{token}/close',
                 'POST /terminal/{token}/input',
                 'PUT /adminer/{container}[/{path:.*}]',
@@ -257,6 +265,12 @@ class AgentModeTest extends TestCase
         $this->assertSame(
             [AgentTerminalController::class, 'closeSession'],
             $routes['pairs']['POST /terminal/{token}/close']->getCallback()
+        );
+        // Perintah satu-kali (tombol "Run") dijalankan di server ini lewat
+        // mekanisme yang sama dengan jalur lokal (non-interaktif, timeout).
+        $this->assertSame(
+            [AgentTerminalController::class, 'runSession'],
+            $routes['pairs']['POST /terminal/run']->getCallback()
         );
         // Operasional per server (F3b/F3c): file manager container & monitoring
         // dijalankan DI server agent (control plane mem-proxy hasilnya).
@@ -364,11 +378,11 @@ class AgentModeTest extends TestCase
             $routes['pairs']['GET /healthz']->getCallback()
         );
         $this->assertCount(
-            36,
+            38,
             $routes['definitions'],
-            'route agent F0 (diagnostik) + F1 (3 job + proyeksi app) + F2 (nginx) + F3a (log + 4 terminal)'
+            'route agent F0 (diagnostik) + F1 (3 job + proyeksi app) + F2 (nginx) + F3a (log + 5 terminal)'
             . ' + F3b/F3c (10 file manager + 2 monitoring) + F3d (1 database + 1 adminer + 7 network/volume)'
-            . ' + F4 (2 route data: daftar volume backup + daftar snapshot)'
+            . ' + F4 (3 route data: daftar volume backup + daftar snapshot + unduh dump bertahap)'
         );
     }
 

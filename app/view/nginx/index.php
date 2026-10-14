@@ -148,7 +148,7 @@ $pull = is_array($pull ?? null) ? $pull : null;
 </div>
 <?php endif; ?>
 
-<script src="/js/template-pull.js?v=1"></script>
+<script src="/js/template-pull.js?v=2"></script>
 <script>
   // Sinkronkan tab aktif dengan URL (`?tab=`) tanpa reload/permintaan server,
   // supaya refresh & tautan yang dibagikan mendarat di tab yang sama. Tab awal

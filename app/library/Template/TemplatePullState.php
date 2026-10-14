@@ -18,6 +18,12 @@ use RuntimeException;
  * Penulisan JSON atomik (tmp + `rename` + `LOCK_EX`) dan `mkdir` 0775 — pola
  * `Update\UpdateState`. Kelas ini TIDAK menyimpan cache di properti: setiap
  * pembacaan menyentuh disk (worker persistent Webman, banyak proses).
+ *
+ * Sejak multi-server F4 lanjutan, konstruktor menerima **kunci pemisah**
+ * (`$key`): diisi id server agent ⇒ state & log run server itu berada di
+ * `<run_dir>/servers/<key>/` sehingga riwayat tarik image dua server tidak
+ * pernah tercampur. `''` = jalur lama (dashboard/server lokal), bentuk berkasnya
+ * tidak berubah supaya UI/JS lama tetap bekerja.
  */
 final class TemplatePullState
 {
@@ -27,11 +33,42 @@ final class TemplatePullState
     /** Pola nama berkas log (aman dijadikan input endpoint: tanpa traversal). */
     public const LOG_PATTERN = '/^[A-Za-z0-9._-]+\.log$/';
 
+    /** Pola kunci pemisah state per server (dipakai sebagai nama subdirektori). */
+    private const KEY_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/';
+
+    private readonly string $runDir;
+
+    private readonly string $key;
+
     private string $runFile;
 
-    public function __construct(private readonly string $runDir)
+    /**
+     * @param string $runDir direktori run (basis)
+     * @param string $key    pemisah state **per server** (`''` = jalur lama:
+     *                       dashboard/server lokal, berkas tepat di `$runDir`).
+     *                       Diisi id server agent ⇒ state + log run server itu
+     *                       disimpan di `<runDir>/servers/<key>/`, sehingga
+     *                       riwayat tarik image dua server tidak pernah tercampur
+     *                       (misi F4: state per server).
+     * @throws RuntimeException kunci tidak sah (dipakai sebagai path)
+     */
+    public function __construct(string $runDir, string $key = '')
     {
-        $this->runFile = rtrim($this->runDir, '/') . '/' . self::RUN_FILE;
+        $key = trim($key);
+        if ($key !== '' && preg_match(self::KEY_PATTERN, $key) !== 1) {
+            throw new RuntimeException('Kunci state tarik image tidak sah (huruf/angka/`-`/`_`): ' . $key);
+        }
+
+        $base = rtrim($runDir, '/');
+        $this->key = $key;
+        $this->runDir = $key === '' ? $base : $base . '/servers/' . $key;
+        $this->runFile = $this->runDir . '/' . self::RUN_FILE;
+    }
+
+    /** Kunci pemisah state (`''` = jalur lokal). */
+    public function serverKey(): string
+    {
+        return $this->key;
     }
 
     public function runDir(): string
@@ -51,7 +88,7 @@ final class TemplatePullState
     /**
      * Status run (selalu berbentuk lengkap — kunci mengikuti kontrak UI).
      *
-     * @return array{id:?string,slug:string,title:string,stage:string,message:string,result:?string,error:?string,started_at:?string,finished_at:?string,actor:string,images:array<int,string>,results:array<int,array{image:string,ok:bool,seconds:float,message:string}>,log:?string,pid:int}
+     * @return array{id:?string,slug:string,title:string,stage:string,message:string,result:?string,error:?string,started_at:?string,finished_at:?string,actor:string,images:array<int,string>,results:array<int,array{image:string,ok:bool,seconds:float,message:string}>,log:?string,pid:int,job:string,log_offset:int}
      */
     public function run(): array
     {
@@ -74,6 +111,11 @@ final class TemplatePullState
             'results' => self::normalizeResults($data['results'] ?? []),
             'log' => isset($data['log']) && (string) $data['log'] !== '' ? (string) $data['log'] : null,
             'pid' => (int) ($data['pid'] ?? 0),
+            // Op tarik image yang dijalankan DI server agent (F4 lanjutan):
+            // id job agent + offset log job yang sudah dicerminkan ke berkas log
+            // run ini. Kosong untuk run lokal (dijalankan `cli/pull.php` di sini).
+            'job' => isset($data['job']) && (string) $data['job'] !== '' ? (string) $data['job'] : '',
+            'log_offset' => max(0, (int) ($data['log_offset'] ?? 0)),
         ];
     }
 

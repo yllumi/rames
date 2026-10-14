@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Update\AgentVersionGate;
 use Webman\Http\Response;
 
 /**
@@ -31,14 +32,21 @@ class AgentController
     /**
      * Versi agent — **satu-satunya sumber** untuk `health()` dan `version()`
      * (dipakai control plane sebagai `servers.agent_version`).
+     *
+     * Nilai & aturan kompatibilitasnya ada di {@see AgentVersionGate} (dipakai
+     * bersama control plane: `AgentDeployer`, `ServerController`, `cli/deploy.php`)
+     * supaya angka versi tidak pernah ditulis di dua tempat.
      */
-    public const VERSION = '0.1.0';
+    public const VERSION = AgentVersionGate::CODEBASE_VERSION;
 
     /**
      * Versi control plane minimum yang boleh mengendalikan agent ini
-     * (`servers.min_control_plane_version` di sisi dashboard).
+     * (`servers.min_control_plane_version` di sisi dashboard) — dilaporkan
+     * `GET /version` dan **disimpan per server** oleh Test connection
+     * (`ServerController`). Control plane yang lebih tua akan ditolak gerbang
+     * versi sebelum menjalankan op apa pun.
      */
-    public const MIN_CONTROL_PLANE_VERSION = '0.1.0';
+    public const MIN_CONTROL_PLANE_VERSION = AgentVersionGate::MIN_CONTROL_PLANE_VERSION;
 
     /** Nama layanan pada laporan kesehatan (pembeda dari dashboard `rames`). */
     public const SERVICE = 'rames-agent';
@@ -65,7 +73,10 @@ class AgentController
      * ({@see AgentJobController::OPS} → {@see \app\library\Deploy\DeployWorkerLauncher::MODES},
      * yaitu mode `cli/deploy.php` yang ada). Satu sumber dengan validasi
      * `POST /jobs`: daftar yang dilaporkan tidak bisa menyimpang dari yang
-     * diterima. Control plane menolak (bukan mendiamkan) op di luar daftar ini.
+     * diterima. Control plane menolak (bukan mendiamkan) op di luar daftar ini
+     * lewat {@see \app\library\Update\AgentVersionGate::assertCompatible()} —
+     * daftar ini **lebih diutamakan** daripada nomor versi saat memutuskan
+     * dukungan sebuah op.
      */
     public function version(): Response
     {

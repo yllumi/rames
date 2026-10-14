@@ -352,14 +352,7 @@ class TerminalController
         }
 
         if ($deployer !== null) {
-            // Penjaga antar-fase (plan §3 butir 4): jalur "Run" (one-shot) belum
-            // server-aware, jadi app di server agent DITOLAK eksplisit — bukan
-            // diam-diam dieksekusi di server lokal control plane.
-            return json([
-                'code' => 501,
-                'msg' => 'Perintah satu-kali (Run) belum didukung untuk app di server agent. '
-                    . 'Gunakan tab Terminal (sesi interaktif) — sesi itu berjalan di server agent.',
-            ])->withStatus(501);
+            return $this->runAtAgent($request, $app, $deployer);
         }
 
         $container = AppContainers::resolve($app, (string) $request->post('container', ''));
@@ -390,6 +383,54 @@ class TerminalController
         }
 
         $this->audit($app, $container, 'run: ' . substr($command, 0, 120) . ' (user ' . $user . ')');
+        return json(['code' => 0, 'data' => $result]);
+    }
+
+    /**
+     * `run()` untuk app di server agent: perintah satu-kali dijalankan **di
+     * server itu** dengan mekanisme yang sama seperti jalur lokal
+     * (`DockerExec::runCommand()` di agent) — bukan sesi interaktif, bukan
+     * eksekusi di container control plane.
+     *
+     * Container divalidasi `AgentDeployer::containerRef()` terhadap data proyeksi
+     * app (tanpa menyentuh Engine lokal), sedangkan bentuk user tetap lewat
+     * kebijakan yang sama (`resolveUser()`) — aturan satu sumber dengan jalur
+     * lokal. `timeout` dibatasi anggaran HTTP klien agent (≤30 s, aturan repo),
+     * jadi perintah panjang tetap berhenti dengan `timedOut` yang jujur.
+     *
+     * @param array<string,mixed> $app
+     */
+    private function runAtAgent(Request $request, array $app, AgentDeployer $deployer)
+    {
+        $container = AgentDeployer::containerRef($app, (string) $request->post('container', ''));
+        if ($container === null) {
+            return json(['code' => 400, 'msg' => 'Container tidak dikenali atau bukan milik app ini.']);
+        }
+
+        $command = trim((string) $request->post('command', ''));
+        if ($command === '') {
+            return json(['code' => 400, 'msg' => 'Perintah kosong.']);
+        }
+
+        $timeout = (int) $request->post('timeout', 0);
+        if ($timeout < 0 || $timeout > 600) {
+            $timeout = 0;
+        }
+
+        $user = self::resolveUser((string) $request->post('user', ''));
+
+        try {
+            $result = $deployer->runCommand($app, $container, $command, $timeout, $user);
+        } catch (\Throwable $e) {
+            return $this->agentFailure($e);
+        }
+
+        $this->audit(
+            $app,
+            $container,
+            'run (server agent): ' . substr($command, 0, 120) . ' (user ' . $user . ')'
+        );
+
         return json(['code' => 0, 'data' => $result]);
     }
 

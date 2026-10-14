@@ -120,6 +120,11 @@ if ($ramesMode === 'agent') {
         Route::get('/terminal/{token}/stream', [AgentTerminalController::class, 'streamSession']);
         Route::post('/terminal/{token}/input', [AgentTerminalController::class, 'inputSession']);
         Route::post('/terminal/{token}/close', [AgentTerminalController::class, 'closeSession']);
+        // Perintah satu-kali (tombol "Run"): dijalankan DI server ini lewat
+        // mekanisme yang sama dengan jalur lokal (`DockerExec::runCommand()`:
+        // non-interaktif, timeout, stdout/stderr/exit code) — bukan sesi
+        // terminal, jadi tidak ada sesi/FIFO yang tertinggal di agent.
+        Route::post('/terminal/run', [AgentTerminalController::class, 'runSession']);
 
         // F3b/F3c multi-server (plan §4.1/§5): **file manager** container & **monitoring**
         // yang dijalankan di server ini. Control plane mem-proxy semuanya
@@ -184,6 +189,11 @@ if ($ramesMode === 'agent') {
         // log tetap satu jalur.
         Route::get('/backups/volumes', [AgentJobController::class, 'backupVolumes']);
         Route::get('/backups/snapshots', [AgentJobController::class, 'backupSnapshots']);
+        // Unduh **bertahap** hasil `db_dump` (staging server ini): body = potongan
+        // berkas `.sql`, kontrol `offset`/`limit` + header `X-Rames-*`, sehingga
+        // control plane dapat meneruskan isi berkas ke pengguna tanpa satu
+        // respons raksasa (setiap panggilan HTTP ≤30 s).
+        Route::get('/backups/dump', [AgentJobController::class, 'backupDump']);
     }
 
     // Berhenti di sini: route dashboard di bawah tidak pernah didaftarkan.
@@ -313,6 +323,9 @@ Route::post('/servers/{id}', [ServerController::class, 'update']);
 Route::post('/servers/{id}/delete', [ServerController::class, 'delete']);
 // Uji koneksi ke agent (JSON; panggilan HTTP ≤30 s ke `GET /healthz` + `/version`).
 Route::post('/servers/{id}/test', [ServerController::class, 'testConnection']);
+// Perbarui agen di server itu (JSON; job async `self_update` dijalankan DI agen,
+// dengan gerbang versi/kapabilitas sebelum efek samping) — F4 lanjutan.
+Route::post('/servers/{id}/agent-update', [ServerController::class, 'agentUpdate']);
 // Daftar server untuk JS dashboard (tanpa token/PEM).
 Route::get('/api/servers', [ServerController::class, 'apiIndex']);
 
@@ -337,6 +350,10 @@ Route::post('/backups/restore', [BackupController::class, 'restore']);
 // Dump logis DB sebuah volume (multi-server F4: di server agent dijalankan **di
 // server itu** lewat job `db_dump`; volume lokal memakai jalur worker setempat).
 Route::post('/backups/db-dump', [BackupController::class, 'dbDump']);
+// Unduh berkas `.sql` hasil `db_dump` (staging) sebuah volume — ability `backup`
+// (operator+). Multi-server F4: volume server agent diunduh **dari server itu**
+// (potongan bertahap), volume lokal dari staging host ini.
+Route::get('/backups/dump/sql', [BackupController::class, 'downloadDumpSql']);
 // Segarkan cache status (live Engine/restic) & seleksi backup berkala per volume
 Route::post('/backups/refresh', [BackupController::class, 'refresh']);
 Route::post('/backups/schedule', [BackupController::class, 'setScheduled']);

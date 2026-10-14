@@ -19,8 +19,10 @@ use RuntimeException;
  *    pernah** menjalankan restic/helper/`docker` terhadap volume tersebut;
  *  - volume server **lokal** tidak pernah dikirim ke agent;
  *  - op yang belum didukung untuk server agent **ditolak dengan pesan jelas**
- *    (`restore-archived`, volume yatim) — bukan fallback ke server lokal dan
- *    bukan sukses palsu.
+ *    (volume yatim) — bukan fallback ke server lokal dan bukan sukses palsu;
+ *    `restore-archived` kini **didukung** untuk server agent sebagai op tingkat
+ *    server `restore_archived` (volume target dibuat & restic dijalankan di
+ *    server itu, plan §5 / F4 lanjutan).
  *
  * Riwayat backup server agent dicatat **di control plane** (plan §4.3: registry
  * & seleksi milik control plane; agent hanya menjalankan job + menulis log)
@@ -106,10 +108,9 @@ class BackupDispatcher
             return;
         }
 
-        if ($mode === 'restore-archived') {
+        if (!in_array($mode, ['run', 'restore', 'restore-archived', 'db-dump'], true)) {
             throw new RuntimeException(
-                "Op `restore-archived` untuk server agent ({$serverId}) belum didukung: volume target harus dibuat "
-                . 'di server itu. Operasi dibatalkan — TIDAK dijalankan di server lokal.'
+                "Op `{$mode}` tidak dikenal dispatcher backup — operasi dibatalkan (tidak dijalankan di server lokal)."
             );
         }
     }
@@ -212,6 +213,45 @@ class BackupDispatcher
             'message' => (string) ($result['message'] ?? '') !== ''
                 ? (string) $result['message']
                 : "Dump DB volume {$volume} selesai di server {$serverId}.",
+            'server_id' => trim($serverId),
+        ];
+    }
+
+    /**
+     * Pulihkan volume **arsip** di server agent ke volume target BARU
+     * (job `restore_archived`, op tingkat server — plan §5).
+     *
+     * Berbeda dari {@see self::runBackup()}/{@see self::restore()}: volume arsip
+     * **tidak lagi punya app**, jadi op ini tidak butuh proyeksi app dan dikirim
+     * sebagai op tingkat server (`target` = nama volume). Seluruh pekerjaan
+     * (pembuatan volume target + restic) berjalan **di server itu**, memakai repo
+     * restic dan daemon server itu; `VolumeStateGuard` tetap ditegakkan di sana.
+     *
+     * @param callable(string,string):void|null $log `(project, message)`
+     * @return array{volume:string,status:string,message:string,server_id:string}
+     * @throws RuntimeException server tak dikenal/disabled, atau job agent gagal
+     */
+    public function restoreArchived(
+        string $serverId,
+        string $volume,
+        string $snapshot,
+        string $targetName,
+        ?callable $log = null,
+    ): array {
+        VolumeStateGuard::assertVolumeName($volume);
+        VolumeStateGuard::assertVolumeName($targetName);
+        $snapshot = ResticRunner::assertSnapshotId(trim($snapshot));
+
+        $deployer = $this->agentFor($serverId);
+
+        $result = $deployer->restoreArchivedVolume($volume, $snapshot, $targetName, $log);
+
+        return [
+            'volume' => $volume,
+            'status' => 'ok',
+            'message' => (string) ($result['message'] ?? '') !== ''
+                ? (string) $result['message']
+                : "Restore arsip volume {$volume} → {$targetName} selesai di server {$serverId}.",
             'server_id' => trim($serverId),
         ];
     }

@@ -207,6 +207,13 @@ return [
     'volume_backup_require_stopped' => (getenv('VOLUME_BACKUP_REQUIRE_STOPPED') ?: 'true') !== 'false',
     'volume_backup_stop_timeout' => (int) (getenv('VOLUME_BACKUP_STOP_TIMEOUT') ?: 120),   // detik, tunggu container berhenti
     'volume_backup_dump_timeout' => (int) (getenv('VOLUME_BACKUP_DUMP_TIMEOUT') ?: 600),   // detik, timeout mysqldump/pg_dump
+    // Retensi staging dump logis (server yang menjalankan dump): jumlah dump
+    // terbaru per project yang dipertahankan + umur maksimum (hari) di luar itu.
+    'volume_backup_dump_keep' => (int) (getenv('VOLUME_BACKUP_DUMP_KEEP') ?: 5),
+    'volume_backup_dump_max_age_days' => (int) (getenv('VOLUME_BACKUP_DUMP_MAX_AGE_DAYS') ?: 7),
+    // Batas ukuran satu unduhan hasil `db_dump` server agent (byte) — satu
+    // respons tidak boleh menahan data tanpa batas.
+    'volume_backup_dump_download_max_bytes' => (int) (getenv('VOLUME_BACKUP_DUMP_DOWNLOAD_MAX_BYTES') ?: 134217728),
     // Strategi A: dump logis untuk container DB (dijalankan selagi container hidup).
     'volume_backup_db_dump_enabled' => (getenv('VOLUME_BACKUP_DB_DUMP_ENABLED') ?: 'true') !== 'false',
     'volume_backup_timeout' => (int) (getenv('VOLUME_BACKUP_TIMEOUT') ?: 3600),            // detik, timeout satu run restic

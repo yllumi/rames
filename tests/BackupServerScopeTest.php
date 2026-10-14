@@ -199,14 +199,15 @@ class BackupServerScopeTest extends TestCase
         $this->assertTrue(BackupDispatcher::isLocalServer(ServerStore::LOCAL_ID));
         $this->assertFalse(BackupDispatcher::isLocalServer('srv-a'));
 
-        // Op arsip belum didukung untuk server agent (volume target harus dibuat
-        // di server itu) — ditolak sebelum efek samping apa pun.
+        // Op arsip kini **didukung** untuk server agent (job tingkat server
+        // `restore_archived`: volume target dibuat & restic dijalankan di server
+        // itu) — tetapi op yang tidak dikenal tetap ditolak sebelum efek samping.
+        BackupDispatcher::assertSupported('restore-archived', 'srv-a');
         try {
-            BackupDispatcher::assertSupported('restore-archived', 'srv-a');
-            $this->fail('restore-archived di server agent harus ditolak');
+            BackupDispatcher::assertSupported('op-hantu', 'srv-a');
+            $this->fail('op tak dikenal di server agent harus ditolak');
         } catch (RuntimeException $e) {
-            $this->assertStringContainsString('restore-archived', $e->getMessage());
-            $this->assertStringContainsString('srv-a', $e->getMessage());
+            $this->assertStringContainsString('op-hantu', $e->getMessage());
         }
 
         BackupDispatcher::assertSupported('restore-archived', '');

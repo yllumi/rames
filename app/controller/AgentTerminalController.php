@@ -18,7 +18,13 @@ use Webman\Http\Response;
  * GET  /terminal/{token}/stream?app_id=X                              → SSE (chunked)
  * POST /terminal/{token}/input     {app_id, data}                     → {code:0}
  * POST /terminal/{token}/close     {app_id}                           → {code:0}
+ * POST /terminal/run               {app_id, container, command, timeout?, user?} → {code:0,data:{…}}
  * ```
+ *
+ * `POST /terminal/run` = perintah **satu-kali non-interaktif** (tombol "Run" di
+ * UI) yang dijalankan di server ini dengan mekanisme yang sama seperti jalur
+ * lokal (`DockerExec::runCommand()`: tanpa PTY, `timeout`, stdout/stderr/exit
+ * code dikembalikan) — bukan sesi interaktif, jadi tidak ada state sesi di agent.
  *
  * Dipanggil control plane (`TerminalController` ⇒ `AgentDeployer`), bukan UI:
  * route ini hanya terdaftar di mode `agent` dan otomatis tertutup
@@ -104,6 +110,25 @@ class AgentTerminalController extends TerminalController
         }
 
         return parent::close($request, $appId, $token);
+    }
+
+    /**
+     * `POST /terminal/run` — perintah satu-kali (**non-interaktif**) di container
+     * app yang hidup di server ini.
+     *
+     * Sesi interaktif tidak dipakai di sini: kontrol plane memanggil jalur yang
+     * sama dengan tombol "Run" lokal (`DockerExec::runCommand()`), sehingga
+     * timeout + stdout/stderr/exit code dikembalikan sekaligus dan tidak ada
+     * sesi/FIFO yang tertinggal di agent.
+     */
+    public function runSession(Request $request)
+    {
+        $appId = $this->appId($request);
+        if ($this->appDoc($appId) === null) {
+            return $this->notFound();
+        }
+
+        return parent::run($request, $appId);
     }
 
     /**

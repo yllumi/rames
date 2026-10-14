@@ -8,6 +8,7 @@ use app\library\Agent\AgentArtifactPackager;
 use app\library\Agent\AgentClient;
 use app\library\Agent\AgentError;
 use app\library\Docker\AppContainers;
+use app\library\Update\AgentVersionGate;
 use RuntimeException;
 
 /**
@@ -44,7 +45,15 @@ use RuntimeException;
  *    `POST /networks/*`) dibaca dari agent. Tidak ada jalur mundur ke
  *    `LocalDeployer`: operasi yang belum server-aware melempar
  *    `AgentError('unsupported')` (mis. metode yang tidak dipetakan) — itu persis
- *    kesalahan "app remote dieksekusi lokal" yang harus dicegah.
+ *    kesalahan "app remote dieksekusi lokal" yang harus dicegah;
+ *  - **operasi pendek server agent** (F4 lanjutan, plan §5): `runCommand()` (tombol
+ *    "Run" satu-kali non-interaktif, `POST /terminal/run` di agent),
+ *    `downloadDump()` (unduh hasil `db_dump` bertahap, `GET /backups/dump`),
+ *    dan `restoreArchivedVolume()` (job tingkat server `restore_archived`) —
+ *    semuanya dijalankan di server agent; `timeout` setiap panggilan HTTP tetap
+ *    ≤30 s (aturan repo), sehingga `runCommand()` memangkas `timeout` perintah ke
+ *    anggaran HTTP klien dan `downloadDump()` membaca potongan (offset) sampai
+ *    `eof` atau plafon ukuran tercapai.
  *
  * **Artefak app wajib ikut** (misi `ms-f1-artifacts`, plan §4.3/§11 catatan 4):
  * agent hanya memegang proyeksi metadata app, jadi tiga hal yang tidak bisa ia
@@ -248,6 +257,129 @@ final class AgentDeployer implements DeployerInterface
             : array_values(array_map('strval', $preserveVolumes));
 
         $this->runJob('teardown', $app, $logger, ['preserve_volumes' => $preserve]);
+    }
+
+    // ==================================================================
+    // Operasi tingkat server (tidak terikat satu app) — F4 lanjutan
+    // ==================================================================
+
+    /**
+     * Kirim job **tingkat server** ke agent **tanpa menunggu selesai**
+     * (`template_pull`, `self_update` — {@see DeployWorkerLauncher::SERVER_OPS}).
+     *
+     * Kenapa tidak menunggu (beda dari {@see self::runJob()}): kedua op ini bisa
+     * berjalan menit-an (tarik image) atau sengaja mematikan proses yang
+     * menjalankannya (self-update agen me-recreate container agen) — menunggu di
+     * dalam request HTTP UI akan menggantung sampai timeout. Pemanggil (control
+     * plane) memantau progres lewat {@see self::serverJobProgress()} yang
+     * dipanggil dari request polling pendek.
+     *
+     * Fail-fast sebelum HTTP: op wajib op tingkat server yang dikenal, target
+     * wajib berbetuk aman, dan server harus lolos gerbang versi/kapabilitas
+     * ({@see AgentVersionGate::assertCompatible()}) — op yang tidak dilaporkan
+     * `capabilities` agen ditolak di sini, **tidak pernah** dijatuhkan ke
+     * eksekusi lokal.
+     *
+     * @param string              $op      op tingkat server (`template_pull`|`self_update`)
+     * @param string              $target  slug template / `agent` (masuk argv worker; tanpa kredensial)
+     * @param array<string,mixed> $payload field payload pendukung (mis. `update_mode`, `control_plane_version`)
+     * @return array{job_id:string,log_offset:int} offset log awal (agar baris run sebelumnya tidak terulang)
+     * @throws AgentError|RuntimeException op/target tak sah, gerbang versi, atau kegagalan transport
+     */
+    public function startServerJob(string $op, string $target, array $payload = [], ?callable $logger = null): array
+    {
+        $op = trim($op);
+        if (!in_array($op, DeployWorkerLauncher::SERVER_OPS, true)) {
+            throw new RuntimeException(
+                $this->label() . ': op "' . $op . '" bukan op tingkat server yang dikenal ('
+                . implode('|', DeployWorkerLauncher::SERVER_OPS) . ').'
+            );
+        }
+
+        $target = trim($target);
+        if (preg_match(self::ID_PATTERN, $target) !== 1) {
+            throw new RuntimeException($this->label() . ': target op tingkat server tidak sah.');
+        }
+
+        AgentVersionGate::assertCompatible($this->server, $op);
+
+        $body = $payload;
+        $body['op'] = $op;
+        $body['target'] = $target;
+
+        return $this->postJob($op, $body, $target, $logger);
+    }
+
+    /**
+     * Kirim satu job ke agent lalu kembalikan id + offset log awalnya — inti
+     * bersama {@see self::startServerJob()} dan op tingkat server yang targetnya
+     * **bukan** slug/`agent` (mis. `restore_archived` yang targetnya nama volume,
+     * divalidasi pemanggil lewat aturan volume).
+     *
+     * @param array<string,mixed> $body payload job lengkap (`op`/`target` sudah diisi)
+     * @return array{job_id:string,log_offset:int}
+     * @throws AgentError|RuntimeException
+     */
+    private function postJob(string $op, array $body, string $logKey, ?callable $logger): array
+    {
+        $data = $this->client->post('/jobs', $body);
+        $jobId = trim((string) ($data['job_id'] ?? $data['data']['job_id'] ?? ''));
+        if (preg_match(self::ID_PATTERN, $jobId) !== 1) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan `job_id` yang valid untuk op `' . $op . '`.'
+            );
+        }
+
+        $offset = $this->initialOffset($data, $logKey, $logger);
+        if ($logger !== null) {
+            $logger('agent', "Job `{$op}` dikirim ke {$this->label()} (job {$jobId}, target {$logKey}).");
+        }
+
+        return ['job_id' => $jobId, 'log_offset' => $offset];
+    }
+
+    /**
+     * Status + potongan log **baru** satu job tingkat server (dipanggil
+     * berulang oleh pemanggil; tanpa loop/tidur di sini).
+     *
+     * Hanya baris **lengkap** (sampai newline terakhir) yang dikembalikan, dan
+     * `offset` maju tepat sepanjang teks itu — potongan baris yang belum selesai
+     * dibaca ulang pada polling berikutnya (pola {@see self::drainLog()}),
+     * sehingga tidak ada baris yang hilang atau terduplikasi.
+     *
+     * @return array{job:array<string,mixed>,log:string,offset:int}
+     * @throws AgentError transport/HTTP ke agent
+     */
+    public function serverJobProgress(string $jobId, int $offset = 0): array
+    {
+        if (preg_match(self::ID_PATTERN, trim($jobId)) !== 1) {
+            throw AgentError::badResponse($this->label() . ': id job tidak sah.');
+        }
+
+        $offset = max(0, $offset);
+        $job = $this->jobRecord($jobId);
+
+        $chunk = $this->client->jobLog($jobId, $offset);
+        $log = '';
+        if ($chunk !== '') {
+            $lastNewline = strrpos($chunk, "\n");
+            if ($lastNewline !== false) {
+                $log = substr($chunk, 0, $lastNewline + 1);
+                $offset += strlen($log);
+            }
+        }
+
+        return ['job' => $job, 'log' => $log, 'offset' => $offset];
+    }
+
+    /**
+     * Pesan galat job tingkat server (disanitasi: tanpa token/`Authorization`).
+     *
+     * @param array<string,mixed> $job rekaman job dari {@see self::serverJobProgress()}
+     */
+    public function serverJobFailure(array $job, string $op): string
+    {
+        return $this->jobError($job, $op);
     }
 
     // ==================================================================
@@ -578,6 +710,60 @@ final class AgentDeployer implements DeployerInterface
             '/terminal/' . $this->tokenRef($token) . '/stream',
             ['app_id' => $id]
         ));
+    }
+
+    /**
+     * `POST /terminal/run` — jalankan **satu perintah (one-shot, non-interaktif)**
+     * di container app yang hidup **di server agent**, lalu kembalikan hasilnya
+     * (kode keluar, stdout, stderr) ke control plane.
+     *
+     * Ini mekanisme yang **sama** dengan jalur lokal (`DockerExec::runCommand()`
+     * di server itu) — bukan sesi terminal interaktif: tanpa FIFO/PTY, output
+     * dibatasi `timeout`, dan tidak ada sesi yang tertinggal di agent.
+     *
+     * `timeout` dibatasi **anggaran HTTP** klien agent (`AgentClient` ≤30 s,
+     * aturan repo #7): satu panggilan tidak boleh menggantung melewati timeout
+     * klien. Nilai lebih besar dipangkas (dan `timedOut` dari container tetap
+     * dilaporkan apa adanya), sedangkan `timeout <= 0` memakai anggaran penuh.
+     *
+     * @param array<string,mixed> $app
+     * @return array{code:int,stdout:string,stderr:string,timedOut:bool}
+     * @throws AgentError koneksi/HTTP ke agent atau container tidak dikenali
+     */
+    public function runCommand(
+        array $app,
+        string $container,
+        string $command,
+        int $timeout = 0,
+        string $user = '',
+    ): array {
+        $id = $this->appId($app);
+
+        $budget = max(1, $this->client->timeout() - 5);
+        $timeout = $timeout > 0 ? min($timeout, $budget) : $budget;
+
+        $data = $this->short('menjalankan perintah di container', fn (): array => $this->client->post('/terminal/run', [
+            'app_id' => $id,
+            'container' => $container,
+            'command' => $command,
+            'timeout' => $timeout,
+            'user' => $user,
+        ]));
+        $data = $this->ok($data, 'menjalankan perintah di container');
+
+        $payload = $data['data'] ?? null;
+        if (!is_array($payload)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan hasil perintah (kontrak: `{code:0,data:{code,stdout,stderr,timedOut}}`).'
+            );
+        }
+
+        return [
+            'code' => (int) ($payload['code'] ?? 0),
+            'stdout' => (string) ($payload['stdout'] ?? ''),
+            'stderr' => (string) ($payload['stderr'] ?? ''),
+            'timedOut' => (bool) ($payload['timedOut'] ?? false),
+        ];
     }
 
     // ==================================================================
@@ -1560,6 +1746,163 @@ final class AgentDeployer implements DeployerInterface
     }
 
     /**
+     * Jalankan op **tingkat server** `restore_archived` di agent — restore volume
+     * arsip ke volume target BARU (plan §5, F4 lanjutan).
+     *
+     * Tidak ada app: volume arsip sudah kehilangan app-nya, jadi op ini dikirim
+     * sebagai op tingkat server (`target` = nama volume) — payload hanya memuat
+     * `snapshot` + `target_name` (dua penanda, tanpa kredensial). Pembuatan volume
+     * target & restic dijalankan **di server itu**, dan `VolumeStateGuard` di sana
+     * tetap menolak snapshot filesystem selama container masih me-mount volume.
+     *
+     * @return array{message:string,status:string}
+     * @throws RuntimeException|AgentError job gagal / timeout / transport
+     */
+    public function restoreArchivedVolume(
+        string $volume,
+        string $snapshot,
+        string $targetName,
+        ?callable $logger = null,
+    ): array {
+        $volume = self::assertVolumeName($volume);
+        $targetName = self::assertVolumeName($targetName);
+        $snapshot = self::assertSnapshotRef($snapshot);
+
+        AgentVersionGate::assertCompatible($this->server, 'restore_archived');
+
+        // Target op = nama volume (bukan slug/`agent`), jadi bentuknya divalidasi
+        // aturan volume di atas — bukan `ID_PATTERN` milik op tingkat server lain.
+        $started = $this->postJob('restore_archived', [
+            'op' => 'restore_archived',
+            'target' => $volume,
+            'snapshot' => $snapshot,
+            'target_name' => $targetName,
+        ], $volume, $logger);
+
+        $job = $this->pollJob((string) $started['job_id'], 'restore_archived', (int) $started['log_offset'], $logger);
+
+        return [
+            'status' => 'done',
+            'message' => trim((string) ($job['message'] ?? '')),
+        ];
+    }
+
+    /**
+     * Batas satu potongan unduhan dump (byte) pada jalur agent — satu panggilan
+     * HTTP tidak pernah menahan/mengalirkan data tanpa batas; control plane
+     * mengulang dengan `offset` sampai `eof`.
+     */
+    public const DUMP_CHUNK_BYTES = 4194304; // 4 MiB per panggilan
+
+    /**
+     * Plafon total satu unduhan dump dari server agent (byte) — nilai default;
+     * dapat diubah server ini lewat
+     * `deploy.volume_backup_dump_download_max_bytes` (satu knob dengan jalur
+     * lokal `BackupController::downloadDumpSql()`).
+     */
+    public const MAX_DUMP_BYTES = 134217728; // 128 MiB
+
+    /**
+     * Unduh **satu potongan** berkas `.sql` hasil `db_dump` terakhir sebuah volume
+     * **di server agent** (`GET /backups/dump`, streaming bertahap).
+     *
+     * Setiap panggilan ≤30 s (`AgentClient`) dan dibatasi `limit` byte; kontrolnya
+     * `offset` + `eof` dari header agent, jadi control plane dapat meneruskan isi
+     * berkas ke pengguna tanpa menunggu seluruh dump selesai dibaca.
+     *
+     * @return array{name:string,offset:int,size:int,eof:bool,data:string}
+     * @throws AgentError transport/HTTP (termasuk berkas belum ada ⇒ 404/409)
+     */
+    public function downloadDumpChunk(string $volume, int $offset, int $limit = self::DUMP_CHUNK_BYTES): array
+    {
+        $volume = self::assertVolumeName($volume);
+        $offset = max(0, $offset);
+        $limit = max(1, min($limit, self::DUMP_CHUNK_BYTES));
+
+        $response = $this->short(
+            'mengunduh hasil dump',
+            fn (): array => $this->client->getRaw('/backups/dump', [
+                'volume' => $volume,
+                'offset' => $offset,
+                'limit' => $limit,
+            ])
+        );
+
+        $data = (string) ($response['body'] ?? '');
+        $headers = is_array($response['headers'] ?? null) ? $response['headers'] : [];
+        $size = self::headerInt($headers, 'X-Rames-Size', $offset + strlen($data));
+        $next = self::headerInt($headers, 'X-Rames-Offset', $offset + strlen($data));
+        $eof = strtolower(self::headerString($headers, 'X-Rames-Eof')) === 'true';
+        $name = self::headerString($headers, 'X-Rames-File');
+
+        if ($data === '' && !$eof) {
+            // Berkas kosong/terpotong tanpa penanda selesai: jangan mengulang
+            // selamanya — laporkan sebagai respons agent yang cacat.
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengirim isi dump maupun penanda `eof`.'
+            );
+        }
+
+        return [
+            'name' => $name,
+            'offset' => $next,
+            'size' => $size,
+            'eof' => $eof,
+            'data' => $data,
+        ];
+    }
+
+    /**
+     * Unduh **seluruh** berkas `.sql` hasil `db_dump` terakhir sebuah volume di
+     * server agent — hasil agregasi potongan ({@see self::downloadDumpChunk()}),
+     * dibatasi {@see self::MAX_DUMP_BYTES} supaya satu permintaan tidak menahan
+     * data tanpa batas (kredensial tetap tidak ikut: hanya isi berkas dump).
+     *
+     * @return array{name:string,bytes:int,content:string}
+     * @throws RuntimeException|AgentError dump terlalu besar / belum ada / transport
+     */
+    public function downloadDump(string $volume, ?callable $logger = null): array
+    {
+        $volume = self::assertVolumeName($volume);
+        $maxBytes = max(1, (int) config('deploy.volume_backup_dump_download_max_bytes', self::MAX_DUMP_BYTES));
+
+        $content = '';
+        $name = '';
+        $offset = 0;
+
+        while (true) {
+            $chunk = $this->downloadDumpChunk($volume, $offset);
+
+            if ($chunk['name'] !== '') {
+                $name = (string) $chunk['name'];
+            }
+            $content .= $chunk['data'];
+            $offset = (int) $chunk['offset'];
+
+            if (strlen($content) > $maxBytes) {
+                throw new RuntimeException(
+                    "Berkas dump volume {$volume} melebihi batas unduh ({$maxBytes} byte) — "
+                    . 'unduh langsung di server agent, atau gunakan strategi snapshot.'
+                );
+            }
+
+            if ($chunk['eof'] === true) {
+                break;
+            }
+        }
+
+        if ($content === '') {
+            throw new RuntimeException("Berkas dump volume {$volume} kosong — tidak ada yang bisa diunduh.");
+        }
+
+        if ($logger !== null) {
+            $logger('agent', "Unduhan dump {$name} dari {$this->label()} selesai (" . strlen($content) . ' byte).');
+        }
+
+        return ['name' => $name, 'bytes' => strlen($content), 'content' => $content];
+    }
+
+    /**
      * Validasi bentuk nama volume sebelum masuk payload/HTTP (fail-fast, satu
      * sumber aturan dengan sisi agent: `VolumeStateGuard::assertVolumeName()`).
      *
@@ -1659,6 +2002,13 @@ final class AgentDeployer implements DeployerInterface
      */
     private function runJob(string $op, array $app, ?callable $logger, array $payload = [], bool $pullState = true): array
     {
+        // Gerbang versi/kapabilitas control plane (F4 lanjutan) — fail-fast
+        // SEBELUM efek samping apa pun. Bila agen sudah pernah melaporkan
+        // `capabilities` dan op ini tidak ada di daftar itu, op ditolak
+        // `unsupported` dengan pesan jelas; agen yang belum pernah melaporkan
+        // (capabilities kosong) tidak ditolak di sini — keputusan akhir di agen.
+        AgentVersionGate::assertCompatible($this->server, $op);
+
         // Op yang menulis vhost di agent (deploy & turunannya) ikut memakai
         // aturan F2 §5: app ber-subdomain bawaan di server agent tanpa `domain`
         // akan menulis config dengan domain yang salah ⇒ tolak lebih awal.
@@ -2172,5 +2522,38 @@ final class AgentDeployer implements DeployerInterface
         }
 
         return $id !== '' ? "Server ({$id})" : 'Server tanpa id';
+    }
+
+    /**
+     * Satu header respons agent (nama kasus-tidak-peka, nilai pertama).
+     *
+     * @param array<string,mixed> $headers header Guzzle (`name => string[]`)
+     */
+    private static function headerString(array $headers, string $name): string
+    {
+        foreach ($headers as $key => $values) {
+            if (strcasecmp((string) $key, $name) !== 0) {
+                continue;
+            }
+            if (is_array($values)) {
+                return (string) ($values[0] ?? '');
+            }
+
+            return is_scalar($values) ? (string) $values : '';
+        }
+
+        return '';
+    }
+
+    /**
+     * Header numerik respons agent (default bila tidak ada/tidak masuk akal).
+     *
+     * @param array<string,mixed> $headers
+     */
+    private static function headerInt(array $headers, string $name, int $default): int
+    {
+        $raw = self::headerString($headers, $name);
+
+        return is_numeric($raw) ? max(0, (int) $raw) : $default;
     }
 }
