@@ -340,6 +340,131 @@ class VolumeAppServerViewTest extends TestCase
         self::assertStringContainsString('<option value="srv-jakarta" selected>vps-jakarta</option>', $html);
     }
 
+    /**
+     * Tata letak toolbar filter `/apps`: **satu** form untuk semua filter
+     * (server + nama + domain + owner) dengan **satu** tombol submit.
+     *
+     * Regresi yang dicegah: pemilih server pernah hidup di form sendiri di dalam
+     * `page-head` (tombol "Filter" terpisah dari tombol "Terapkan"), sehingga
+     * toolbar terbelah dua, tinggi elemen tidak seragam, dan tombol utama
+     * ("+ Create App") terlempar ke baris bawah. Kontraknya: aksi utama di
+     * `page-head`, semua filter di dalam satu form di bawah tab scope.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAppsPageKeepsEveryFilterInOneToolbarForm(): void
+    {
+        $GLOBALS['RAMES_VIEW_ADMIN'] = true;
+
+        $html = $this->renderView('app/index.php', [
+            'apps' => [$this->appRow('app-jakarta', 'srv-jakarta', 'vps-jakarta', 'agent')],
+            'roles' => ['a1' => 'admin'],
+            'ownedIds' => ['a1' => true],
+            'scope' => 'mine',
+            'counts' => ['mine' => 1, 'shared' => 0, 'all' => 1],
+            'isAdmin' => true,
+            'ownerNames' => ['u1' => 'admin', 'u2' => 'budi'],
+            'ownerOptions' => ['u1' => 'admin', 'u2' => 'budi'],
+            'serverNames' => ['srv-jakarta' => 'vps-jakarta'],
+            'serverOptions' => [['id' => 'srv-jakarta', 'name' => 'vps-jakarta']],
+            'serverFilter' => 'srv-jakarta',
+            'filters' => ['name' => 'app', 'domain' => '', 'owner' => 'u2'],
+            'filterActive' => true,
+        ]);
+
+        // Satu form, satu tombol submit — sisanya (aksi utama) tautan, bukan form.
+        self::assertSame(1, substr_count($html, '<form'), 'halaman /apps hanya boleh punya satu form filter');
+        self::assertSame(1, substr_count($html, 'type="submit">Terapkan'), 'hanya satu tombol submit filter');
+
+        $open = strpos($html, '<form');
+        $close = strpos($html, '</form>');
+        self::assertNotFalse($open);
+        self::assertNotFalse($close);
+        $form = substr($html, $open, $close - $open);
+
+        foreach (['name="server"', 'name="name"', 'name="domain"', 'name="owner"'] as $field) {
+            self::assertStringContainsString($field, $form, "kontrol {$field} harus di dalam satu form filter");
+        }
+        self::assertStringContainsString('id="server-filter"', $form, 'pemilih server pindah ke dalam toolbar filter');
+
+        // Aksi utama tetap di page-head, di luar form filter.
+        $create = strpos($html, 'href="/apps/create"');
+        self::assertNotFalse($create);
+        self::assertLessThan($open, $create, 'tombol "+ Create App" harus berada sebelum (di luar) form filter');
+
+        // Filter aktif: badge + Reset yang hanya membuang filter (scope/server tetap).
+        self::assertStringContainsString('2 filter aktif', $html);
+        self::assertStringContainsString('href="/apps?scope=mine&amp;server=srv-jakarta"', $form, 'Reset mempertahankan scope + server');
+
+        $this->assertNoSecretLeak($html);
+    }
+
+    /**
+     * Tanpa filter aktif, tombol Reset tidak dirender (tidak ada yang perlu
+     * direset) — toolbar tetap satu form.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAppsPageHidesResetWhenNoFilterIsActive(): void
+    {
+        $GLOBALS['RAMES_VIEW_ADMIN'] = true;
+
+        $html = $this->renderView('app/index.php', [
+            'apps' => [$this->appRow('app-lokal', 'local', 'local', 'local')],
+            'roles' => ['a1' => 'admin'],
+            'ownedIds' => ['a1' => true],
+            'scope' => 'all',
+            'counts' => ['mine' => 1, 'shared' => 0, 'all' => 1],
+            'isAdmin' => true,
+            'ownerNames' => ['u1' => 'admin'],
+            'ownerOptions' => ['u1' => 'admin'],
+            'serverNames' => ['local' => 'local'],
+            'serverOptions' => [['id' => 'local', 'name' => 'local']],
+            'serverFilter' => '',
+            'filters' => ['name' => '', 'domain' => '', 'owner' => ''],
+            'filterActive' => false,
+        ]);
+
+        self::assertSame(1, substr_count($html, '<form'));
+        self::assertStringNotContainsString('>Reset</a>', $html);
+        self::assertStringNotContainsString('filter aktif', $html);
+    }
+
+    /**
+     * Non-admin tidak mendapat pemilih server (`serverOptions` kosong), tetapi
+     * filter `?server=` bisa datang dari tautan yang dibagikan admin. Karena semua
+     * kontrol kini satu form, nilai itu **wajib** tetap dibawa saat submit
+     * (input tersembunyi) — kalau tidak, menekan "Terapkan" membuang filter server
+     * padahal tautan tab tetap mempertahankannya (tidak konsisten).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAppsPageMemberKeepsServerFilterThroughSubmit(): void
+    {
+        $GLOBALS['RAMES_VIEW_ADMIN'] = false;
+
+        $html = $this->renderView('app/index.php', [
+            'apps' => [$this->appRow('app-jakarta', 'srv-jakarta', 'vps-jakarta', 'agent')],
+            'roles' => ['a1' => 'operator'],
+            'ownedIds' => ['a1' => false],
+            'scope' => 'all',
+            'counts' => ['mine' => 0, 'shared' => 1, 'all' => 1],
+            'isAdmin' => false,
+            'ownerNames' => [],
+            'ownerOptions' => [],
+            'serverNames' => ['srv-jakarta' => 'vps-jakarta'],
+            'serverOptions' => [],
+            'serverFilter' => 'srv-jakarta',
+            'filters' => ['name' => 'app', 'domain' => '', 'owner' => ''],
+            'filterActive' => true,
+        ]);
+
+        self::assertStringNotContainsString('id="server-filter"', $html, 'non-admin tetap tanpa pemilih server');
+        self::assertStringContainsString('name="server" value="srv-jakarta"', $html, 'filter server dibawa via input tersembunyi');
+        self::assertSame(1, substr_count($html, 'name="server"'), 'param server tidak boleh dikirim dua kali');
+        self::assertStringContainsString('href="/apps?scope=mine&amp;server=srv-jakarta&amp;name=app"', $html);
+    }
+
     // ==================================================================
     // Helper
     // ==================================================================

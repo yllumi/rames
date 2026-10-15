@@ -1435,6 +1435,7 @@ Field tambahan per app:
 6. Filter berbasis **query string** (bukan JS state) sehingga URL bisa di-share & tombol back bekerja; tautan tab mempertahankan filter aktif, tombol **Reset** membuang filter sambil menyisakan `scope`/`server`.
 7. Nilai yang ditampilkan di form = nilai **efektif dari controller** (satu pintu `AppFilter::normalize()`: `trim()`; `name`/`domain` lowercase) — view hanya merender, tidak menormalkan ulang.
 8. Implementasi: kelas `AppFilter` (`apply()`/`matches()`/`normalize()`/`isActive()`; **statik murni**, tanpa I/O **dan tanpa otorisasi**) — satu-satunya tempat pencocokan filter; pengaman daftar tetap `AppAccess::visible()`.
+9. **Satu toolbar** — semua kontrol filter di atas (Server/Nama/Domain/Owner) berada dalam **satu toolbar** tepat di bawah tab scope, bukan tersebar di beberapa form; aksi utama **Create App** tetap di header halaman. Bagi **non-admin** (tanpa pemilih server), filter `?server=` yang datang dari tautan tetap **dipertahankan** saat menekan **Terapkan**.
 
 **Belum diimplementasikan (tetap rencana):** `?q={keyword}` (search gabungan `name`/`subdomain`/`custom_domain`/`repo_url`), `?status={running|stopped|deploying|error}`, dan **pagination** `SITES_PER_PAGE` (default 20, tombol prev/next + info "menampilkan x–y dari z"). Sebelumnya §8e menyebut ketiganya seolah sudah ada — kini ditandai eksplisit **belum**. Murni di `AppController::index` + view `app/view/app/index.php` (`request()->get()`), tanpa perubahan data model.
 

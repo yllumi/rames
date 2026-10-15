@@ -22,6 +22,17 @@ $__activeFilterCount = count(array_filter($__filterValues, static fn (string $v)
 // Peta `id => username` untuk pilihan owner; hanya terisi bagi admin.
 $__ownerOptions = is_array($ownerOptions ?? null) ? $ownerOptions : [];
 
+// Lebar kolom toolbar filter menyesuaikan jumlah field yang benar-benar dirender
+// (Server hanya bila ada pilihan, Owner hanya untuk admin): pada `md` tiap
+// kombinasi mengisi **12/12** kolom (tanpa celah di kanan), dan pada `xl`
+// menyisakan ruang (8-9 kolom) sehingga tombol Terapkan/Reset muat sebaris.
+$__filterFieldCount = ($__serverOptions !== [] ? 1 : 0) + 2 + ($__isAdmin ? 1 : 0);
+$__filterCol = match ($__filterFieldCount) {
+    2 => 'col-6 col-md-6 col-xl-4',
+    3 => 'col-6 col-md-4 col-xl-3',
+    default => 'col-6 col-md-3 col-xl-2',
+};
+
 // Suffix query yang **mempertahankan** filter aktif pada tautan tab (dan
 // dipakai `Reset` untuk membuang filter sambil menyisakan scope + server).
 $__serverSuffix = $__serverFilter !== '' ? '&server=' . rawurlencode($__serverFilter) : '';
@@ -40,46 +51,58 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
 };
 ?>
 
-<div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+<div class="page-head d-flex flex-wrap justify-content-between align-items-end gap-3 mb-3">
   <div>
     <h1 class="h3 mb-1">Apps<?php if ($__filterActive): ?> <span class="badge text-bg-secondary align-middle"><?= (int) $__activeFilterCount ?> filter aktif</span><?php endif; ?></h1>
     <p class="text-muted mb-0">Kelola project Docker yang di-deploy dari repo Git.</p>
   </div>
-  <div class="d-flex flex-wrap align-items-center gap-2">
-    <?php if ($__serverOptions !== []): ?>
-      <form class="d-flex align-items-center gap-2" method="get" action="/apps">
-        <input type="hidden" name="scope" value="<?= e($__scope) ?>">
-        <?php foreach ($__filterValues as $__filterKey => $__filterValue): ?>
-          <?php if ($__filterValue !== ''): ?>
-            <input type="hidden" name="<?= e($__filterKey) ?>" value="<?= e($__filterValue) ?>">
-          <?php endif; ?>
-        <?php endforeach; ?>
-        <label class="text-muted small mb-0" for="server-filter">Server</label>
-        <select class="form-select form-select-sm" id="server-filter" name="server">
-          <option value="">Semua server</option>
-          <?php foreach ($__serverOptions as $__option): ?>
-            <option value="<?= e($__option['id']) ?>"<?= $__serverFilter === (string) $__option['id'] ? ' selected' : '' ?>><?= e($__option['name']) ?></option>
-          <?php endforeach; ?>
-        </select>
-        <button class="btn btn-outline-secondary btn-sm" type="submit">Filter</button>
-      </form>
+  <a class="btn btn-primary" href="/apps/create">+ Create App</a>
+</div>
+
+<ul class="nav nav-pills mb-3">
+  <?= $__tab('all', ($isAdmin ?? false) ? 'Semua App (admin)' : 'Semua', (int) $__counts['all']) ?>
+  <?= $__tab('mine', 'Milik Saya', (int) $__counts['mine']) ?>
+  <?= $__tab('shared', 'Dibagikan ke Saya', (int) $__counts['shared']) ?>
+</ul>
+
+<?php // Satu form untuk SEMUA filter (server + nama + domain + owner) supaya tidak
+      // ada dua tombol filter berdampingan dan nilainya saling mempertahankan
+      // otomatis. Berbasis query string (bukan JS state) — URL tetap bisa dibagikan. ?>
+<form class="card mb-3" method="get" action="/apps" aria-label="Filter daftar app">
+  <div class="card-body py-3">
+    <input type="hidden" name="scope" value="<?= e($__scope) ?>">
+    <?php // Non-admin tidak mendapat pemilih server (`$serverOptions` kosong), tetapi
+          // `?server=` bisa datang dari tautan yang dibagikan admin. Bawa nilainya
+          // lewat input tersembunyi supaya "Terapkan" tidak membuang filter server —
+          // kondisional, agar tidak menduplikasi param saat select dirender. ?>
+    <?php if ($__serverFilter !== '' && $__serverOptions === []): ?>
+      <input type="hidden" name="server" value="<?= e($__serverFilter) ?>">
     <?php endif; ?>
-    <form class="d-flex flex-wrap gap-2 align-items-end" method="get" action="/apps">
-      <input type="hidden" name="scope" value="<?= e($__scope) ?>">
-      <?php if ($__serverFilter !== ''): ?>
-        <input type="hidden" name="server" value="<?= e($__serverFilter) ?>">
+    <div class="row g-2 g-md-3 align-items-end">
+      <?php if ($__serverOptions !== []): ?>
+        <div class="<?= $__filterCol ?>">
+          <label class="form-label small fw-semibold mb-1" for="server-filter">Server</label>
+          <select class="form-select form-select-sm" id="server-filter" name="server">
+            <option value="">Semua server</option>
+            <?php foreach ($__serverOptions as $__option): ?>
+              <option value="<?= e($__option['id']) ?>"<?= $__serverFilter === (string) $__option['id'] ? ' selected' : '' ?>><?= e($__option['name']) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
       <?php endif; ?>
-      <div>
-        <label class="text-muted small mb-0" for="app-filter-name">Nama</label>
-        <input class="form-control form-control-sm" type="text" id="app-filter-name" name="name" value="<?= e($__filterValues['name']) ?>" autocomplete="off">
+      <div class="<?= $__filterCol ?>">
+        <label class="form-label small fw-semibold mb-1" for="app-filter-name">Nama</label>
+        <input class="form-control form-control-sm" type="search" id="app-filter-name" name="name"
+               value="<?= e($__filterValues['name']) ?>" placeholder="mis. renkeu" autocomplete="off">
       </div>
-      <div>
-        <label class="text-muted small mb-0" for="app-filter-domain">Domain</label>
-        <input class="form-control form-control-sm" type="text" id="app-filter-domain" name="domain" value="<?= e($__filterValues['domain']) ?>" autocomplete="off">
+      <div class="<?= $__filterCol ?>">
+        <label class="form-label small fw-semibold mb-1" for="app-filter-domain">Domain</label>
+        <input class="form-control form-control-sm" type="search" id="app-filter-domain" name="domain"
+               value="<?= e($__filterValues['domain']) ?>" placeholder="mis. example.org" autocomplete="off">
       </div>
       <?php if ($__isAdmin): ?>
-        <div>
-          <label class="text-muted small mb-0" for="app-filter-owner">Owner</label>
+        <div class="<?= $__filterCol ?>">
+          <label class="form-label small fw-semibold mb-1" for="app-filter-owner">Owner</label>
           <select class="form-select form-select-sm" id="app-filter-owner" name="owner">
             <option value="">Semua owner</option>
             <?php foreach ($__ownerOptions as $__ownerId => $__ownerName): ?>
@@ -88,22 +111,15 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
           </select>
         </div>
       <?php endif; ?>
-      <div class="d-flex gap-2">
-        <button class="btn btn-outline-secondary btn-sm" type="submit">Terapkan</button>
+      <div class="col-12 col-xl-auto ms-xl-auto d-flex flex-wrap align-items-center gap-2">
+        <button class="btn btn-primary btn-sm" type="submit">Terapkan</button>
         <?php if ($__filterActive || $__serverFilter !== ''): ?>
-          <a class="btn btn-link btn-sm text-decoration-none px-1" href="<?= e($__resetUrl) ?>">Reset</a>
+          <a class="btn btn-outline-secondary btn-sm" href="<?= e($__resetUrl) ?>">Reset</a>
         <?php endif; ?>
       </div>
-    </form>
-    <a class="btn btn-primary" href="/apps/create">+ Create App</a>
+    </div>
   </div>
-</div>
-
-<ul class="nav nav-pills mb-3">
-  <?= $__tab('all', ($isAdmin ?? false) ? 'Semua App (admin)' : 'Semua', (int) $__counts['all']) ?>
-  <?= $__tab('mine', 'Milik Saya', (int) $__counts['mine']) ?>
-  <?= $__tab('shared', 'Dibagikan ke Saya', (int) $__counts['shared']) ?>
-</ul>
+</form>
 
 <?php if (empty($apps)): ?>
   <div class="card empty">

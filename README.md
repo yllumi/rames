@@ -12,7 +12,7 @@
 
 - **Autentikasi** — login/logout berbasis session, password bcrypt, multi-user dengan role global (admin/member) + kepemilikan & sharing app per user (viewer/operator/owner; SPECS §7.7).
 - **Manage Users** — tambah/hapus user, ganti password.
-- **App Management** — buat app dari URL repo Git, deteksi & edit host port, deteksi konflik port dengan saran port otomatis. Daftar `/apps` punya **filter Nama / Domain / Owner** lewat query string (filter **Owner** admin-only); filter digabung AND dengan tab scope (`Semua`/`Milik Saya`/`Dibagikan`) & filter server (SPECS §8e).
+- **App Management** — buat app dari URL repo Git, deteksi & edit host port, deteksi konflik port dengan saran port otomatis. Daftar `/apps` punya **filter Nama / Domain / Owner** lewat query string (filter **Owner** admin-only); filter digabung AND dengan tab scope (`Semua`/`Milik Saya`/`Dibagikan`) & filter server (SPECS §8e); semua kontrol filter berada dalam **satu toolbar** di bawah tab scope, sedangkan aksi utama **Create App** tetap di header.
 - **Deploy otomatis** — clone repo → parse `docker-compose.yml` → tulis override port → `docker compose up -d --build` → kumpulkan info container → generate config Nginx.
 - **Background worker** — deploy/rebuild berjalan async (proses terpisah) dengan status yang bisa di-*poll* dari UI.
 - **Reverse proxy** — tiap app otomatis mendapat subdomain `{name}.{APP_DOMAIN}`; subdomain bisa **diganti** (label sendiri, terpisah dari nama app) lewat tab **Domain & SSL** (SPECS §7.11).
