@@ -6,7 +6,33 @@ $__scope = $scope ?? 'all';
 $__counts = $counts ?? ['mine' => 0, 'shared' => 0, 'all' => 0];
 $__serverFilter = (string) ($serverFilter ?? '');
 $__serverOptions = $serverOptions ?? [];
-$__suffix = $__serverFilter !== '' ? '&server=' . rawurlencode($__serverFilter) : '';
+$__isAdmin = (bool) ($isAdmin ?? false);
+
+// Filter daftar app (SPECS.md §8e / §7.7). Nilai sudah **efektif** dari
+// controller (trim; `name`/`domain` lowercase) — kosong = filter tidak aktif.
+// View hanya merender, tidak menormalkan ulang.
+$__filters = is_array($filters ?? null) ? $filters : [];
+$__filterValues = [
+    'name' => (string) ($__filters['name'] ?? ''),
+    'domain' => (string) ($__filters['domain'] ?? ''),
+    'owner' => (string) ($__filters['owner'] ?? ''),
+];
+$__filterActive = (bool) ($filterActive ?? false);
+$__activeFilterCount = count(array_filter($__filterValues, static fn (string $v): bool => $v !== ''));
+// Peta `id => username` untuk pilihan owner; hanya terisi bagi admin.
+$__ownerOptions = is_array($ownerOptions ?? null) ? $ownerOptions : [];
+
+// Suffix query yang **mempertahankan** filter aktif pada tautan tab (dan
+// dipakai `Reset` untuk membuang filter sambil menyisakan scope + server).
+$__serverSuffix = $__serverFilter !== '' ? '&server=' . rawurlencode($__serverFilter) : '';
+$__filterSuffix = '';
+foreach ($__filterValues as $__filterKey => $__filterValue) {
+    if ($__filterValue !== '') {
+        $__filterSuffix .= '&' . $__filterKey . '=' . rawurlencode($__filterValue);
+    }
+}
+$__resetUrl = '/apps?scope=' . rawurlencode((string) $__scope) . $__serverSuffix;
+$__suffix = $__serverSuffix . $__filterSuffix;
 $__tab = static function (string $key, string $label, int $count) use ($__scope, $__suffix): string {
     $cls = $__scope === $key ? 'nav-link active' : 'nav-link';
     return '<li class="nav-item"><a class="' . $cls . '" href="/apps?scope=' . e($key) . e($__suffix) . '">'
@@ -16,13 +42,18 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
 
 <div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <div>
-    <h1 class="h3 mb-1">Apps</h1>
+    <h1 class="h3 mb-1">Apps<?php if ($__filterActive): ?> <span class="badge text-bg-secondary align-middle"><?= (int) $__activeFilterCount ?> filter aktif</span><?php endif; ?></h1>
     <p class="text-muted mb-0">Kelola project Docker yang di-deploy dari repo Git.</p>
   </div>
   <div class="d-flex flex-wrap align-items-center gap-2">
     <?php if ($__serverOptions !== []): ?>
       <form class="d-flex align-items-center gap-2" method="get" action="/apps">
         <input type="hidden" name="scope" value="<?= e($__scope) ?>">
+        <?php foreach ($__filterValues as $__filterKey => $__filterValue): ?>
+          <?php if ($__filterValue !== ''): ?>
+            <input type="hidden" name="<?= e($__filterKey) ?>" value="<?= e($__filterValue) ?>">
+          <?php endif; ?>
+        <?php endforeach; ?>
         <label class="text-muted small mb-0" for="server-filter">Server</label>
         <select class="form-select form-select-sm" id="server-filter" name="server">
           <option value="">Semua server</option>
@@ -33,6 +64,37 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
         <button class="btn btn-outline-secondary btn-sm" type="submit">Filter</button>
       </form>
     <?php endif; ?>
+    <form class="d-flex flex-wrap gap-2 align-items-end" method="get" action="/apps">
+      <input type="hidden" name="scope" value="<?= e($__scope) ?>">
+      <?php if ($__serverFilter !== ''): ?>
+        <input type="hidden" name="server" value="<?= e($__serverFilter) ?>">
+      <?php endif; ?>
+      <div>
+        <label class="text-muted small mb-0" for="app-filter-name">Nama</label>
+        <input class="form-control form-control-sm" type="text" id="app-filter-name" name="name" value="<?= e($__filterValues['name']) ?>" autocomplete="off">
+      </div>
+      <div>
+        <label class="text-muted small mb-0" for="app-filter-domain">Domain</label>
+        <input class="form-control form-control-sm" type="text" id="app-filter-domain" name="domain" value="<?= e($__filterValues['domain']) ?>" autocomplete="off">
+      </div>
+      <?php if ($__isAdmin): ?>
+        <div>
+          <label class="text-muted small mb-0" for="app-filter-owner">Owner</label>
+          <select class="form-select form-select-sm" id="app-filter-owner" name="owner">
+            <option value="">Semua owner</option>
+            <?php foreach ($__ownerOptions as $__ownerId => $__ownerName): ?>
+              <option value="<?= e($__ownerId) ?>"<?= $__filterValues['owner'] === (string) $__ownerId ? ' selected' : '' ?>><?= e($__ownerName) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+      <?php endif; ?>
+      <div class="d-flex gap-2">
+        <button class="btn btn-outline-secondary btn-sm" type="submit">Terapkan</button>
+        <?php if ($__filterActive || $__serverFilter !== ''): ?>
+          <a class="btn btn-link btn-sm text-decoration-none px-1" href="<?= e($__resetUrl) ?>">Reset</a>
+        <?php endif; ?>
+      </div>
+    </form>
     <a class="btn btn-primary" href="/apps/create">+ Create App</a>
   </div>
 </div>
@@ -46,7 +108,9 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
 <?php if (empty($apps)): ?>
   <div class="card empty">
     <div class="empty-icon">◈</div>
-    <?php if ($__serverFilter !== ''): ?>
+    <?php if ($__filterActive): ?>
+      <p class="text-muted mb-0">Tidak ada app yang cocok dengan filter. Coba longgarkan kata kunci atau <a href="<?= e($__resetUrl) ?>">Reset filter</a>.</p>
+    <?php elseif ($__serverFilter !== ''): ?>
       <p class="text-muted mb-0">Tidak ada app di server yang dipilih. Pilih <strong>Semua server</strong> untuk melihat semuanya.</p>
     <?php elseif ($__scope === 'shared'): ?>
       <p class="text-muted mb-0">Belum ada app yang dibagikan ke Anda. Minta pemilik app menambahkan Anda di tab <strong>Akses</strong>.</p>
@@ -57,6 +121,7 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
     <?php endif; ?>
   </div>
 <?php else: ?>
+<p class="text-muted small mb-2">Menampilkan <?= (int) count($apps) ?> app<?= $__filterActive ? ' yang cocok dengan filter' : '' ?>.</p>
 <div class="card">
   <div class="table-responsive">
   <table class="table table-hover align-middle mb-0">

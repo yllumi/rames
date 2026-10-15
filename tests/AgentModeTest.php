@@ -71,11 +71,16 @@ class AgentModeTest extends TestCase
      *
      * +1 (F4 lanjutan: unduh hasil `db_dump`): `GET /backups/dump/sql` — ability
      * `backup` (operator+); volume server agent dibaca dari server itu.
+     *
+     * +2 (SSL mode AJAX, SPECS §8a): `GET /api/ssl/status` &
+     * `POST /api/ssl/{id}/enable` — ability `ssl` (operator+); keduanya
+     * dashboard-only (halaman/JSON tabel SSL tidak ada di agent) dan tetap wajib
+     * CSRF (`CsrfMiddleware` tanpa pengecualian baru).
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 116;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 118;
 
-    /** Definisi di atas menghasilkan 122 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 122;
+    /** Definisi di atas menghasilkan 124 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 124;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -91,6 +96,10 @@ class AgentModeTest extends TestCase
         'GET /users',
         'GET /api/monitor/overview',
         'GET /api/apps/{id}/status',
+        // SSL mode AJAX (SPECS §8a): endpoint JSON status & enable tidak boleh
+        // bocor ke mode agent (agent tidak melayani tabel SSL control plane).
+        'GET /api/ssl/status',
+        'POST /api/ssl/{id}/enable',
         // Registry server (F0 multi-server): halaman & daftar JSON-nya tidak boleh
         // bocor ke mode agent (agent tidak mengenal server lain).
         'GET /servers',

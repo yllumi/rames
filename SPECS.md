@@ -32,7 +32,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [x] Kepemilikan app per user + sharing ke user lain (role viewer/operator/owner) & role global admin/member (§6.1, §7.7)
 - [ ] Log viewer real-time per container (§8c)
 - [x] Monitoring resource container & total VM — halaman global `/monitor` (§8d)
-- [ ] Search / filter / pagination daftar app (§8e)
+- [x] Search / filter / pagination daftar app (§8e) — **sebagian**: filter `name`/`domain`/`owner` selesai (owner admin-only); **belum**: `?q=`, `?status=`, pagination `SITES_PER_PAGE`
 - [ ] Rate limiting / proteksi brute-force login (§8f)
 - [ ] Backup otomatis data & config sebelum overwrite (§8g)
 - [x] Backup volume harian ke object storage (S3) via restic — dump logis (DB) & snapshot (non-DB) (§8h)
@@ -712,7 +712,7 @@ Setiap app **dimiliki satu user (owner)** dan hanya terlihat oleh user yang berh
 - Semua endpoint aksi tetap menolak di server meski tombolnya disembunyikan di UI (defense in depth).
 
 **Penyaringan resource global**
-- `/apps` — hanya app yang boleh diakses; tab filter **Semua (admin) / Milik Saya / Dibagikan ke Saya**; kolom **Owner** untuk admin.
+- `/apps` — hanya app yang boleh diakses; tab filter **Semua (admin) / Milik Saya / Dibagikan ke Saya**; kolom **Owner** untuk admin. Filter query-string **`?name=`/`?domain=`/`?owner=`** (§8e) lewat `AppFilter`; **`?owner=` hanya dihormati untuk admin** (non-admin: parameter diabaikan total) dan id di luar peta `user_names()` diabaikan.
 - `/database` — non-admin hanya melihat container MySQL/MariaDB milik app yang bisa diaksesnya (milik sendiri + yang dibagikan); container app user lain dan container eksternal hanya tampil untuk admin. Tombol **Kelola →** (membuka proxy Adminer, §7.10) hanya muncul bila user punya ability `database` (operator ke atas) — endpoint proxy tetap menolak 404 bila dipaksa. Kolom Owner ditampilkan untuk admin.
 - Nilai **environment variable** (bisa berisi kredensial) hanya ditampilkan untuk role **operator** ke atas; viewer hanya melihat keterangan tanpa nilainya.
 - `/ssl`, `/database`, `/volumes`, `/networks` — daftar disaring ke app yang boleh diakses (admin: semua). Volume **yatim** (project sudah tidak ada di `apps.json`) hanya tampil untuk admin.
@@ -1315,6 +1315,13 @@ Nginx tetap native di host; **certbot dijalankan di dalam dashboard container** 
 4. Sukses → update `ssl_status=active` + `ssl_expires_at`, lalu **regenerate config Nginx** dengan blok `listen 443 ssl` + redirect HTTP→HTTPS (path cert `/etc/letsencrypt/live/{domain}/...` yang di-mount dari host). Watcher host me-reload.
 5. Gagal → `ssl_status=failed` + pesan error; app tetap `running` via HTTP, tombol **Retry SSL** muncul. Pesan galat **memuat blok `Detail:` dari `stdout` certbot** (mis. `404`, `Timeout during connect`, `DNS problem`) — bukan hanya ringkasan `stderr` ("Some challenges have failed") — sehingga sebabnya terbaca langsung di UI & log worker `runtime/logs/ssl/{appId}.log` (state `ssl_error`) tanpa membuka log container.
 
+### Mode AJAX (tanpa reload halaman)
+Tombol **Aktifkan SSL** / **Retry SSL** di halaman `/ssl` kini berjalan **tanpa reload halaman** (detail teknis: `ARCHITECTURE.md` §5.36): baris tabel diperbarui **di tempat** dari JSON (menggantikan `window.location.reload()` tiap 5 dtk yang lama — **sudah dihapus**). Rentang kontrak:
+- `POST /api/ssl/{id}/enable` (`SslController::apiEnable`) — inti kerjanya **sama** dengan jalur halaman `POST /ssl/{id}/enable` (keduanya memanggil privat `enableDomain()`): validasi → efek samping (status store + spawn worker) → hasil terstruktur. Sukses ⇒ `{"code":0,"ok":true,"status":"pending","domain":…,"message":…}`. **Penolakan bisnis apa pun** (tanpa host port, domain bukan milik app, domain non-publik, sudah `active`/`pending`, atau **gagal spawn worker**) ⇒ HTTP **200** `{"code":1,"ok":false,"error":…}` (amplop sengaja sama supaya JS membedakan lewat `code`/`error` lalu menyinkronkan ulang status). App tidak ada / tanpa ability `ssl` ⇒ **404** `{"code":404,…}` (bukan 403). CSRF **wajib** dan **tidak dikecualikan** (tidak ada pengecualian baru di `CsrfMiddleware`; `_token` dikirim di body) — CSRF salah ⇒ **419**.
+- `GET /api/ssl/status` (`SslController::apiStatus`) — **read-only** (hanya membaca store; Docker/agent tidak disentuh): `{"code":0,"ssl_supported":bool,"pending":bool,"rows":[{"app_id","app_name","domain","is_custom","status","message","expires_at","error","can_ssl"}]}`. Baris dipakai ulang dari `sslRows()` (tanpa duplikasi logika domain/`hasHostPort`) dan disaring `AppAccess::visible()` — hanya app yang boleh dilihat user yang dikembalikan.
+- **Fallback tanpa JS tetap ada**: tombol tetap `<form method="post" action="/ssl/{id}/enable">` (progressive enhancement) sehingga halaman tetap bekerja penuh tanpa JavaScript (302 → `/ssl` + flash).
+- **Polling browser**: 5 dtk **hanya** selama ada baris `pending`, **dijeda saat tab tidak terlihat** (`visibilitychange`) dan **dibersihkan saat halaman ditinggalkan** (`pagehide`/`beforeunload`, plus `AbortController`) — tidak ada permintaan latar belakang. Peta status→kelas badge tetap milik view (`$badges`) dan dikirim ke JS lewat `data-ssl-badge-map` (tidak diduplikasi di JS).
+
 ### Renewal
 Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (atau tombol Enable/Retry) tidak menerbitkan ulang selama masih valid. Otomasi renewal di host memakai **systemd timer**: script `host/certbot-renew.sh` menjalankan `certbot renew` (2×/hari, `RandomizedDelaySec`), lalu `nginx -s reload` + tulis status **hanya bila** ada sertifikat yang benar-benar diperbarui (bandingkan mtime `live/*/fullchain.pem`). Unit `host/systemd/certbot-renew.{service,timer}` dipasang otomatis oleh `host/install.sh` (fitur 3).
 
@@ -1419,13 +1426,19 @@ Field tambahan per app:
 
 **Tujuan:** memudahkan navigasi saat jumlah app banyak (daftar `/apps`).
 
-**Alur:**
-1. `/apps` menerima query params: `?q={keyword}&status={running|stopped|deploying|error}&page={n}`.
-2. **Search (`q`)** — cocokkan case-insensitive pada `name`, `subdomain`, `custom_domain`, `repo_url`.
-3. **Filter status** — dropdown (semua/running/stopped/deploying/error).
-4. **Pagination** — `SITES_PER_PAGE` app per halaman (default 20), tombol prev/next + info "menampilkan x–y dari z".
-5. Filter/search berbasis **query string** (bukan JS state) sehingga URL bisa di-share & tombol back bekerja.
-6. Murni di `AppController::index` + view `app/index.php` (`request()->get()`), tanpa perubahan data model.
+**Terimplementasi — filter `name` / `domain` / `owner`** (query string; `AppController::index()` + `app\library\Storage\AppFilter` + form GET di `app/view/app/index.php`):
+1. `/apps` menerima `?name={substring}&domain={substring}&owner={user id}`.
+2. **`name`** — cocok **case-insensitive** (substring) pada `name` app.
+3. **`domain`** — cocok (substring, case-insensitive) pada **domain efektif** (`app_subdomain_of()` — satu sumber resolusi subdomain, bukan tebakan dari `name`) **atau** `custom_domain`.
+4. **`owner`** — cocok **persis** dengan `owner_id`; **hanya dihormati untuk admin**. Bagi non-admin parameter itu **diabaikan total** (tidak menyaring, tidak membocorkan app user lain — penyaringan tetap `AppAccess::visible()`); id di luar peta `user_names()` juga **diabaikan** (pola sama `?server=<id asing>` — bukan oracle keberadaan user, dan halaman tidak dikosongkan).
+5. Digabung **AND** dengan `?scope=all|mine|shared` & `?server=<id>` yang sudah ada; karena filter diterapkan **sebelum** perhitungan tab, angka `counts` tab ikut menyempit. Urutan tampilan tidak berubah (**milik sendiri dulu, lalu alfabetis**).
+6. Filter berbasis **query string** (bukan JS state) sehingga URL bisa di-share & tombol back bekerja; tautan tab mempertahankan filter aktif, tombol **Reset** membuang filter sambil menyisakan `scope`/`server`.
+7. Nilai yang ditampilkan di form = nilai **efektif dari controller** (satu pintu `AppFilter::normalize()`: `trim()`; `name`/`domain` lowercase) — view hanya merender, tidak menormalkan ulang.
+8. Implementasi: kelas `AppFilter` (`apply()`/`matches()`/`normalize()`/`isActive()`; **statik murni**, tanpa I/O **dan tanpa otorisasi**) — satu-satunya tempat pencocokan filter; pengaman daftar tetap `AppAccess::visible()`.
+
+**Belum diimplementasikan (tetap rencana):** `?q={keyword}` (search gabungan `name`/`subdomain`/`custom_domain`/`repo_url`), `?status={running|stopped|deploying|error}`, dan **pagination** `SITES_PER_PAGE` (default 20, tombol prev/next + info "menampilkan x–y dari z"). Sebelumnya §8e menyebut ketiganya seolah sudah ada — kini ditandai eksplisit **belum**. Murni di `AppController::index` + view `app/view/app/index.php` (`request()->get()`), tanpa perubahan data model.
+
+**Pengujian**: `tests/AppFilterTest.php` (unit murni pencocokan: substring case-insensitive/Unicode-safe, domain efektif vs `custom_domain`, `owner` persis, AND, urutan input terjaga, `normalize()`/`isActive()`), `tests/AppListFilterTest.php` (integrasi controller+view: penyempitan baris & `counts` tab, AND dengan `scope`/`server`, `owner` admin-only, id owner asing & non-admin diabaikan, non-admin tetap ter-scope `visible()`).
 
 ## 8f. Rate Limiting & Proteksi Brute-Force Login
 

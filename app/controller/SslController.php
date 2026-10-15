@@ -11,6 +11,7 @@ use app\library\Docker\AppPorts;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use support\Request;
+use Webman\Http\Response;
 
 /**
  * Halaman SSL otomatis (Let's Encrypt) — SPECS.md §8a & §8b.
@@ -29,6 +30,12 @@ use support\Request;
  *
  * Seam uji `$spawn` (nullable, pola `AgentJobController`): menggantikan
  * peluncuran worker SSL supaya uji tidak pernah menjalankan certbot nyata.
+ *
+ * **Mode AJAX (JSON, tanpa reload halaman):** `apiEnable()` menjalankan inti
+ * yang sama dengan `enable()` (`enableDomain()`) lalu merespons envelope JSON,
+ * sedangkan `apiStatus()` mengembalikan baris `sslRows()` untuk memperbarui
+ * tabel `/ssl` di tempat. Otorisasinya sama (`AppAccess`); `apiStatus()` murni
+ * membaca store — tidak menyentuh Docker/agent.
  */
 class SslController
 {
@@ -135,6 +142,103 @@ class SslController
      */
     public function enable(Request $request, string $id)
     {
+        $result = $this->enableDomain($request, $id);
+
+        flash_set($result['flash'], $result['message']);
+
+        return redirect('/ssl');
+    }
+
+    /**
+     * Aktifkan SSL via JSON (AJAX) — `POST /api/ssl/{id}/enable`.
+     *
+     * Inti kerjanya persis `enable()` (`enableDomain()`), hanya responsnya beda:
+     * envelope JSON `{code:0,...}` saat diterima, `{code:1,...}` untuk penolakan
+     * bisnis apa pun (HTTP **200** — bukan error server, JS memutuskan dari
+     * `code`/`error`). App tak ada / tanpa ability `ssl` melempar
+     * `AppAccessDenied` → 404 JSON `{"code":404,...}` oleh handler webman.
+     *
+     * CSRF tidak dikecualikan: JS wajib mengirim `_token` (middleware global).
+     */
+    public function apiEnable(Request $request, string $id): Response
+    {
+        $result = $this->enableDomain($request, $id);
+
+        if (!$result['ok']) {
+            return json(['code' => 1, 'ok' => false, 'error' => $result['error']]);
+        }
+
+        return json([
+            'code' => 0,
+            'ok' => true,
+            'status' => $result['status'],
+            'domain' => $result['domain'],
+            'message' => $result['message'],
+        ]);
+    }
+
+    /**
+     * Baris tabel SSL sebagai JSON — `GET /api/ssl/status` (AJAX, tanpa reload).
+     *
+     * Otorisasi identik `index()`: `AppAccess::visible()` + `sslRows()` (satu
+     * sumber logika domain/`hasHostPort`, tidak diduplikasi). Read-only: hanya
+     * membaca store; Docker/agent tidak disentuh.
+     */
+    public function apiStatus(Request $request): Response
+    {
+        $store = new AppStore();
+        // Hanya app yang boleh diakses user ini (admin: semua app).
+        $apps = AppAccess::visible($store->all(), current_user());
+        $table = $this->sslRows($apps);
+
+        $rows = [];
+        $pending = false;
+        foreach ($table['rows'] as $row) {
+            $status = (string) $row['ssl_status'];
+            $pending = $pending || $status === 'pending';
+            $rows[] = [
+                'app_id' => (string) ($row['app']['id'] ?? ''),
+                'app_name' => (string) ($row['app']['name'] ?? ''),
+                'domain' => (string) $row['domain'],
+                'is_custom' => (bool) $row['is_custom'],
+                'status' => $status,
+                'message' => $row['ssl_message'],
+                'expires_at' => $row['ssl_expires_at'],
+                'error' => $row['ssl_error'],
+                'can_ssl' => AppAccess::can('ssl', $row['app'], current_user()),
+            ];
+        }
+
+        return json([
+            'code' => 0,
+            'ssl_supported' => $table['sslSupported'],
+            'pending' => $pending,
+            'rows' => $rows,
+        ]);
+    }
+
+    /**
+     * Inti `enable()` / `apiEnable()`: validasi → efek samping (status store +
+     * spawn worker) → hasil terstruktur. Satu implementasi untuk dua respons
+     * (halaman & JSON) supaya validasinya tidak bisa menyimpang.
+     *
+     * Hasil:
+     *   ok      — permintaan diterima & worker diluncurkan
+     *   error   — pesan penolakan untuk user (= `message`, null saat diterima)
+     *   status  — `pending` (diterima) | `rejected` | `already` | `failed`
+     *   domain  — domain target; `''` bila belum sempat dihitung (ditolak karena
+     *             port host/domain server)
+     *   message — teks flash, persis seperti jalur halaman lama
+     *   flash   — tipe flash: `success` | `info` | `error`
+     *
+     * Efek samping hanya pada jalur diterima / gagal-spawn, sama seperti sebelum
+     * refactor (fail-fast lain tidak menyentuh store).
+     *
+     * @return array{ok:bool,error:?string,status:string,domain:string,message:string,flash:string}
+     * @throws AppAccessDenied app tidak ada / user tanpa ability `ssl`
+     */
+    private function enableDomain(Request $request, string $id): array
+    {
         $store = new AppStore();
         $app = $store->find($id);
         if ($app === null) {
@@ -148,8 +252,7 @@ class SslController
         // Tanpa port terpublish tidak ada vhost Nginx → tidak ada yang bisa
         // di-SSL (subdomain app memang tidak dilayani, SPECS §7.2).
         if (!AppPorts::hasHostPort($app)) {
-            flash_set('error', 'App ini tidak mem-publish port host — tidak ada domain yang bisa di-SSL. Tambahkan `ports:` pada compose app (tab Compose) lalu Deploy Ulang.');
-            return redirect('/ssl');
+            return $this->rejected('App ini tidak mem-publish port host — tidak ada domain yang bisa di-SSL. Tambahkan `ports:` pada compose app (tab Compose) lalu Deploy Ulang.');
         }
 
         // Fail-fast SEBELUM efek samping apa pun (status/worker): server agent
@@ -159,8 +262,7 @@ class SslController
             try {
                 AgentDeployer::assertDomainBase($server, $app);
             } catch (\RuntimeException $e) {
-                flash_set('error', $e->getMessage());
-                return redirect('/ssl');
+                return $this->rejected($e->getMessage());
             }
         }
 
@@ -172,20 +274,19 @@ class SslController
             $domain = $customDomain !== '' ? $customDomain : $subdomain;
         }
         if ($domain !== $subdomain && $domain !== $customDomain) {
-            flash_set('error', "Domain {$domain} bukan milik app ini.");
-            return redirect('/ssl');
+            return $this->rejected("Domain {$domain} bukan milik app ini.", domain: $domain);
         }
 
         if (!SslIssuer::isPublicDomain($domain)) {
-            flash_set('error', "Domain {$domain} bukan domain publik — SSL otomatis tidak didukung (mis. TLD .local).");
-            return redirect('/ssl');
+            return $this->rejected("Domain {$domain} bukan domain publik — SSL otomatis tidak didukung (mis. TLD .local).", domain: $domain);
         }
 
         $slot = ($domain === $customDomain && $customDomain !== '') ? 'custom_ssl' : 'ssl';
         $status = (string) ($app[$slot . '_status'] ?? 'disabled');
         if (in_array($status, ['active', 'pending'], true)) {
-            flash_set('info', "SSL untuk {$domain} sudah {$status}.");
-            return redirect('/ssl');
+            // Status slot yang sudah jalan bukan error — di jalur halaman ini
+            // flash `info` (perilaku lama), bukan `error`.
+            return $this->rejected("SSL untuk {$domain} sudah {$status}.", 'already', $domain, 'info');
         }
 
         $store->update($id, function (array &$s) use ($slot): void {
@@ -203,11 +304,35 @@ class SslController
                 $s[$slot . '_message'] = null;
                 $s[$slot . '_error'] = 'Gagal spawn worker SSL. Cek log runtime/logs/ssl/{id}.log.';
             });
-            flash_set('error', 'Gagal menjalankan worker SSL.');
-        } else {
-            flash_set('success', "Penerbitan SSL untuk {$domain} dijalankan.");
+
+            return $this->rejected('Gagal menjalankan worker SSL.', 'failed', $domain);
         }
-        return redirect('/ssl');
+
+        return [
+            'ok' => true,
+            'error' => null,
+            'status' => 'pending',
+            'domain' => $domain,
+            'message' => "Penerbitan SSL untuk {$domain} dijalankan.",
+            'flash' => 'success',
+        ];
+    }
+
+    /**
+     * Hasil terstruktur penolakan bisnis (tanpa efek samping apa pun).
+     *
+     * @return array{ok:bool,error:?string,status:string,domain:string,message:string,flash:string}
+     */
+    private function rejected(string $message, string $status = 'rejected', string $domain = '', string $flash = 'error'): array
+    {
+        return [
+            'ok' => false,
+            'error' => $message,
+            'status' => $status,
+            'domain' => $domain,
+            'message' => $message,
+            'flash' => $flash,
+        ];
     }
 
     /**

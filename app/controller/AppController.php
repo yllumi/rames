@@ -36,6 +36,7 @@ use app\library\Nginx\NginxConfigGuard;
 use app\library\Nginx\NginxReloader;
 use app\library\Nginx\NginxRoutes;
 use app\library\SSL\SslIssuer;
+use app\library\Storage\AppFilter;
 use app\library\Storage\AppStore;
 use app\library\Storage\ServerStore;
 use app\library\Support\Markdown;
@@ -102,6 +103,33 @@ class AppController
             ));
         }
 
+        // Filter `?name=` / `?domain=` / `?owner=` (query string, SPECS.md §8e).
+        // Nilai mentah dinormalisasi lebih dulu lewat satu pintu `AppFilter`
+        // (trim + lowercase, non-skalar ⇒ kosong) supaya nilai efektif yang
+        // dikirim ke view identik dengan yang dipakai penyaringan.
+        $filters = AppFilter::normalize([
+            'name' => $request->get('name', ''),
+            'domain' => $request->get('domain', ''),
+            'owner' => $request->get('owner', ''),
+        ]);
+
+        // `?owner=` hanya dihormati untuk **admin**: bagi non-admin parameter itu
+        // diabaikan total (tidak menyaring, tidak membocorkan app user lain —
+        // penyaringan sisi server tetap `AppAccess::visible()`).
+        // Id owner di luar peta `user_names()` juga diabaikan (pola sama dengan
+        // `?server=<id asing>`): bukan oracle keberadaan user dan tidak
+        // menghasilkan halaman kosong.
+        $ownerNames = $isAdmin ? user_names() : [];
+        if (!$isAdmin || ($filters['owner'] !== '' && !isset($ownerNames[$filters['owner']]))) {
+            $filters['owner'] = '';
+        }
+
+        // Filter menyempitkan baris **dan** tab count (`counts`), konsisten
+        // dengan filter server yang sudah ada.
+        if (AppFilter::isActive($filters)) {
+            $visible = AppFilter::apply($visible, $filters);
+        }
+
         $roles = [];
         $owned = [];
         foreach ($visible as $app) {
@@ -150,10 +178,13 @@ class AppController
             'scope' => $scope,
             'counts' => ['mine' => count($mine), 'shared' => count($shared), 'all' => count($visible)],
             'isAdmin' => $isAdmin,
-            'ownerNames' => $isAdmin ? user_names() : [],
+            'ownerNames' => $ownerNames,
+            'ownerOptions' => $ownerNames,
             'serverNames' => $serverNames,
             'serverOptions' => $serverOptions,
             'serverFilter' => $serverFilter,
+            'filters' => $filters,
+            'filterActive' => AppFilter::isActive($filters),
         ]);
     }
 

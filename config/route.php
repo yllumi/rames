@@ -332,6 +332,10 @@ Route::get('/api/servers', [ServerController::class, 'apiIndex']);
 // SSL otomatis (Let's Encrypt)
 Route::get('/ssl', [SslController::class, 'index']);
 Route::post('/ssl/{id}/enable', [SslController::class, 'enable']);
+// Status tabel SSL (JSON, read-only) untuk memperbarui halaman `/ssl` di tempat.
+Route::get('/api/ssl/status', [SslController::class, 'apiStatus']);
+// Aktifkan SSL via JSON (AJAX, tanpa reload; CSRF tetap lewat CsrfMiddleware).
+Route::post('/api/ssl/{id}/enable', [SslController::class, 'apiEnable']);
 
 // Volume Docker (lihat & bersihkan volume yatim)
 Route::get('/volumes', [VolumeController::class, 'index']);

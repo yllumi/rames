@@ -12,12 +12,12 @@
 
 - **Autentikasi** — login/logout berbasis session, password bcrypt, multi-user dengan role global (admin/member) + kepemilikan & sharing app per user (viewer/operator/owner; SPECS §7.7).
 - **Manage Users** — tambah/hapus user, ganti password.
-- **App Management** — buat app dari URL repo Git, deteksi & edit host port, deteksi konflik port dengan saran port otomatis.
+- **App Management** — buat app dari URL repo Git, deteksi & edit host port, deteksi konflik port dengan saran port otomatis. Daftar `/apps` punya **filter Nama / Domain / Owner** lewat query string (filter **Owner** admin-only); filter digabung AND dengan tab scope (`Semua`/`Milik Saya`/`Dibagikan`) & filter server (SPECS §8e).
 - **Deploy otomatis** — clone repo → parse `docker-compose.yml` → tulis override port → `docker compose up -d --build` → kumpulkan info container → generate config Nginx.
 - **Background worker** — deploy/rebuild berjalan async (proses terpisah) dengan status yang bisa di-*poll* dari UI.
 - **Reverse proxy** — tiap app otomatis mendapat subdomain `{name}.{APP_DOMAIN}`; subdomain bisa **diganti** (label sendiri, terpisah dari nama app) lewat tab **Domain & SSL** (SPECS §7.11).
 - **Custom domain** — app bisa diberi satu custom domain; subdomain bawaan redirect (301) ke custom domain.
-- **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri.
+- **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri. Klik **Aktifkan SSL** berjalan **tanpa reload halaman** — baris tabel diperbarui otomatis via polling JSON sementara status `pending` (fallback tanpa JS tetap bekerja) (SPECS §8a, ARCHITECTURE §5.36).
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
 - **Database manager (Adminer)** — halaman `/database` membuka **Adminer** yang disajikan helper internal Rames **tanpa port publik** (di balik login + hak akses app, ability `database` = operator ke atas): daftar container MySQL/MariaDB, tombol **Kelola →**, kredensial terisi otomatis bila terdeteksi (kalau tidak, form login Adminer muncul dengan Server ter-prefill). Dump/import besar diarahkan ke **Volume/backup** atau tab **Terminal** (proxy dibatasi ≤30 detik & ukuran respons; SPECS §7.10).
@@ -133,7 +133,7 @@ Buka `http://{app}.{APP_DOMAIN}` di browser. Pastikan DNS subdomain mengarah ke 
 ### Langkah 6 — (Opsional) Custom domain & SSL
 
 1. Buka halaman detail app → kartu **Custom Domain** → isi domain (mis. `app.example.org`) → **Set**.
-2. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi). Untuk app yang berjalan di **server agent**, penerbitan dijalankan **di server itu** dan `ADMIN_EMAIL` diambil dari `secrets/agent.env` server itu — bukan `.env` dashboard ([detail](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
+2. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi). Klik ini berjalan **tanpa reload halaman** — baris tabel `/ssl` diperbarui di tempat dan status `pending` di-*poll* via JSON hingga selesai; tombol tetap berupa `<form>` biasa sehingga **fallback tanpa JS** tetap bekerja. Untuk app yang berjalan di **server agent**, penerbitan dijalankan **di server itu** dan `ADMIN_EMAIL` diambil dari `secrets/agent.env` server itu — bukan `.env` dashboard ([detail](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
 
 ### Reload Nginx host (dari dashboard)
 
