@@ -9,6 +9,12 @@
 // merender modal konfirmasi update/rollback. Modal itu WAJIB tetap di
 // index.php: `.tab-pane` non-aktif memakai `display:none`, sehingga modal yang
 // berada di dalamnya tidak akan pernah tampil.
+//
+// SKRIP PANEL: `/js/update.js` **tidak** dimuat di sini, melainkan oleh
+// `index.php` setelah markup modal konfirmasi. Partial ini dirender sebelum
+// modal (modal ada di luar `.tab-pane`), jadi skrip yang ikut di sini akan
+// melihat `#update-confirm-modal`/`#rollback-confirm-modal` masih null dan
+// tombol konfirmasinya mati.
 // ---------------------------------------------------------------------------
 // $update null = fitur dimatikan / panel gagal dibaca. Normalisasi dulu supaya
 // blok perhitungan di bawah tidak pernah mengakses array pada null.
@@ -157,6 +163,4 @@ $canUpdate = is_admin() && !empty($pf['ok']) && !empty($check['update_available'
   </div>
 </div>
 <div id="update-flash"></div>
-
-<script src="/js/update.js?v=2"></script>
 <?php endif; ?>

@@ -161,24 +161,35 @@
   }
 
   // Konfirmasi memakai modal Bootstrap (bukan window.confirm), mengikuti pola
-  // modal hapus app di halaman detail. Bila Bootstrap tidak termuat, aksi TIDAK
-  // dijalankan dan panel memberi pesan (tidak ada lagi dialog window.confirm).
-  var updateModalEl = document.getElementById('update-confirm-modal');
-  var rollbackModalEl = document.getElementById('rollback-confirm-modal');
+  // modal hapus app di halaman detail. Bila Bootstrap/modal tidak tersedia,
+  // aksi TIDAK dijalankan dan panel memberi pesan (tidak ada lagi dialog
+  // window.confirm).
+  //
+  // Elemen modal di-resolve **saat dipakai** (bukan saat skrip dimuat): markup-nya
+  // dirender di luar partial tab, dan urutan skrip-vs-modal pernah membuat
+  // `getElementById()` di awal skrip bernilai null → tombol konfirmasi mati
+  // dengan pesan yang menyesatkan. Lookup malas ini menjaga urutan DOM tidak
+  // lagi jadi syarat.
   var NO_MODAL = 'Modal konfirmasi tidak dapat ditampilkan (aset Bootstrap belum termuat) — muat ulang halaman lalu coba lagi.';
+  var NO_MARKUP = 'Modal konfirmasi tidak ada di halaman ini — muat ulang halaman lalu coba lagi.';
 
-  function showModal(el) {
-    if (el && window.bootstrap && window.bootstrap.Modal) {
-      window.bootstrap.Modal.getOrCreateInstance(el).show();
-      return true;
-    }
-    return false;
+  function showModal(id) {
+    var el = document.getElementById(id);
+    if (!el || !window.bootstrap || !window.bootstrap.Modal) return null;
+    window.bootstrap.Modal.getOrCreateInstance(el).show();
+    return el;
   }
 
-  function hideModal(el) {
+  function hideModal(id) {
+    var el = document.getElementById(id);
     if (el && window.bootstrap && window.bootstrap.Modal) {
       window.bootstrap.Modal.getOrCreateInstance(el).hide();
     }
+  }
+
+  /** Pesan yang tepat: markup hilang atau aset Bootstrap belum termuat. */
+  function modalMissingMessage(id) {
+    return document.getElementById(id) ? NO_MODAL : NO_MARKUP;
   }
 
   function runUpdate() {
@@ -218,15 +229,15 @@
   var startBtn = document.getElementById('update-start-btn');
   if (startBtn) {
     startBtn.addEventListener('click', function () {
-      if (showModal(updateModalEl)) return; // lanjut lewat tombol di modal
-      notify(NO_MODAL, 'danger');
+      if (showModal('update-confirm-modal')) return; // lanjut lewat tombol di modal
+      notify(modalMissingMessage('update-confirm-modal'), 'danger');
     });
   }
 
   var updateConfirmBtn = document.getElementById('update-confirm-btn');
   if (updateConfirmBtn) {
     updateConfirmBtn.addEventListener('click', function () {
-      hideModal(updateModalEl);
+      hideModal('update-confirm-modal');
       runUpdate();
     });
   }
@@ -234,15 +245,15 @@
   var rollbackBtn = document.getElementById('update-rollback-btn');
   if (rollbackBtn) {
     rollbackBtn.addEventListener('click', function () {
-      if (showModal(rollbackModalEl)) return;
-      notify(NO_MODAL, 'danger');
+      if (showModal('rollback-confirm-modal')) return;
+      notify(modalMissingMessage('rollback-confirm-modal'), 'danger');
     });
   }
 
   var rollbackConfirmBtn = document.getElementById('rollback-confirm-btn');
   if (rollbackConfirmBtn) {
     rollbackConfirmBtn.addEventListener('click', function () {
-      hideModal(rollbackModalEl);
+      hideModal('rollback-confirm-modal');
       runRollback();
     });
   }

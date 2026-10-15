@@ -494,6 +494,83 @@ class NginxServerViewTest extends TestCase
         ];
     }
 
+    // ==================================================================
+    // (C) urutan DOM: skrip panel update vs markup modal konfirmasi
+    // ==================================================================
+
+    /**
+     * Regresi: `/js/update.js` **wajib** dimuat setelah markup modal konfirmasi.
+     *
+     * Skrip itu mengikat handler ke `#update-confirm-btn`/`#rollback-confirm-btn`
+     * (yang berada **di dalam** modal) dan mencari `#update-confirm-modal` /
+     * `#rollback-confirm-modal`. Ketika skrip masih ikut di dalam
+     * `partials/tab-update.php` — yang dirender sebelum modal, karena modal ada di
+     * luar `.tab-pane` — semua lookup itu `null` saat skrip dimuat: tombol
+     * "Update Sekarang" hanya menampilkan pesan "Modal konfirmasi tidak dapat
+     * ditampilkan" walau Bootstrap termuat, dan tombol "Ya, update sekarang" tidak
+     * pernah terpasang handler.
+     *
+     * Bukti = posisi byte pada HTML hasil render halaman Config + isi partial
+     * (tanpa JS/browser).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testUpdateScriptIsLoadedAfterTheConfirmModals(): void
+    {
+        $vars = $this->nginxVars($this->serverOptions());
+        $vars['tab'] = 'update';
+        $vars['update']['check'] = [
+            'ok' => true,
+            'update_available' => true,
+            'local_sha' => 'abcdef1234567890',
+            'remote_sha' => 'fedcba0987654321',
+            'checked_at' => '2026-10-15 09:00:00',
+        ];
+        $vars['update']['preflight'] = ['ok' => true, 'errors' => [], 'warnings' => []];
+
+        $html = $this->renderView('nginx/index.php', $vars);
+
+        $updateModal = strpos($html, 'id="update-confirm-modal"');
+        $rollbackModal = strpos($html, 'id="rollback-confirm-modal"');
+        $confirmBtn = strpos($html, 'id="update-confirm-btn"');
+        $script = strpos($html, '<script src="/js/update.js');
+
+        self::assertNotFalse($updateModal, 'modal konfirmasi update harus dirender untuk admin');
+        self::assertNotFalse($rollbackModal, 'modal konfirmasi rollback harus dirender untuk admin');
+        self::assertNotFalse($confirmBtn, 'tombol konfirmasi di dalam modal harus dirender');
+        self::assertNotFalse($script, 'skrip panel update harus dimuat halaman Config');
+        self::assertGreaterThan($updateModal, $script, 'update.js harus dimuat SETELAH markup modal konfirmasi update');
+        self::assertGreaterThan($rollbackModal, $script, 'update.js harus dimuat SETELAH markup modal konfirmasi rollback');
+        self::assertGreaterThan($confirmBtn, $script, 'update.js harus dimuat SETELAH tombol konfirmasi (handler diikat saat skrip dimuat)');
+
+        $partial = (string) file_get_contents(self::VIEW_DIR . '/nginx/partials/tab-update.php');
+        self::assertStringNotContainsString(
+            '<script src="/js/update.js',
+            $partial,
+            'partial tab tidak boleh memuat update.js sendiri (selalu dirender sebelum modal)'
+        );
+    }
+
+    /**
+     * Skrip panel update hanya dimuat bila panelnya benar-benar dirender: fitur
+     * update dimatikan / panel gagal dibaca (`$update = null`) ⇒ tanpa
+     * `#update-panel` sekaligus tanpa request `/js/update.js` yang sia-sia.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testUpdateScriptIsSkippedWhenThePanelIsNotRendered(): void
+    {
+        $vars = $this->nginxVars($this->serverOptions());
+        $vars['tab'] = 'update';
+        $vars['update'] = null;
+
+        $html = $this->renderView('nginx/index.php', $vars);
+
+        self::assertStringNotContainsString('id="update-panel"', $html, 'panel update tidak dirender saat fitur mati');
+        self::assertStringNotContainsString('/js/update.js', $html, 'skrip panel tidak perlu dimuat tanpa panel');
+        self::assertStringContainsString('id="pane-update"', $html, 'tab Update tetap ada (pesan "fitur mati" milik panel)');
+    }
+
     /**
      * Render view dengan variabel sesuai kontrak controller (tanpa HTTP/webman).
      *

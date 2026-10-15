@@ -149,6 +149,17 @@ $pull = is_array($pull ?? null) ? $pull : null;
 <?php endif; ?>
 
 <script src="/js/template-pull.js?v=2"></script>
+<?php if (!empty($update)): ?>
+<!-- Panel update dimuat **setelah** markup modal: `update.js` mencari
+     `#update-confirm-modal` / `#rollback-confirm-modal` yang dirender di blok
+     atas (di luar `.tab-pane`). Bila skrip ikut di dalam partial tab, ia
+     berjalan sebelum modal ada di DOM sehingga tombol "Update Sekarang" /
+     "Rollback" selalu gagal menampilkan konfirmasi.
+     Syarat muat = syarat panel (`partials/tab-update.php` merender `#update-panel`
+     bila `$update` truthy) — skrip menemukan elemennya lewat `#update-panel`,
+     jadi tanpa panel ia hanya menambah satu request tanpa guna. -->
+<script src="/js/update.js?v=3"></script>
+<?php endif; ?>
 <script>
   // Sinkronkan tab aktif dengan URL (`?tab=`) tanpa reload/permintaan server,
   // supaya refresh & tautan yang dibagikan mendarat di tab yang sama. Tab awal
