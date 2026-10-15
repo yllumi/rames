@@ -16,6 +16,11 @@
  * Field form yang dibaca controller: name, kind, base_url, token, tls_cert_pem,
  * domain, notes, enabled, dan `port_range_start`/`port_range_end`.
  *
+ * Blok bantu (bukan field) untuk server agent: perintah siap-salin pembaca
+ * `AGENT_TOKEN` + `AGENT_TLS_CERT` dari container agent di server tujuan
+ * (`docker exec rames-agent …`) — token tidak pernah dirender ulang dashboard,
+ * jadi admin butuh jalan mengambilnya tanpa menyalin ulang dari terminal lama.
+ *
  * Dua jebakan kontrak yang dijaga di sini:
  *  1. `enabled` tidak dicentang = key absen ⇒ controller memakai default `true`.
  *     Karena itu ada hidden `enabled=0` SEBELUM checkbox. Khusus baris **lokal**
@@ -136,6 +141,43 @@ $breadcrumbs = [
       <dt class="col-sm-4 text-muted fw-normal">Aktif</dt>
       <dd class="col-sm-8 mb-0"><?= $enabled ? 'ya' : 'tidak' ?></dd>
     </dl>
+  </div>
+</section>
+<?php endif; ?>
+
+<?php if (!$isLocal): ?>
+<section class="card mb-3">
+  <div class="card-header">
+    <h2 class="h6 mb-0">Ambil token &amp; sertifikat dari server tujuan</h2>
+  </div>
+  <div class="card-body">
+    <p class="text-muted small mb-2">
+      Jalankan perintah ini <strong>di server tujuan</strong> (tempat agent berjalan) — nilainya dibaca dari
+      container agent yang sudah hidup, jadi tidak perlu menyalin ulang dari terminal instalasi. Akses daemon
+      Docker tetap diperlukan (root atau anggota grup <span class="mono">docker</span>); bila user Anda bukan
+      keduanya, jalankan dengan <span class="mono">sudo</span>:
+    </p>
+    <textarea class="form-control mono" id="agent-onboarding-cmd" rows="2" readonly spellcheck="false"
+              onclick="this.select()">docker exec rames-agent sh -lc 'printf "TOKEN=%s\n\n" "$AGENT_TOKEN"; cat "$AGENT_TLS_CERT"'</textarea>
+    <div class="mt-2">
+      <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyAgentOnboardingCmd()">Salin perintah</button>
+    </div>
+    <ul class="text-muted small mt-3 mb-0">
+      <li>
+        Kalau container agent tidak berjalan, jalankan ulang <span class="mono">./agent/install.sh</span> dari
+        direktori paket agent di server itu (butuh akses daemon Docker) — blok onboarding
+        (URL + token + fingerprint + PEM) dicetak lagi dan token &amp; sertifikat yang sudah ada dipertahankan
+        (tanpa <span class="mono">--force</span> tidak ada rotasi).
+      </li>
+      <li>
+        Tempel <strong>seluruh</strong> blok
+        <span class="mono">-----BEGIN CERTIFICATE----- … -----END CERTIFICATE-----</span> pada kolom PEM di bawah;
+        fingerprint dihitung dashboard dari isi itu.
+      </li>
+      <li>
+        Token &amp; PEM adalah kredensial: jangan ditempel ke chat, tiket, atau commit.
+      </li>
+    </ul>
   </div>
 </section>
 <?php endif; ?>
@@ -275,5 +317,18 @@ $breadcrumbs = [
     </form>
   </div>
 </div>
+
+<?php if (!$isLocal): ?>
+<script>
+function copyAgentOnboardingCmd() {
+  var t = document.getElementById('agent-onboarding-cmd');
+  if (!t) return;
+  t.select();
+  t.setSelectionRange(0, 99999);
+  try { navigator.clipboard.writeText(t.value); } catch (e) {}
+  try { document.execCommand('copy'); } catch (e) {}
+}
+</script>
+<?php endif; ?>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

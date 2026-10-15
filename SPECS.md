@@ -47,7 +47,7 @@ Kebutuhan fase ini (cek daftar di §12 untuk sisa yang belum):
 - [x] **Dua peran runtime dari satu kode & satu image**: `RAMES_MODE=dashboard` (control plane: UI, login, timer) dan `RAMES_MODE=agent` (eksekutor: hanya route mesin, tanpa UI). Bukan fork kode — perbaikan bug berlaku di kedua peran.
 - [x] **Satu domain dasar per server** (`servers.domain`, keputusan: satu `APP_DOMAIN` + wildcard DNS per server). Subdomain app = `{label}.{domain server pemilik app}`; app di server `local` tetap memakai `APP_DOMAIN` bila `servers.domain` kosong (tanpa perubahan perilaku).
 - [x] **Kelola & pilih server = admin-only**: halaman `/servers` (pola `/nginx`; non-admin → **404**), pemilihan server hanya ada di form create app untuk admin. Tidak ada ability per-server baru untuk member dan tidak ada pricing per server.
-- [x] **Bootstrap manual + TLS self-signed + pinning**: ops menyiapkan server baru dan menjalankan `agent/install.sh` di server itu; admin menambahkan server lewat **Add Server** (paste token + PEM) lalu **Test connection**. TLS diterminasi **di proses agent** (port `8443`), bukan Nginx host; fingerprint yang di-pin = sertifikat agent sendiri.
+- [x] **Bootstrap manual + TLS self-signed + pinning**: ops menyiapkan server baru dan menjalankan `agent/install.sh` di server itu; admin menambahkan server lewat **Add Server** (paste token + PEM) lalu **Test connection**. TLS diterminasi **di proses agent** (port `8443`), bukan Nginx host; fingerprint yang di-pin = sertifikat agent sendiri. Karena token agent **tidak pernah ditampilkan ulang** oleh dashboard, form **Add Server**/**Ubah Server** menyediakan **perintah siap-salin** untuk mengambil `AGENT_TOKEN` + `AGENT_TLS_CERT` dari container agent di server tujuan (atau menjalankan ulang `agent/install.sh` — idempoten, tanpa `--force` token/sertifikat dipertahankan), sehingga admin tak perlu menyalin ulang dari terminal instalasi.
 - [x] **Job async** (konsekuensi batas timeout HTTP 30 dtk): `POST /jobs` → balas `job_id` + `log_offset` → agent spawn worker `cli/deploy.php` detached → control plane **polling** `GET /jobs/{id}` & `GET /jobs/{id}/log?offset=N`.
 - [x] **Keunikan per server** (bukan lagi global): nama app, host port, nama container, project compose, subdomain, dan custom domain diperiksa terhadap app **di server itu** (dua server boleh memakai nama/port/subdomain yang sama).
 - [x] **Kompatibilitas single-server**: app lama otomatis ber-`server_id` = server `local` (migrasi skema v2), tanpa perubahan perilaku.
@@ -1311,7 +1311,7 @@ Nginx tetap native di host; **certbot dijalankan di dalam dashboard container** 
    - `SSL_CHALLENGE=dns-cloudflare`: `--dns-cloudflare --dns-cloudflare-credentials {CLOUDFLARE_CREDS}` — validasi via record TXT; cocok saat record Cloudflare proxy aktif, tidak butuh port 80 publik.
    - `SSL_CA_SERVER=staging` → tambah `--staging` untuk uji tanpa rate limit production.
 4. Sukses → update `ssl_status=active` + `ssl_expires_at`, lalu **regenerate config Nginx** dengan blok `listen 443 ssl` + redirect HTTP→HTTPS (path cert `/etc/letsencrypt/live/{domain}/...` yang di-mount dari host). Watcher host me-reload.
-5. Gagal → `ssl_status=failed` + pesan error; app tetap `running` via HTTP, tombol **Retry SSL** muncul.
+5. Gagal → `ssl_status=failed` + pesan error; app tetap `running` via HTTP, tombol **Retry SSL** muncul. Pesan galat **memuat blok `Detail:` dari `stdout` certbot** (mis. `404`, `Timeout during connect`, `DNS problem`) — bukan hanya ringkasan `stderr` ("Some challenges have failed") — sehingga sebabnya terbaca langsung di UI & log worker `runtime/logs/ssl/{appId}.log` (state `ssl_error`) tanpa membuka log container.
 
 ### Renewal
 Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (atau tombol Enable/Retry) tidak menerbitkan ulang selama masih valid. Otomasi renewal di host memakai **systemd timer**: script `host/certbot-renew.sh` menjalankan `certbot renew` (2×/hari, `RandomizedDelaySec`), lalu `nginx -s reload` + tulis status **hanya bila** ada sertifikat yang benar-benar diperbarui (bandingkan mtime `live/*/fullchain.pem`). Unit `host/systemd/certbot-renew.{service,timer}` dipasang otomatis oleh `host/install.sh` (fitur 3).
@@ -1322,6 +1322,8 @@ Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (
 - Nginx reload watcher host (SPECS §8.3) aktif — dashboard hanya menulis `.conf`, watcher yang `nginx -t && reload`
 - `ADMIN_EMAIL` diisi; untuk DNS-01 Cloudflare: `CLOUDFLARE_CREDS` menunjuk file berisi `dns_cloudflare_api_token = <token>` yang terbaca container dashboard
 - `LETSENCRYPT_PATH` (default `/etc/letsencrypt`) di-mount ke container dari host
+
+**Diagnosa kegagalan** — pesan kegagalan certbot yang tampil di UI/log kini memuat blok `Detail:` dari `stdout` (sebab asli: `404`/timeout/masalah DNS), bukan sekadar ringkasan `stderr`. Log debug certbot (`--logs-dir /var/log/letsencrypt`) bersifat **lokal container** (direktori itu tidak di-mount ke host, jadi hilang saat container di-recreate); bila pesan galat kurang, baca di dalam container tempat certbot berjalan — `docker exec rames-webman cat /var/log/letsencrypt/letsencrypt.log` (penerbitan app di server agent dijalankan di server itu, jadi log ada di container `rames-agent`).
 
 ## 8b. Custom Domain per App
 

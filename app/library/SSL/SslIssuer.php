@@ -20,6 +20,12 @@ use RuntimeException;
  */
 class SslIssuer
 {
+    /**
+     * Batas panjang pesan galat certbot yang disimpan di berkas app
+     * (`{slot}_error`) / log job — cukup untuk memuat baris `Detail:`.
+     */
+    private const MAX_FAILURE_TEXT = 2000;
+
     private ProcessRunner $runner;
     private int $timeout;
 
@@ -117,12 +123,45 @@ class SslIssuer
         $result = $this->runner->run($command, null, $this->timeout);
 
         if ($result['code'] !== 0) {
-            $err = trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']);
-            throw new RuntimeException('Gagal menerbitkan sertifikat SSL untuk ' . $domain . ': ' . $err);
+            throw new RuntimeException(
+                'Gagal menerbitkan sertifikat SSL untuk ' . $domain . ': ' . self::failureText($result)
+            );
         }
         if (!$this->certExists($domain)) {
             throw new RuntimeException('certbot selesai tetapi sertifikat tidak ditemukan untuk ' . $domain . '.');
         }
+    }
+
+    /**
+     * Ringkas keluaran certbot untuk pesan galat — **kedua** stream dibaca.
+     *
+     * Blok diagnosa certbot ("Certbot failed to authenticate some domains …
+     * Detail: …") ditulis ke **stdout**, sedangkan ringkasannya ("Saving debug
+     * log … / Some challenges have failed.") ke **stderr**. Memilih hanya salah
+     * satu membuat pesan yang sampai ke UI/log job kehilangan sebab aslinya —
+     * `Detail: … 404`, `Timeout during connect`, dan `DNS problem` semuanya
+     * tampak sama saja.
+     *
+     * @param array{code:int,stdout:string,stderr:string,timedOut?:bool} $result
+     */
+    private static function failureText(array $result): string
+    {
+        $parts = [];
+        foreach (['stdout', 'stderr'] as $stream) {
+            $text = trim((string) ($result[$stream] ?? ''));
+            if ($text !== '' && !in_array($text, $parts, true)) {
+                $parts[] = $text;
+            }
+        }
+
+        $text = implode("\n", $parts);
+        if ($text === '') {
+            return 'certbot keluar tanpa keluaran (lihat log certbot di server ini).';
+        }
+
+        return strlen($text) > self::MAX_FAILURE_TEXT
+            ? substr($text, 0, self::MAX_FAILURE_TEXT) . "\n…(keluaran certbot dipotong)"
+            : $text;
     }
 
     /**
@@ -154,8 +193,7 @@ class SslIssuer
 
         $result = $this->runner->run($cmd, null, 120);
         if ($result['code'] !== 0) {
-            $err = trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']);
-            throw new RuntimeException('Gagal revoke sertifikat untuk ' . $domain . ': ' . $err);
+            throw new RuntimeException('Gagal revoke sertifikat untuk ' . $domain . ': ' . self::failureText($result));
         }
 
         // Bersihkan artefak certbot domain (live symlink, archive, renewal config)

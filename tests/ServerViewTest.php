@@ -41,7 +41,12 @@ use PHPUnit\Framework\TestCase;
  *        hidden `enabled=0` (mengirimnya akan ditolak controller);
  *  (vi)  nav "Servers" hanya untuk admin;
  *  (vii) render defensif: view tetap jalan tanpa variabel opsional
- *        (`active`/`errors`/`isEdit`/`server`).
+ *        (`active`/`errors`/`isEdit`/`server`);
+ *  (viii) blok bantu onboarding agent ("Ambil token & sertifikat dari server
+ *        tujuan") — dirender untuk server **non-local** (create + edit agent),
+ *        tidak dirender untuk server `local`, selalu **di luar** `<form>`
+ *        (bukan field form), dan perintahnya menyebut container tetap
+ *        `rames-agent`.
  *
  * Kontrak payload yang diuji = `ServerController` (lihat `tests/ServerControllerTest.php`).
  * Test ini hanya merender; tidak menyentuh store, SQLite, Docker, atau jaringan.
@@ -357,6 +362,129 @@ class ServerViewTest extends TestCase
         self::assertStringContainsString('name="notes"', $html);
         self::assertStringContainsString('>host utama</textarea>', $html);
         self::assertMatchesRegularExpression('/type="checkbox" id="server-enabled" checked disabled/', $html);
+
+        $this->assertNoSecretLeak($html);
+    }
+
+    // ------------------------------------------------------------------
+    // (viii) blok bantu onboarding agent (view `form.php`)
+    // ------------------------------------------------------------------
+
+    /**
+     * Blok bantu "Ambil token & sertifikat dari server tujuan" harus muncul untuk
+     * server non-`local` (create = selalu agent, lihat `<select name="kind">`, dan
+     * edit agent) — nilai yang dibaca (`AGENT_TOKEN`/`AGENT_TLS_CERT`) tidak pernah
+     * dirender ulang dashboard, jadi blok ini satu-satunya jalan bagi admin.
+     *
+     * Diuji juga dua jebakan kontrak:
+     *  1. blok berada **di luar** `<form method="post">` dan `textarea`-nya tanpa
+     *     `name` ⇒ tidak ikut ter-POST (payload form server tidak berubah);
+     *  2. id & nama fungsi JS dikunci agar halaman tidak memuat substring yang
+     *     dilarang `assertNoSecretLeak()` (dulu `agent-secret-cmd`).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testFormAgentOnboardingHelperBlockRenderedForCreateAndEditAgent(): void
+    {
+        $cases = [
+            'create' => [
+                'server' => null,
+                'errors' => [],
+                'isEdit' => false,
+                'active' => 'servers',
+            ],
+            'edit agent' => [
+                'server' => [
+                    'id' => 'vps-jakarta',
+                    'name' => 'vps-jakarta',
+                    'kind' => 'agent',
+                    'enabled' => true,
+                    'base_url' => 'https://10.0.0.12:8443',
+                    'has_token' => true,
+                    'tls_cert_pem' => self::SAMPLE_PEM,
+                    'tls_fingerprint' => self::SAMPLE_PIN,
+                    'domain' => 'contoh2.id',
+                    'notes' => 'server utama',
+                    'port_range' => ['start' => 31000, 'end' => 31999],
+                ],
+                'errors' => [],
+                'isEdit' => true,
+                'active' => 'servers',
+            ],
+        ];
+
+        foreach ($cases as $label => $vars) {
+            $html = $this->renderView('server/form.php', $vars);
+
+            self::assertStringContainsString('Ambil token &amp; sertifikat dari server tujuan', $html, $label);
+            self::assertStringContainsString('id="agent-onboarding-cmd"', $html, $label);
+            self::assertStringContainsString('docker exec rames-agent sh -lc', $html, $label);
+            self::assertStringContainsString(
+                'docker exec rames-agent sh -lc \'printf "TOKEN=%s\n\n" "$AGENT_TOKEN"; cat "$AGENT_TLS_CERT"\'',
+                $html,
+                $label
+            );
+            self::assertStringContainsString('onclick="copyAgentOnboardingCmd()"', $html, $label);
+            self::assertStringContainsString('function copyAgentOnboardingCmd()', $html, $label);
+
+            // Tombol harus `type="button"` — jangan sampai ikut men-submit form.
+            self::assertMatchesRegularExpression(
+                '/<button type="button"[^>]*onclick="copyAgentOnboardingCmd\(\)"/',
+                $html,
+                $label
+            );
+
+            // `textarea` pemuat perintah BUKAN field form (tanpa `name`), dan blok
+            // benar-benar berada DI LUAR elemen form server (dicek dari isi form-nya
+            // sendiri, bukan sekadar urutan posisi).
+            self::assertMatchesRegularExpression('/<textarea[^>]*id="agent-onboarding-cmd"[^>]*>/', $html, $label);
+            preg_match('/<textarea[^>]*id="agent-onboarding-cmd"[^>]*>/', $html, $textarea);
+            self::assertStringNotContainsString('name=', $textarea[0] ?? '', $label . ': textarea tidak boleh ber-`name`');
+
+            $formStart = strpos($html, '<form method="post" action="/servers');
+            self::assertIsInt($formStart, $label . ': form server tidak ditemukan di HTML');
+            $formEnd = (int) strpos($html, '</form>', $formStart);
+            $formHtml = substr($html, $formStart, $formEnd - $formStart);
+            self::assertStringNotContainsString('agent-onboarding-cmd', $formHtml, $label . ': blok bantu harus DI LUAR <form> server');
+
+            $this->assertNoSecretLeak($html);
+        }
+    }
+
+    /**
+     * Server `local` (dashboard ini sendiri) tidak punya agent ⇒ blok bantu beserta
+     * `<script>`-nya harus absen total, agar tidak ada instruksi menyesatkan dan
+     * tidak ada string mati di halaman.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testFormLocalOmitsAgentOnboardingHelperBlock(): void
+    {
+        $html = $this->renderView('server/form.php', [
+            'server' => [
+                'id' => self::LOCAL_ID,
+                'name' => 'local',
+                'kind' => 'local',
+                'enabled' => true,
+                'domain' => '',
+                'notes' => 'host utama',
+            ],
+            'errors' => [],
+            'isEdit' => true,
+            'active' => 'servers',
+        ]);
+
+        // Sanity: memang halaman local (bukan halaman agent).
+        self::assertStringContainsString('Identitas server lokal', $html);
+        self::assertStringContainsString('action="/servers/' . self::LOCAL_ID . '"', $html);
+
+        self::assertStringNotContainsString('Ambil token &amp; sertifikat dari server tujuan', $html);
+        self::assertStringNotContainsString('id="agent-onboarding-cmd"', $html);
+        self::assertStringNotContainsString('agent-onboarding-cmd', $html, 'id ikut muncul di JS jika <script> tak di-guard');
+        self::assertStringNotContainsString('docker exec rames-agent sh -lc', $html);
+        self::assertStringNotContainsString('copyAgentOnboardingCmd', $html);
+        self::assertStringNotContainsString('AGENT_TOKEN', $html);
+        self::assertStringNotContainsString('AGENT_TLS_CERT', $html);
 
         $this->assertNoSecretLeak($html);
     }
