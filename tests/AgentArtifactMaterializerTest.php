@@ -394,6 +394,112 @@ class AgentArtifactMaterializerTest extends TestCase
     }
 
     // ==================================================================
+    // Siklus hidup artefak: direktori sisa app yang sudah dihapus & forget()
+    // ==================================================================
+
+    /**
+     * Direktori sisa app lain (penanda id berbeda) dibuang lebih dulu oleh
+     * pemanggil — `AgentJobController` memanggilnya sesudah proyeksi menjamin
+     * nama itu milik app ini. Tanpa ini materialisasi app dengan nama sama
+     * selalu ditolak penanda kepemilikan.
+     */
+    public function testDropStaleDirRemovesDirectoryOwnedByAnotherAppId(): void
+    {
+        mkdir($this->tmp . '/apps/demo', 0755, true);
+        file_put_contents(
+            $this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE,
+            '{"app_id":"app-lama","name":"demo"}'
+        );
+        file_put_contents($this->tmp . '/apps/demo/docker-compose.yml', "services:\n  lama:\n    image: nginx:alpine\n");
+
+        $app = $this->app(['source' => 'compose']);
+
+        $this->assertTrue($this->materializer->dropStaleDir($app));
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/demo');
+
+        // Materialisasi app ini sesudahnya berjalan normal & penandanya milik app ini.
+        $this->materializer->materialize($app, [
+            'compose' => "services:\n  web:\n    image: nginx:alpine\n",
+            'compose_name' => 'docker-compose.yml',
+        ]);
+
+        $marker = json_decode(
+            (string) file_get_contents($this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE),
+            true
+        );
+        $this->assertSame(self::APP_ID, $marker['app_id'] ?? null);
+        $this->assertStringContainsString('web:', (string) file_get_contents($this->tmp . '/apps/demo/docker-compose.yml'));
+    }
+
+    /** Direktori milik app ini, tanpa penanda, atau belum ada: tidak disentuh. */
+    public function testDropStaleDirNeverTouchesOwnMarkerlessOrMissingDirectories(): void
+    {
+        $app = $this->app(['source' => 'compose']);
+
+        $this->assertFalse($this->materializer->dropStaleDir($app), 'direktori belum ada');
+
+        mkdir($this->tmp . '/apps/demo', 0755, true);
+        file_put_contents($this->tmp . '/apps/demo/penting.yml', 'jangan hilang');
+        $this->assertFalse($this->materializer->dropStaleDir($app), 'tanpa penanda = data tak dikenal');
+        $this->assertFileExists($this->tmp . '/apps/demo/penting.yml');
+
+        file_put_contents(
+            $this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE,
+            json_encode(['app_id' => self::APP_ID, 'name' => 'demo'])
+        );
+        $this->assertFalse($this->materializer->dropStaleDir($app), 'sudah milik app ini');
+        $this->assertFileExists($this->tmp . '/apps/demo/penting.yml');
+    }
+
+    /** `forget()` = artefak app dibuang: direktori, deploy key (+ `.pub`), managed env. */
+    public function testForgetRemovesAppDirectoryDeployKeyAndManagedEnv(): void
+    {
+        $app = $this->app(['source' => 'compose', 'auth_method' => 'ssh', 'ssh_key' => 'keys/demo']);
+
+        $this->materializer->materialize($app, [
+            'compose' => "services:\n  web:\n    image: nginx:alpine\n",
+            'compose_name' => 'docker-compose.yml',
+            'ssh_key' => self::KEY_PEM,
+        ]);
+        mkdir($this->tmp . '/database/env', 0755, true);
+        file_put_contents($this->tmp . '/database/env/demo.env', "APP_ENV=prod\n");
+        file_put_contents($this->tmp . '/database/keys/demo.pub', 'ssh-ed25519 AAAAfixture');
+
+        $this->assertFileExists($this->tmp . '/apps/demo/docker-compose.yml');
+        $this->assertFileExists($this->tmp . '/database/keys/demo');
+
+        $this->materializer->forget($app);
+
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/demo');
+        $this->assertFileDoesNotExist($this->tmp . '/database/keys/demo');
+        $this->assertFileDoesNotExist($this->tmp . '/database/keys/demo.pub');
+        $this->assertFileDoesNotExist($this->tmp . '/database/env/demo.env');
+
+        // Idempoten: memanggilnya lagi tidak melempar.
+        $this->materializer->forget($app);
+    }
+
+    /** App tanpa `ssh_key` sah: `forget()` tetap membersihkan direktori & env. */
+    public function testForgetToleratesUnsafeKeyMetadata(): void
+    {
+        $app = $this->app([
+            'source' => 'compose',
+            'auth_method' => 'ssh',
+            'ssh_key' => '../../etc/passwd',
+            'name' => 'demo',
+        ]);
+
+        $this->materializer->materialize($app, [
+            'compose' => "services:\n  web:\n    image: nginx:alpine\n",
+            'compose_name' => 'docker-compose.yml',
+        ]);
+
+        $this->materializer->forget($app);
+
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/demo');
+    }
+
+    // ==================================================================
     // App compose tanpa file compose (celah yang ditutup misi ini)
     // ==================================================================
 

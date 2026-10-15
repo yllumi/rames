@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\library\Agent;
 
 use app\library\Deploy\ComposeSource;
+use app\library\Deploy\EnvManager;
 use app\library\Git\GitService;
 use app\library\Git\SshKeyManager;
 use app\library\Support\ProcessRunner;
@@ -52,10 +53,27 @@ use RuntimeException;
  * | deploy key | `{deploy.database_path}/{ssh_key}` (fallback `{deploy.ssh_keys_path}/{name}`) | `LocalDeployer::appSshKeyPath()` — itulah pembaca di agent; mode dir `0700`/file `0600` sama seperti `SshKeyManager` |
  * | checkout repo (`source=git`) | `{deploy.apps_path}/{name}` (clone sementara `apps/.rames-clone-*` ⇒ `rename`) | pembaca: `LocalDeployer::deploy()`/`rebuild()` (`git -C <dir> rev-parse`/`pull`) |
  *
+ * ## Siklus hidup artefak (jangan hanya menulis)
+ *  - **saat app dihapus di control plane**, worker agent memanggil
+ *    {@see self::forget()} (penanda `forget` di payload job `teardown`):
+ *    direktori app + deploy key + managed env file dibuang, sama seperti
+ *    `AppController::delete()` di host lokal (cleanupDir + `SshKeyManager::remove()`
+ *    + `EnvManager::remove()`). Tanpa ini nama app tetap "terpakai" oleh
+ *    direktorinya dan app berikutnya dengan nama sama tidak bisa dibuat;
+ *  - **direktori sisa app yang sudah dihapus** di server agent (instalasi lama /
+ *    penghapusan yang gagal separuh) dibuang lebih dulu oleh
+ *    {@see self::dropStaleDir()} — dipanggil `AgentJobController` **setelah**
+ *    proyeksi menjamin tidak ada app lain yang memegang nama itu. Direktori
+ *    milik app ini dan direktori **tanpa** penanda tidak pernah disentuh jalur
+ *    itu.
+ *
  * ## Fail-fast (dilarang menimpa diam-diam)
  *  - direktori app sudah ada dan **bukan** milik app ini (penanda
  *    {@see self::MARKER_FILE} berisi id app lain, atau direktori non-kosong
- *    tanpa penanda) ⇒ melempar, **tidak** menimpa;
+ *    tanpa penanda) ⇒ melempar, **tidak** menimpa — kecuali direktori itu
+ *    terbukti sisa app yang sudah dihapus dan pemanggil sudah membuangnya lebih
+ *    dulu lewat {@see self::dropStaleDir()} (keputusan ada di pemanggil, bukan
+ *    di sini);
  *  - direktori app repo sudah ada, non-kosong, dan bukan clone git dari
  *    `repo_url` ⇒ melempar (tidak meng-clone di atas data orang lain);
  *  - clone repo gagal ⇒ melempar dengan pesan jelas, direktori sementara
@@ -612,6 +630,109 @@ final class AgentArtifactMaterializer
         }
 
         $this->writeMarker($dir, $app);
+    }
+
+    /**
+     * Buang direktori artefak app bila penanda kepemilikannya milik **id app
+     * lain** — `true` bila ada direktori yang dibuang.
+     *
+     * Dipanggil {@see \app\controller\AgentJobController::create()} **sesudah**
+     * {@see \app\library\Agent\AgentAppProjection::upsert()}, yang menjamin tidak
+     * ada app lain yang memegang nama itu di store agent (baris basi bernama sama
+     * dibuang). Nama direktori app ditentukan oleh nama app, sehingga direktori
+     * `apps/<name>` yang penandanya milik id lain **bukan** milik app lain yang
+     * sah di server ini: ia sisa app lama. Tanpa dibuang, materialisasi app ini
+     * ditolak penanda kepemilikan (`ensureOwnedDir()`) dan nama app itu tidak
+     * bisa dipakai lagi di server ini (GOTCHA §8 no. 35).
+     *
+     * Direktori milik app ini dan direktori **tanpa** penanda tidak disentuh:
+     * yang pertama sudah benar, yang kedua adalah data tak dikenal — tetap
+     * ditolak `ensureOwnedDir()`, bukan dihapus.
+     *
+     * @param array<string,mixed> $app
+     * @return bool true bila direktori sisa dibuang
+     * @throws RuntimeException direktori sisa tidak bisa dibuang (jangan lanjutkan dengan error yang menyesatkan)
+     */
+    public function dropStaleDir(array $app): bool
+    {
+        $dir = $this->appDir(self::appDirName($app));
+        if (!is_dir($dir)) {
+            return false;
+        }
+
+        $marker = $this->readMarker($dir);
+        $owner = is_array($marker) && is_scalar($marker['app_id'] ?? null) ? trim((string) $marker['app_id']) : '';
+        if ($owner === '' || $owner === (string) ($app['id'] ?? '')) {
+            return false;
+        }
+
+        $this->removeTree($dir);
+        if (is_dir($dir)) {
+            throw new RuntimeException(
+                'Direktori artefak app (' . $dir . ') berisi artefak app lain dan tidak bisa dibuang otomatis. '
+                . 'Bereskan direktori itu di server agent (izin/isi), lalu deploy ulang.'
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * Buang **seluruh** artefak app di server ini: direktori app (termasuk
+     * penanda), deploy key (`+ .pub`), dan managed env file app.
+     *
+     * Dipakai saat app **dihapus di control plane** — worker agent memanggilnya
+     * bersama {@see \app\library\Agent\AgentAppProjection::forget()} (penanda
+     * `forget` di payload job `teardown`). Langkah ini **wajib**: tanpa membuang
+     * direktori, nama app tetap "terpakai" di server ini dan create berikutnya
+     * dengan nama sama ditolak penanda kepemilikan (GOTCHA §8 no. 35).
+     *
+     * Cermin dari pembersihan jalur lokal (`AppController::delete()`:
+     * `cleanupDir()` + `SshKeyManager::remove()` + `EnvManager::remove()`) —
+     * sengaja memakai path yang sama dengan penulisnya ({@see self::keyPath()},
+     * `{database_path}/env`), bukan path yang ditebak.
+     *
+     * Idempoten: apa pun yang tidak ada dilewati. Gagal membuang direktori ⇒
+     * melempar (pemanggil mencatatnya sebagai peringatan, tidak menggagalkan
+     * penghapusan app yang sudah ter-teardown); kegagalan kunci/env bersifat
+     * best-effort seperti jalur lokal.
+     *
+     * @param array<string,mixed> $app
+     * @throws RuntimeException direktori app tidak bisa dibuang
+     */
+    public function forget(array $app): void
+    {
+        $name = self::appDirName($app);
+
+        $dir = $this->appDir($name);
+        if (is_dir($dir)) {
+            $this->removeTree($dir);
+            if (is_dir($dir)) {
+                throw new RuntimeException('Gagal menghapus direktori artefak app (' . $dir . ').');
+            }
+        }
+
+        // Deploy key: path yang sama dengan penulisnya. Metadata `ssh_key` tak
+        // sah ⇒ tidak ada yang dibuang (bukan alasan menggagalkan pembersihan).
+        $key = '';
+        try {
+            $key = $this->keyPath($app);
+        } catch (RuntimeException) {
+            $key = '';
+        }
+        foreach ($key !== '' ? [$key, $key . '.pub'] : [] as $file) {
+            if (is_file($file)) {
+                @unlink($file);
+            }
+        }
+
+        // Managed env file app (`{database_path}/env/<name>.env`, mode 0600).
+        try {
+            (new EnvManager($this->databasePath() . '/env'))->remove($name);
+        } catch (\Throwable) {
+            // Direktori env tidak bisa ditentukan: pembersihan ini hygiene,
+            // bukan syarat sahnya penghapusan app.
+        }
     }
 
     /**

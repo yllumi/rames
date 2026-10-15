@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use app\library\Agent\AgentArtifactMaterializer;
 use app\library\Agent\AgentJobStore;
 use app\library\Support\ProcessRunner;
 use PHPUnit\Framework\TestCase;
@@ -60,6 +61,10 @@ class CliDeployJobAwarenessTest extends TestCase
             'DOCKER_SOCKET' => '/nonexistent/docker.sock',
             'DEPLOYER_CLASS' => FakeCliDeployer::class,
             'RAMES_JOB_DIR' => $this->jobDir(),
+            // Deploy key app dibaca/dihapus lewat path yang sama dengan penulisnya
+            // (`AgentArtifactMaterializer::keyPath()`) — arahkan ke temp supaya
+            // uji tidak pernah menyentuh `database/keys` nyata.
+            'SSH_KEYS_PATH' => $this->workDir . '/database/keys',
             'FAKE_DEPLOYER_LOG' => $this->workDir . '/fake-deployer.log',
         ];
 
@@ -228,6 +233,35 @@ class CliDeployJobAwarenessTest extends TestCase
         $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr']);
         $this->assertSame('done', (string) $this->jobStore()->find((string) $record['id'])['status']);
         $this->assertSame([], SqliteFixture::readAll($this->db(), 'apps'), 'proyeksi app dibuang dari store server ini');
+    }
+
+    /**
+     * `forget` juga membuang **artefak** app di server ini (direktori app +
+     * deploy key + managed env file) — tanpa itu nama app tetap "terpakai" oleh
+     * direktori sisa dan create berikutnya dengan nama sama ditolak penanda
+     * kepemilikan di materializer.
+     */
+    public function testTeardownWithForgetAlsoRemovesAppArtifacts(): void
+    {
+        foreach (['/apps/jobapp', '/database/keys', '/database/env'] as $dir) {
+            mkdir($this->workDir . $dir, 0777, true);
+        }
+        file_put_contents($this->workDir . '/apps/jobapp/docker-compose.yml', "services:\n  web:\n    image: nginx\n");
+        file_put_contents($this->workDir . '/apps/jobapp/' . AgentArtifactMaterializer::MARKER_FILE, '{"app_id":"app-lama"}');
+        file_put_contents($this->workDir . '/database/keys/jobapp', 'KUNCI-RAHASIA');
+        file_put_contents($this->workDir . '/database/env/jobapp.env', "APP_ENV=prod\n");
+
+        $record = $this->jobStore()->create('teardown', self::APP_ID, [
+            'app_id' => self::APP_ID,
+            'forget' => true,
+        ]);
+
+        $result = $this->worker('teardown', self::APP_ID, '', ['RAMES_JOB_ID' => (string) $record['id']]);
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr']);
+        $this->assertDirectoryDoesNotExist($this->workDir . '/apps/jobapp');
+        $this->assertFileDoesNotExist($this->workDir . '/database/keys/jobapp');
+        $this->assertFileDoesNotExist($this->workDir . '/database/env/jobapp.env');
     }
 
     /** Tanpa `forget` (teardown biasa): proyeksi app tetap ada, statusnya `stopped`. */

@@ -53,6 +53,7 @@ declare(strict_types=1);
  */
 
 use app\library\Agent\AgentAppProjection;
+use app\library\Agent\AgentArtifactMaterializer;
 use app\library\Agent\AgentJobStore;
 use app\library\Auth\UserStore;
 use app\library\Billing\BillingGate;
@@ -613,11 +614,11 @@ try {
 
             // `forget` (penanda payload job `teardown`, dikirim
             // `AgentDeployer::teardown()`): app DIHAPUS di control plane, jadi
-            // proyeksinya di server ini dibuang — nama app dibebaskan untuk app
-            // berikutnya (tanpa ini semua job dengan nama itu ditolak
-            // `projection_failed`, termasuk job hapus app baru). Dijalankan
-            // SESUDAH `$store->update()` di bawah: tidak ada lagi yang menulis
-            // dokumen app ini.
+            // proyeksi **dan artefaknya** di server ini dibuang — nama app
+            // dibebaskan untuk app berikutnya (tanpa ini semua job dengan nama
+            // itu ditolak, dan direktori sisa membuat create berikutnya ditolak
+            // penanda kepemilikan). Dijalankan SESUDAH `$store->update()` di
+            // bawah: tidak ada lagi yang menulis dokumen app ini.
             $forgetProjection = ($jobPayload['forget'] ?? null) === true;
         }
 
@@ -628,23 +629,35 @@ try {
         });
 
         // Best-effort: teardown sudah sukses (container & network project sudah
-        // dibersihkan), jadi kegagalan membuang proyeksi TIDAK boleh membuat
-        // control plane membatalkan penghapusan app (app akan tertinggal
-        // setengah mati) — tetapi juga TIDAK diam: dicatat sebagai peringatan di
-        // log deploy app ini. Baris yang tertinggal tetap direkonsiliasi
-        // proyeksi berikutnya (`AgentAppProjection::upsert()`).
+        // dibersihkan), jadi kegagalan pembersihan TIDAK boleh membuat control
+        // plane membatalkan penghapusan app (app akan tertinggal setengah mati)
+        // — tetapi juga TIDAK diam: dicatat sebagai peringatan di log deploy app
+        // ini. Sisa yang tertinggal tetap direkonsiliasi job berikutnya untuk
+        // nama yang sama (`AgentArtifactMaterializer::dropStaleDir()` +
+        // `AgentAppProjection::upsert()`).
         if ($forgetProjection) {
+            /** @var callable(string,\Throwable):void $warnCleanup */
+            $warnCleanup = static function (string $what, \Throwable $e) use ($logFile): void {
+                file_put_contents(
+                    $logFile,
+                    '[' . date('c') . '] [cleanup] PERINGATAN: ' . $what . ' app ini gagal dibuang di server ini: '
+                    . $e->getMessage()
+                    . ' — sisa itu akan dibereskan otomatis saat app dengan nama sama dibuat lagi di server ini.'
+                    . PHP_EOL,
+                    FILE_APPEND
+                );
+            };
+
+            try {
+                (new AgentArtifactMaterializer())->forget($app);
+            } catch (\Throwable $e) {
+                $warnCleanup('direktori & deploy key', $e);
+            }
+
             try {
                 (new AgentAppProjection())->forget($appId);
             } catch (\Throwable $e) {
-                file_put_contents(
-                    $logFile,
-                    '[' . date('c') . '] [projection] PERINGATAN: proyeksi app di server ini gagal dibuang: '
-                    . $e->getMessage()
-                    . ' — periksa basis data dashboard server ini (tabel apps); baris yang tertinggal akan'
-                    . ' dibersihkan otomatis saat app dengan nama sama diproyeksikan lagi.' . PHP_EOL,
-                    FILE_APPEND
-                );
+                $warnCleanup('proyeksi', $e);
             }
         }
 

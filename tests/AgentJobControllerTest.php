@@ -692,6 +692,45 @@ class AgentJobControllerTest extends TestCase
     }
 
     /**
+     * Direktori `apps/<nama>` sisa app lain (id berbeda) di server agent dibuang
+     * **sebelum** materialisasi, sehingga create app dengan nama itu tidak lagi
+     * ditolak penanda kepemilikan ("penimpaan diam-diam dilarang") — kegagalan
+     * setelah record app dibuat di control plane (deploy error).
+     */
+    public function testStaleAppDirectoryOfADeletedAppIsReclaimedBeforeMaterialize(): void
+    {
+        mkdir($this->tmp . '/apps/demo', 0777, true);
+        file_put_contents(
+            $this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE,
+            '{"app_id":"app-lama","name":"demo"}'
+        );
+        file_put_contents($this->tmp . '/apps/demo/docker-compose.yml', "services:\n  lama:\n    image: nginx:alpine\n");
+
+        [$status, , $body] = $this->decode($this->controller->create($this->request('POST', '/jobs', json_encode([
+            'op' => 'deploy',
+            'app' => $this->composeAppPayload(),
+            'artifacts' => [
+                'compose' => "services:\n  web:\n    image: nginx:alpine\n",
+                'compose_name' => 'docker-compose.yml',
+            ],
+        ]))));
+
+        $this->assertSame(200, $status, 'direktori sisa app lama tidak boleh menggagalkan job');
+        $this->assertSame(0, $body['code']);
+        $this->assertCount(1, $this->spawned);
+
+        $marker = json_decode(
+            (string) file_get_contents($this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE),
+            true
+        );
+        $this->assertSame(self::APP_ID, $marker['app_id'] ?? null, 'penanda kini milik app ini');
+        $this->assertStringContainsString(
+            'web:',
+            (string) file_get_contents($this->tmp . '/apps/demo/docker-compose.yml')
+        );
+    }
+
+    /**
      * Gagal proyeksi (mis. store agent rusak: baris tanpa id memegang nama yang
      * sama) tetap dijawab JSON, bukan halaman HTML — API mesin tidak boleh
      * menjatuhkan request menjadi halaman galat.

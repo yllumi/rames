@@ -67,7 +67,11 @@ use Webman\Http\Response;
  *   4. catat job di {@see AgentJobStore} (`pending`);
  *   5. **materialisasi artefak** ke disk agent
  *      ({@see AgentArtifactMaterializer}) — file compose / deploy key SSH /
- *      template. Gagal ⇒ job ditandai `error` + respons **500**
+ *      template. Direktori `apps/<name>` sisa app **lain** (penanda id berbeda =
+ *      app yang sudah dihapus) dibuang lebih dulu
+ *      ({@see AgentArtifactMaterializer::dropStaleDir()}), sebab proyeksi di
+ *      langkah 2 sudah menjamin nama itu milik app ini. Gagal ⇒ job ditandai
+ *      `error` + respons **500**
  *      `{code:1, reason:'materialize_failed'}` (pesan disanitasi: tanpa isi
  *      kunci) dan worker **tidak** di-spawn. Urutan ini penting: worker
  *      langsung membaca direktori app, jadi artefak wajib siap lebih dulu —
@@ -436,6 +440,14 @@ class AgentJobController
         // direktori app & deploy key. Gagal ⇒ job ditandai error (jangan ada job
         // `pending` yang tidak pernah dikerjakan) dan worker TIDAK dijalankan.
         try {
+            // Direktori `apps/<name>` sisa app lain (app yang sudah dihapus di
+            // control plane, mis. instalasi lama / penghapusan yang gagal
+            // separuh) dibuang LEBIH DULU. Proyeksi di atas menjamin tidak ada
+            // app lain yang memegang nama ini di store agent, jadi direktori
+            // ber-penanda id lain itu bukan milik app sah mana pun di server ini
+            // — tanpa dibuang, materialisasi ditolak penanda kepemilikan dan nama
+            // app tidak bisa dipakai lagi (GOTCHA §8 no. 35).
+            $this->materializer()->dropStaleDir($app);
             $this->materializer()->materialize($app, $artifacts);
         } catch (\Throwable $e) {
             $message = AgentArtifactMaterializer::sanitizeError($e->getMessage(), $artifacts);
