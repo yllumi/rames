@@ -133,7 +133,7 @@ Buka `http://{app}.{APP_DOMAIN}` di browser. Pastikan DNS subdomain mengarah ke 
 ### Langkah 6 — (Opsional) Custom domain & SSL
 
 1. Buka halaman detail app → kartu **Custom Domain** → isi domain (mis. `app.example.org`) → **Set**.
-2. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi).
+2. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi). Untuk app yang berjalan di **server agent**, penerbitan dijalankan **di server itu** dan `ADMIN_EMAIL` diambil dari `secrets/agent.env` server itu — bukan `.env` dashboard ([detail](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
 
 ### Reload Nginx host (dari dashboard)
 
@@ -258,6 +258,8 @@ Dashboard dapat mengendalikan **server tambahan** (multi-server): dashboard berp
 
    Installer membuat `secrets/agent.env` (0600, token acak) + **sertifikat TLS self-signed**, menjalankan `docker compose -f docker-compose.agent.yml -p rames-agent up -d --build`, lalu mencetak **blok onboarding**: URL, token, fingerprint SHA-256, PEM sertifikat, dan versi agent.
 
+   Tambahkan juga **`ADMIN_EMAIL`** ke `secrets/agent.env` **server itu** — lewat opsi installer `--email <email>` — lalu recreate container agent (env dibaca saat create). Job `ssl_issue` dijalankan **di server agent** memakai env server itu, jadi tanpa `ADMIN_EMAIL` penerbitan SSL di sana selalu gagal ([rincian](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
+
 2. **Batasi port agent** (default `8443`) hanya untuk IP control plane (`ufw`/`iptables`) — port ini adalah pintu eksekusi Docker di server itu, jangan pernah dibuka ke publik.
 
 3. **Di dashboard (admin)**: menu **Servers → Add Server** → isi name, URL (`https://<ip>:8443`), token, **PEM** (paste dari blok onboarding), domain server, dan rentang port → **Test connection**. Dashboard menghitung fingerprint sendiri dari PEM; tidak cocok ⇒ gagal tegas dan server tidak disimpan.
@@ -306,10 +308,10 @@ Selengkapnya (opsi installer, rotasi token/sertifikat dengan `--force`, firewall
 | `DB_BACKUP_KEEP_DAILY` / `_WEEKLY` / `_MONTHLY` | `7` / `4` / `3` | Retensi snapshot harian/pekanan/bulanan (`0` = tingkat diabaikan; hanya snapshot terbaru dipertahankan bila semua `0`) |
 | `DB_IMPORT_LEGACY_JSON` | `true` | Impor **sekali** `database/*.json` lama ke SQLite saat koneksi pertama |
 | `DNS_1` / `DNS_2` | `8.8.8.8` / `1.1.1.1` | DNS untuk container (diperlukan jika resolv.conf host bermasalah) |
-| `ADMIN_EMAIL` | — | Email untuk SSL Let's Encrypt (wajib saat mengaktifkan SSL) |
+| `ADMIN_EMAIL` | — | Email untuk SSL Let's Encrypt (wajib saat mengaktifkan SSL). Untuk app di **server agent**, nilai ini dibaca dari `secrets/agent.env` **server itu** (bukan `.env` dashboard) — lihat [Menambah server kedua](#menambah-server-kedua) |
 | `SSL_CHALLENGE` | `http` | Mode challenge: `http` (webroot) atau `dns-cloudflare` |
 | `SSL_CA_SERVER` | `production` | CA Let's Encrypt: `production` / `staging` (staging untuk uji) |
-| `SSL_WEBROOT` | `{proyek}/webroot` | Webroot HTTP-01 challenge |
+| `SSL_WEBROOT` | `{proyek}/webroot` | Webroot HTTP-01 challenge — harus traversable/terbaca user nginx host **dan** berada di path yang di-mount ke container (lihat `ARCHITECTURE.md` §8 GOTCHA no. 28) |
 | `LETSENCRYPT_PATH` | `/etc/letsencrypt` | Direktori sertifikat (di-mount dari host) |
 | `CLOUDFLARE_CREDS` | — | File kredensial DNS Cloudflare (saat `SSL_CHALLENGE=dns-cloudflare`) |
 | `VOLUME_BACKUP_ENABLED` | `true` | Aktifkan backup volume harian ke S3 (SPECS §8h) |

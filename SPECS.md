@@ -1322,7 +1322,7 @@ Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (
 - DNS wildcard/record subdomain mengarah ke server (untuk HTTP-01 juga butuh port 80 publik terbuka di firewall host)
 - Port 80 dan 443 terbuka di firewall host
 - Nginx reload watcher host (SPECS §8.3) aktif — dashboard hanya menulis `.conf`, watcher yang `nginx -t && reload`
-- `ADMIN_EMAIL` diisi; untuk DNS-01 Cloudflare: `CLOUDFLARE_CREDS` menunjuk file berisi `dns_cloudflare_api_token = <token>` yang terbaca container dashboard
+- `ADMIN_EMAIL` diisi **di setiap server yang menerbitkan sertifikat** — dashboard *dan* tiap **server agent**, karena job `ssl_issue` dijalankan `cli/deploy.php` **di server itu** memakai konfigurasi server itu (pemetaan: env `ADMIN_EMAIL` → `config/deploy.php:136` `deploy.admin_email` → `SslIssuer::buildCommand()` (`app/library/SSL/SslIssuer.php:249-253`) yang **menolak** dengan "ADMIN_EMAIL belum diatur …" bila kosong; di server agent nilainya tinggal di `secrets/agent.env` server itu, **bukan** `.env` dashboard — lihat `agent/README.md` "Prasyarat SSL"). Untuk DNS-01 Cloudflare: `CLOUDFLARE_CREDS` menunjuk file berisi `dns_cloudflare_api_token = <token>` yang terbaca container tempat certbot berjalan (dashboard atau agent)
 - `LETSENCRYPT_PATH` (default `/etc/letsencrypt`) di-mount ke container dari host
 
 **Diagnosa kegagalan** — pesan kegagalan certbot yang tampil di UI/log kini memuat blok `Detail:` dari `stdout` (sebab asli: `404`/timeout/masalah DNS), bukan sekadar ringkasan `stderr`. Log debug certbot (`--logs-dir /var/log/letsencrypt`) bersifat **lokal container** (direktori itu tidak di-mount ke host, jadi hilang saat container di-recreate); bila pesan galat kurang, baca di dalam container tempat certbot berjalan — `docker exec rames-webman cat /var/log/letsencrypt/letsencrypt.log` (penerbitan app di server agent dijalankan di server itu, jadi log ada di container `rames-agent`).
@@ -1763,6 +1763,17 @@ UPDATE_PATH={proyek}        # direktori repo dashboard (path host)
 UPDATE_IMAGE=               # image untuk helper (kosong = image container dashboard)
 TEMPLATE_PULL_RUN_DIR=      # direktori status+log tarik image template (§7.13); kosong = runtime/logs/template-pull
 TEMPLATE_PULL_TIMEOUT=1800  # timeout `docker pull` PER image (§7.13; detik)
+
+# SSL otomatis (§8a). Berlaku untuk server INI; server agent punya berkasnya
+# sendiri (`secrets/agent.env`) — job `ssl_issue` dijalankan di server itu dan
+# membaca env server itu, jadi ADMIN_EMAIL wajib ada di SETIAP server yang
+# menerbitkan sertifikat (lihat agent/README.md "Prasyarat SSL").
+ADMIN_EMAIL=                # kontak ACME Let's Encrypt — kosong ⇒ SslIssuer menolak menerbitkan
+SSL_CHALLENGE=http          # http (webroot HTTP-01) | dns-cloudflare (DNS-01)
+SSL_CA_SERVER=production    # production | staging (uji; sertifikat tidak dipercaya)
+SSL_WEBROOT={proyek}/webroot  # webroot HTTP-01 — HARUS terbaca user nginx host & terlihat di dalam container (lihat ARCHITECTURE §8 GOTCHA no. 28)
+LETSENCRYPT_PATH=/etc/letsencrypt  # direktori sertifikat, dimount dari host
+# CLOUDFLARE_CREDS=/path/cloudflare.ini  # ini-file `dns_cloudflare_api_token = <token>` (wajib saat dns-cloudflare)
 
 # Backup volume harian ke S3 via restic (§8h). Namespace VOLUME_BACKUP_*/RESTIC_*/AWS_*
 # TERPISAH dari BACKUP_* (§8g) — jangan digabung.
