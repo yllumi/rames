@@ -248,6 +248,12 @@ final class AgentDeployer implements DeployerInterface
      * perluasan yang sama dengan `LocalDeployer::teardown()`) sehingga log job
      * tetap bisa diteruskan ke pemanggil yang membutuhkannya.
      *
+     * Payload job membawa `forget: true`: `teardown` **hanya** dipanggil saat
+     * app dihapus di control plane, jadi worker agent membuang proyeksi app di
+     * sana setelah teardown sukses (§5.25). Tanpa itu nama app tetap terpakai
+     * di store agent dan create berikutnya dengan nama sama ditolak
+     * (`projection_failed`) — jebakan "app tidak bisa dibuat maupun dihapus".
+     *
      * @param array<int,string>|null $preserveVolumes
      */
     public function teardown(array $app, ?array $preserveVolumes = null, ?callable $logger = null): void
@@ -256,7 +262,7 @@ final class AgentDeployer implements DeployerInterface
             ? null
             : array_values(array_map('strval', $preserveVolumes));
 
-        $this->runJob('teardown', $app, $logger, ['preserve_volumes' => $preserve]);
+        $this->runJob('teardown', $app, $logger, ['preserve_volumes' => $preserve, 'forget' => true]);
     }
 
     // ==================================================================

@@ -384,6 +384,12 @@ class AgentJobController
             $preserve = array_values(array_map('strval', $payload['preserve_volumes']));
         }
 
+        // `forget` (op `teardown`): control plane memberitahu bahwa app **dihapus
+        // di sana**, jadi proyeksinya di server ini dibuang worker setelah
+        // teardown sukses (§5.25). Hanya bermakna untuk `teardown`; op lain
+        // tidak menghapus app sehingga penandanya diabaikan (bukan error).
+        $forget = $op === 'teardown' && ($payload['forget'] ?? null) === true;
+
         try {
             $this->projection()->upsert($app);
         } catch (InvalidArgumentException) {
@@ -414,6 +420,9 @@ class AgentJobController
         }
         if ($snapshot !== '') {
             $jobPayload['snapshot'] = $snapshot;
+        }
+        if ($forget) {
+            $jobPayload['forget'] = true;
         }
 
         $job = $this->jobs()->create($op, $appId, $jobPayload);

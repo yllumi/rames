@@ -26,6 +26,10 @@ use RuntimeException;
  *  3. idempoten (job berulang tidak menggandakan app);
  *  4. tidak menyentuh store user/billing/registry server.
  *
+ * Plus penjaga **nama app** (jebakan "app tidak bisa dibuat maupun dihapus"):
+ * baris basi bernama sama dengan id berbeda dibuang sebelum proyeksi baru, dan
+ * `forget()` menghapus proyeksi saat app dihapus di control plane.
+ *
  * Semua uji memakai basis data SQLite **temp** — `database/rames.sqlite`,
  * `apps/`, dan `runtime/` nyata tidak pernah disentuh.
  */
@@ -175,6 +179,83 @@ class AgentAppProjectionTest extends TestCase
         $this->assertSame(self::APP_ID, $third['id']);
         $this->assertSame($first['created_at'], $third['created_at'], 'created_at tidak berubah oleh proyeksi ulang');
         $this->assertSame('main3', $this->apps->find(self::APP_ID)['branch']);
+    }
+
+    /**
+     * Baris basi dengan **nama sama** tapi id app lain (sisa app yang sudah
+     * dihapus di control plane) dibuang sebelum proyeksi baru — kalau tidak,
+     * `AppStore::create()` menolak dan app tidak bisa dibuat maupun dihapus.
+     */
+    public function testUpsertReplacesStaleRowHoldingTheSameName(): void
+    {
+        $this->apps->create([
+            'id' => 'basi1234567890ab',
+            'name' => 'demo',
+            'status' => 'stopped',
+            'deploy_history' => [['sha' => 'old', 'status' => 'success']],
+        ]);
+
+        $stored = $this->projection->upsert($this->payload());
+
+        $this->assertSame(self::APP_ID, $stored['id']);
+        $this->assertNull($this->apps->find('basi1234567890ab'), 'baris basi dibuang');
+        $this->assertSame(self::APP_ID, $this->apps->findByNameOnServer('demo', ServerStore::LOCAL_ID)['id']);
+        $this->assertCount(1, $this->apps->all());
+    }
+
+    /** Nama sama di server scope lain (bukan `local`) tidak diganggu. */
+    public function testUpsertKeepsSameNameRowOfAnotherServerScope(): void
+    {
+        $this->apps->create(['id' => 'serverlain123456', 'name' => 'demo', 'server_id' => 'abc123']);
+
+        $this->projection->upsert($this->payload());
+
+        $this->assertNotNull($this->apps->find('serverlain123456'));
+        $this->assertNotNull($this->apps->find(self::APP_ID));
+    }
+
+    /** Proyeksi ulang app yang sama (id sama) tidak pernah menghapus barisnya sendiri. */
+    public function testUpsertNeverDropsItsOwnRow(): void
+    {
+        $this->projection->upsert($this->payload(['status' => 'running']));
+        $this->projection->upsert($this->payload(['branch' => 'main5']));
+
+        $this->assertSame('running', $this->apps->find(self::APP_ID)['status'], 'state eksekusi milik agent tetap utuh');
+        $this->assertSame('main5', $this->apps->find(self::APP_ID)['branch']);
+        $this->assertCount(1, $this->apps->all());
+    }
+
+    public function testForgetRemovesProjectionAndIsIdempotent(): void
+    {
+        $this->projection->upsert($this->payload());
+
+        $this->projection->forget(self::APP_ID);
+        $this->assertNull($this->apps->find(self::APP_ID), 'proyeksi app dihapus (nama dibebaskan)');
+
+        // Idempoten: app yang tidak ada = bukan kegagalan (teardown app yang
+        // belum pernah diproyeksikan juga memanggil ini).
+        $this->projection->forget(self::APP_ID);
+        $this->projection->forget('tidakada12345678');
+        $this->assertSame([], $this->apps->all());
+
+        // Sesudah forget, nama yang sama bisa diproyeksikan lagi (create, bukan
+        // ditolak).
+        $again = $this->projection->upsert($this->payload());
+        $this->assertSame(self::APP_ID, $again['id']);
+    }
+
+    public function testForgetRejectsUnsafeId(): void
+    {
+        foreach (['', '   ', '../../database/auth.json', 'app/../x'] as $bad) {
+            try {
+                $this->projection->forget($bad);
+                $this->fail('id tak aman harus ditolak');
+            } catch (InvalidArgumentException) {
+                // diharapkan
+            }
+        }
+
+        $this->assertSame([], $this->apps->all());
     }
 
     public function testUpsertTouchesOnlyAppsStore(): void

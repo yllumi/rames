@@ -265,6 +265,32 @@ class AgentJobControllerTest extends TestCase
         $this->assertSame(['vol_data', '42'], $record['payload']['preserve_volumes'] ?? null);
     }
 
+    /** `forget` (app dihapus di control plane) hanya bermakna & hanya direkam untuk `teardown`. */
+    public function testCreateForwardsForgetOnlyForTeardown(): void
+    {
+        [$status, , $body] = $this->decode($this->controller->create($this->request('POST', '/jobs', json_encode([
+            'op' => 'teardown',
+            'app' => $this->appPayload(),
+            'forget' => true,
+        ]))));
+
+        $this->assertSame(200, $status);
+        $record = (array) $this->jobs->find((string) $body['job_id']);
+        $this->assertTrue($record['payload']['forget'] ?? null, 'penanda dibaca worker dari rekaman job');
+
+        // Op lain tidak menghapus app ⇒ penanda diabaikan (bukan disimpan,
+        // bukan pula error).
+        [$status, , $body] = $this->decode($this->controller->create($this->request('POST', '/jobs', json_encode([
+            'op' => 'deploy',
+            'app' => $this->appPayload(),
+            'forget' => true,
+        ]))));
+
+        $this->assertSame(200, $status);
+        $record = (array) $this->jobs->find((string) $body['job_id']);
+        $this->assertArrayNotHasKey('forget', $record['payload']);
+    }
+
     // ==================================================================
     // Artefak app (misi ms-f1-artifacts) — materialisasi SEBELUM spawn
     // ==================================================================
@@ -640,10 +666,39 @@ class AgentJobControllerTest extends TestCase
         $this->assertSame([], $this->jobs->all());
     }
 
-    /** Gagal proyeksi (mis. nama bentrok) tetap dijawab JSON, bukan halaman HTML. */
+    /**
+     * Nama app yang masih dipegang baris **id lain** (sisa app yang sudah
+     * dihapus di control plane) TIDAK boleh memblokir job: baris basi itu
+     * dibuang dan proyeksi dilanjutkan — kalau tidak, app tidak bisa dibuat
+     * maupun dihapus (job `teardown` pun ditolak di proyeksi).
+     */
+    public function testStaleProjectionWithTheSameNameIsReplacedInsteadOfFailing(): void
+    {
+        $store = new AppStore($this->tmp . '/rames.sqlite');
+        $store->create(['id' => 'lain1234567890ab', 'name' => 'demo']);
+
+        [$status, , $body] = $this->decode($this->controller->create(
+            $this->request('POST', '/jobs', json_encode(['op' => 'teardown', 'app' => $this->appPayload()]))
+        ));
+
+        $this->assertSame(200, $status, 'baris basi tidak boleh menggagalkan job');
+        $this->assertSame(0, $body['code']);
+        $this->assertCount(1, $this->spawned);
+
+        $this->assertNull($store->find('lain1234567890ab'), 'baris basi dibuang');
+        $projected = $store->find(self::APP_ID);
+        $this->assertNotNull($projected);
+        $this->assertSame('demo', $projected['name']);
+    }
+
+    /**
+     * Gagal proyeksi (mis. store agent rusak: baris tanpa id memegang nama yang
+     * sama) tetap dijawab JSON, bukan halaman HTML — API mesin tidak boleh
+     * menjatuhkan request menjadi halaman galat.
+     */
     public function testProjectionFailureIsAnsweredAsJsonWithoutJobOrSpawn(): void
     {
-        (new AppStore($this->tmp . '/rames.sqlite'))->create(['id' => 'lain1234567890ab', 'name' => 'demo']);
+        (new AppStore($this->tmp . '/rames.sqlite'))->create(['id' => '', 'name' => 'demo']);
 
         [$status, , $body, $raw] = $this->decode($this->controller->create(
             $this->request('POST', '/jobs', json_encode(['op' => 'deploy', 'app' => $this->appPayload()]))

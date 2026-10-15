@@ -211,6 +211,50 @@ class CliDeployJobAwarenessTest extends TestCase
         $this->assertSame(['teardown:null'], $this->notes(), 'tanpa payload job: hapus semua volume (down -v)');
     }
 
+    /**
+     * `forget` di payload job (`AgentDeployer::teardown()` mengirimnya saat app
+     * DIHAPUS di control plane): proyeksi app di server ini dibuang sesudah
+     * teardown sukses, sehingga nama app bebas dipakai app berikutnya (§5.25).
+     */
+    public function testTeardownWithForgetRemovesTheProjectionOfThisServer(): void
+    {
+        $record = $this->jobStore()->create('teardown', self::APP_ID, [
+            'app_id' => self::APP_ID,
+            'forget' => true,
+        ]);
+
+        $result = $this->worker('teardown', self::APP_ID, '', ['RAMES_JOB_ID' => (string) $record['id']]);
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr']);
+        $this->assertSame('done', (string) $this->jobStore()->find((string) $record['id'])['status']);
+        $this->assertSame([], SqliteFixture::readAll($this->db(), 'apps'), 'proyeksi app dibuang dari store server ini');
+    }
+
+    /** Tanpa `forget` (teardown biasa): proyeksi app tetap ada, statusnya `stopped`. */
+    public function testTeardownWithoutForgetKeepsTheProjection(): void
+    {
+        $record = $this->jobStore()->create('teardown', self::APP_ID, ['app_id' => self::APP_ID]);
+
+        $result = $this->worker('teardown', self::APP_ID, '', ['RAMES_JOB_ID' => (string) $record['id']]);
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr']);
+        $this->assertCount(1, SqliteFixture::readAll($this->db(), 'apps'));
+        $this->assertSame('stopped', (string) $this->storedApp()['status']);
+    }
+
+    /**
+     * Jalur control plane/manual (tanpa `RAMES_JOB_ID`) tidak pernah membawa
+     * payload job ⇒ proyeksi app TIDAK boleh dibuang (penghapusan record app
+     * adalah urusan pemanggil, bukan worker).
+     */
+    public function testTeardownWithoutJobIdKeepsTheProjection(): void
+    {
+        $result = $this->worker('teardown');
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr']);
+        $this->assertCount(1, SqliteFixture::readAll($this->db(), 'apps'));
+    }
+
     public function testUnknownModeIsRejectedWithUsage(): void
     {
         $result = $this->worker('save_compose');

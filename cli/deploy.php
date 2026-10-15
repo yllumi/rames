@@ -52,6 +52,7 @@ declare(strict_types=1);
  * dan `snapshot`/`target_name` dibaca dari payload job.
  */
 
+use app\library\Agent\AgentAppProjection;
 use app\library\Agent\AgentJobStore;
 use app\library\Auth\UserStore;
 use app\library\Billing\BillingGate;
@@ -593,6 +594,8 @@ try {
 
     // Mode yang tidak menghasilkan dokumen app (void): stop/start/teardown.
     if (in_array($mode, ['stop', 'start', 'teardown'], true)) {
+        $forgetProjection = false;
+
         if ($mode === 'stop') {
             $deployer->stop($app);
             $patch = ['status' => 'stopped', 'stage' => null, 'message' => 'Stopped', 'error' => null];
@@ -607,6 +610,15 @@ try {
                 : null;
             $deployer->teardown($app, $preserve, $logOnly);
             $patch = ['status' => 'stopped', 'stage' => null, 'message' => 'Container app dihentikan & dihapus.', 'error' => null];
+
+            // `forget` (penanda payload job `teardown`, dikirim
+            // `AgentDeployer::teardown()`): app DIHAPUS di control plane, jadi
+            // proyeksinya di server ini dibuang — nama app dibebaskan untuk app
+            // berikutnya (tanpa ini semua job dengan nama itu ditolak
+            // `projection_failed`, termasuk job hapus app baru). Dijalankan
+            // SESUDAH `$store->update()` di bawah: tidak ada lagi yang menulis
+            // dokumen app ini.
+            $forgetProjection = ($jobPayload['forget'] ?? null) === true;
         }
 
         $store->update($appId, function (array &$s) use ($patch): void {
@@ -614,6 +626,27 @@ try {
                 $s[$key] = $value;
             }
         });
+
+        // Best-effort: teardown sudah sukses (container & network project sudah
+        // dibersihkan), jadi kegagalan membuang proyeksi TIDAK boleh membuat
+        // control plane membatalkan penghapusan app (app akan tertinggal
+        // setengah mati) — tetapi juga TIDAK diam: dicatat sebagai peringatan di
+        // log deploy app ini. Baris yang tertinggal tetap direkonsiliasi
+        // proyeksi berikutnya (`AgentAppProjection::upsert()`).
+        if ($forgetProjection) {
+            try {
+                (new AgentAppProjection())->forget($appId);
+            } catch (\Throwable $e) {
+                file_put_contents(
+                    $logFile,
+                    '[' . date('c') . '] [projection] PERINGATAN: proyeksi app di server ini gagal dibuang: '
+                    . $e->getMessage()
+                    . ' — periksa basis data dashboard server ini (tabel apps); baris yang tertinggal akan'
+                    . ' dibersihkan otomatis saat app dengan nama sama diproyeksikan lagi.' . PHP_EOL,
+                    FILE_APPEND
+                );
+            }
+        }
 
         $markJob(['status' => 'done', 'stage' => null, 'message' => (string) $patch['message'], 'finished_at' => date('c')]);
         file_put_contents($logFile, '[' . date('c') . "] done\n", FILE_APPEND);

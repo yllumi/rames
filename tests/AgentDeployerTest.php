@@ -98,7 +98,7 @@ final class AgentDeployerFakeHandler
  *
  * Yang dikunci (plan §3 butir 4 + §4.1 + §11 catatan 6):
  *  1. setiap operasi panjang dipetakan ke **op job agent** yang benar
- *     (`ref` untuk rollback, `preserve_volumes` untuk teardown);
+ *     (`ref` untuk rollback, `preserve_volumes` + `forget` untuk teardown);
  *  2. polling berhenti saat `done`; baris log baru diteruskan **tepat sekali**
  *     (offset byte-accurate, termasuk saat `X-Rames-Offset` agent bergeser atau
  *     potongan baris belum selesai);
@@ -155,8 +155,10 @@ class AgentDeployerTest extends TestCase
             'rollback' => ['rollback', ['ref' => 'abc1234'], ['op' => 'rollback', 'ref' => 'abc1234']],
             'stop' => ['stop', [], ['op' => 'stop']],
             'start' => ['start', [], ['op' => 'start']],
-            'teardown (purge)' => ['teardown', ['preserve' => null], ['op' => 'teardown', 'preserve_volumes' => null]],
-            'teardown (preserve)' => ['teardown', ['preserve' => ['vol_a', 'vol_b']], ['op' => 'teardown', 'preserve_volumes' => ['vol_a', 'vol_b']]],
+            // `teardown` = app dihapus di control plane ⇒ agent wajib membuang
+            // proyeksinya sesudah teardown sukses (nama app dibebaskan).
+            'teardown (purge)' => ['teardown', ['preserve' => null], ['op' => 'teardown', 'preserve_volumes' => null, 'forget' => true]],
+            'teardown (preserve)' => ['teardown', ['preserve' => ['vol_a', 'vol_b']], ['op' => 'teardown', 'preserve_volumes' => ['vol_a', 'vol_b'], 'forget' => true]],
         ];
     }
 
