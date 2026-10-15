@@ -45,7 +45,7 @@ dashboard: tombol SSL → `AgentDeployer::issueSsl()` (`app/library/Deploy/Agent
 
 - **`ADMIN_EMAIL` WAJIB ada di setiap server yang menerbitkan sertifikat**,
   termasuk server agent. `SslIssuer::buildCommand()`
-  (`app/library/SSL/SslIssuer.php:249-253`) menolak (`ADMIN_EMAIL belum diatur —
+  (`app/library/SSL/SslIssuer.php:514-518`) menolak (`ADMIN_EMAIL belum diatur —
   wajib untuk penerbitan sertifikat Let's Encrypt.`) bila
   `config('deploy.admin_email')` kosong; env-nya `ADMIN_EMAIL`
   (`config/deploy.php:136`). Tanpa nilai itu job `ssl_issue` di server ini
@@ -58,6 +58,21 @@ dashboard: tombol SSL → `AgentDeployer::issueSsl()` (`app/library/Deploy/Agent
   (`production` | `staging`), `CLOUDFLARE_CREDS` (path berkas berisi
   `dns_cloudflare_api_token = <token>` — **isi berkasnya**, jangan menaruh token
   di `agent.env`).
+
+- **Webroot HTTP-01 (`SSL_WEBROOT`) wajib *traversable* oleh user nginx host**
+  (bit `x` pada setiap komponen path) **dan** terlihat di dalam container
+  (certbot menulis berkas dari dalam container, nginx host menyajikannya dari
+  luar). Webroot di balik direktori `0700` (mis. instalasi di bawah `/root/...`)
+  selalu berakhir `403`. `SslIssuer` kini menolaknya lebih dulu lewat preflight
+  berbasis bit mode — jadi setup grup yang sah (`0750 root:www-data`) tetap lolos.
+  Diagnosa lengkap & jalan keluar: `ARCHITECTURE.md` §8 GOTCHA no. 28.
+- **Opsional — persist log debug certbot.** Set `CERTBOT_LOGS_DIR` (dan/atau
+  `CERTBOT_WORK_DIR`) **di wilayah operator** `secrets/agent.env` ke path yang
+  di-bind, mis. `CERTBOT_LOGS_DIR=<repo>/runtime/logs/letsencrypt`, supaya log
+  diagnosa challenge tidak hilang saat container di-recreate (default
+  `/var/log/letsencrypt` = lokal container). Nilai kosong/relatif/ber-NUL
+  dinormalkan ke default. Perubahan env ⇒ **recreate** (`docker compose … up -d`),
+  bukan `restart`.
 
 **Cara 1 — lewat installer (disarankan).** Installer menulis kunci SSL itu ke
 `secrets/agent.env` sekaligus lalu menjalankan compose:
@@ -159,11 +174,11 @@ ketik) dan menolak tegas bila fingerprint tidak cocok.
 | `--domain <d>` | `APP_DOMAIN` server ini. Wajib pada instalasi pertama. |
 | `--email <e>` | `ADMIN_EMAIL` — kontak penerbitan SSL Let's Encrypt **di server ini** (wajib sebelum job `ssl_issue` bisa jalan; lihat [Prasyarat SSL](#prasyarat-ssl-sertifikat-app-di-server-ini)). Nilai lama dipertahankan bila opsi tidak diberikan atau diberikan kosong (`--email ""`). |
 | `--port-range <s> <e>` | rentang host port container app (default `30000 30999`). |
-| `--bind <ip:port>` | `AGENT_BIND` — alamat listen agent **di dalam container** (default `0.0.0.0:8443`). Port selain 8443 hanya boleh bila `AGENT_PORT_PUBLISH` diset sama (lihat di bawah). |
+| `--bind <ip:port>` | `AGENT_BIND` — alamat listen agent **di dalam container** (default `0.0.0.0:8443`). **Wajib bentuk `IP:PORT`**: nilai tanpa `:` ditolak **fail-fast** (mis. `0.0.0.0/` — dulu lolos lalu membuat container agent **crash saat start** — `config/process.php` menuntut `:`); IPv4 cacat (`1.2.3`, `300.1.1.1`) & IPv6 tanpa kurung ditolak. Skema `http(s)://` **dan** garis miring penutup (`/`, boleh berulang) **ditoleransi** runtime — keduanya dibuang saat parsing `host:port`, nilainya tetap ditulis **apa adanya** ke `secrets/agent.env`, dan hanya memicu **satu** peringatan agar dirapikan (port untuk cek `AGENT_PORT_PUBLISH` = port **hasil parsing**: `0.0.0.0:9000/` ⇒ `9000`). Port selain 8443 hanya boleh bila `AGENT_PORT_PUBLISH` diset sama (lihat di bawah). |
 | `--ip <ip>` | IP server ini untuk SAN sertifikat & URL onboarding (pakai bila deteksi otomatis gagal/salah). |
 | `--ssl-challenge <http\|dns-cloudflare>` | `SSL_CHALLENGE` (default `http` = webroot HTTP-01). |
 | `--ssl-ca-server <production\|staging>` | `SSL_CA_SERVER` (`staging` untuk uji — sertifikat tidak dipercaya). |
-| `--cloudflare-creds <path>` | `CLOUDFLARE_CREDS` — path **absolut** (wajib mulai `/`, tanpa spasi/kutip) ini-file kredensial Cloudflare untuk `--dns-cloudflare`; harus **terbaca container agent** (paling aman di bawah path repo, karena repo di-mount di path yang sama). |
+| `--cloudflare-creds <path>` | `CLOUDFLARE_CREDS` — path **absolut** (wajib mulai `/`, tanpa spasi/kutip) ini-file kredensial Cloudflare untuk `--dns-cloudflare`; harus **terbaca container agent** (paling aman di bawah path repo, karena repo di-mount di path yang sama). Tidak terbaca **di host** hanya **diperingatkan** — yang menentukan adalah keterbacaan **di dalam container** (path di container bisa berbeda, mis. berkas disalin/di-mount ke tempat lain). |
 | `--force` | regenerasi token + sertifikat, lalu force-recreate container. **Perbarui server di dashboard setelahnya.** |
 | `--help` | bantuan. |
 
@@ -241,7 +256,13 @@ SSL_WEBROOT=/srv/rames-agent/webroot
   **tanpa kunci duplikat** (salinan kunci terkelola yang tertulis manual di wilayah
   operator dibuang), mode tetap `0600`, dan hasilnya **byte-identik** pada rerun
   berikutnya. Berkas **format lama (tanpa sentinel) dinormalisasi pada rerun
-  pertama** — nilai operator tidak hilang, hanya berpindah ke wilayah operator.
+  pertama** — nilai operator tidak hilang, hanya berpindah ke wilayah operator,
+  dan **komentar header installer versi lama dibuang** (pencocokan persis per baris
+  — komentar operator yang mirip secara kebetulan tetap dipertahankan).
+- **Jangan menyunting `secrets/agent.env` dengan editor Windows (Notepad/WordPad).**
+  Berkas ber-CRLF membuat `sed` membaca `\r` sebagai bagian nilai (dulu rerun
+  **gagal** dengan pesan menyesatkan). Installer kini menormalkan ke LF + hanya
+  **memperingatkan**; tetap hindari editor Windows agar tidak terulang.
 - **`SSL_WEBROOT` harus terlihat di DUA sisi**: container agent yang menulis berkas
   challenge (certbot) dan nginx host yang menyajikannya. Compose agent hanya
   mem-bind **`${PWD}:${PWD}`** (`docker-compose.agent.yml`), jadi direktori itu

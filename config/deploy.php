@@ -140,6 +140,12 @@ return [
     'ssl_ca_server' => getenv('SSL_CA_SERVER') ?: 'production',  // production | staging
     'ssl_webroot' => getenv('SSL_WEBROOT') ?: (base_path() . '/webroot'),
     'letsencrypt_path' => getenv('LETSENCRYPT_PATH') ?: '/etc/letsencrypt',
+    // Direktori kerja & log debug certbot. Bisa diarahkan ke path lain (mis.
+    // `${PWD}/runtime/logs/letsencrypt`) supaya log diagnosa challenge tidak
+    // hilang saat container di-recreate; nilai tak masuk akal (kosong, relatif,
+    // ber-NUL) dinormalkan `SslIssuer` ke default di bawah.
+    'certbot_work_dir' => getenv('CERTBOT_WORK_DIR') ?: '/var/lib/letsencrypt',
+    'certbot_logs_dir' => getenv('CERTBOT_LOGS_DIR') ?: '/var/log/letsencrypt',
     'cloudflare_creds' => getenv('CLOUDFLARE_CREDS') ?: '',
 
     // Socket Docker Engine

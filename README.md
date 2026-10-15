@@ -280,7 +280,7 @@ Selengkapnya (opsi installer, rotasi token/sertifikat dengan `--force`, firewall
 | `PORT_RANGE_START` / `PORT_RANGE_END` | `30000` / `30999` | Rentang host port untuk container app |
 | `RAMES_MODE` | `dashboard` | Peran runtime: `dashboard` (control plane) atau `agent` (server yang dikendalikan, tanpa UI; lihat [Menambah server kedua](#menambah-server-kedua)) |
 | `AGENT_TOKEN` | (kosong) | Bearer token control plane → agent (**rahasia**, dibuat `agent/install.sh`). Kosong di mode agent ⇒ seluruh route agent tidak didaftarkan (fail-closed) |
-| `AGENT_BIND` | `0.0.0.0:8443` | Alamat listen agent (HTTPS self-signed; TLS diterminasi di proses agent) |
+| `AGENT_BIND` | `0.0.0.0:8443` | Alamat listen agent (HTTPS self-signed; TLS diterminasi di proses agent) — **wajib bentuk `IP:PORT`**: nilai tanpa `:` (mis. `0.0.0.0/` atau `https://0.0.0.0`) membuat container agent gagal start (runtime menuntut `:`); skema `http(s)://` **dan garis miring penutup (`/`) berulang** ditoleransi runtime (keduanya dibuang saat parsing — nilai tetap ditulis apa adanya) tetapi sebaiknya dirapikan |
 | `AGENT_TLS_CERT` / `AGENT_TLS_KEY` | (kosong) | Path sertifikat & private key TLS agent — **wajib** di mode agent (start ditolak tanpa TLS) |
 | `NGINX_CONF_PATH` / `NGINX_ENABLED_PATH` | `/etc/nginx/sites-available` / `sites-enabled` | Direktori config Nginx host (di-mount ke container) |
 | `NGINX_RELOAD_STATUS_FILE` | `{proyek}/nginx-status/last-reload.json` | Status reload yang ditulis watcher host / dashboard |
@@ -314,6 +314,7 @@ Selengkapnya (opsi installer, rotasi token/sertifikat dengan `--force`, firewall
 | `SSL_WEBROOT` | `{proyek}/webroot` | Webroot HTTP-01 challenge — harus traversable/terbaca user nginx host **dan** berada di path yang di-mount ke container (lihat `ARCHITECTURE.md` §8 GOTCHA no. 28) |
 | `LETSENCRYPT_PATH` | `/etc/letsencrypt` | Direktori sertifikat (di-mount dari host) |
 | `CLOUDFLARE_CREDS` | — | File kredensial DNS Cloudflare (saat `SSL_CHALLENGE=dns-cloudflare`) |
+| `CERTBOT_WORK_DIR` / `CERTBOT_LOGS_DIR` | `/var/lib/letsencrypt` / `/var/log/letsencrypt` | Direktori kerja & log debug certbot. Arahkan `CERTBOT_LOGS_DIR` ke path yang di-bind (mis. `{proyek}/runtime/logs/letsencrypt`) agar log diagnosa challenge tidak hilang saat container di-recreate; nilai tak masuk akal (kosong/relatif/ber-NUL) dinormalkan ke default. Ubah env ⇒ **recreate** container (`docker compose … up -d`), bukan `restart` |
 | `VOLUME_BACKUP_ENABLED` | `true` | Aktifkan backup volume harian ke S3 (SPECS §8h) |
 | `VOLUME_BACKUP_DB_DUMP_ENABLED` | `true` | Strategi A: dump logis untuk container DB (container tetap hidup) |
 | `VOLUME_BACKUP_SNAPSHOT_POLICY` | `stop` | `stop` = volume non-DB di-backup harian via stop→snapshot→start; `skip` = manual saja |

@@ -104,9 +104,19 @@ Opsi:
   --port-range <s> <e>    rentang host port untuk container app — dua bilangan
                           bulat 1..65535 dengan start < end
                           (default 30000 30999; nilai lama dipertahankan)
-  --bind <ip:port>        AGENT_BIND — alamat listen agent DI DALAM container
-                          (default 0.0.0.0:8443; port lain hanya boleh bila
-                          AGENT_PORT_PUBLISH diset sama)
+  --bind <ip:port>        AGENT_BIND — alamat listen agent DI DALAM container,
+                          WAJIB berbentuk <ip|host>:<port> (mis. 0.0.0.0:8443;
+                          port 1..65535). Nilai tanpa ':' ditolak sejak awal.
+                          Skema http:// atau https:// di depan DAN garis miring
+                          penutup (/) boleh ada — keduanya opsional dan
+                          DITOLERANSI seperti runtime (config/process.php membuang
+                          skema lalu rtrim garis miring penutup), dibuang sebelum
+                          parsing dan hanya memicu SATU peringatan; nilainya tetap
+                          ditulis apa adanya ke secrets/agent.env. Bentuk kanonik
+                          yang disarankan: <ip|host>:<port> tanpa skema & tanpa
+                          garis miring penutup.
+                          Port selain 8443 hanya boleh bila AGENT_PORT_PUBLISH
+                          diset sama.
   --ip <ip>               IPv4 server ini untuk SAN sertifikat & URL onboarding
                           (mis. 10.0.0.12; pakai bila deteksi otomatis
                           gagal/salah — hostname TIDAK diterima, SAN memakai
@@ -165,10 +175,22 @@ parse_args() {
 read_env_value() {
     local key="$1" file="$2" value=""
     [ -f "$file" ] || return 0
-    value="$(sed -n "s/^${key}=//p" "$file" | tail -n1)"
+    # `tr -d '\r'`: berkas yang disunting editor Windows (CRLF) menyisakan `\r`
+    # di ujung tiap baris — tak terlihat di layar, tapi membuat nilai terbaca
+    # ber-"spasi/baris baru" (pesan galat menyesatkan) dan ikut tersalin ke
+    # wilayah operator. Dinormalisasi di sini; hasil tulis installer selalu LF.
+    value="$(sed -n "s/^${key}=//p" "$file" | tr -d '\r' | tail -n1)"
     value="${value%\"}"; value="${value#\"}"
     value="${value%\'}"; value="${value#\'}"
     printf '%s' "$value"
+}
+
+# Deteksi (bukan perbaikan) berkas env ber-CRLF: dipakai hanya untuk memperingatkan
+# operator agar tidak menyunting berkas ini dengan editor Windows.
+env_file_has_crlf() {
+    local file="$1"
+    [ -f "$file" ] || return 1
+    LC_ALL=C grep -q $'\r' "$file" 2>/dev/null
 }
 
 # ---------------------------------------------------------------- validasi
@@ -177,6 +199,9 @@ read_env_value() {
 # menyesatkan operator (mis. disuruh memperbaiki `--email` padahal asalnya baris
 # di secrets/agent.env). Nilai tervalidasi/ternormalisasi ditaruh di
 # VALIDATED_VALUE (pola out-param global, sama seperti EFFECTIVE_* di main()).
+# `validate_agent_bind()` memakai out-param tambahan VALIDATED_BIND_PORT (port
+# hasil parsing, sudah lepas dari skema/garis miring penutup) — supaya main()
+# TIDAK mengurai ulang nilai mentahnya.
 
 # Pesan galat nilai tak sah. `origin`: cli | file | lainnya (mis. auto).
 invalid_value_die() {
@@ -330,6 +355,140 @@ validate_port_range_order() {
     [ "$start" -lt "$end" ] && return 0
     invalid_value_die "$origin" "--port-range" "PORT_RANGE_START/PORT_RANGE_END" \
         "rentang tidak masuk akal: start ($start) harus lebih kecil dari end ($end)" "--port-range 30000 30999"
+}
+
+# Predikat IPv4 bertitik: 4 oktet, 0..255, tanpa nol di depan. Dipakai validator
+# AGENT_BIND di bawah; branch HOST_IP di validate_value TIDAK diubah (ia memakai
+# pesan galat detail per oktet).
+is_ipv4_literal() {
+    local v="$1" o octets=()
+    case "$v" in
+        *[!0-9.]*|.*|*..*|*.) return 1 ;;
+    esac
+    IFS='.' read -r -a octets <<< "$v"
+    [ "${#octets[@]}" -eq 4 ] || return 1
+    for o in "${octets[@]}"; do
+        case "$o" in
+            0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;;
+            *) return 1 ;;
+        esac
+        [ "$o" -le 255 ] || return 1
+    done
+    return 0
+}
+
+# AGENT_BIND WAJIB berbentuk [skema]IP:PORT (bagian IP/host + port 1..65535).
+# Nilai TANPA ':' — mis. `--bind 8443` — dulu lolos: `${EFFECTIVE_BIND##*:}` pada
+# string tanpa ':' mengembalikan SELURUH string sehingga "8443" terlihat sebagai
+# port sah dan nilai itu ditulis apa adanya ke berkas env. Padahal
+# `config/process.php` mensyaratkan ':' pada AGENT_BIND (RuntimeException saat
+# start ⇒ container agent TIDAK pernah hidup) — jadi harus ditolak di sini,
+# SEBELUM efek samping apa pun. Aturan koherensi AGENT_BIND ↔ AGENT_PORT_PUBLISH
+# di main() tidak diubah oleh validator ini.
+#
+# Bagian yang REDUNDAN dan DITOLERANSI (dibuang hanya untuk PARSING, bukan
+# dinormalisasi): skema `http://`/`https://` di depan DAN garis miring penutup
+# (`/`, satu atau lebih) — persis yang dinormalkan runtime di `config/process.php`
+# (`trim()` → `preg_replace('#^https?://#i', …)` → `rtrim(…, '/')`), sehingga
+# `https://0.0.0.0:8443/` → `socket=tcp://0.0.0.0:8443` (BISA di-bind, sama
+# persis dengan `0.0.0.0:8443`). Installer TIDAK boleh lebih ketat daripada
+# runtime: tanpa toleransi ini, operator yang env-nya (ditulis installer versi
+# lama, atau disunting manual) sudah memuat nilai berskema/bergari-miring-penutup
+# tidak bisa menjalankan installer lagi — SETIAP rerun abort, padahal agent-nya
+# sendiri sehat. Nilai valid tetap ditulis VERBATIM ke secrets/agent.env (isi env
+# operator tidak dinormalisasi ulang — hindari diff tak terduga) dan operator
+# diberi SATU `warn` gabungan yang menyebut bagian mana yang redundan + bentuk
+# kanoniknya.
+#
+# Yang tetap DITOLAK (rc=1, konsisten dengan runtime): nilai tanpa ':' SETELAH
+# semua toleransi di atas — mis. `0.0.0.0/` → `0.0.0.0` (runtime:
+# RuntimeException saat start) — serta IPv4/host cacat dan port di luar 1..65535.
+validate_agent_bind() {
+    local value="$1" origin="$2" example="--bind 0.0.0.0:8443"
+    local host="" port="" port_num=0 target="" scheme="" redundant=""
+    local trailing_slash=0
+
+    # Buang skema opsional (case-insensitive: HTTPS:// juga diterima). Pola
+    # eksplisit [hH][tT]… dipakai karena `case` POSIX tidak punya mode
+    # abaikan-besar-kecil; `${value:8}`/`${value:7}` = offset panjang skema.
+    case "$value" in
+        [hH][tT][tT][pP][sS]://*) scheme="${value:0:8}"; target="${value:8}" ;;
+        [hH][tT][tT][pP]://*)     scheme="${value:0:7}"; target="${value:7}" ;;
+        *)                        target="$value" ;;
+    esac
+
+    # Garis miring penutup (satu atau lebih) dibuang dari ujung SEBELUM parsing
+    # `host:port` — runtime memakai `rtrim(…, '/')` setelah membuang skema, jadi
+    # `0.0.0.0:8443/` di-bind sama persis dengan `0.0.0.0:8443`. Perulangan (bukan
+    # rtrim sekali) supaya `0.0.0.0:8443//` ikut konsisten dengan runtime.
+    while [ "$target" != "${target%/}" ]; do
+        target="${target%/}"
+        trailing_slash=1
+    done
+
+    case "$target" in
+        *:*) host="${target%:*}"; port="${target##*:}" ;;
+        *)   invalid_value_die "$origin" "--bind" "AGENT_BIND" \
+                 "\"$value\" bukan bentuk IP:PORT (tanpa \":\") — agent hanya bisa listen pada IP:PORT" "$example" ;;
+    esac
+
+    case "$host" in
+        '')
+            invalid_value_die "$origin" "--bind" "AGENT_BIND" "bagian IP/host kosong (bentuk IP:PORT)" "$example" ;;
+        \[*\])
+            : ;;   # IPv6 dalam tanda kurung, mis. [::]:8443 atau [fe80::1]:8443
+        *:*)
+            invalid_value_die "$origin" "--bind" "AGENT_BIND" \
+                "bagian IP/host \"$host\" tidak sah — tanpa skema; untuk IPv6 pakai tanda kurung, mis. [::]:8443" "$example" ;;
+        *[!0-9.]*)
+            # Ada huruf/strip → hostname (Workerman menerima hostname di listen).
+            printf '%s' "$host" | grep -qE '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' \
+                || invalid_value_die "$origin" "--bind" "AGENT_BIND" \
+                    "\"$host\" bukan host/IP yang sah" "$example"
+            ;;
+        *)
+            # Hanya angka + titik ⇒ WAJIB IPv4 sah (menolak "1.2.3", "1.2.3.4.5", "300.1.1.1").
+            is_ipv4_literal "$host" || invalid_value_die "$origin" "--bind" "AGENT_BIND" \
+                "\"$host\" bukan IPv4 yang sah (4 oktet 0..255, tanpa nol di depan)" "$example"
+            ;;
+    esac
+
+    case "$port" in
+        ''|*[!0-9]*)
+            invalid_value_die "$origin" "--bind" "AGENT_BIND" "port \"$port\" bukan bilangan bulat" "$example" ;;
+    esac
+    if [ "${#port}" -gt 5 ]; then
+        invalid_value_die "$origin" "--bind" "AGENT_BIND" "port \"$port\" lebih dari 5 digit (port 1..65535)" "$example"
+    fi
+    # 10# aman: seluruh karakter sudah dipastikan digit di atas.
+    port_num="$((10#$port))"
+    if [ "$port_num" -lt 1 ] || [ "$port_num" -gt 65535 ]; then
+        invalid_value_die "$origin" "--bind" "AGENT_BIND" "port $port_num di luar 1..65535" "$example"
+    fi
+
+    # Out-param untuk main(): port hasil parsing — main() TIDAK boleh mengurai
+    # ulang nilai mentah (`${EFFECTIVE_BIND##*:}` mengembalikan "8443/" untuk
+    # `0.0.0.0:8443/` dan menolak nilai yang justru SAH di runtime).
+    VALIDATED_BIND_PORT="$port_num"
+
+    # Validasi lolos ⇒ BARU sekarang beri tahu bagian mana yang redundan
+    # (peringatan tidak pernah mendahului fail-fast: nilai cacat tetap mati tanpa
+    # output tambahan selain pesan galatnya). Satu peringatan GABUNGAN — bukan dua
+    # yang bertele-tele — yang menyebut tiap bagian redundan (skema dan/atau
+    # garis miring penutup) lalu bentuk kanonik penggantinya.
+    if [ -n "$scheme" ] || [ "$trailing_slash" -eq 1 ]; then
+        if [ -n "$scheme" ]; then
+            redundant="skema \"$scheme\""
+        fi
+        if [ "$trailing_slash" -eq 1 ]; then
+            if [ -n "$redundant" ]; then
+                redundant="$redundant dan garis miring penutup (\"/\")"
+            else
+                redundant="garis miring penutup (\"/\")"
+            fi
+        fi
+        warn "AGENT_BIND \"$value\" memuat $redundant — redundan & ditoleransi: runtime membuangnya sendiri (config/process.php: preg_replace('#^https?://#i', …) lalu rtrim(…, '/')), jadi agent tetap listen di \"$target\". Nilai ditulis APA ADANYA ke $SECRETS_ENV; rapi-kan jadi \"$target\" kapan saja (aman, hasil akhirnya sama)."
+    fi
 }
 
 # Nilai efektif satu kunci: opsi CLI menang bila NON-KOSONG, lalu nilai berkas,
@@ -513,23 +672,94 @@ is_managed_env_key() {
     return 1
 }
 
+# Komentar header yang ditulis installer versi LAMA (format tanpa sentinel) ke
+# dalam berkas env. Berkas format lama tidak punya penanda blok, jadi baris-baris
+# itu ikut terbaca sebagai "baris operator" dan tersalin ke wilayah operator tiap
+# rerun (temuan kosmetik: wilayah operator bukan lagi murni milik operator).
+# Dicocokkan PERSIS baris (kelimanya literal — tanpa ekspansi variabel), bukan
+# pola longgar: komentar operator yang mirip secara kebetulan (mis. berawalan
+# '# Rames agent —' atau '# Sumber tunggal identitas…') TIDAK ikut terbuang.
+# Pencocokan juga hanya berlaku di WILAYAH HEADER (lihat preserve_unmanaged_env_lines).
+#
+# PROVENANCE — hanya baris yang TERBUKTI pernah ditulis ke berkas env operator
+# (wilayah di luar blok kelolaan). Sumber bukti: here-doc `write_secrets_env()`
+# pra-sentinel pada revisi `7a3c644` dan `dafdabd` (`git show <rev>:agent/install.sh`).
+# Revisi asal tiap baris dicatat di komentar di atas entri bersangkutan; baris
+# yang sama ditulis ulang revisi berikutnya didaftarkan sekali (dedupe).
+#   * `7a3c644` baris 252-254 — tiga baris pertama (here-doc TANPA sentinel ⇒
+#     seluruh header mendarat di wilayah operator).
+#   * `dafdabd` baris 336-339 — mengulang tiga baris di atas (tanpa backtick:
+#     here-doc itu tanpa kutip ⇒ backtick = command substitution) DITAMBAH dua
+#     baris baru: kutip-tunggal `env_file` (baris 338) dan catatan backtick
+#     (baris 339) — keduanya juga tanpa sentinel, jadi ikut mendarat di wilayah
+#     operator pada upgrade dari berkas revisi itu.
+# Tidak ada entri lain: revisi `102a403` sudah menulis header ini DI DALAM blok
+# kelolaan (`# rames-installer:begin` … `:end`), jadi barisnya tidak pernah
+# menjadi baris operator. Jangan menambah entri baru tanpa bukti riwayat
+# (`git show <rev>:agent/install.sh`).
+LEGACY_INSTALLER_HEADER_LINES=(
+    # 7a3c644:252 (diulang dafdabd:336)
+    '# Rames agent — dibuat oleh agent/install.sh. JANGAN di-commit (/secrets/ gitignored).'
+    # 7a3c644:253 (diulang dafdabd:337)
+    '# Sumber tunggal identitas + rahasia agent: diinjeksi ke container lewat'
+    # 7a3c644:254 (diulang dafdabd:338 dengan kutip tunggal, lihat entri berikut)
+    '# `env_file: ./secrets/agent.env` di docker-compose.agent.yml.'
+    # dafdabd:338 (kutip tunggal — pengganti backtick yang = command substitution)
+    "# 'env_file: ./secrets/agent.env' di docker-compose.agent.yml."
+    # dafdabd:339
+    '# (tanpa backtick: here-doc ini tanpa kutip → backtick = command substitution)'
+)
+
+is_legacy_installer_header_line() {
+    local line="$1" known
+    for known in "${LEGACY_INSTALLER_HEADER_LINES[@]}"; do
+        [ "$line" = "$known" ] && return 0
+    done
+    return 1
+}
+
 # Salin baris yang TIDAK dikelola installer dari berkas env lama ke $2 — VERBATIM
 # (komentar operator, baris kosong, `SSL_WEBROOT`, `LETSENCRYPT_PATH`, kunci
 # kustom apa pun; nilai ber-spasi/kutip tidak pernah di-parse ulang). Yang dibuang
-# hanya: isi blok kelolaan, penanda sentinel, dan salinan kunci terkelola di
-# wilayah operator. Tanpa ini, rerun installer menghapus penyetelan operator
-# (mis. `SSL_WEBROOT`) dan merusak SSL HTTP-01 yang baru saja diperbaiki.
+# hanya: isi blok kelolaan, penanda sentinel, salinan kunci terkelola di wilayah
+# operator, dan komentar header installer versi lama (lihat di atas). Tanpa ini,
+# rerun installer menghapus penyetelan operator (mis. `SSL_WEBROOT`) dan merusak
+# SSL HTTP-01 yang baru saja diperbaiki.
+#
+# Pembuangan header lama DIBATASI ke WILAYAH HEADER: rentetan baris komentar/
+# kosong di AWAL berkas, berhenti pada baris pertama yang bukan komentar/kosong
+# (atau pada sentinel/kunci pertama). Alasannya: pencocokan persis di SELURUH
+# wilayah operator bisa menghapus komentar operator yang kebetulan byte-identik
+# dengan salah satu entri header — di luar header, komentar itu milik operator
+# dan wajib dipertahankan apa adanya.
 preserve_unmanaged_env_lines() {
-    local src="$1" dst="$2" in_block=0 line key
+    local src="$1" dst="$2" in_block=0 in_header=1 line key
     : > "$dst" || return 1
     [ -f "$src" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
+        # Berkas CRLF (editor Windows) → LF; tanpa ini `\r` ikut tersalin dan
+        # membuat hasil tulis bukan LF murni.
+        line="${line%$'\r'}"
         case "$line" in
-            '# rames-installer:begin'*)     in_block=1; continue ;;
-            '# rames-installer:end'*)       in_block=0; continue ;;
-            '# rames-installer:preserved'*) continue ;;
+            '# rames-installer:begin'*)     in_block=1; in_header=0; continue ;;
+            '# rames-installer:end'*)       in_block=0; in_header=0; continue ;;
+            '# rames-installer:preserved'*) in_header=0; continue ;;
         esac
         [ "$in_block" -eq 1 ] && continue
+        if [ "$in_header" -eq 1 ]; then
+            case "$line" in
+                '#'*)
+                    is_legacy_installer_header_line "$line" && continue
+                    ;;
+                *[![:space:]]*)
+                    # Baris berisi non-spasi yang bukan komentar ⇒ wilayah
+                    # header berakhir; baris ini (dan sisanya) diproses biasa.
+                    in_header=0
+                    ;;
+                *)
+                    : ;;   # kosong / hanya spasi ⇒ masih di dalam wilayah header
+            esac
+        fi
         key="${line%%=*}"
         if [ "$key" != "$line" ] && is_managed_env_key "$key"; then
             continue
@@ -769,6 +999,16 @@ main() {
     [ -n "$OPT_BIND" ] && EFFECTIVE_BIND="$OPT_BIND"
     [ -n "$EFFECTIVE_BIND" ] || EFFECTIVE_BIND="0.0.0.0:${AGENT_INTERNAL_PORT}"
 
+    # Sumber AGENT_BIND dibedakan di pesan galat (opsi CLI vs baris berkas).
+    ORIGIN_BIND="file"
+    [ -n "$OPT_BIND" ] && ORIGIN_BIND="cli"
+
+    # Berkas env ber-CRLF (editor Windows) dinormalisasi saat dibaca/ditulis;
+    # beri tahu operator supaya tidak terulang (perilaku fail-safe tidak berubah).
+    if env_file_has_crlf "$SECRETS_ENV"; then
+        warn "$SECRETS_ENV: berkas ber-CRLF (disunting editor Windows?) — dinormalisasi ke LF saat ditulis ulang; hindari editor Windows (Notepad/WordPad) untuk berkas ini."
+    fi
+
     # --- APP_DOMAIN: opsi CLI > berkas > (wajib) ---------------------------
     RAW_DOMAIN=""
     ORIGIN_DOMAIN="none"
@@ -828,9 +1068,27 @@ main() {
     if [ "$EFFECTIVE_SSL_CHALLENGE" = "dns-cloudflare" ] && [ -z "$EFFECTIVE_CLOUDFLARE_CREDS" ]; then
         warn "SSL_CHALLENGE=dns-cloudflare tanpa CLOUDFLARE_CREDS — job SSL akan gagal sampai kredensial Cloudflare diatur (--cloudflare-creds)"
     fi
+    # Keterbacaan CLOUDFLARE_CREDS di host HANYA diperingatkan (bukan ditolak):
+    # yang menentukan adalah keterbacaan DI DALAM container agent, dan path di
+    # container bisa berbeda dari host (berkas disalin/di-mount terpisah).
+    if [ -n "$EFFECTIVE_CLOUDFLARE_CREDS" ]; then
+        if [ ! -f "$EFFECTIVE_CLOUDFLARE_CREDS" ] || [ ! -r "$EFFECTIVE_CLOUDFLARE_CREDS" ]; then
+            warn "CLOUDFLARE_CREDS=\"$EFFECTIVE_CLOUDFLARE_CREDS\" tidak ada/tidak terbaca DI HOST ini — BUKAN penolakan: yang wajib adalah terbaca DI DALAM container agent (path di dalam container bisa berbeda, mis. berkas disalin/di-mount ke tempat lain). Job SSL dns-cloudflare gagal bila di sana juga tidak terbaca."
+        fi
+    fi
 
     # --- koherensi bind ↔ publish ------------------------------------------
-    local bind_port="${EFFECTIVE_BIND##*:}"
+    # Bentuk IP:PORT divalidasi DULU (fail-fast, sebelum efek samping apa pun):
+    # nilai tanpa ':' seperti `8443` dulu lolos ke blok ini dan tertulis ke
+    # secrets/agent.env meski agent pasti crash saat start.
+    # `bind_port` diambil dari OUT-PARAM validator, bukan dari
+    # `${EFFECTIVE_BIND##*:}`: nilai mentah boleh memuat skema/garis miring
+    # penutup yang ditoleransi (mis. `0.0.0.0:8443/`), dan penguraian ulang di
+    # sini akan menghasilkan `8443/` ⇒ MENOLAK nilai yang justru sah di runtime.
+    validate_agent_bind "$EFFECTIVE_BIND" "$ORIGIN_BIND"
+    local bind_port="$VALIDATED_BIND_PORT"
+    # Penjaga invarian (validator sudah menjamin digit 1..65535): kalau ini
+    # pernah gagal, ada jalur yang melewati validator di atas.
     case "$bind_port" in
         ''|*[!0-9]*) die "AGENT_BIND \"$EFFECTIVE_BIND\" tidak valid — pakai bentuk IP:PORT, mis. 0.0.0.0:8443" ;;
     esac
