@@ -64,6 +64,12 @@ sudo ./host/install.sh --domain example.com --email admin@example.com
 
 Idempoten — aman dijalankan ulang. Lihat `./host/install.sh --help` untuk opsi (mis. `--no-deps`, `--non-interactive`). Bila memakai installer, **Langkah 1–3 di bawah tidak perlu dijalankan manual** (`.env`, build, dan `make:admin` sudah ditangani; kredensial admin dicetak di akhir instalasi). Langkah manual berikut disediakan sebagai alternatif/pengecekan.
 
+> Provisioning user admin dipisah ke [`host/create-admin.sh`](./host/create-admin.sh) — script itu **menunggu dashboard benar-benar siap** sebelum memanggil `php webman make:admin`. Container sudah berstatus `running` sejak detik pertama bootstrap compose (`composer install` bila `vendor/autoload.php` belum ada → `php cli/db.php migrate` → `import-json` → `start.php start`), sehingga `docker exec rames-webman php webman make:admin` yang dijalankan terlalu cepat gagal dengan `Failed to open stream: … vendor/autoload.php`. Script ini memprobe `GET /healthz` dari dalam container (tanda vendor siap + migrasi DB selesai + server listening) lalu membuat admin, dengan exit code jujur + potongan log container bila gagal. Jalankan manual kapan saja:
+>
+> ```bash
+> sudo ./host/create-admin.sh [username] [password]   # password kosong ⇒ di-generate acak
+> ```
+
 ### Langkah 1 — Siapkan environment (`.env`)
 
 ```bash
@@ -92,15 +98,23 @@ Periksa container **`rames-webman`** berjalan (status `Up`):
 docker compose ps
 ```
 
-> `docker compose up` membuat **named volume `rames`** (nama nyata di host: `rames`) yang di-mount ke `/var/lib/rames` → basis data SQLite dashboard + snapshot backup-nya. Sebelum server start, `command:` compose menjalankan `php cli/db.php migrate && php cli/db.php import-json` (migrasi skema + impor **sekali** `database/*.json` lama bila ada). Keduanya **fail-fast**: bila gagal, kontainer berhenti (`exit` non-zero) dan server **tidak** start. Lihat [Basis data dashboard (SQLite)](#basis-data-dashboard-sqlite).
+> `docker compose up` membuat **named volume `rames`** (nama nyata di host: `rames`) yang di-mount ke `/var/lib/rames` → basis data SQLite dashboard + snapshot backup-nya. Sebelum server start, `command:` compose menjalankan `composer install` (bila `vendor/autoload.php` belum ada) lalu `php cli/db.php migrate && php cli/db.php import-json` (migrasi skema + impor **sekali** `database/*.json` lama bila ada). Semuanya **fail-fast**: bila gagal, kontainer berhenti (`exit` non-zero) dan server **tidak** start — dan selama rantai itu berjalan container sudah berstatus `running` (jadi jangan menganggap dashboard siap sebelum `GET /healthz` balas 200). Lihat [Basis data dashboard (SQLite)](#basis-data-dashboard-sqlite).
 
 ### Langkah 3 — Buat user admin pertama (cukup sekali)
+
+Cara paling aman — script host yang menunggu bootstrap container selesai dulu:
+
+```bash
+sudo ./host/create-admin.sh          # username default 'admin', password acak
+```
+
+Ekuivalen manualnya (pastikan server sudah melayani request — `GET /healthz` balas 200 — sebelum menjalankannya; bootstrap compose `composer install` + `php cli/db.php migrate` harus sudah selesai):
 
 ```bash
 docker exec -it rames-webman php webman make:admin
 ```
 
-Perintah ini mencetak **username** (default `admin`) dan **password acak**. Simpan keduanya — dipakai untuk login. (Opsional: tentukan sendiri, mis. `docker exec -it rames-webman php webman make:admin admin passwordku`.)
+Perintah ini mencetak **username** (default `admin`) dan **password acak**. Simpan keduanya — dipakai untuk login. (Opsional: tentukan sendiri, mis. `sudo ./host/create-admin.sh admin passwordku` atau `docker exec -it rames-webman php webman make:admin admin passwordku`.)
 
 ### Langkah 4 — Buka dashboard & login
 

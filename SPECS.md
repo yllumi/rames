@@ -26,7 +26,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [x] Rollback app ke versi sukses sebelumnya (checkpoint `deploy_history`, §7.5)
 - [x] Dukungan repo private via deploy key SSH per app (§7.1)
 - [x] Delete app dengan pilihan pertahankan/purge volume + halaman `/volumes` (§7.4)
-- [x] Installer otomatis host (`host/install.sh`) — setup nginx, watcher, renewal certbot, `.env`, build dashboard
+- [x] Installer otomatis host (`host/install.sh`) — setup nginx, watcher, renewal certbot, `.env`, build dashboard, provisioning user admin (`host/create-admin.sh`, §6.3)
 - [x] Nginx reload watcher host (`host/nginx-reload-watcher.sh` + systemd unit) (§8.3)
 - [x] Renewal certbot otomatis (`host/certbot-renew.sh` + systemd timer) (§8a)
 - [x] Kepemilikan app per user + sharing ke user lain (role viewer/operator/owner) & role global admin/member (§6.1, §7.7)
@@ -196,7 +196,9 @@ Store `auth` di basis data SQLite (`config('deploy.sqlite_file')`, tabel `auth_u
 5. Logout menghapus session
 
 ### 6.3 Provisioning awal
-Karena belum ada installer resmi di Phase 1, entry pertama di store `auth` dibuat manual lewat script/console command (mis. `php webman make:admin`) yang generate username/password default dan menuliskannya — dijalankan sekali saat setup. User pertama otomatis berrole **admin**. User tambahan berikutnya dibuat lewat halaman "Manage Users" di dashboard (khusus admin). Command `php webman app:assign-owner` menugaskan app lama yang belum punya owner (§7.7).
+Entry pertama di store `auth` dibuat lewat console command `php webman make:admin [username] [password]` (password tidak diberikan ⇒ di-generate acak dan dicetak satu kali) yang dijalankan sekali saat setup. User pertama otomatis berrole **admin**. User tambahan berikutnya dibuat lewat halaman "Manage Users" di dashboard (khusus admin). Command `php webman app:assign-owner` menugaskan app lama yang belum punya owner (§7.7).
+
+**Di jalur instalasi host**, provisioning dijalankan `host/create-admin.sh` (dipakai `host/install.sh`, bisa juga dijalankan manual kapan saja: `sudo ./host/create-admin.sh [username] [password]`). Script itu **menunggu bootstrap container selesai lebih dulu**: `command:` compose menjalankan `composer install` (bila `vendor/autoload.php` belum ada) → `php cli/db.php migrate` → `php cli/db.php import-json` → `php start.php start`, sementara container sudah berstatus `running` sejak detik pertama bootstrap — sehingga `docker exec … php webman make:admin` yang dipanggil terlalu cepat gagal dengan `Failed to open stream: … vendor/autoload.php` (gejala + sebab + penangkal: `ARCHITECTURE.md` §3). Probe readiness-nya `GET /healthz` **dari dalam** container (port internal `8787`, bukan `APP_PORT` host) yang membalas JSON `"ok":true` ⇔ vendor terpasang + skema SQLite termigrasi + server listening. Gagal ⇒ exit code non-zero + keluaran `make:admin` dan potongan log container dicetak (tidak lagi ditelan diam-diam).
 
 ## 7. App Management
 
@@ -748,7 +750,7 @@ Alasan `--user <uid pemilik repo>` (bukan root): (a) `git pull` sebagai root men
 **Alur satu tombol**
 1. `POST /api/update/start` (admin) → **preflight** (gagal cepat di sini, bukan di tengah build): repo git ada & branch terdeteksi, `git` tersedia, berkas helper ada, **repo bersih**, tidak ada update berjalan, repo bisa ditulis, dan identitas container (project/service/network **non-internal**/image/dns) terbaca dari Engine.
 2. Dashboard menulis `plan.json` + status awal (`runtime/logs/update/run.json`) lalu spawn helper (detached, request langsung kembali).
-3. Helper: `git fetch` → `git checkout --force <branch>` → `git merge --ff-only origin/<branch>` → `composer install` (hanya bila `vendor/` hilang atau `composer.json`/`composer.lock` berubah) → `docker compose up -d --build --force-recreate <service>`.
+3. Helper: `git fetch` → `git checkout --force <branch>` → `git merge --ff-only origin/<branch>` → `composer install` (hanya bila `vendor/autoload.php` hilang atau `composer.json`/`composer.lock` berubah) → `docker compose up -d --build --force-recreate <service>`.
    - `--force-recreate` penting: bila perubahan hanya berupa kode PHP (image identik), compose **tidak** men-ciptakan ulang container — proses PHP lama akan terus memakai kelas yang sudah dimuat di memori, sehingga kode baru tidak benar-benar aktif.
 4. Helper menunggu `GET /healthz` versi baru sehat (default `UPDATE_HEALTH_TIMEOUT`, 180 detik).
 5. **Sukses** → status `success`. **Gagal** (build error / tidak sehat) → **rollback otomatis**: `git reset --hard <SHA lama>` → rebuild + recreate → tunggu sehat → status `rolled_back` (atau `error` bila versi lama pun tidak sehat).
@@ -1834,6 +1836,8 @@ BILLING_DUITKU_STATUS_MAX_PER_TICK=20    # maksimum order yang dicek statusnya p
 │   └── keys/                 # deploy key SSH per app (private 0600) + known_hosts
 ├── host/                     # skrip & unit systemd untuk infra host (installer/watcher/renewal)
 │   ├── install.sh
+│   ├── create-admin.sh       # provisioning user admin pertama: menunggu dashboard siap
+│   │                         #   (GET /healthz dari dalam container) lalu `php webman make:admin` (§6.3)
 │   ├── nginx-reload-watcher.sh
 │   ├── certbot-renew.sh
 │   ├── backup.sh             # jembatan timer host → cli/backup.php run (§8h)

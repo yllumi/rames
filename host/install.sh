@@ -7,6 +7,8 @@
 #   2. Konfigurasi: buat .env dari .env.example (interaktif / flag)
 #   3. Nginx: pastikan direktori sites-available/enabled + include di nginx.conf
 #   4. Dashboard: docker compose up -d --build + user admin pertama
+#      (delegasi `host/create-admin.sh` — menunggu bootstrap container selesai
+#      dulu; container sudah "running" sejak detik pertama `composer install`)
 #   5. Watcher nginx reload (systemd) — SPECS §8.3 (fitur 2)
 #   6. Renewal certbot otomatis (systemd timer) — SPECS §8a (fitur 3)
 #   7. Backup volume harian ke S3 via restic (systemd timer) — PLAN_VOLUME_BACKUP.md
@@ -42,6 +44,9 @@ OPT_EMAIL=""
 OPT_ADMIN_USER="admin"
 OPT_ADMIN_PASS=""
 OPT_SESSION_SECRET=""
+
+# Di-set bila `host/create-admin.sh` gagal — dilaporkan tegas di ringkasan akhir
+ADMIN_CREATE_FAILED=0
 
 # ---------------------------------------------------------------- colors
 if [ -t 1 ]; then
@@ -234,31 +239,51 @@ generate_env() {
 # ---------------------------------------------------------------- dashboard
 start_dashboard() {
     info "Membangun & menjalankan dashboard (docker compose up -d --build) ..."
-    ( cd "$PROJECT_DIR" && docker compose up -d --build )
+    ( cd "$PROJECT_DIR" && docker compose up -d --build ) \
+        || die "docker compose up gagal — lihat keluaran di atas."
     local i
     for i in $(seq 1 60); do
         if docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null | grep -q true; then
-            sleep 2
-            ok "Container dashboard siap ($CONTAINER_NAME)."
+            ok "Container dashboard berjalan ($CONTAINER_NAME) — bootstrap container (composer install + migrasi DB) masih berjalan."
             return 0
         fi
         sleep 2
     done
-    warn "Container $CONTAINER_NAME belum 'running' — periksa 'docker compose ps' & 'docker compose logs webman'."
+    warn "Container $CONTAINER_NAME belum 'running' setelah ~2 menit — 40 baris terakhir lognya:"
+    docker logs --tail 40 "$CONTAINER_NAME" 2>&1 | sed 's/^/      /' || true
+    warn "Periksa 'docker compose ps' & 'docker compose logs webman'."
 }
 
+# User admin pertama dibuat oleh `host/create-admin.sh` (satu sumber kebenaran):
+# script itu MENUNGGU bootstrap container selesai (GET /healthz dari dalam
+# container) sebelum `php webman make:admin` — tanpa itu make:admin balapan
+# dengan `composer install` dan gagal 'Failed opening required vendor/autoload.php'.
 create_admin() {
-    docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" >/dev/null 2>&1 \
-        || { warn "Container dashboard tidak berjalan — lewati pembuatan user admin."; return; }
-    info "Membuat user admin pertama (auth.json) ..."
-    local out
-    out="$(docker exec "$CONTAINER_NAME" php webman make:admin "$OPT_ADMIN_USER" "$OPT_ADMIN_PASS" 2>&1 || true)"
-    if printf '%s' "$out" | grep -qi 'sudah punya user'; then
-        warn "auth.json sudah punya user — admin tidak dibuat ulang (gunakan halaman Manage Users)."
-    else
-        printf '%s\n' "$out"
-        warn "Simpan kredensial di atas — password hanya tampil sekali."
+    local script="$SCRIPT_DIR/create-admin.sh"
+    if [ ! -x "$script" ]; then
+        ADMIN_CREATE_FAILED=1
+        warn "host/create-admin.sh tidak ditemukan/tidak executable — user admin pertama tidak dibuat."
+        return 0
     fi
+
+    info "Membuat user admin pertama (tunggu dashboard siap) ..."
+    local args=(--user "$OPT_ADMIN_USER")
+    if [ -n "$OPT_ADMIN_PASS" ]; then
+        args+=(--password "$OPT_ADMIN_PASS")
+    fi
+
+    local rc=0
+    "$script" "${args[@]}" || rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        ok "Langkah user admin selesai."
+        return 0
+    fi
+
+    ADMIN_CREATE_FAILED=1
+    warn "User admin pertama BELUM dibuat (exit $rc) — ulangi setelah dashboard siap:"
+    warn "  sudo $script --user $OPT_ADMIN_USER"
+    return 0
 }
 
 # ---------------------------------------------------------------- watcher user
@@ -403,11 +428,22 @@ print_summary() {
     echo "    - volume-backup.timer (backup volume ke S3, harian 02:30)"
     echo
     echo "  Langkah berikutnya:"
+    echo "    - Log in dengan kredensial admin (dicetak saat admin pertama dibuat)"
     echo "    - Buka dashboard, login, lalu Create App dari repo Git berisi docker-compose.yml"
+    echo "    - Buat/ulang user admin kapan saja: sudo ./host/create-admin.sh [username] [password]"
     echo "    - Pastikan DNS *.${domain} mengarah ke IP server ini"
     echo "    - Isi kredensial S3 di .env (RESTIC_REPOSITORY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION)"
     echo "      dan passphrase restic di database/restic/password (chmod 0600) agar backup volume berjalan"
     echo "    - Periksa service: systemctl status dashboard-nginx-watcher certbot-renew.timer volume-backup.timer"
+
+    if [ "$ADMIN_CREATE_FAILED" -ne 0 ]; then
+        echo
+        echo "${C_RED}==================================================${C_RESET}"
+        echo "${C_RED} PERHATIAN: user admin belum dibuat — tanpa itu tidak ada yang bisa login.${C_RESET}"
+        echo "${C_RED}==================================================${C_RESET}"
+        echo "  Setelah dashboard siap (bootstrap container selesai), jalankan:"
+        echo "    sudo $SCRIPT_DIR/create-admin.sh --user $OPT_ADMIN_USER"
+    fi
 }
 
 # ---------------------------------------------------------------- main

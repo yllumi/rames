@@ -91,12 +91,16 @@ services:
     dns:
       - "${DNS_1:-8.8.8.8}"
       - "${DNS_2:-1.1.1.1}"
-    # Composer otomatis bila vendor/ belum ada (bind ${PWD} → hasilnya tersimpan
-    # di host), lalu migrasi skema SQLite proyeksi agent, baru start.
+    # Composer otomatis bila dependensi belum lengkap (penanda berkas
+    # `vendor/autoload.php` — bukan direktori `vendor/`, agar instalasi yang
+    # terputus tidak membuat `composer install` terlewat dan bootstrap gagal
+    # `Failed opening required '…/vendor/autoload.php'`; sama dengan
+    # docker-compose.yml). Bind ${PWD} → hasilnya tersimpan di host),
+    # lalu migrasi skema SQLite proyeksi agent, baru start.
     # SENGAJA TANPA `cli/db.php import-json`: impor data lama milik DASHBOARD
     # (auth_users/apps) ke DB agent akan melanggar §4.3 (kredensial user tidak
     # pernah ada di server agent).
-    command: ["sh", "-c", "if [ ! -d vendor ]; then composer install --no-dev --optimize-autoloader; fi && php cli/db.php migrate && php start.php start"]
+    command: ["sh", "-c", "if [ ! -f vendor/autoload.php ]; then composer install --no-dev --optimize-autoloader; fi && php cli/db.php migrate && php start.php start"]
 
 # Named volume SQLite proyeksi agent. `name: rames-agent-data` → nama nyata di
 # host = `rames-agent-data` (stabil lintas `docker compose down`).

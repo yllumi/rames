@@ -118,6 +118,8 @@ flowchart TD
 - `/etc/letsencrypt` host di-mount → certbot (container) menulis sertifikat; nginx host membaca dari path yang sama.
 - Named volume **`rames`** di-mount ke `/var/lib/rames` (di luar bind `${PWD}:${PWD}`) → menyimpan basis data SQLite `rames.sqlite` + snapshot backup-nya (§5.19); tidak hilang saat `git clean`/update dashboard. Berlabel `rames.role=dashboard-db` agar dikecualikan dari fitur backup volume app (§5.15).
 - Container memakai `dns:` eksplisit (`DNS_1`/`DNS_2`) karena `/etc/resolv.conf` host pada environment ini bermasalah (symlink rusak) sehingga resolver internal Docker tak punya upstream.
+- **Urutan bootstrap container (penting untuk provisioning).** `command:` compose menjalankan `composer install` (bila `vendor/autoload.php` belum ada — penanda berkas, bukan direktori `vendor/`, agar instalasi yang terputus tidak membuat bootstrap terlewat) → `php cli/db.php migrate` → `php cli/db.php import-json` → `php start.php start`, sedangkan container sudah berstatus `running` sejak detik pertama rantai itu. Karena itu "container running" **bukan** tanda dashboard siap. Satu-satunya jalur provisioning user admin adalah `host/create-admin.sh` (dipakai `host/install.sh`, bisa manual): ia memprobe `GET /healthz` dari **dalam** container (port internal `8787`, bukan `APP_PORT` host) sampai JSON `"ok":true` — tanda vendor terpasang + skema SQLite termigrasi + server listening — baru memanggil `php webman make:admin` (SPECS §6.3).
+> **GOTCHA — "container `running`" ≠ "dashboard siap".** **Gejala**: `sudo ./host/install.sh` mencetak `PHP Warning: require_once(/…/vendor/autoload.php): Failed to open stream` + `PHP Fatal error: Failed opening required '…/vendor/autoload.php'` tepat setelah baris "Membuat user admin pertama", lalu dashboard tidak bisa dilogin; `docker exec rames-webman php webman make:admin` manual pun gagal sama. **Sebab**: `State.Running=true` sudah terpenuhi sejak detik pertama bootstrap `command:` compose, sedangkan `composer install` + `cli/db.php migrate` masih berjalan — `make:admin` menabrak `vendor/autoload.php`/skema DB yang belum siap. **Penangkal**: ukur kesiapan dari `GET /healthz` **dari dalam** container (`"ok":true`), bukan dari `.State.Running` — pola `host/create-admin.sh`; jalur manual wajib menunggu `docker compose logs webman` menunjukkan server listening.
 - **Mode runtime `agent` (`RAMES_MODE=agent`)** — server #2..N memakai kode & image yang sama dengan mode dashboard, tetapi:
   - `config/route.php` hanya mendaftarkan route mesin (`GET /healthz`, `GET /version`, `POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/log`, `GET /apps/{id}`, `GET /apps/{id}/nginx`, `POST /nginx/check`) dan **hanya bila `AGENT_TOKEN` terisi** (fail-closed: tanpa token tidak ada route sama sekali → semua 404);
   - `config/middleware.php` memasang **`AgentAuthMiddleware` saja** (bukan CSRF/Auth sesi) — middleware bersifat global, jadi mode harus digerbangi di sini juga, bukan hanya di `route.php`;
@@ -523,6 +525,7 @@ Lalu: hapus config Nginx (+ symlink) → hapus direktori `apps/{name}` → hapus
 
 ### 5.5 Autentikasi
 
+0. **Provisioning user pertama** (host, sekali): `host/create-admin.sh` menunggu `GET /healthz` dari dalam container balas `"ok":true` (bootstrap compose selesai) lalu `php webman make:admin [username] [password]` — lihat GOTCHA §3 ("container `running`" ≠ siap) & SPECS §6.3.
 1. `/login` → `UserStore::verify` (`password_verify`, bcrypt).
 2. Sukses → regenerasi session id → set `user` di session.
 3. Semua route (kecuali `/login`) dilindungi `AuthMiddleware`.
@@ -693,7 +696,7 @@ flowchart TD
     C -- lolos --> D[Tap tulis plan.json + run.json<br/>runtime/logs/update]
     D --> E[spawn helper: docker run -d<br/>uid pemilik repo + --group-add gid socket<br/>--network: &lt;project&gt;_default (non-internal)<br/>--dns dari inspect dashboard]
     E --> F[cli/self-update.sh:<br/>git fetch + merge --ff-only origin/branch]
-    F --> G[composer install bila vendor/ atau composer.* berubah]
+    F --> G[composer install bila vendor/autoload.php hilang atau composer.* berubah]
     G --> H[docker compose up -d --build --force-recreate]
     H --> I{GET /healthz sehat?}
     I -- ya --> J[run.json: success]

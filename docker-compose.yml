@@ -107,14 +107,19 @@ services:
     dns:
       - "${DNS_1:-8.8.8.8}"
       - "${DNS_2:-1.1.1.1}"
-    # Instal dependensi Composer otomatis jika vendor/ belum ada (mis. clone baru
-    # di host tanpa vendor). Karena bind mount ${PWD}:${PWD}, hasil install langsung
+    # Instal dependensi Composer otomatis jika vendor/ belum lengkap (mis. clone
+    # baru di host tanpa vendor). Penandanya `vendor/autoload.php`, BUKAN direktori
+    # `vendor/`: instalasi yang terputus meninggalkan direktori `vendor/` tanpa
+    # `autoload.php`, dan gerbang berbasis direktori akan MELEWATI composer install
+    # sehingga bootstrap gagal `Failed opening required '…/vendor/autoload.php'`
+    # (gejala sama saat `php webman make:admin` dijalankan terlalu cepat — GOTCHA
+    # ARCHITECTURE §3). Karena bind mount ${PWD}:${PWD}, hasil install langsung
     # tersimpan di direktori host dan reusable untuk restart berikutnya.
     # Lalu migrasi skema SQLite + impor sekali data lama (database/*.json) sebelum
     # server start. Tanpa `|| true`: bila salah satu langkah gagal, && menghentikan
     # rantai dan kontainer exit non-zero (fail-fast) — server TIDAK pernah start
     # dengan skema/DB yang belum siap.
-    command: ["sh", "-c", "if [ ! -d vendor ]; then composer install --no-dev --optimize-autoloader; fi && php cli/db.php migrate && php cli/db.php import-json && php start.php start"]
+    command: ["sh", "-c", "if [ ! -f vendor/autoload.php ]; then composer install --no-dev --optimize-autoloader; fi && php cli/db.php migrate && php cli/db.php import-json && php start.php start"]
 
 # Named volume database dashboard (SQLite + snapshot backup).
 # `name: rames` → nama nyata di host = `rames` (bukan rames_rames-data), sehingga
