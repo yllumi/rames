@@ -20,6 +20,7 @@ use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteDatabase;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Psr7\Response;
+use PHPUnit\Framework\AssertionFailedError;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
@@ -207,6 +208,18 @@ class AppControllerServerScopeTest extends TestCase
                 function flash_pull(): ?array
                 {
                     return null;
+                }
+            }
+            if (!function_exists('csrf_token')) {
+                function csrf_token(): string
+                {
+                    return 'uji-csrf-token';
+                }
+            }
+            if (!function_exists('csrf_field')) {
+                function csrf_field(): string
+                {
+                    return '<input type="hidden" name="_token" value="uji-csrf-token">';
                 }
             }
             if (!function_exists('session')) {
@@ -1287,6 +1300,377 @@ class AppControllerServerScopeTest extends TestCase
         ];
     }
 
+    // ==================================================================
+    // (5) Re-render kegagalan wizard — pilihan server tidak boleh hilang
+    // ==================================================================
+
+    /**
+     * Verifier #3 (verifikasi fungsional, bukan sekadar sumber): jalur
+     * re-render kegagalan wajib memakai id server yang **diminta** request,
+     * bukan `$serverId` yang masih bernilai default lokal saat
+     * `resolveCreateServer()` gagal.
+     *
+     * View benar-benar dirender lewat helper `view()` Webman (template repo),
+     * lalu HTML hasilnya diperiksa: `<option value="<agent>" selected>`.
+     * Fixture 100% temp (sqlite/apps/keys/template) + git tiruan.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testFailureRerenderKeepsRequestedServerInAllThreeModes(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->useViewConfig();
+        $this->agent(self::AGENT_ID, ['status' => 'offline']);
+        $this->tempTemplate('demo');
+        // Cabang re-render mode git hanya hidup saat deploy key sudah ada.
+        $this->writeDeployKey('app-git-ssh');
+        // Git tiruan: jangan sampai jalur ini menyentuh `git`/jaringan nyata bila
+        // urutan kegagalan berubah (fail-fast resolve tetap terjadi lebih dulu).
+        $git = new AppControllerServerFakeGit();
+
+        $html = $this->renderBody((new AppController())->createPreview($this->postForm('/apps/create', [
+            'name' => 'app-git-ssh',
+            'repo_url' => 'git@example.test:user/app.git',
+            'branch' => 'main',
+            'auth_method' => 'ssh',
+            'server_id' => self::AGENT_ID,
+        ]), $git));
+        $this->assertFailureRerenderKeepsAgent($html, 'createPreview (git, cabang SSH)');
+
+        $html = $this->renderBody((new AppController())->composePreview($this->postForm('/apps/create/compose', [
+            'name' => 'app-compose',
+            'compose' => "services:\n  web:\n    image: nginx:alpine\n",
+            'server_id' => self::AGENT_ID,
+        ])));
+        $this->assertFailureRerenderKeepsAgent($html, 'composePreview');
+
+        $html = $this->renderBody((new AppController())->templateDeploy(
+            $this->postForm('/apps/create/template/demo', ['name' => 'app-tpl', 'server_id' => self::AGENT_ID]),
+            'demo'
+        ));
+        $this->assertFailureRerenderKeepsAgent($html, 'templateDeploy (fase 1)');
+
+        // Server **nonaktif** (`enabled=false`): id yang diminta juga tetap
+        // dipertahankan — opsi dirender `selected disabled` + penanda `(nonaktif)`
+        // — bukan diam-diam kembali ke server lokal. POST-nya tetap ditolak
+        // `resolveCreateServer()` (fail-fast), jadi target deploy tidak berubah.
+        $this->agent('srv-mati', ['enabled' => false, 'status' => 'offline']);
+        $html = $this->renderBody((new AppController())->composePreview($this->postForm('/apps/create/compose', [
+            'name' => 'app-compose-mati',
+            'compose' => "services:\n  web:\n    image: nginx:alpine\n",
+            'server_id' => 'srv-mati',
+        ])));
+        self::assertMatchesRegularExpression(
+            '/<option value="srv-mati" selected disabled>.*\(nonaktif\)/',
+            $html,
+            'server nonaktif: id yang diminta tetap dipertahankan (ditandai nonaktif)'
+        );
+        self::assertStringNotContainsString('<option value="' . ServerStore::LOCAL_ID . '" selected>', $html);
+        // `composePreview()` merender pesan kegagalan di form (`compose_error`),
+        // bukan lewat flash — yang dibuktikan: pesannya menyebut server dinonaktifkan.
+        self::assertStringContainsString('dinonaktifkan', $html, 'server nonaktif: pesan kegagalan menyebut server dinonaktifkan');
+    }
+
+    /**
+     * Cabang non-SSH `createPreview()` (jalur `redirect()`): `Location` hanya
+     * boleh membawa `?server_id=<id>` bila id non-kosong, bukan `local`, **dan**
+     * user berhak memilih server. URL tanpa parameter tetap berarti lokal.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testFailureRedirectCarriesServerIdOnlyForEntitledRequest(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID, ['enabled' => false, 'status' => 'offline']);
+        $git = new AppControllerServerFakeGit();
+
+        $base = [
+            'name' => 'app-redirect',
+            'repo_url' => 'https://example.test/app.git',
+            'branch' => 'main',
+            'auth_method' => 'none',
+        ];
+
+        // admin + server tidak siap ⇒ pilihan tidak boleh hilang dari URL.
+        self::assertSame(
+            '/apps/create?server_id=' . self::AGENT_ID,
+            $this->failureLocation($base + ['server_id' => self::AGENT_ID], $git)
+        );
+
+        // admin + id tak dikenal ⇒ parameter dibawa apa adanya; `serverFormContext()`
+        // menormalkannya kembali ke lokal (tidak ada identitas server yang bocor).
+        self::assertSame(
+            '/apps/create?server_id=ghost-server',
+            $this->failureLocation($base + ['server_id' => 'ghost-server'], $git)
+        );
+
+        // Nilai id di-`rawurlencode` sebelum ditempel ke query.
+        self::assertSame(
+            '/apps/create?server_id=srv%20%22x',
+            $this->failureLocation($base + ['server_id' => 'srv "x'], $git)
+        );
+
+        // non-admin + id agent ⇒ tanpa parameter (keberadaan server lain tidak bocor).
+        $GLOBALS['RAMES_TEST_USER'] = self::MEMBER;
+        self::assertSame(
+            '/apps/create',
+            $this->failureLocation($base + ['server_id' => self::AGENT_ID], $git),
+            'non-admin tidak boleh mendapat parameter server'
+        );
+        $GLOBALS['RAMES_TEST_USER'] = self::ADMIN;
+
+        // id kosong / `local` / `LOCAL` ⇒ URL bersih (gagal validasi nama lebih dulu).
+        foreach (['', 'local', 'LOCAL'] as $localId) {
+            $fields = $base;
+            $fields['name'] = 'app_bad'; // nama tidak valid (underscore) → jalur redirect
+            if ($localId !== '') {
+                $fields['server_id'] = $localId;
+            }
+            self::assertSame(
+                '/apps/create',
+                $this->failureLocation($fields, $git),
+                'id lokal/kosong ⇒ tanpa parameter (id=' . $localId . ')'
+            );
+        }
+    }
+
+    /**
+     * Uji mutasi assert backend di atas: (a) pilihan server dikembalikan ke
+     * default lokal pada ketiga jalur re-render, (b) parameter `Location`
+     * dibuang ⇒ assert wajib **gagal** (mutan tertangkap).
+     *
+     * Mutan = salinan berkas controller di temp dengan namespace berbeda; berkas
+     * repo tidak pernah disentuh.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testFailureRerenderAndRedirectMutantsAreCaught(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->useViewConfig();
+        $this->agent(self::AGENT_ID, ['enabled' => false, 'status' => 'offline']);
+        $this->tempTemplate('demo');
+        $this->writeDeployKey('app-git-ssh');
+
+        $source = (string) file_get_contents(dirname(__DIR__) . '/app/controller/AppController.php');
+        $git = new AppControllerServerFakeGit();
+        $report = [];
+
+        // M1: createPreview (cabang SSH) kembali memakai default server lokal.
+        $report[] = $this->mutantCaught(
+            'M1-createpreview-selected-server',
+            $source,
+            "                ] + \$this->serverFormContext(current_user(), \$this->requestedServerId(\$request)));\n            }\n            if (\$generatedKey) {",
+            "                ] + \$this->serverFormContext(current_user()));\n            }\n            if (\$generatedKey) {",
+            function (object $controller): void {
+                $html = $this->renderBody($controller->createPreview($this->postForm('/apps/create', [
+                    'name' => 'app-git-ssh',
+                    'repo_url' => 'git@example.test:user/app.git',
+                    'branch' => 'main',
+                    'auth_method' => 'ssh',
+                    'server_id' => self::AGENT_ID,
+                ])));
+                self::assertStringContainsString('<option value="' . self::AGENT_ID . '" selected>', $html, 'server yang diminta tetap terpilih');
+            }
+        );
+
+        // M2: composePreview kembali memakai default server lokal.
+        $report[] = $this->mutantCaught(
+            'M2-composepreview-selected-server',
+            $source,
+            "            ] + \$this->serverFormContext(current_user(), \$this->requestedServerId(\$request)));\n        }\n    }\n\n    // ==================================================================\n    // Wizard create — mode Template",
+            "            ] + \$this->serverFormContext(current_user()));\n        }\n    }\n\n    // ==================================================================\n    // Wizard create — mode Template",
+            function (object $controller): void {
+                $html = $this->renderBody($controller->composePreview($this->postForm('/apps/create/compose', [
+                    'name' => 'app-compose',
+                    'compose' => "services:\n  web:\n    image: nginx:alpine\n",
+                    'server_id' => self::AGENT_ID,
+                ])));
+                self::assertStringContainsString('<option value="' . self::AGENT_ID . '" selected>', $html, 'server yang diminta tetap terpilih');
+            }
+        );
+
+        // M3: templateDeploy fase-1 kembali memakai default server lokal.
+        $report[] = $this->mutantCaught(
+            'M3-templatedeploy-selected-server',
+            $source,
+            "            return view('app/template', \$this->serverFormContext(\n                current_user(),\n                \$this->requestedServerId(\$request)\n            ) + [",
+            "            return view('app/template', \$this->serverFormContext(\n                current_user()\n            ) + [",
+            function (object $controller): void {
+                $html = $this->renderBody($controller->templateDeploy(
+                    $this->postForm('/apps/create/template/demo', ['name' => 'app-tpl', 'server_id' => self::AGENT_ID]),
+                    'demo'
+                ));
+                self::assertStringContainsString('<option value="' . self::AGENT_ID . '" selected>', $html, 'server yang diminta tetap terpilih');
+            }
+        );
+
+        // M4: parameter `server_id` di Location dibuang.
+        $report[] = $this->mutantCaught(
+            'M4-location-server-query',
+            $source,
+            "            \$serverQuery = \$mayPickServer ? '?server_id=' . rawurlencode(\$requestedServerId) : '';",
+            "            \$serverQuery = '';",
+            function (object $controller) use ($git): void {
+                $response = $controller->createPreview($this->postForm('/apps/create', [
+                    'name' => 'app-redirect',
+                    'repo_url' => 'https://example.test/app.git',
+                    'branch' => 'main',
+                    'auth_method' => 'none',
+                    'server_id' => self::AGENT_ID,
+                ]), $git);
+                self::assertSame('/apps/create?server_id=' . self::AGENT_ID, $response->getHeader('Location'));
+            }
+        );
+
+        echo "\n";
+        foreach ($report as $line) {
+            echo '  ' . $line . "\n";
+        }
+        self::assertCount(4, $report);
+    }
+
+    // ------------------------------------------------------------------
+    // Helper blok (5)
+    // ------------------------------------------------------------------
+
+    /** Bukti view hasil re-render kegagalan mempertahankan server yang diminta. */
+    private function assertFailureRerenderKeepsAgent(string $html, string $label, string $expectedError = 'berstatus offline'): void
+    {
+        self::assertNotSame('', $html, $label . ': view wajib dirender ulang');
+        self::assertStringContainsString('Server tujuan', $html, $label . ': blok pemilih server dirender');
+        // `selected` boleh diikuti atribut lain (`disabled` untuk server nonaktif);
+        // yang dibuktikan: payload re-render tetap membawa id yang diminta.
+        self::assertMatchesRegularExpression(
+            '/<option value="' . preg_quote(self::AGENT_ID, '/') . '" selected/',
+            $html,
+            $label . ': server yang diminta request harus tetap terpilih'
+        );
+        self::assertStringNotContainsString(
+            '<option value="' . ServerStore::LOCAL_ID . '" selected>',
+            $html,
+            $label . ': pilihan tidak boleh jatuh kembali ke server lokal'
+        );
+        self::assertStringNotContainsString('badge-running', $html, $label . ': server offline tidak boleh berbadge online');
+        self::assertStringContainsString('badge-error', $html, $label . ': status offline memakai badge error');
+
+        $flash = (array) ($GLOBALS['RAMES_FLASH'] ?? []);
+        $surfaced = $flash !== []
+            ? (string) ($flash[array_key_last($flash)]['message'] ?? '')
+            // `composePreview()`/`templateDeploy()` fase-1 & cabang SSH mode git
+            // merender pesan kegagalan di form (`compose_error`/`form_error`/
+            // `preview_error`), bukan lewat flash.
+            : $html;
+        self::assertStringContainsString(
+            $expectedError,
+            $surfaced,
+            $label . ': pesan kegagalan kesiapan server wajib tampil (flash atau form)'
+        );
+    }
+
+    /**
+     * POST wizard create yang **gagal** → header `Location` saja (kontrak:
+     * `302` + flash error + tanpa rahasia server di URL).
+     *
+     * @param array<string,mixed> $fields
+     */
+    private function failureLocation(array $fields, GitService $git): string
+    {
+        $response = (new AppController())->createPreview($this->postForm('/apps/create', $fields), $git);
+
+        self::assertSame(302, $response->getStatusCode(), 'kegagalan wizard git wajib redirect ke form create');
+
+        $flash = (array) ($GLOBALS['RAMES_FLASH'] ?? []);
+        self::assertNotSame([], $flash, 'kegagalan wajib menyetor flash error');
+
+        $location = (string) $response->getHeader('Location');
+        self::assertStringNotContainsString(self::AGENT_TOKEN, $location, 'token agent tidak boleh masuk URL');
+
+        return $location;
+    }
+
+    /** Body respons `view()`/`redirect()` Webman sebagai HTML. */
+    private function renderBody(object $response): string
+    {
+        self::assertTrue(method_exists($response, 'rawBody'), 'respons Webman wajib punya rawBody()');
+
+        return (string) $response->rawBody();
+    }
+
+    /**
+     * Muat salinan controller bermutasi (namespace unik, di temp) lalu buktikan
+     * assert yang sama **gagal** untuk mutan tersebut.
+     */
+    private function mutantCaught(string $name, string $source, string $from, string $to, callable $assert): string
+    {
+        self::assertStringContainsString($from, $source, 'anchor mutasi tidak ditemukan: ' . $name);
+
+        $namespace = 'RamesMutant' . str_replace('-', '', ucwords($name, '-'));
+        $class = $namespace . '\\AppController';
+        file_put_contents(
+            $this->tmp . '/' . $namespace . '.php',
+            str_replace('namespace app\controller;', 'namespace ' . $namespace . ';', str_replace($from, $to, $source))
+        );
+        require $this->tmp . '/' . $namespace . '.php';
+
+        $caught = 'TIDAK tertangkap';
+        try {
+            $assert(new $class());
+        } catch (AssertionFailedError $failure) {
+            $caught = 'tertangkap (' . $this->shorten($failure->getMessage()) . ')';
+        }
+
+        self::assertStringStartsWith('tertangkap', $caught, 'mutan lolos: ' . $name);
+
+        return $name . ' ⇒ ' . $caught;
+    }
+
+    private function shorten(string $text): string
+    {
+        $text = trim((string) preg_replace('/\s+/', ' ', $text));
+
+        return strlen($text) > 100 ? substr($text, 0, 97) . '...' : $text;
+    }
+
+    /** Konfigurasi `view` temp (`Raw` handler) supaya `view()` benar-benar merender. */
+    private function useViewConfig(): void
+    {
+        file_put_contents($this->tmp . '/config/view.php', '<?php return ' . var_export([
+            'handler' => \support\view\Raw::class,
+            'options' => ['view_suffix' => 'php'],
+        ], true) . ';' . PHP_EOL);
+        Config::load($this->tmp . '/config');
+    }
+
+    /**
+     * Deploy key tiruan untuk app (tanpa `ssh-keygen`): cukup berkas privat +
+     * publik, supaya `createPreview()` masuk cabang re-render SSH.
+     */
+    private function writeDeployKey(string $name): void
+    {
+        $dir = $this->tmp . '/keys';
+        if (!is_dir($dir)) {
+            mkdir($dir, 0700, true);
+        }
+        file_put_contents($dir . '/' . $name, "-----BEGIN OPENSSH PRIVATE KEY-----\nuji\n");
+        file_put_contents($dir . '/' . $name . '.pub', 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHUJI uji');
+    }
+
+    /** Template temp minimal (valid) untuk jalur `templateDeploy()`. */
+    private function tempTemplate(string $slug): void
+    {
+        $dir = $this->tmp . '/templates/' . $slug;
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+        file_put_contents($dir . '/template.yml', "title: Template Uji\ndescription: fixture uji\n");
+        file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"80\"\n");
+
+        $template = (new \app\library\Template\TemplateCatalog())->find($slug);
+        self::assertNotNull($template, 'fixture template wajib terbaca');
+        self::assertTrue($template['valid'], 'fixture template wajib valid: ' . (string) ($template['error'] ?? ''));
+    }
+
     /** Request form-urlencoded (jalur wizard create) — dengan sesi uji. */
     private function postForm(string $uri, array $fields): Request
     {
@@ -1437,6 +1821,9 @@ class AppControllerServerScopeTest extends TestCase
             'app_domain' => 'example.test',
             'port_range' => ['start' => 30000, 'end' => 30999],
             'templates_path' => $this->tmp . '/templates',
+            // Deploy key SSH juga di temp: jalur create mode git ber-`auth_method=ssh`
+            // tidak boleh menyentuh `database/keys/` runtime nyata.
+            'ssh_keys_path' => $this->tmp . '/keys',
             // Uji tidak boleh menyentuh daemon Docker nyata host ini.
             'docker_socket' => $this->tmp . '/tidak-ada.sock',
         ], true) . ';' . PHP_EOL);

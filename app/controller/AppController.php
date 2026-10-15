@@ -848,13 +848,28 @@ class AppController
                     'form_name' => $name,
                     'form_repo_url' => $repoUrl,
                     'form_branch' => $branch,
-                ] + $this->serverFormContext(current_user(), $serverId));
+                // Server terpilih di form = id yang **diminta** request: `$serverId`
+                // masih bernilai default server lokal bila `resolveCreateServer()`
+                // gagal, sehingga pilihan user akan ter-reset. `serverFormContext()`
+                // menormalkan id tak dikenal/tak boleh dipakai kembali ke lokal.
+                ] + $this->serverFormContext(current_user(), $this->requestedServerId($request)));
             }
             if ($generatedKey) {
                 $keyManager->remove($name);
             }
             flash_set('error', $e->getMessage());
-            return redirect('/apps/create');
+
+            // Pilihan server yang gagal tidak boleh ikut hilang: form create (mode
+            // git) membacanya dari query `server_id`. Syarat & pola query sama
+            // dengan tautan nav view (berhak memilih, id non-kosong, bukan `local`)
+            // sehingga URL tanpa parameter tetap berarti server lokal.
+            $requestedServerId = $this->requestedServerId($request);
+            $mayPickServer = ServerAccess::canSelectServer(current_user())
+                && $requestedServerId !== ''
+                && strtolower($requestedServerId) !== ServerStore::LOCAL_ID;
+            $serverQuery = $mayPickServer ? '?server_id=' . rawurlencode($requestedServerId) : '';
+
+            return redirect('/apps/create' . $serverQuery);
         } finally {
             // Clone analisis app di server agent bersifat sekali pakai: jangan
             // meninggalkan checkout repo di host control plane (berhasil maupun
@@ -956,7 +971,9 @@ class AppController
                 'compose_error' => $e->getMessage(),
                 'form_name' => $name,
                 'form_compose' => $composeContent,
-            ] + $this->serverFormContext(current_user(), $serverId));
+            // Server terpilih = id yang diminta request, bukan `$serverId` yang masih
+            // default lokal saat `resolveCreateServer()` gagal (pilihan user ter-reset).
+            ] + $this->serverFormContext(current_user(), $this->requestedServerId($request)));
         }
     }
 
@@ -1081,6 +1098,8 @@ class AppController
             // Kartu "Batas Sumber Daya" wajib ikut dirender ulang — kontrak sama
             // dengan templateForm(). View mem-prefill kolom dari `repo`, jadi
             // nilai yang dikirim user ditempatkan di sana juga agar tidak hilang.
+            // Server terpilih juga dipulihkan dari request (bukan `$serverId` yang
+            // masih default lokal saat resolve gagal).
             $postedLimits = $this->prefillLimits((array) $request->post('limits', []));
             $limitsContext = $this->limitsContext(
                 (string) $template['dir'],
@@ -1093,7 +1112,10 @@ class AppController
                 $limitsContext['repo'][$service] = $limit;
             }
 
-            return view('app/template', $this->serverFormContext(current_user(), $serverId) + [
+            return view('app/template', $this->serverFormContext(
+                current_user(),
+                $this->requestedServerId($request)
+            ) + [
                 'template' => $template,
                 'form_name' => $name,
                 'form_env' => $envInput,
@@ -1191,7 +1213,7 @@ class AppController
             }
             flash_set('error', $e->getMessage());
 
-            return view('app/template', $this->serverFormContext(current_user(), $serverId) + [
+            return view('app/template', $this->serverFormContext(current_user(), $this->requestedServerId($request)) + [
                 'template' => $template,
                 'form_name' => $name,
                 'form_env' => $envInput,
@@ -1382,6 +1404,11 @@ class AppController
         try {
             $server = $this->resolveCreateServer($postedServerId, current_user());
         } catch (\Throwable $e) {
+            // Sengaja render ulang dari `pending_app` (id langkah analisis), bukan
+            // id kiriman: langkah konfirmasi tidak punya pemilih server di UI
+            // (hanya hidden input), jadi jalan ini hanya bisa dicapai dengan
+            // memanipulasi POST — fail-fast + target deploy tetap pilihan yang
+            // sudah divalidasi lebih aman daripada diam-diam memakai id kiriman.
             flash_set('error', $e->getMessage());
             return redirect('/apps/create/confirm');
         }

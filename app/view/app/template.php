@@ -9,9 +9,123 @@ $formError = $form_error ?? null;
 // di bawah; nilai dari server (bila ada) tidak pernah ditimpa.
 $formSubdomain = $form_subdomain ?? '';
 
+// Pemilih server tujuan (multi-server: SPECS.md §2a, ARCHITECTURE.md §5.22).
+// Payload dari `AppController::serverFormContext()`: `servers`,
+// `selectedServerId`, `canSelectServer`. View hanya merender — server tetap
+// sumber kebenaran (`resolveCreateServer()` memvalidasi ulang `server_id`).
+// Nilai teks aman dari payload: hanya scalar yang dipakai (array/objek
+// diabaikan) supaya view tidak pernah warning karena data registry rusak.
+$wizardText = static fn (mixed $value): string => is_scalar($value) ? trim((string) $value) : '';
+
+$wizardServers = is_array($servers ?? null) ? array_values(array_filter($servers, 'is_array')) : [];
+$wizardSelectedServerId = $wizardText($selectedServerId ?? '');
+if ($wizardSelectedServerId === '') {
+    $wizardSelectedServerId = \app\library\Storage\ServerStore::LOCAL_ID;
+}
+$wizardCanSelectServer = (bool) ($canSelectServer ?? false);
+// Selektor hanya untuk admin dengan >1 pilihan: controller memang hanya
+// mengirim server lokal ke non-admin, jadi nama server lain tidak pernah
+// dirender (bukan sekadar tombol yang disembunyikan). View tetap menjaga diri
+// sendiri: bila `$wizardCanSelectServer` false, catatan read-only memakai
+// proyeksi server lokal (lihat `$wizardLocalServerProjection` di bawah).
+$wizardShowServerSelect = $wizardCanSelectServer && count($wizardServers) > 1;
+
+// Navigasi wizard mempertahankan pilihan server (SPECS.md §2a). Parameter
+// `server_id` hanya ditambahkan bila server terpilih BUKAN server lokal **dan**
+// user memang boleh memilih server (`$wizardCanSelectServer`) — supaya URL
+// default/non-admin tetap bersih (absen = server lokal) dan payload di luar
+// kontrak tidak membocorkan id server agent lewat `href`.
+$wizardNavServerParam = ($wizardCanSelectServer
+    && $wizardSelectedServerId !== ''
+    && strtolower($wizardSelectedServerId) !== \app\library\Storage\ServerStore::LOCAL_ID)
+    ? 'server_id=' . rawurlencode($wizardSelectedServerId)
+    : '';
+// Menempelkan parameter tanpa merusak query yang sudah ada (`?mode=…`); hasil
+// tetap di-`e()` di atribut href, jadi `&` di sini menjadi `&amp;`.
+$wizardNavUrl = static function (string $path) use ($wizardNavServerParam): string {
+    if ($wizardNavServerParam === '') {
+        return $path;
+    }
+
+    return $path . (str_contains($path, '?') ? '&' : '?') . $wizardNavServerParam;
+};
+
+// Proyeksi render tiap server: label opsi (teks polos — `<option>` tidak bisa
+// memuat badge), kelas badge baku repo, dan catatan kesiapan.
+$wizardServerOptions = [];
+$wizardSelectedServer = null;
+foreach ($wizardServers as $wizardServer) {
+    $wizardId = $wizardText($wizardServer['id'] ?? '');
+    if ($wizardId === '') {
+        continue;
+    }
+    $wizardIsLocal = strtolower($wizardText($wizardServer['kind'] ?? '')) === 'local';
+    $wizardServerName = $wizardText($wizardServer['name'] ?? '');
+    $wizardServerName = $wizardServerName !== '' ? $wizardServerName : $wizardId;
+    $wizardServerDomain = $wizardText($wizardServer['domain'] ?? '');
+    $wizardServerEnabled = !empty($wizardServer['enabled']);
+    $wizardServerStatus = strtolower($wizardText($wizardServer['status'] ?? ''));
+    $wizardServerStatus = $wizardServerStatus !== '' ? $wizardServerStatus : 'unknown';
+
+    $wizardOptionLabel = $wizardServerName . ' — ' . ($wizardIsLocal ? 'lokal' : 'agent');
+    if ($wizardServerDomain !== '') {
+        $wizardOptionLabel .= ' · ' . $wizardServerDomain;
+    }
+    if (!$wizardServerEnabled) {
+        $wizardOptionLabel .= ' (nonaktif)';
+    }
+
+    $wizardOption = [
+        'id' => $wizardId,
+        'label' => $wizardOptionLabel,
+        'name' => $wizardServerName,
+        'domain' => $wizardServerDomain,
+        'local' => $wizardIsLocal,
+        'enabled' => $wizardServerEnabled,
+        'status' => $wizardServerStatus,
+        'badge' => $wizardServerStatus === 'online'
+            ? 'badge-running'
+            : ($wizardServerStatus === 'offline' ? 'badge-error' : 'badge-unknown'),
+        // Catatan kesiapan hanya untuk agent: server lokal tidak punya status
+        // koneksi (selalu dipakai dari dashboard ini).
+        'note' => !$wizardIsLocal && (!$wizardServerEnabled || $wizardServerStatus !== 'online'),
+    ];
+    $wizardServerOptions[] = $wizardOption;
+    if ($wizardId === $wizardSelectedServerId) {
+        $wizardSelectedServer = $wizardOption;
+    }
+}
+// Proyeksi server lokal (turunan murni, tanpa logika bisnis): nilai aman untuk
+// catatan read-only saat identitas server terpilih tidak boleh/tidak bisa
+// ditampilkan.
+$wizardLocalServerProjection = [
+    'id' => \app\library\Storage\ServerStore::LOCAL_ID,
+    'label' => 'lokal',
+    'name' => 'lokal',
+    'domain' => '',
+    'local' => true,
+    'enabled' => true,
+    'status' => 'unknown',
+    'badge' => 'badge-unknown',
+    'note' => false,
+];
+if ($wizardSelectedServer === null) {
+    // `$servers` kosong/absen (varian render lama): tetap aman — catatan
+    // read-only tanpa nama server asing, dan tanpa selektor.
+    $wizardSelectedServer = $wizardLocalServerProjection;
+}
+if (!$wizardCanSelectServer && !$wizardSelectedServer['local']) {
+    // Payload di luar kontrak (`canSelectServer=false` + `selectedServerId`
+    // menunjuk server agent): selektor tidak dirender, jadi catatan read-only
+    // juga tidak boleh memuat nama/domain server non-lokal. Pertahanan berlapis
+    // di sisi view — server tetap memvalidasi ulang `server_id` saat POST
+    // (`resolveCreateServer()`).
+    $wizardSelectedServer = $wizardLocalServerProjection;
+}
+
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
-    ['label' => 'Template', 'href' => '/apps/create?mode=template'],
+    ['label' => 'Template', 'href' => $wizardNavUrl('/apps/create?mode=template')],
     ['label' => $template['title'], 'href' => null],
 ];
 ?>
@@ -57,6 +171,37 @@ $breadcrumbs = [
 
   <div class="card mb-3 form-card">
     <div class="card-body">
+      <?php if ($wizardShowServerSelect): ?>
+      <div class="mb-3">
+        <label class="form-label" for="template-server-id">Server tujuan</label>
+        <select class="form-select" name="server_id" id="template-server-id" style="max-width:420px;">
+          <?php foreach ($wizardServerOptions as $wizardServerOption): ?>
+          <option value="<?= e($wizardServerOption['id']) ?>"<?= $wizardServerOption['id'] === $wizardSelectedServerId ? ' selected' : '' ?><?= $wizardServerOption['enabled'] ? '' : ' disabled' ?>><?= e($wizardServerOption['label']) ?></option>
+          <?php endforeach; ?>
+        </select>
+        <div class="form-text">
+          App dibangun &amp; dijalankan di server ini — <strong>lokal</strong> = dashboard ini,
+          <strong>agent</strong> = server terdaftar (image &amp; volume berada di server itu). Server app tidak bisa dipindah setelah app dibuat.
+        </div>
+        <?php foreach ($wizardServerOptions as $wizardServerOption): ?>
+        <?php if (!$wizardServerOption['note']) { continue; } ?>
+        <div class="form-text">
+          Server <strong><?= e($wizardServerOption['name']) ?></strong>
+          <?php if (!$wizardServerOption['enabled']): ?><span class="badge badge-stopped">nonaktif</span><?php endif; ?>
+          <?php if ($wizardServerOption['status'] !== 'online'): ?><span class="badge <?= e($wizardServerOption['badge']) ?>"><?= e($wizardServerOption['status']) ?></span><?php endif; ?>
+          <?php if (!$wizardServerOption['enabled']): ?>— aktifkan dulu di halaman Servers.<?php endif; ?>
+          <?php if ($wizardServerOption['status'] !== 'online'): ?>Agent belum online — jalankan Test connection di halaman Servers sebelum memilihnya.<?php endif; ?>
+        </div>
+        <?php endforeach; ?>
+      </div>
+      <?php else: ?>
+      <div class="mb-3">
+        <label class="form-label">Server tujuan</label>
+        <p class="form-text mb-0">
+          App akan dibuat di server <strong><?= e($wizardSelectedServer['name']) ?></strong><?php if (!$wizardSelectedServer['local']): ?> <span class="badge <?= e($wizardSelectedServer['badge']) ?>"><?= e($wizardSelectedServer['status']) ?></span><?php endif; ?>.
+        </p>
+      </div>
+      <?php endif; ?>
       <div class="mb-3">
         <label class="form-label" for="template-app-name">Nama app (slug)</label>
         <input type="text" class="form-control" id="template-app-name" name="name" value="<?= e($form_name) ?>"
@@ -321,7 +466,7 @@ $breadcrumbs = [
       <span class="spinner-border spinner-border-sm d-none" id="deploy-btn-spinner" role="status" aria-hidden="true"></span>
       Deploy
     </button>
-    <a class="btn btn-outline-secondary" href="/apps/create?mode=template">Batal</a>
+    <a class="btn btn-outline-secondary" href="<?= e($wizardNavUrl('/apps/create?mode=template')) ?>">Batal</a>
   </div>
 </form>
 

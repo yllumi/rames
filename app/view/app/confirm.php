@@ -1,9 +1,92 @@
 <?php $pageTitle = 'Confirm App'; $active = 'apps'; ?>
 <?php $pendingSource = ($pending['source'] ?? 'git') === 'compose' ? 'compose' : 'git'; ?>
 <?php
+// Pemilih server tujuan (multi-server: SPECS.md §2a, ARCHITECTURE.md §5.22).
+// Payload dari `AppController::serverFormContext()`: `servers`,
+// `selectedServerId`, `canSelectServer`. View hanya merender — server tetap
+// sumber kebenaran (`confirmCreate()` memvalidasi ulang `server_id`).
+// Nilai teks aman dari payload: hanya scalar yang dipakai (array/objek
+// diabaikan) supaya view tidak pernah warning karena data registry rusak.
+$wizardText = static fn (mixed $value): string => is_scalar($value) ? trim((string) $value) : '';
+
+$wizardServers = is_array($servers ?? null) ? array_values(array_filter($servers, 'is_array')) : [];
+$wizardSelectedServerId = $wizardText($selectedServerId ?? '');
+if ($wizardSelectedServerId === '') {
+    $wizardSelectedServerId = \app\library\Storage\ServerStore::LOCAL_ID;
+}
+// Halaman konfirmasi tidak merender selektor server, tetapi flag ini dipakai
+// sebagai penjaga ringkasan read-only: bila `false`, identitas server non-lokal
+// dari payload tidak boleh tampil (defense-in-depth, misi Frontend UI).
+$wizardCanSelectServer = (bool) ($canSelectServer ?? false);
+
+// Navigasi wizard mempertahankan pilihan server (SPECS.md §2a). Parameter
+// `server_id` hanya ditambahkan bila server terpilih BUKAN server lokal **dan**
+// user memang boleh memilih server (`$wizardCanSelectServer`) — supaya URL
+// default/non-admin tetap bersih (absen = server lokal) dan payload di luar
+// kontrak tidak membocorkan id server agent lewat `href`.
+$wizardNavServerParam = ($wizardCanSelectServer
+    && $wizardSelectedServerId !== ''
+    && strtolower($wizardSelectedServerId) !== \app\library\Storage\ServerStore::LOCAL_ID)
+    ? 'server_id=' . rawurlencode($wizardSelectedServerId)
+    : '';
+// Menempelkan parameter tanpa merusak query yang sudah ada (`?mode=…`); hasil
+// tetap di-`e()` di atribut href, jadi `&` di sini menjadi `&amp;`.
+$wizardNavUrl = static function (string $path) use ($wizardNavServerParam): string {
+    if ($wizardNavServerParam === '') {
+        return $path;
+    }
+
+    return $path . (str_contains($path, '?') ? '&' : '?') . $wizardNavServerParam;
+};
+// Ringkasan server terpilih (read-only di langkah konfirmasi).
+$wizardSelectedServer = null;
+foreach ($wizardServers as $wizardServer) {
+    if ($wizardText($wizardServer['id'] ?? '') !== $wizardSelectedServerId) {
+        continue;
+    }
+    $wizardIsLocal = strtolower($wizardText($wizardServer['kind'] ?? '')) === 'local';
+    $wizardServerName = $wizardText($wizardServer['name'] ?? '');
+    $wizardServerStatus = strtolower($wizardText($wizardServer['status'] ?? ''));
+    $wizardServerStatus = $wizardServerStatus !== '' ? $wizardServerStatus : 'unknown';
+    $wizardSelectedServer = [
+        'name' => $wizardServerName !== '' ? $wizardServerName : $wizardSelectedServerId,
+        'domain' => $wizardText($wizardServer['domain'] ?? ''),
+        'local' => $wizardIsLocal,
+        'status' => $wizardServerStatus,
+        // Kelas badge baku repo (bukan dirakit dari data server).
+        'badge' => $wizardServerStatus === 'online'
+            ? 'badge-running'
+            : ($wizardServerStatus === 'offline' ? 'badge-error' : 'badge-unknown'),
+    ];
+    break;
+}
+// Proyeksi server lokal (turunan murni, tanpa logika bisnis): nilai aman untuk
+// ringkasan read-only saat identitas server terpilih tidak boleh/tidak bisa
+// ditampilkan.
+$wizardLocalServerProjection = [
+    'name' => 'lokal',
+    'domain' => '',
+    'local' => true,
+    'status' => 'unknown',
+    'badge' => 'badge-unknown',
+];
+if ($wizardSelectedServer === null) {
+    // Payload server absen/kosong (varian render lama): tetap aman — ringkasan
+    // read-only tanpa nama server asing.
+    $wizardSelectedServer = $wizardLocalServerProjection;
+}
+if (!$wizardCanSelectServer && !$wizardSelectedServer['local']) {
+    // Payload di luar kontrak (`canSelectServer=false` + `selectedServerId`
+    // menunjuk server agent): ringkasan konfirmasi tidak boleh memuat
+    // nama/domain server non-lokal. Pertahanan berlapis di sisi view — server
+    // tetap memvalidasi ulang `server_id` saat POST (`confirmCreate()`).
+    $wizardSelectedServer = $wizardLocalServerProjection;
+}
+?>
+<?php
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
-    ['label' => 'Buat App', 'href' => '/apps/create'],
+    ['label' => 'Buat App', 'href' => $wizardNavUrl('/apps/create')],
     ['label' => 'Konfirmasi', 'href' => null],
 ];
 ?>
@@ -25,6 +108,14 @@ $breadcrumbs = [
 <form method="post" action="/apps/create/confirm" id="deploy-confirm-form">
   <?= csrf_field() ?>
 
+  <?php
+  // Server yang dipilih di langkah sebelumnya diteruskan apa adanya: controller
+  // membaca POST `server_id` (fallback `pending['server_id']`). Id `local`
+  // sengaja tetap dikirim eksplisit — nilainya dinormalkan kembali ke server
+  // lokal, jadi kontrak POST lama tidak berubah.
+  ?>
+  <input type="hidden" name="server_id" value="<?= e($wizardSelectedServerId) ?>">
+
   <!-- Nama container (override container_name) — opsional -->
   <div class="card mb-3">
     <div class="card-body">
@@ -38,6 +129,33 @@ $breadcrumbs = [
         Nama container <strong>unik se-host</strong>: dicek ke container lain saat deploy, dan tidak bisa dipakai
         service yang memakai replica (<span class="mono">deploy.replicas</span>).
       </div>
+    </div>
+  </div>
+
+  <?php
+  // Ringkasan server tujuan (read-only) — server dipilih di langkah sebelumnya
+  // dan dikirim lewat hidden input di atas; di sini hanya ditampilkan supaya
+  // user tahu app akan dibuat di mana (SPECS §2a).
+  ?>
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h6 mb-2">Server tujuan</h2>
+      <dl class="row mb-2 small">
+        <dt class="col-sm-3">Nama</dt>
+        <dd class="col-sm-9 mb-1">
+          <strong><?= e($wizardSelectedServer['name']) ?></strong>
+          <?php if (!$wizardSelectedServer['local']): ?>
+          <span class="badge <?= e($wizardSelectedServer['badge']) ?> ms-1"><?= e($wizardSelectedServer['status']) ?></span>
+          <?php endif; ?>
+        </dd>
+        <dt class="col-sm-3">Jenis</dt>
+        <dd class="col-sm-9 mb-1"><?= $wizardSelectedServer['local'] ? 'lokal (dashboard ini)' : 'agent (server terdaftar)' ?></dd>
+        <dt class="col-sm-3">Domain</dt>
+        <dd class="col-sm-9 mb-0 mono"><?= e($wizardSelectedServer['domain'] !== '' ? $wizardSelectedServer['domain'] : '-') ?></dd>
+      </dl>
+      <p class="text-muted small mb-0">
+        Server tujuan diambil dari langkah sebelumnya — ubah lewat tombol <strong>Kembali</strong>.
+      </p>
     </div>
   </div>
 
@@ -345,7 +463,7 @@ $breadcrumbs = [
       <span class="spinner-border spinner-border-sm d-none" id="deploy-btn-spinner" role="status" aria-hidden="true"></span>
       Deploy App
     </button>
-    <a class="btn btn-outline-secondary" href="/apps/create<?= $pendingSource === 'compose' ? '?mode=compose' : '' ?>">Kembali</a>
+    <a class="btn btn-outline-secondary" href="<?= e($wizardNavUrl($pendingSource === 'compose' ? '/apps/create?mode=compose' : '/apps/create')) ?>">Kembali</a>
   </div>
 </form>
 
