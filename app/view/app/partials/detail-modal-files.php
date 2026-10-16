@@ -1,6 +1,7 @@
 <?php if ($canFiles && !empty($containers)): ?>
 <!-- Modal file manager container: jelajah berkas, unggah (multi + progres), unduh,
-     edit teks, buat folder, rename, pindah (move) ke folder lain, hapus, ekstrak arsip.
+     edit teks, buat berkas baru (format bebas — dibuat saat Simpan), buat folder,
+     rename, pindah (move) ke folder lain, hapus, ekstrak arsip.
      Logika di /js/app-files.js; semua data dari server dirender via textContent (anti-XSS). -->
 <div class="modal fade" id="files-modal" tabindex="-1" aria-labelledby="files-title" aria-hidden="true"
      data-app="<?= e($app['id']) ?>" data-bs-backdrop="static" data-bs-keyboard="false">
@@ -23,6 +24,8 @@
             <ol class="breadcrumb mb-0 small flex-nowrap" id="files-breadcrumb" style="overflow-x:auto;"></ol>
           </nav>
           <div class="d-flex gap-2 flex-wrap">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="files-new"
+                    title="Buat berkas baru (format bebas)" aria-label="Buat berkas baru (format bebas)">📄+ Berkas baru</button>
             <button type="button" class="btn btn-outline-secondary btn-sm" id="files-mkdir"
                     title="Buat folder baru" aria-label="Buat folder baru">📁+ Buat folder</button>
             <button type="button" class="btn btn-outline-primary btn-sm" id="files-upload-btn"
@@ -33,8 +36,9 @@
                     title="Ekstrak arsip .zip / .tar.gz di folder ini" aria-label="Ekstrak arsip">🗜 Ekstrak</button>
           </div>
         </div>
-        <p class="text-muted small mb-2">Batas <strong>64 MB</strong> per berkas. Arsip <span class="mono">.zip</span> /
-          <span class="mono">.tar.gz</span> bisa diekstrak langsung di container.</p>
+        <p class="text-muted small mb-2">Batas <strong>64 MiB</strong> per berkas. Arsip <span class="mono">.zip</span> /
+          <span class="mono">.tar.gz</span> bisa diekstrak langsung di container. Berkas baru (format bebas, hingga
+          <strong>2 MiB</strong>) dibuat lewat editor teks; berkas biner pakai <strong>Unggah</strong>.</p>
         <div id="files-alert" class="alert alert-danger py-2 small d-none" role="alert"></div>
         <div id="files-uploads" class="mb-2"></div>
 
@@ -54,7 +58,7 @@
         </div>
 
         <div id="files-edit-pane" class="d-none">
-          <label class="form-label small" for="files-editor">Edit <span class="mono" id="files-edit-name"></span></label>
+          <label class="form-label small" for="files-editor"><span id="files-edit-verb">Edit</span> <span class="mono" id="files-edit-name"></span></label>
           <textarea id="files-editor" class="form-control form-control-sm mono" rows="18" spellcheck="false"
                     aria-describedby="files-edit-meta" style="white-space:pre; overflow:auto;"></textarea>
           <div class="d-flex justify-content-between align-items-center mt-2 gap-2 flex-wrap">

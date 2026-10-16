@@ -14,4 +14,4 @@ document.addEventListener('DOMContentLoaded', function () {
 <script src="/vendor/xterm/xterm.js"></script>
 <script src="/vendor/xterm/addons/fit/fit.js"></script>
 <script src="/js/app-terminal.js?v=7"></script>
-<script src="/js/app-files.js?v=2"></script>
+<script src="/js/app-files.js?v=4"></script>

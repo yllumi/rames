@@ -1,4 +1,4 @@
-/* File manager container (jelajah / unggah / unduh / edit teks / pindah / ekstrak arsip).
+/* File manager container (jelajah / unggah / unduh / edit teks / berkas baru / pindah / ekstrak arsip).
  * Dipakai di halaman detail app (tab Container) lewat tombol 📁 Files per container.
  * Semua mutasi via POST + token CSRF; daftar & isi berkas via GET (JSON).
  * Nama/path dari server TIDAK pernah dimasukkan sebagai innerHTML — selalu
@@ -84,6 +84,7 @@
     mode: 'list',
     editPath: '',
     editName: '',
+    editIsNew: false,  // true = editor sedang menampung berkas yang BELUM ada (dibuat saat Simpan)
     xhrs: [],          // XHR unggahan yang masih berjalan
     queue: [],
     curXhr: null,
@@ -727,6 +728,57 @@
 
   // ----------------------------------------------------------- edit teks
 
+  // Label pane edit: "Edit <nama>" atau "Berkas baru <nama>".
+  function setEditVerb(verb) {
+    var v = el('files-edit-verb');
+    if (v) v.textContent = verb || 'Edit';
+  }
+
+  // Isi editor untuk berkas yang SUDAH ada (dipakai startEdit() dan newFile()).
+  function fillEditor(name, path, data, verb) {
+    ST.editPath = (typeof data.path === 'string' && data.path !== '') ? data.path : path;
+    ST.editName = name;
+    ST.editIsNew = false;
+    setEditVerb(verb || 'Edit');
+
+    var nameEl = el('files-edit-name');
+    if (nameEl) nameEl.textContent = ST.editName;
+    var ta = el('files-editor');
+    if (ta) ta.value = typeof data.text === 'string' ? data.text : '';
+
+    var meta = el('files-edit-meta');
+    if (meta) {
+      meta.textContent = formatSize(data.size) + (data.truncated ? ' · dimuat sebagian' : '');
+    }
+    var save = el('files-edit-save');
+    if (save) save.disabled = !!data.truncated;
+    if (data.truncated) {
+      showAlert('Berkas terlalu besar untuk dimuat penuh — penyimpanan dinonaktifkan agar isi berkas tidak terpotong.');
+    }
+  }
+
+  // Buka editor untuk berkas yang BELUM ada: textarea kosong, berkas benar-benar
+  // dibuat saat Simpan (POST /files/write membuat berkas bila path belum ada).
+  function openNewEditor(name, path) {
+    ST.editPath = path;
+    ST.editName = name;
+    ST.editIsNew = true;
+    setEditVerb('Berkas baru');
+
+    var nameEl = el('files-edit-name');
+    if (nameEl) nameEl.textContent = name;
+    var ta = el('files-editor');
+    if (ta) ta.value = '';
+    var meta = el('files-edit-meta');
+    if (meta) meta.textContent = 'Berkas belum ada — dibuat saat Simpan (maks 2 MiB).';
+    var save = el('files-edit-save');
+    if (save) save.disabled = false;
+
+    showPane('edit');
+    setStatus('');
+    if (ta) ta.focus();
+  }
+
   function startEdit(name) {
     var path = childPath(name);
     clearAlert();
@@ -738,27 +790,58 @@
           setStatus('');
           return;
         }
-        var data = d.data;
-        ST.editPath = (typeof data.path === 'string' && data.path !== '') ? data.path : path;
-        ST.editName = name;
-
-        var nameEl = el('files-edit-name');
-        if (nameEl) nameEl.textContent = ST.editName;
-        var ta = el('files-editor');
-        if (ta) ta.value = typeof data.text === 'string' ? data.text : '';
-
-        var meta = el('files-edit-meta');
-        if (meta) {
-          meta.textContent = formatSize(data.size) + (data.truncated ? ' · dimuat sebagian' : '');
-        }
-        var save = el('files-edit-save');
-        if (save) save.disabled = !!data.truncated;
-        if (data.truncated) {
-          showAlert('Berkas terlalu besar untuk dimuat penuh — penyimpanan dinonaktifkan agar isi berkas tidak terpotong.');
-        }
+        fillEditor(name, path, d.data, 'Edit');
         showPane('edit');
         setStatus('');
+        var ta = el('files-editor');
         if (ta) ta.focus();
+      })
+      .catch(function () { showAlert('Gagal terhubung ke server.'); setStatus(''); });
+  }
+
+  // "Berkas baru": nama & format bebas (ekstensi apa pun). Berkas TIDAK dibuat di
+  // sini — hanya dibuka di editor kosong, dan tercipta saat Simpan. Bila berkas
+  // dengan nama itu sudah ada, dibuka untuk diedit dengan status yang jelas
+  // (tidak menimpa tanpa sadar); bila tak bisa dibuka (biner/terlalu besar) editor
+  // tidak pernah ditawarkan.
+  function newFile() {
+    var name = window.prompt('Nama berkas baru (format bebas, tanpa "/"):');
+    if (name === null) return;
+    name = name.trim();
+    // Aturan nama entri (SPECS §7.9 / PathGuard::assertName()): tanpa "/", bukan
+    // "." / "..", dan tidak diawali "-". validName() sengaja TIDAK diubah (dipakai
+    // rename/mkdir/unggah) — guard "-" dijaga lokal di alur berkas baru ini.
+    if (!validName(name) || name.charAt(0) === '-') {
+      showAlert('Nama berkas tidak valid (tanpa "/", bukan "." / "..", dan tidak diawali "-").');
+      return;
+    }
+
+    var path = childPath(name);
+    clearAlert();
+    setStatus('Memeriksa berkas ...');
+    jsonFetch('/api/apps/' + enc(ST.appId) + '/files/read?container=' + enc(ST.container) + '&path=' + enc(path))
+      .then(function (d) {
+        var code = (d && typeof d.code !== 'undefined') ? d.code : -1;
+
+        if (code === 404) { openNewEditor(name, path); return; }
+
+        if (code === 0 && d.data) {
+          fillEditor(name, path, d.data, 'Edit');
+          showPane('edit');
+          setStatus('Berkas sudah ada — dibuka untuk diedit.');
+          var ta = el('files-editor');
+          if (ta) ta.focus();
+          return;
+        }
+
+        if (code === 413 || code === 415) {
+          showAlert('Berkas sudah ada dan tidak bisa dibuka di editor teks (biner/terlalu besar) — pakai Unggah untuk menggantinya.');
+          setStatus('');
+          return;
+        }
+
+        showAlert(errMsg(d, 'Gagal membuka berkas.'));
+        setStatus('');
       })
       .catch(function () { showAlert('Gagal terhubung ke server.'); setStatus(''); });
   }
@@ -768,6 +851,7 @@
     if (!ta) return;
     var sp = el('files-edit-spinner');
     var btn = el('files-edit-save');
+    var wasNew = !!ST.editIsNew;
     if (sp) sp.classList.remove('d-none');
     if (btn) btn.disabled = true;
     clearAlert();
@@ -783,7 +867,14 @@
         showAlert(errMsg(d, 'Gagal menyimpan berkas.'));
         return;
       }
-      setStatus('Berkas disimpan.');
+      if (wasNew) {
+        // Berkas baru kini ada: status editor kembali ke mode "Edit".
+        ST.editIsNew = false;
+        setEditVerb('Edit');
+        setStatus('Berkas dibuat.');
+      } else {
+        setStatus('Berkas disimpan.');
+      }
       loadFiles(ST.path);
     }).catch(function () {
       if (sp) sp.classList.add('d-none');
@@ -964,6 +1055,7 @@
     ST.parent = null;
     ST.editPath = '';
     ST.editName = '';
+    ST.editIsNew = false;
     clearAlert();
     clearEntries();
     showPane('list');
@@ -998,6 +1090,9 @@
     ST.queue = [];
     ST.path = null;
     ST.editPath = '';
+    ST.editName = '';
+    ST.editIsNew = false;
+    setEditVerb('Edit');
     var ta = el('files-editor');
     if (ta) ta.value = '';
     clearAlert();
@@ -1018,6 +1113,8 @@
   if (refreshBtn) refreshBtn.addEventListener('click', function () { loadFiles(ST.path); });
   var mkdirBtn = el('files-mkdir');
   if (mkdirBtn) mkdirBtn.addEventListener('click', makeFolder);
+  var newFileBtn = el('files-new');
+  if (newFileBtn) newFileBtn.addEventListener('click', newFile);
   var extractBtn = el('files-extract-btn');
   if (extractBtn) extractBtn.addEventListener('click', extractPrompt);
   var uploadBtn = el('files-upload-btn');
@@ -1030,7 +1127,18 @@
     });
   }
   var editCancel = el('files-edit-cancel');
-  if (editCancel) editCancel.addEventListener('click', function () { showPane('list'); clearAlert(); setStatus(''); });
+  if (editCancel) {
+    editCancel.addEventListener('click', function () {
+      // Tinggalkan mode editor: jangan bawa penanda "berkas baru" ke berkas lain.
+      ST.editPath = '';
+      ST.editName = '';
+      ST.editIsNew = false;
+      setEditVerb('Edit');
+      showPane('list');
+      clearAlert();
+      setStatus('');
+    });
+  }
   var editSave = el('files-edit-save');
   if (editSave) editSave.addEventListener('click', saveEdit);
 
