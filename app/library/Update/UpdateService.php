@@ -186,7 +186,39 @@ final class UpdateService implements UpdateRunner
         }
 
         if (!is_writable($this->repo->root())) {
+            // Catatan: pemeriksaan ini lemah — ia dievaluasi sebagai **root**
+            // (container dashboard berjalan sebagai root, `is_writable()` hampir
+            // selalu true). Yang menentukan adalah blok kepemilikan di bawah.
             $errors[] = 'Repo tidak bisa ditulis oleh dashboard: ' . $this->repo->root();
+        }
+
+        // 1) Repo yang OWNER-nya campur: git sendiri menolaknya walau izin tulis
+        //    cukup (`detected dubious ownership`). Diperiksa lebih dulu karena
+        //    pesannya berbeda dari "tidak bisa ditulis" — dan karena urutan cek
+        //    ini murni `fileowner`/`filegroup` (tanpa menjalankan git).
+        $gitDirError = self::gitDirOwnershipError($this->repo->root());
+        if ($gitDirError !== null) {
+            $errors[] = $gitDirError;
+        }
+
+        // 2) Kepemilikan repo: helper berjalan `--user <uid>:<gid>` = **pemilik
+        //    direktori repo** (SPECS §7.8 / ARCHITECTURE §5.14) supaya berkas hasil
+        //    pull tidak jadi milik root. Konsekuensinya repo — termasuk `.git` —
+        //    WAJIB bisa ditulis oleh uid:gid itu; kalau tidak, helper sudah menyentuh
+        //    repo (fetch/merge) lalu gagal di tengah jalan. Kepemilikan campuran
+        //    (mis. `.git` root-owned sisa `sudo git …`) adalah penyebab klasiknya.
+        $repoUid = $this->repoUid();
+        if ($this->repo->isRepo() && $repoUid > 0) {
+            $repoGid = $this->repoGid();
+            $offenders = self::unwritableHelperPaths($this->repo->root(), $repoUid, $repoGid);
+            if ($offenders !== []) {
+                $errors[] = 'Repo tidak bisa ditulis oleh helper update (uid:gid '
+                    . $repoUid . ':' . $repoGid . '): ' . implode(', ', $offenders)
+                    . '. Helper self-update berjalan sebagai pemilik direktori repo, sehingga repo — termasuk `.git` — '
+                    . 'wajib milik uid:gid itu (kepemilikan campuran, mis. `.git` milik root sisa `sudo git …`, '
+                    . 'membuat `git fetch` gagal menulis object: "insufficient permission for adding an object to repository database"). '
+                    . 'Perbaiki di host: sudo chown -R ' . $repoUid . ':' . $repoGid . ' ' . $this->repo->root();
+            }
         }
 
         return [
@@ -653,6 +685,188 @@ final class UpdateService implements UpdateRunner
         $gid = @filegroup($socket);
 
         return $gid === false ? 0 : (int) $gid;
+    }
+
+    /**
+     * Penyebab **git sendiri** menolak repo walau izin tulisnya cukup: `.git`
+     * (gitdir) dimiliki uid lain daripada direktori repo, atau `.git` bukan
+     * direktori. Murni `fileowner`/`filegroup`/`is_dir` — **tanpa** menjalankan
+     * `git`, jadi murah dan bebas efek samping.
+     *
+     * Helper berjalan `--user <uid>:<gid>` = pemilik direktori repo
+     * (SPECS §7.8 / ARCHITECTURE §5.14), sehingga git melihat gitdir milik user
+     * lain dan berhenti dengan `fatal: detected dubious ownership in repository
+     * at '<root>'` — pemeriksaan keamanan git yang **sengaja tidak** dilewati repo
+     * ini (tidak ada `safe.directory` tambahan). Tanpa pemeriksaan ini update
+     * sudah menyentuh repo lalu mati di tengah `git fetch` dengan pesan yang dulu
+     * menyesatkan ("jaringan/DNS pada network …").
+     *
+     * Diuji empiris pada git image ini (2.49): `.git` milik uid lain tetap ditolak
+     * walau gid-nya sama dengan gid helper dan bit setgid menyala (2775) — jadi
+     * perbandingan **uid** sudah cukup. Bila suatu build git menerimanya, preflight
+     * ini hanya fail-fast dengan jalan keluar `chown` (bukan penyebab kegagalan
+     * baru); kalau toh lolos, klasifikasi galat di helper tetap mengenali
+     * `dubious ownership`.
+     *
+     * @return string|null pesan galat siap pakai (path + owner yang ditemukan +
+     *         owner repo + jalan keluar), atau null bila tidak ada masalah
+     */
+    public static function gitDirOwnershipError(string $root): ?string
+    {
+        $root = rtrim($root, '/');
+        $gitDir = $root . '/.git';
+
+        if (!file_exists($gitDir) && !is_link($gitDir)) {
+            return null; // `.git` tidak ada → sudah ditangani pemeriksaan "bukan repo Git".
+        }
+
+        $gitUid = @fileowner($gitDir);
+        $gitGid = @filegroup($gitDir);
+        $repoUid = @fileowner($root);
+        $repoGid = @filegroup($root);
+        $repoOwner = self::ownerLabel($repoUid, $repoGid);
+        $gitOwner = self::ownerLabel($gitUid, $gitGid);
+        // Dipakai HANYA oleh cabang layout di bawah: `chown` baru berguna bila
+        // pasangan kepemilikan benar-benar berbeda (uid DAN gid sama ⇒ `chown`
+        // tidak mengubah apa pun, jadi jangan dicetak seolah wajib).
+        $ownersDiffer = $gitUid !== $repoUid || $gitGid !== $repoGid;
+        $fix = 'Perbaiki di host: sudo chown -R ' . $repoOwner . ' ' . $root;
+
+        if (!is_dir($gitDir)) {
+            $layout = '`.git` ada tetapi BUKAN direktori: ' . $gitDir . ' (ditemukan ' . $gitOwner
+                . ', direktori repo ' . $repoOwner . ') — helper self-update membaca `.git/HEAD` langsung dan menjalankan '
+                . '`git fetch` di dalam gitdir, sehingga layout berkas (worktree `gitdir:` / symlink rusak) tidak didukung. '
+                . 'Perbaiki layoutnya: pakai layout repo normal (gitdir direktori di dalam repo — mis. `git clone`/`git init` '
+                . 'ulang di tempat ini) atau jalankan update dari instalasi non-worktree.';
+
+            return $ownersDiffer
+                ? $layout . ' Kepemilikannya juga campur — samakan dulu: ' . $fix . '.'
+                : $layout;
+        }
+
+        if ($gitUid === false || $repoUid === false || (int) $gitUid === (int) $repoUid) {
+            return null;
+        }
+
+        return '`.git` dimiliki user lain: ' . $gitDir . ' dimiliki ' . $gitOwner . ', sedangkan direktori repo dimiliki '
+            . $repoOwner . ' (uid:gid itulah yang dipakai helper) — helper berjalan sebagai pemilik direktori repo, dan git menolak '
+            . 'repository milik user lain: "fatal: detected dubious ownership in repository at \'' . $root . '\'" '
+            . '(repo ini sengaja tidak menambah `safe.directory`). ' . $fix . '.';
+    }
+
+    /**
+     * Label `uid:gid` untuk pesan galat (`?` bila stat gagal).
+     */
+    private static function ownerLabel(int|false $uid, int|false $gid): string
+    {
+        return ($uid === false ? '?' : (string) $uid) . ':' . ($gid === false ? '?' : (string) $gid);
+    }
+
+    /**
+     * Path yang WAJIB bisa ditulis oleh helper update (uid/gid pemilik repo).
+     *
+     * `$root` = worktree (`git checkout`/`merge` menulis berkas di sini),
+     * `$root/.git` = indeks/HEAD (`index.lock`, `refs`), `$root/.git/objects` =
+     * tempat `git fetch` menulis object baru, `$root/.git/refs` = tempat ref
+     * remote ditulis.
+     *
+     * @return array<int,string>
+     */
+    public static function helperWritablePaths(string $root): array
+    {
+        $root = rtrim($root, '/');
+
+        return [
+            $root,
+            $root . '/.git',
+            $root . '/.git/objects',
+            $root . '/.git/refs',
+        ];
+    }
+
+    /**
+     * Path helper yang TIDAK bisa ditulis uid/gid pemilik repo, lengkap dengan mode
+     * oktalnya supaya pesan galat bisa langsung ditindaklanjuti. Kosong = aman.
+     *
+     * @return array<int,string> mis. ["/srv/rames/.git (mode 0755)"]
+     */
+    public static function unwritableHelperPaths(string $root, int $uid, int $gid): array
+    {
+        $offenders = [];
+        foreach (self::helperWritablePaths($root) as $path) {
+            if (self::canUidWritePath($path, $uid, $gid)) {
+                continue;
+            }
+            $perms = @fileperms($path);
+            $offenders[] = $path . ($perms === false ? ' (tidak ada)' : ' (mode ' . sprintf('%04o', $perms & 0777) . ')');
+        }
+
+        return $offenders;
+    }
+
+    /**
+     * Bolehkah uid/gid ini menulis path tersebut? Dihitung dari **stat**
+     * (owner/group/other + bit mode) — bukan `is_writable()`.
+     *
+     * Kenapa bukan `is_writable()`: preflight berjalan di container dashboard yang
+     * berjalan sebagai **root**, dan bagi root `is_writable()` hampir selalu `true`
+     * (CAP_DAC_OVERRIDE) — justru itu yang membuat bug kepemilikan lolos preflight.
+     * Helper self-update **tidak** berjalan sebagai root: ia dijalankan
+     * `--user <uid>:<gid>` = pemilik direktori repo (`repoUid()`/`repoGid()`,
+     * SPECS §7.8 / ARCHITECTURE §5.14). Jadi pertanyaan yang benar adalah persis
+     * "bolehkah uid:gid ITU menulis path ini?", dan jawabannya hanya bisa dibaca
+     * dari kepemilikan + mode berkas.
+     *
+     * uid 0 dikecualikan: root menembus bit mode (selama bukan mount read-only),
+     * jadi repo milik root tetap boleh di-update oleh helper root.
+     *
+     * Untuk **direktori**, bit `w` saja tidak cukup: `git fetch` membuat
+     * subdirektori (`objects/xx`) dan berkas baru di dalamnya, jadi butuh `w` dan
+     * `x` (traverse). Untuk berkas biasa, `w` sudah cukup.
+     *
+     * Path di ATAS `$root` sengaja tidak diperiksa: bind mount `${PWD}:${PWD}`
+     * membuat direktori induk di dalam helper berasal dari image, bukan dari host,
+     * sehingga memeriksanya justru menyesatkan.
+     *
+     * **Batas (disengaja):** ini pemeriksaan DAC murni. ACL POSIX, SELinux/AppArmor,
+     * mount read-only, dan `chattr +i` **tidak** terlihat di sini — ACL yang
+     * memberi izin tanpa bit mode bisa ditolak lebih awal (fail-fast), sedangkan
+     * mount read-only/immutable bisa lolos dan baru gagal di helper (pesannya
+     * terkalsifikasi sebagai kepemilikan/izin, bukan jaringan).
+     *
+     * @param string $path berkas/direktori yang diperiksa
+     */
+    public static function canUidWritePath(string $path, int $uid, int $gid): bool
+    {
+        if ($uid === 0) {
+            return true;
+        }
+
+        $stat = @stat($path);
+        if ($stat === false) {
+            // Tidak ada (atau symlink rusak) → tidak bisa ditulis; git pasti gagal.
+            return false;
+        }
+
+        $mode = (int) $stat['mode'];
+        if ($uid === (int) $stat['uid']) {
+            $bits = ($mode >> 6) & 07;
+        } elseif ($gid === (int) $stat['gid']) {
+            $bits = ($mode >> 3) & 07;
+        } else {
+            $bits = $mode & 07;
+        }
+
+        if (($bits & 02) === 0) {
+            return false;
+        }
+
+        // Direktori: menulis entri baru juga butuh bit `x`.
+        if (($mode & 0040000) !== 0) {
+            return ($bits & 01) !== 0;
+        }
+
+        return true;
     }
 
     public static function isSha(string $value): bool

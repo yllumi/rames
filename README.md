@@ -49,6 +49,7 @@
 - DNS wildcard `*.{APP_DOMAIN}` diarahkan ke IP server (prasyarat; bukan tanggung jawab dashboard)
 - Port 80/443 host terbuka untuk traffic app
 - (Disarankan) daemon Docker mengizinkan `--privileged` — dipakai fitur "Reload Nginx dari dashboard"
+- **Repo dashboard dimiliki uid yang sama dengan pemilik direktori repo** — panel self-update (menu **Config → Update Rames**) menjalankan helper-nya sebagai pemilik direktori repo, sehingga seluruh repo termasuk `.git` wajib bisa ditulis uid:gid itu. **Jangan** menjalankan `sudo git …` (mis. `sudo git pull`) di repo ini: berkas di `.git` jadi milik root dan update dari UI gagal dengan `insufficient permission for adding an object to repository database .git/objects`.
 
 ## Instalasi & Menjalankan
 
@@ -153,6 +154,7 @@ docker exec rames-webman php start.php reload
 - **WAJIB**: bila mengubah `public/js/app-terminal.js` atau `public/js/app-files.js`, naikkan query `?v=N` di `app/view/app/partials/detail-scripts.php` — `?v=` adalah satu-satunya cache-buster untuk kedua berkas itu; tanpa menaikkannya browser bisa tetap memakai JS lama.
 - **Jangan** `docker compose up -d --build` hanya untuk memuat ulang kode — rebuild hanya bila `Dockerfile`/dependency berubah. Alternatif restart penuh: `docker compose restart rames-webman` (koneksi terputus sesaat).
 - Verifikasi cepat opsional: `docker exec rames-webman php vendor/bin/phpunit`.
+- **Jangan** menjalankan `git` dengan `sudo` di repo dashboard (mis. `sudo git pull`): berkas di `.git` menjadi milik root sedangkan helper self-update berjalan sebagai pemilik direktori repo ⇒ update dari UI gagal menulis object (`insufficient permission for adding an object to repository database .git/objects`). Bila itu sudah terjadi: `sudo chown -R <uid>:<gid> <root>/.git` (uid:gid = pemilik direktori repo; tertulis di pesan galat panel update).
 
 ### Backup Volume ke S3 (restic)
 
@@ -428,6 +430,7 @@ runtime/                         # state runtime (gitignored): logs/, db-backup/
 ## Troubleshooting Umum
 
 - **`Permission denied` saat menulis `/etc/nginx`** — dashboard harus berjalan sebagai root (container). Jangan jalankan `php webman start` di host saat container aktif; file runtime akan dimiliki root.
+- **Update dari UI gagal `insufficient permission for adding an object to repository database .git/objects` (`fatal: unpack-objects failed`)** — kepemilikan campuran di `.git` (biasanya sisa `sudo git …` di host). Panel self-update menjalankan helper sebagai **pemilik direktori repo** dan menolak lebih awal dengan pesan yang menyebut path + mode-nya. Perbaiki di host: `sudo chown -R <uid>:<gid> <root>/.git` (atau seluruh repo; direktori rahasia seperti `secrets/` sebaiknya tetap `root` 0600). Bila pesannya menyebut **jaringan/DNS**, itu kegagalan yang berbeda (network helper internal/`Could not resolve host`) — lihat pesan di log update. Varian kepemilikan lain: `fatal: detected dubious ownership in repository at '<root>'` bila `.git` dimiliki uid lain daripada direktori repo (helper sengaja **tidak** memakai `safe.directory`); perbaikannya sama, `sudo chown -R <uid>:<gid> <root>/.git`.
 - **`Could not resolve host` saat clone** — resolv.conf host rusak; container memakai `dns:` eksplisit (atur `DNS_1`/`DNS_2`).
 - **Port "sudah terpakai"** — dashboard hanya mendeteksi port milik app-nya sendiri; port yang dipakai container luar bisa diedit di halaman konfirmasi.
 - **Subdomain tidak kebuka** — pastikan DNS resolve (hosts/dnsmasq) dan `sudo systemctl reload nginx`.

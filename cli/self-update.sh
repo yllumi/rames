@@ -57,6 +57,53 @@ log() {
   printf '[%s] %s\n' "$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')" "$1" >>"$LOG" 2>/dev/null || true
 }
 
+# Tulis jejak keluaran git ke log. Stdout helper TIDAK boleh dipakai untuk ini —
+# `docker run` memakainya untuk mencetak id container.
+trace_log() {
+  if [ -n "${1:-}" ]; then
+    printf '%s\n' "$1" >>"$LOG" 2>/dev/null || true
+  fi
+}
+
+# Jejak galat git berpola izin/kepemilikan? Ditulis sebagai `case` (tanpa grep)
+# supaya aman di image helper yang minimal.
+#
+# `dubious ownership`/`safe.directory` WAJIB ada di sini: git menolak repo yang
+# gitdir-nya milik uid lain (`fatal: detected dubious ownership in repository
+# at …`) — pemicunya kepemilikan, bukan jaringan, dan tanpa pola ini UI jatuh
+# kembali ke kesimpulan "jaringan/DNS" yang menyesatkan.
+git_perm_error() {
+  case "${1:-}" in
+    *"insufficient permission"*|*"Permission denied"*|*"permission denied"*|*"unable to create"*|*"could not open"*|*"unable to write"*|*"Operation not permitted"*|*"dubious ownership"*|*"safe.directory"*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Pesan UI untuk kegagalan git. Kegagalan IZIN/KEPEMILIKAN tidak boleh dilaporkan
+# sebagai masalah jaringan/DNS — operator akan mencari di tempat yang salah
+# (padahal `chown` di host adalah perbaikannya).
+git_error_message() {
+  # $1 = jejak keluaran git, $2 = pesan cadangan (mis. jaringan/DNS)
+  if git_perm_error "${1:-}"; then
+    printf '%s' "Repo tidak bisa ditulis oleh helper (uid=$(id -u):$(id -g)) — kepemilikan/izin berkas repo bermasalah. Perbaiki di host: sudo chown -R $(id -u):$(id -g) $ROOT"
+  else
+    printf '%s' "${2:-}"
+  fi
+}
+
+# Jalankan git: stdout+stderr ditangkap ke $GIT_OUT (untuk klasifikasi galat)
+# sekaligus dicatat ke log. Exit code git diteruskan apa adanya.
+run_git() {
+  GIT_OUT=$(git "$@" 2>&1)
+  status=$?
+  trace_log "$GIT_OUT"
+  return "$status"
+}
+
 # Laporan akhir wajib ada: kalau skrip berhenti di tengah (kill, OOM, error tak
 # terduga) UI tidak boleh macet di status "sedang berjalan" selamanya.
 on_exit() {
@@ -92,6 +139,28 @@ if [ ! -d "$ROOT/.git" ]; then
   exit 1
 fi
 
+# ----------------------------------------------------------------------
+# 1b) Gate kepemilikan (authoritative) — SEBELUM git disentuh sama sekali.
+#
+#     Helper inilah yang menjalankan git, jadi `[ -w ]` di sini dievaluasi
+#     SEBAGAI UID HELPER, bukan sebagai root seperti preflight di container
+#     dashboard (di sana `is_writable()` hampir selalu true). Tanpa gate ini
+#     update bisa menyentuh repo (fetch/merge) lalu mati di tengah jalan karena
+#     `.git` milik uid lain (mis. sisa `sudo git …` di host).
+#
+#     Ditempatkan sebelum percabangan mode → berlaku untuk update DAN rollback.
+#     Daftar path SAMA dengan preflight PHP (`helperWritablePaths()`): root,
+#     `.git`, `.git/objects`, `.git/refs`.
+# ----------------------------------------------------------------------
+for gate_path in "$ROOT" "$ROOT/.git" "$ROOT/.git/objects" "$ROOT/.git/refs"; do
+  if [ ! -w "$gate_path" ]; then
+    log "gate kepemilikan gagal: $gate_path tidak bisa ditulis oleh uid=$(id -u):$(id -g) (network=$NETWORK dns=$DNS — bukan masalah jaringan)"
+    rep fetch error "Repo tidak bisa ditulis oleh helper (uid=$(id -u):$(id -g)): $gate_path tidak bisa ditulis ([ -w ] gagal — path tidak ada atau izin/kepemilikan kurang). Helper berjalan sebagai pemilik direktori repo, sehingga repo — termasuk .git — wajib milik uid:gid itu; kepemilikan campuran (mis. .git milik root sisa 'sudo git …') membuat git fetch gagal menulis object. Perbaiki di host: sudo chown -R $(id -u):$(id -g) $ROOT"
+    DONE=1
+    exit 1
+  fi
+done
+
 cd "$ROOT" || {
   log "tidak bisa masuk ke $ROOT"
   rep preflight error "Tidak bisa masuk ke direktori repo: $ROOT"
@@ -104,38 +173,38 @@ cd "$ROOT" || {
 # ----------------------------------------------------------------------
 if [ "$MODE" = "rollback" ]; then
   rep fetch running "Mengambil versi lama ${TARGET_SHA}…"
-  if ! git fetch --prune origin "$BRANCH" >>"$LOG" 2>&1; then
-    log "git fetch gagal (rollback)"
-    rep fetch error "git fetch gagal — lihat log."
+  if ! run_git fetch --prune origin "$BRANCH"; then
+    log "git fetch gagal (rollback; network=$NETWORK dns=$DNS)"
+    rep fetch error "$(git_error_message "$GIT_OUT" "git fetch gagal — lihat log.")"
     DONE=1
     exit 1
   fi
-  if ! git checkout --force "$TARGET_SHA" >>"$LOG" 2>&1; then
+  if ! run_git checkout --force "$TARGET_SHA"; then
     log "git checkout $TARGET_SHA gagal"
-    rep fetch error "Tidak bisa kembali ke versi $TARGET_SHA — lihat log."
+    rep fetch error "$(git_error_message "$GIT_OUT" "Tidak bisa kembali ke versi $TARGET_SHA — lihat log.")"
     DONE=1
     exit 1
   fi
 else
   rep fetch running "Mengambil pembaruan dari origin/$BRANCH…"
-  if ! git fetch --prune origin "$BRANCH" >>"$LOG" 2>&1; then
+  if ! run_git fetch --prune origin "$BRANCH"; then
     log "git fetch gagal (network=$NETWORK dns=$DNS — helper butuh network non-internal)"
-    rep fetch error "git fetch gagal (jaringan/DNS pada network $NETWORK?) — lihat log."
+    rep fetch error "$(git_error_message "$GIT_OUT" "git fetch gagal (jaringan/DNS pada network $NETWORK?) — lihat log.")"
     DONE=1
     exit 1
   fi
   # Keluar dari detached HEAD (mis. sisa rollback sebelumnya) sebelum merge.
-  if ! git checkout --force "$BRANCH" >>"$LOG" 2>&1; then
+  if ! run_git checkout --force "$BRANCH"; then
     log "git checkout $BRANCH gagal"
-    rep fetch error "Tidak bisa berpindah ke branch $BRANCH — lihat log."
+    rep fetch error "$(git_error_message "$GIT_OUT" "Tidak bisa berpindah ke branch $BRANCH — lihat log.")"
     DONE=1
     exit 1
   fi
 
   rep merge running "Menerapkan versi terbaru…"
-  if ! git merge --ff-only "origin/$BRANCH" >>"$LOG" 2>&1; then
-    log "merge --ff-only gagal (branch lokal menyimpang dari origin)"
-    rep merge error "Tidak bisa fast-forward ke origin/$BRANCH (branch lokal menyimpang) — lihat log."
+  if ! run_git merge --ff-only "origin/$BRANCH"; then
+    log "merge --ff-only gagal (branch lokal menyimpang dari origin / izin repo)"
+    rep merge error "$(git_error_message "$GIT_OUT" "Tidak bisa fast-forward ke origin/$BRANCH (branch lokal menyimpang) — lihat log.")"
     DONE=1
     exit 1
   fi
@@ -229,9 +298,9 @@ if [ -z "$OLD_SHA" ]; then
   exit 1
 fi
 
-git fetch --prune origin "$BRANCH" >>"$LOG" 2>&1 || true
-if ! git reset --hard "$OLD_SHA" >>"$LOG" 2>&1; then
-  rep finished error "Rollback gagal: tidak bisa kembali ke ${OLD_SHA} — lihat log."
+run_git fetch --prune origin "$BRANCH" || true
+if ! run_git reset --hard "$OLD_SHA"; then
+  rep finished error "$(git_error_message "$GIT_OUT" "Rollback gagal: tidak bisa kembali ke ${OLD_SHA} — lihat log.")"
   DONE=1
   exit 1
 fi
