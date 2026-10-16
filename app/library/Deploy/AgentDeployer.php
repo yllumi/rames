@@ -1454,6 +1454,116 @@ final class AgentDeployer implements DeployerInterface
     }
 
     /**
+     * Preflight ketersediaan nama app **di server agent** (`POST /apps/check`) —
+     * dipakai `AppController::createAndDeploy()` **sebelum** record app ditulis di
+     * control plane.
+     *
+     * Tanpa preflight ini nama yang bentrok dengan data tak dikenal di server itu
+     * baru ditolak saat materialisasi artefak (`AgentArtifactMaterializer`), yaitu
+     * **sesudah** record app ada di control plane — user melihatnya sebagai
+     * "deploy gagal" padahal app itu tidak pernah bisa dibuat. Guard di jalur job
+     * (`ensureOwnedDir()`/`dropStaleDir()`) tetap dipertahankan; endpoint ini hanya
+     * memindahkan penolakannya ke depan.
+     *
+     * Payload sempit `{id,name}` + `repo_url` **hanya** bila app ini app repo
+     * (`source` git/repo, bukan template, `repo_url` terisi) — predikat yang sama
+     * dengan {@see \app\library\Agent\AgentArtifactMaterializer} saat memutuskan
+     * clone. Field lain (`env`, `ssh_key`, token, kredensial) **tidak pernah**
+     * ikut; agent memakai `repo_url` semata-mata untuk membandingkan remote
+     * checkout yang sudah ada di sana (read-only), sehingga app repo hasil deploy
+     * lama tidak dilaporkan "bentrok" hanya karena direktori itu tanpa penanda.
+     *
+     * Kontrak jawaban agent: `available=false` (state `blocked`) ⇒
+     * **RuntimeException** yang menyebut server, nama app, tindakan yang bisa
+     * ditempuh, dan pesan dari agent (pesan itu dibuat library kita sendiri,
+     * bukan input user). `available=true` (state `free`/`owned`/`stale`) ⇒ kembali
+     * tanpa efek samping — state `stale` tetap aman karena
+     * `AgentArtifactMaterializer::dropStaleDir()` membuangnya saat job benar-benar
+     * datang.
+     *
+     * **Fail-closed untuk respons yang tak terbaca** (Fix R-3): pada respons 2xx,
+     * `available` **wajib** boolean. Absen/`0`/`"false"`/`null` ⇒ `AgentError`
+     * (`bad_response`) ber-label + pesan aksi — **tidak** dilewati, sebab preflight
+     * yang diam-diam dilewati mengembalikan persis masalah yang ingin dicegah
+     * ("deploy gagal" sesudah record app lahir).
+     *
+     * **Degradasi yang disengaja**: agent versi lama belum punya endpoint ini ⇒
+     * HTTP 404 (`AgentError::NOT_FOUND`) **dilewati**, bukan digagalkan. Create app
+     * yang sebelumnya jalan tidak boleh mati hanya karena control plane lebih dulu
+     * di-update; guard di jalur job tetap berlaku di sana. Galat lain
+     * (transport/TLS/5xx) **tidak** dilewati — create dibatalkan karena
+     * ketersediaan namanya tidak bisa dipastikan.
+     *
+     * @param array<string,mixed> $app
+     * @throws AgentError       agent tidak bisa dihubungi, jawabannya tak terbaca,
+     *                          atau responsnya cacat (selain 404)
+     * @throws RuntimeException nama app tidak bisa dipakai di server agent itu
+     */
+    public function assertAppTargetAvailable(array $app): void
+    {
+        $appId = $this->appId($app);
+        $name = trim((string) ($app['name'] ?? ''));
+
+        $payload = ['id' => $appId, 'name' => $name];
+        $repoUrl = self::repoUrlForPreflight($app);
+        if ($repoUrl !== '') {
+            $payload['repo_url'] = $repoUrl;
+        }
+
+        try {
+            $result = $this->client->post('/apps/check', ['app' => $payload]);
+        } catch (AgentError $e) {
+            if ($e->reason === AgentError::NOT_FOUND) {
+                return;
+            }
+
+            throw new AgentError(
+                $this->label() . ': tidak bisa memastikan ketersediaan nama app di server agent ini: '
+                . $this->sanitize($e->getMessage()),
+                $e->reason
+            );
+        }
+
+        $available = $result['available'] ?? null;
+        if (!is_bool($available)) {
+            // Fail-closed: preflight yang dilewati tanpa alasan = "deploy gagal"
+            // sesudah record app dibuat, persis yang dicegah endpoint ini.
+            throw new AgentError(
+                $this->label() . ': agent tidak mengembalikan status ketersediaan nama app yang bisa dibaca — '
+                . 'perbarui/periksa agent itu lalu coba lagi.',
+                AgentError::BAD_RESPONSE
+            );
+        }
+
+        if ($available) {
+            return;
+        }
+
+        $note = trim((string) ($result['message'] ?? ''));
+        throw new RuntimeException(
+            $this->label() . ': nama app "' . $this->sanitize($name) . '" tidak bisa dipakai di server agent itu. '
+            . 'Pindahkan/hapus direktori app itu di server tersebut, atau pakai nama app lain, lalu deploy ulang.'
+            . ($note !== '' ? ' Catatan dari server agent: ' . $this->sanitize($note) : '')
+        );
+    }
+
+    /**
+     * `repo_url` yang boleh ikut payload preflight — predikat **sama** dengan
+     * `AgentArtifactMaterializer::repoUrlOf()` yang memutuskan clone di agent
+     * (app git/repo, bukan app template). Selain itu `''` (tidak dikirim).
+     *
+     * @param array<string,mixed> $app
+     */
+    private static function repoUrlForPreflight(array $app): string
+    {
+        if (!ComposeSource::isGit($app) || AgentArtifactPackager::templateSlug($app) !== '') {
+            return '';
+        }
+
+        return is_scalar($app['repo_url'] ?? null) ? trim((string) $app['repo_url']) : '';
+    }
+
+    /**
      * Config Nginx app **sebagaimana dirakit di server agent** (`GET /apps/{id}/nginx`)
      * — perakitan memakai library yang sama di sana, jadi path webroot/letsencrypt
      * dan domain efektif server itu yang dipakai, bukan milik control plane.
@@ -2298,16 +2408,19 @@ final class AgentDeployer implements DeployerInterface
         return ['output', $this->sanitize($stripped)];
     }
 
-    /** Sanitasi pesan (buang token server & header `Authorization`). */
+    /**
+     * Sanitasi pesan lewat **satu pintu** {@see AgentError::sanitizeForServer()}:
+     * token, header `Authorization`, signature, **blok PEM**, dan identitas server
+     * (`base_url`/host internal) dibuang. Label server (`Server "nama" (id)`) tetap
+     * di luar sanitasi — ia memang identitas yang dibutuhkan admin di pesan galat.
+     *
+     * Dipakai untuk pesan galat maupun baris log yang diteruskan ke logger worker.
+     * Jangan kembali ke `AgentError::sanitize()` saja: di sana blok PEM (mis. dari
+     * galat TLS/`open_ssl`) dan host internal agent masih bisa lolos ke wizard/log.
+     */
     private function sanitize(string $message): string
     {
-        return AgentError::sanitize($message, $this->token());
-    }
-
-    /** Token server dari dokumen (`token`, alias lama `token_ref`). */
-    private function token(): string
-    {
-        return trim((string) ($this->server['token'] ?? $this->server['token_ref'] ?? ''));
+        return AgentError::sanitizeForServer($message, $this->server);
     }
 
     /**

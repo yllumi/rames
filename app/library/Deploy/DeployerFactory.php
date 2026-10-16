@@ -91,6 +91,48 @@ class DeployerFactory
     }
 
     /**
+     * Preflight **ketersediaan nama app di server target** sebelum record app
+     * dibuat (`AppController::createAndDeploy()` — satu-satunya jalur create app).
+     *
+     * Kenapa di factory: pemilihan perilaku per `kind` harus berada di pintu yang
+     * sama dengan pemilihan deployer ({@see self::createFor()}), supaya tidak ada
+     * jalur create yang lupa memeriksanya.
+     *
+     *  - `kind=agent` ⇒ delegasi ke {@see AgentDeployer::assertAppTargetAvailable()}
+     *    (`POST /apps/check` di server itu). Deployer dibuat lewat
+     *    {@see self::createFor()} sehingga konfigurasi server yang cacat tetap
+     *    fail-fast seperti biasa, dan klien agent bisa disuntikkan uji;
+     *  - `kind=local` ⇒ **no-op yang disengaja**: jalur lokal tidak punya
+     *    preflight direktori (direktori `apps/<name>` lokal dibersihkan
+     *    `createPreview()`, dan materialisasi lokal tidak memakai penanda
+     *    kepemilikan). Ini **bukan** kelalaian — sengaja tidak ada panggilan
+     *    jaringan/Docker sama sekali, jadi create app lokal berperilaku persis
+     *    seperti sebelumnya;
+     *  - `kind` kosong/tak dikenal ⇒ dibiarkan `createFor()` melempar (fail-fast,
+     *    tidak menebak "mungkin lokal").
+     *
+     * @param array<string,mixed> $server dokumen server target (`kind`, `base_url`,
+     *                                      `token`, `tls_cert_pem` untuk agent)
+     * @param array<string,mixed> $app    dokumen app minimal `{id,name}` — id sudah
+     *                                      final (dibuat pemanggil) supaya sama dengan
+     *                                      id yang dipakai jalur job nanti
+     * @param AgentClient|null    $client klien agent yang sudah jadi (seam uji)
+     * @throws RuntimeException nama app tidak bisa dipakai / `kind` tak dikenal /
+     *                          konfigurasi server agent cacat (AgentError)
+     */
+    public static function assertAppTargetAvailable(array $server, array $app, ?AgentClient $client = null): void
+    {
+        if (strtolower(trim((string) ($server['kind'] ?? ''))) === 'local') {
+            return;
+        }
+
+        $deployer = self::createFor($server, $client);
+        if ($deployer instanceof AgentDeployer) {
+            $deployer->assertAppTargetAvailable($app);
+        }
+    }
+
+    /**
      * Pintu tunggal F1+: resolve server pemilik app (`apps.server_id`, kosong ⇒
      * server lokal) lalu pilih deployer-nya.
      *

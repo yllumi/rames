@@ -119,6 +119,10 @@ class AgentDeployerTest extends TestCase
     private const APP_ID = 'app-uji-1';
     private const TOKEN = 'tok-agent-uji-f1-4d7a9c';
 
+    /** Blok PEM + penanda isinya: tidak pernah boleh muncul di pesan/galat UI. */
+    private const PEM_BLOCK = "-----BEGIN CERTIFICATE-----\nQUJDREVGUEVNVU5ERU5HSElKSw==\n-----END CERTIFICATE-----";
+    private const PEM_BODY_MARKER = 'QUJDREVGUEVNVU5ERU5HSElKSw==';
+
     private string $tmp;
 
     /** @var list<array{0:string,1:string}> */
@@ -345,6 +349,75 @@ class AgentDeployerTest extends TestCase
             $this->assertStringContainsString('rebuild', $e->getMessage());
             $this->assertStringContainsString('vps-jakarta-2', $e->getMessage(), 'identitas server wajib ada');
             $this->assertStringNotContainsString(self::TOKEN, $e->getMessage(), 'token tidak boleh bocor ke pesan galat');
+        }
+    }
+
+    /**
+     * N-4: `sanitize()` juga meredaksi **identitas server** — `base_url` lengkap,
+     * `host:port`, dan host saja diganti `server agent`, sedangkan label
+     * `Server "nama" (id)` tetap utuh (admin butuh tahu server mana).
+     *
+     * Uji pemisah ini penting: bila kelak sanitizer diganti versi yang tetap
+     * meredaksi PEM namun tidak meredaksi host, **uji ini** yang memerah (kalau
+     * tidak ada, regresi itu lolos diam-diam).
+     */
+    public function testAgentMessagesRedactTheAgentBaseUrlAndHostButKeepTheLabel(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, (string) json_encode([
+            'code' => 0,
+            'available' => false,
+            'state' => 'blocked',
+            'message' => 'gagal menghubungi https://agent.test:8443/apps/check — cek agent.test:8443 (host agent.test).',
+        ]));
+
+        try {
+            $this->deployer($handler)->assertAppTargetAvailable($this->app());
+            $this->fail('available:false harus membatalkan create app');
+        } catch (RuntimeException $e) {
+            $message = $e->getMessage();
+
+            $this->assertStringNotContainsString('agent.test', $message, 'host internal agent tidak boleh tampil');
+            $this->assertStringNotContainsString('8443', $message, 'port internal agent tidak boleh tampil');
+            $this->assertStringContainsString('server agent', $message, 'alamat diganti penanda netral');
+            $this->assertStringContainsString(
+                'Server "vps-jakarta-2" (srv-2)',
+                $message,
+                'label server (identitas yang dibutuhkan admin) tetap utuh'
+            );
+        }
+    }
+
+    /**
+     * Fix R-1: blok PEM (sertifikat/kunci) dan token yang tercecer di pesan agent
+     * **tidak pernah** sampai ke pesan exception control plane — `sanitize()`
+     * memakai satu pintu {@see AgentError::sanitizeForServer()}.
+     *
+     * Uji ini **GAGAL** bila `AgentDeployer::sanitize()` dikembalikan ke
+     * `AgentError::sanitize($msg, $token)`: blok PEM lolos apa adanya (token tetap
+     * teredaksi) — dibuktikan dengan mutation check: mengganti isi `sanitize()`
+     * ke versi lama ⇒ 2 uji ini merah ("BEGIN CERTIFICATE" muncul di pesan).
+     */
+    public function testAgentJobErrorNeverLeaksPemBlocksOrTheServerToken(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'job_id' => 'job-pem', 'log_offset' => 0]))
+            ->reply(200, json_encode(['code' => 0, 'job' => [
+                'status' => 'error',
+                'error' => "verifikasi sertifikat gagal:\n" . self::PEM_BLOCK . "\ntoken=" . self::TOKEN,
+            ]]))
+            ->reply(200, '');
+
+        try {
+            $this->deployer($handler)->rebuild($this->app(), $this->logger());
+            $this->fail('job error harus melempar exception');
+        } catch (RuntimeException $e) {
+            $this->assertStringNotContainsString('BEGIN CERTIFICATE', $e->getMessage());
+            $this->assertStringNotContainsString(self::PEM_BODY_MARKER, $e->getMessage());
+            $this->assertStringNotContainsString(self::TOKEN, $e->getMessage());
+            $this->assertStringContainsString('verifikasi sertifikat gagal', $e->getMessage(), 'pesan asli (tanpa rahasia) tetap tersampaikan');
+            $this->assertStringContainsString('vps-jakarta-2', $e->getMessage(), 'identitas server tetap ada');
         }
     }
 
@@ -592,6 +665,238 @@ class AgentDeployerTest extends TestCase
         $this->assertSame('POST', $handler->call(0)['method']);
         $this->assertSame('/jobs', $handler->call(0)['path']);
         $this->assertArrayNotHasKey('artifacts', $handler->jsonBody(0));
+    }
+
+    // ==================================================================
+    // (viii) preflight ketersediaan nama app di server agent (POST /apps/check)
+    // ==================================================================
+
+    /**
+     * `available:true` ⇒ lewat tanpa efek samping, dan payload preflight hanya
+     * membawa `{id,name}` (dokumen app penuh bisa memuat `env`/deploy key — tidak
+     * satu pun boleh ikut).
+     */
+    public function testAppTargetAvailableSendsOnlyIdAndNameAndReturnsSilently(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, (string) json_encode([
+            'code' => 0,
+            'op' => 'app_check',
+            'available' => true,
+            'state' => 'free',
+            'message' => '',
+        ]));
+
+        $this->deployer($handler)->assertAppTargetAvailable($this->app());
+
+        $this->assertSame(1, $handler->count());
+        $this->assertSame('POST', $handler->call(0)['method']);
+        $this->assertSame('/apps/check', $handler->call(0)['path']);
+
+        $body = $handler->jsonBody(0);
+        $this->assertSame(self::APP_ID, $body['app']['id'] ?? null);
+        $this->assertSame('demo', $body['app']['name'] ?? null);
+        $this->assertArrayNotHasKey('env', (array) ($body['app'] ?? []), 'payload preflight sempit');
+        $this->assertArrayNotHasKey('ssh_key', (array) ($body['app'] ?? []));
+    }
+
+    /**
+     * Ketiga state yang aman (`free`, `owned`, `stale`) **tidak** boleh menolak
+     * create: mutasi "hanya `free` yang lolos" harus tertangkap uji ini.
+     *
+     * @return array<string,array{0:string}>
+     */
+    public static function safePreflightStates(): array
+    {
+        return ['free' => ['free'], 'owned' => ['owned'], 'stale' => ['stale']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('safePreflightStates')]
+    public function testSafePreflightStatesNeverRefuseCreate(string $state): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, (string) json_encode([
+            'code' => 0,
+            'op' => 'app_check',
+            'available' => true,
+            'state' => $state,
+            'message' => '',
+        ]));
+
+        $this->deployer($handler)->assertAppTargetAvailable($this->app());
+
+        $this->assertSame(1, $handler->count());
+    }
+
+    /**
+     * Fix R-3 (fail-closed): `available` **wajib** boolean. Bentuk yang tak terbaca
+     * tidak boleh dilewati diam-diam (itu mengembalikan "deploy gagal" sesudah
+     * record app lahir), tetapi juga **bukan** `RuntimeException` ramah — ini
+     * masalah agent, jadi `AgentError` ber-label + pesan aksi.
+     *
+     * @return array<string,array{0:string}>
+     */
+    public static function unreadableAvailablePayloads(): array
+    {
+        return [
+            'absen' => [json_encode(['code' => 0, 'op' => 'app_check', 'state' => 'free'])],
+            'angka nol' => [json_encode(['code' => 0, 'available' => 0])],
+            'string "false"' => [json_encode(['code' => 0, 'available' => 'false'])],
+            'null' => [json_encode(['code' => 0, 'available' => null])],
+            'array' => [json_encode(['code' => 0, 'available' => []])],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unreadableAvailablePayloads')]
+    public function testUnreadableAvailabilityAnswerIsFailClosed(string $body): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, $body);
+
+        try {
+            $this->deployer($handler)->assertAppTargetAvailable($this->app());
+            $this->fail('respons agent tanpa `available` boolean harus membatalkan create');
+        } catch (AgentError $e) {
+            $this->assertSame(AgentError::BAD_RESPONSE, $e->reason);
+            $this->assertStringContainsString('vps-jakarta-2', $e->getMessage(), 'identitas server wajib ada');
+            $this->assertStringContainsString('status ketersediaan nama app', $e->getMessage());
+            $this->assertStringNotContainsString(self::TOKEN, $e->getMessage());
+        }
+
+        $this->assertSame(1, $handler->count(), 'preflight tidak diulang');
+    }
+
+    /**
+     * `available:false` ⇒ create dibatalkan (RuntimeException) dengan pesan ramah:
+     * menyebut server target, nama app, tindakannya, plus catatan dari agent —
+     * dan tanpa membocorkan token server.
+     */
+    public function testBlockedAppTargetIsRefusedWithAFriendlyMessage(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, (string) json_encode([
+            'code' => 0,
+            'op' => 'app_check',
+            'available' => false,
+            'state' => 'blocked',
+            'message' => 'Direktori `apps/demo` di server ini sudah ada dan berisi data tanpa penanda kepemilikan Rames.',
+        ]));
+
+        try {
+            $this->deployer($handler)->assertAppTargetAvailable($this->app());
+            $this->fail('available:false harus membatalkan create app');
+        } catch (RuntimeException $e) {
+            // Kontrak: penolakan data = pesan ramah (RuntimeException), BUKAN
+            // AgentError. `AgentError extends RuntimeException`, jadi tanpa
+            // assertion ini mutasi "lempar AgentError" akan lolos.
+            $this->assertNotInstanceOf(AgentError::class, $e, 'penolakan `available:false` bukan galat transport/agent');
+            $this->assertInstanceOf(RuntimeException::class, $e);
+            $this->assertStringContainsString('demo', $e->getMessage(), 'nama app wajib disebut');
+            $this->assertStringContainsString('vps-jakarta-2', $e->getMessage(), 'server target wajib disebut');
+            $this->assertStringContainsString('pakai nama app lain', $e->getMessage());
+            $this->assertStringContainsString('deploy ulang', $e->getMessage());
+            $this->assertStringContainsString('apps/demo', $e->getMessage(), 'catatan dari agent ikut disampaikan');
+            $this->assertStringNotContainsString(self::TOKEN, $e->getMessage(), 'token server tidak boleh bocor');
+        }
+
+        $this->assertSame(1, $handler->count(), 'preflight hanya sekali panggilan, tanpa job');
+    }
+
+    /**
+     * Fix R-1 di jalur preflight: catatan `message` dari agent disanitasi lewat
+     * pintu tunggal — blok PEM tidak boleh ikut ke pesan yang tampil di wizard.
+     */
+    public function testBlockedAppTargetMessageNeverCarriesPemBlocks(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, (string) json_encode([
+            'code' => 0,
+            'available' => false,
+            'state' => 'blocked',
+            'message' => "sisa sertifikat:\n" . self::PEM_BLOCK,
+        ]));
+
+        try {
+            $this->deployer($handler)->assertAppTargetAvailable($this->app());
+            $this->fail('available:false harus membatalkan create app');
+        } catch (RuntimeException $e) {
+            $this->assertStringNotContainsString('BEGIN CERTIFICATE', $e->getMessage());
+            $this->assertStringNotContainsString(self::PEM_BODY_MARKER, $e->getMessage());
+            $this->assertStringContainsString('[redacted]', $e->getMessage(), 'rahasia diganti penanda, bukan sekadar dihapus');
+        }
+    }
+
+    /**
+     * `repo_url` ikut payload preflight **hanya** untuk app repo (predikat sama
+     * dengan `AgentArtifactMaterializer::repoUrlOf()`): agent membandingkan remote
+     * checkout yang sudah ada di sana. App template/compose tidak mengirimnya —
+     * dan `env`/`ssh_key` tidak pernah ikut.
+     */
+    public function testRepoUrlRidesAlongOnlyForRepoApps(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, (string) json_encode(['code' => 0, 'available' => true, 'state' => 'free', 'message' => '']));
+        $handler->reply(200, (string) json_encode(['code' => 0, 'available' => true, 'state' => 'free', 'message' => '']));
+        $deployer = $this->deployer($handler);
+
+        $deployer->assertAppTargetAvailable($this->app());
+        $body = $handler->jsonBody(0);
+        $this->assertSame('https://example.test/demo.git', $body['app']['repo_url'] ?? null);
+        $this->assertArrayNotHasKey('env', (array) $body['app']);
+
+        // App template dengan `repo_url` tertinggal (data lama) ⇒ tidak dikirim.
+        $deployer->assertAppTargetAvailable(['template' => ['slug' => 'uji']] + $this->app());
+        $this->assertArrayNotHasKey('repo_url', (array) $handler->jsonBody(1)['app']);
+    }
+
+    /**
+     * Agent lama (belum punya `POST /apps/check`) menjawab 404 ⇒ preflight
+     * **dilewati**: create app yang sebelumnya jalan tidak boleh mati hanya karena
+     * control plane lebih dulu di-update.
+     */
+    public function testOldAgentWithoutCheckEndpointIsTolerated(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(404, (string) json_encode(['code' => 1, 'error' => 'Endpoint tidak ada.']));
+
+        $this->deployer($handler)->assertAppTargetAvailable($this->app());
+
+        $this->assertSame(1, $handler->count());
+    }
+
+    /**
+     * Galat agent selain 404 (5xx/transport) ⇒ **tidak** boleh dilewati: create
+     * dibatalkan karena ketersediaan namanya tidak bisa dipastikan.
+     */
+    public function testAgentFailureOtherThan404AbortsTheCreate(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(500, (string) json_encode(['code' => 1, 'error' => 'gagal membaca direktori app']));
+
+        try {
+            $this->deployer($handler)->assertAppTargetAvailable($this->app());
+            $this->fail('galat agent selain 404 harus membatalkan create');
+        } catch (AgentError $e) {
+            $this->assertSame(AgentError::SERVER_ERROR, $e->reason);
+            $this->assertStringContainsString('tidak bisa memastikan', $e->getMessage());
+            $this->assertStringContainsString('vps-jakarta-2', $e->getMessage());
+            $this->assertStringNotContainsString(self::TOKEN, $e->getMessage());
+        }
+    }
+
+    /** App tanpa id sah ditolak **sebelum** ada panggilan HTTP apa pun. */
+    public function testAppTargetAvailableRejectsInvalidAppIdWithoutHttpCall(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+
+        try {
+            $this->deployer($handler)->assertAppTargetAvailable(['id' => '../etc/passwd', 'name' => 'demo']);
+            $this->fail('id app tak sah harus ditolak');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('id', $e->getMessage());
+        }
+
+        $this->assertSame(0, $handler->count());
     }
 
     // ==================================================================

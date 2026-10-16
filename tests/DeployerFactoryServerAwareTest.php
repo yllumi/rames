@@ -13,9 +13,23 @@ use app\library\Deploy\ServerResolver;
 use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteDatabase;
 use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Tests\Support\StoreDbFiles;
+
+/**
+ * Deployer "meledak" — diaktifkan lewat `DEPLOYER_CLASS`, tetapi `create()`
+ * langsung melempar. Dipakai membuktikan `assertAppTargetAvailable(kind=local)`
+ * benar-benar **no-op** (tidak menyentuh `DeployerFactory::createFor()`).
+ */
+final class DeployerFactoryExplodingDeployer
+{
+    public static function create(): never
+    {
+        throw new RuntimeException('jalur lokal tidak boleh membuat deployer saat preflight nama app');
+    }
+}
 
 /**
  * Test `DeployerFactory` sadar server (misi `ms-f0-resolver`, diperbarui misi
@@ -186,6 +200,195 @@ class DeployerFactoryServerAwareTest extends TestCase
         } catch (RuntimeException $e) {
             $this->assertStringContainsString('server-hantu', $e->getMessage());
         }
+    }
+
+    // ------------------------------------------------------------------
+    // assertAppTargetAvailable() — preflight nama app (F1 lanjutan)
+    // ------------------------------------------------------------------
+
+    /**
+     * `kind=local` ⇒ **no-op yang disengaja**: jalur lokal membersihkan
+     * `apps/<name>` sendiri di `createPreview()` dan tidak memakai penanda
+     * kepemilikan, jadi tidak ada yang perlu diperiksa.
+     *
+     * Dibuktikan lewat hook `DEPLOYER_CLASS` yang melempar: kalau implementasi
+     * preflight menyentuh `createFor()` (yang menghormati hook itu), uji ini gagal
+     * — jadi bukan sekadar "kebetulan tidak melempar".
+     */
+    public function testAssertAppTargetAvailableIsANoOpForLocalServers(): void
+    {
+        putenv('DEPLOYER_CLASS=' . DeployerFactoryExplodingDeployer::class);
+
+        try {
+            DeployerFactory::assertAppTargetAvailable(
+                ['id' => ServerStore::LOCAL_ID, 'name' => 'local', 'kind' => 'local', 'domain' => 'example.test'],
+                ['id' => 'a1b2c3d4e5f60718', 'name' => 'demo']
+            );
+        } finally {
+            $this->restoreDeployerClass();
+        }
+
+        $this->addToAssertionCount(1);
+    }
+
+    /** `kind=agent` ⇒ benar-benar memanggil `POST /apps/check` di server itu. */
+    public function testAssertAppTargetAvailableCallsTheAgentEndpoint(): void
+    {
+        $handler = new MockHandler([
+            new Response(200, ['Content-Type' => 'application/json'], (string) json_encode([
+                'code' => 0,
+                'op' => 'app_check',
+                'available' => true,
+                'state' => 'free',
+                'message' => '',
+            ])),
+        ]);
+        $client = new AgentClient($this->agentServer(), $handler, 25, new TlsPinMaterializer($this->tlsDir));
+
+        DeployerFactory::assertAppTargetAvailable(
+            $this->agentServer(),
+            ['id' => 'a1b2c3d4e5f60718', 'name' => 'demo'],
+            $client
+        );
+
+        $this->assertNotNull($handler->getLastRequest(), 'endpoint agent wajib dipanggil');
+        $request = $handler->getLastRequest();
+        $this->assertNotNull($request);
+        $this->assertSame('POST', $request->getMethod());
+        $this->assertSame('/apps/check', $request->getUri()->getPath());
+    }
+
+    /**
+     * Server `kind=agent` berkonfigurasi cacat ⇒ fail-fast (bukan "nama app
+     * bebas", dan bukan fallback ke jalur lokal) — tanpa klien, `createFor()`
+     * betul-betul dijalankan sebelum ada efek samping apa pun.
+     */
+    public function testAssertAppTargetAvailableFailsFastOnBrokenAgentConfig(): void
+    {
+        try {
+            DeployerFactory::assertAppTargetAvailable(
+                ['id' => 'srv-2', 'name' => 'vps-jakarta-2', 'kind' => 'agent'], // base_url/token/PEM kosong
+                ['id' => 'a1b2c3d4e5f60718', 'name' => 'demo']
+            );
+            $this->fail('konfigurasi server agent cacat harus ditolak sebelum efek samping');
+        } catch (AgentError $e) {
+            $this->assertStringContainsString('vps-jakarta-2', $e->getMessage());
+        }
+    }
+
+    /** `kind` tak dikenal tetap fail-fast (tidak pernah dianggap "mungkin lokal"). */
+    public function testAssertAppTargetAvailableRejectsUnknownKind(): void
+    {
+        try {
+            DeployerFactory::assertAppTargetAvailable(
+                ['id' => 'srv-9', 'name' => 'vps-aneh', 'kind' => 'kubernetes'],
+                ['id' => 'a1b2c3d4e5f60718', 'name' => 'demo']
+            );
+            $this->fail('kind tak dikenal harus ditolak');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('kubernetes', $e->getMessage());
+        }
+    }
+
+    /**
+     * `available:true` untuk state apa pun (`free`/`owned`/`stale`) ⇒ **tidak**
+     * melempar: mutasi "hanya `free` yang lolos" harus tertangkap uji ini.
+     *
+     * @return array<string,array{0:string}>
+     */
+    public static function availableStates(): array
+    {
+        return ['free' => ['free'], 'owned' => ['owned'], 'stale' => ['stale']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('availableStates')]
+    public function testAvailableStatesNeverAbortTheCreate(string $state): void
+    {
+        [$handler, $client] = $this->preflightClient((string) json_encode([
+            'code' => 0,
+            'op' => 'app_check',
+            'available' => true,
+            'state' => $state,
+            'message' => '',
+        ]));
+
+        DeployerFactory::assertAppTargetAvailable($this->agentServer(), $this->appDoc(), $client);
+
+        $this->assertNotNull($handler->getLastRequest(), 'preflight harus benar-benar memanggil agent');
+    }
+
+    /**
+     * Fix R-3 (fail-closed) di level pintu tunggal: respons tanpa `available`
+     * boolean ⇒ `AgentError` (bukan dilewati, bukan `RuntimeException` ramah).
+     */
+    public function testUnreadableAvailabilityAnswerFailsClosed(): void
+    {
+        [, $client] = $this->preflightClient((string) json_encode(['code' => 0, 'op' => 'app_check', 'state' => 'free']));
+
+        try {
+            DeployerFactory::assertAppTargetAvailable($this->agentServer(), $this->appDoc(), $client);
+            $this->fail('respons tanpa `available` boolean harus membatalkan create');
+        } catch (AgentError $e) {
+            $this->assertSame(AgentError::BAD_RESPONSE, $e->reason);
+            $this->assertStringContainsString('status ketersediaan nama app', $e->getMessage());
+        }
+    }
+
+    /** `available:false` ⇒ RuntimeException ramah, **bukan** AgentError (masalah data, bukan transport). */
+    public function testBlockedTargetThrowsAFriendlyRuntimeException(): void
+    {
+        [, $client] = $this->preflightClient((string) json_encode([
+            'code' => 0,
+            'available' => false,
+            'state' => 'blocked',
+            'message' => 'Direktori `apps/demo` di server ini sudah ada dan berisi data tanpa penanda kepemilikan Rames.',
+        ]));
+
+        try {
+            DeployerFactory::assertAppTargetAvailable($this->agentServer(), $this->appDoc(), $client);
+            $this->fail('available:false harus membatalkan create');
+        } catch (RuntimeException $e) {
+            $this->assertNotInstanceOf(AgentError::class, $e, 'penolakan data tak dikenal bukan galat transport agent');
+            $this->assertStringContainsString('demo', $e->getMessage());
+            $this->assertStringContainsString('vps-jakarta-2', $e->getMessage());
+        }
+    }
+
+    /** Agent lama (404, tanpa endpoint preflight) ⇒ dilewati juga lewat pintu tunggal. */
+    public function testOldAgentWithoutTheEndpointIsTolerated(): void
+    {
+        [, $client] = $this->preflightClient((string) json_encode(['code' => 1, 'error' => 'Endpoint tidak ada.']), 404);
+
+        DeployerFactory::assertAppTargetAvailable($this->agentServer(), $this->appDoc(), $client);
+
+        $this->addToAssertionCount(1);
+    }
+
+    // ------------------------------------------------------------------
+    // Helper
+    // ------------------------------------------------------------------
+
+    /**
+     * Klien agent ber-handler tiruan untuk satu respons preflight.
+     *
+     * @return array{0:MockHandler,1:AgentClient}
+     */
+    private function preflightClient(string $body, int $status = 200): array
+    {
+        $handler = new MockHandler([new Response($status, ['Content-Type' => 'application/json'], $body)]);
+
+        return [$handler, new AgentClient($this->agentServer(), $handler, 25, new TlsPinMaterializer($this->tlsDir))];
+    }
+
+    /** @return array<string,mixed> */
+    private function appDoc(): array
+    {
+        return [
+            'id' => 'a1b2c3d4e5f60718',
+            'name' => 'demo',
+            'source' => 'git',
+            'repo_url' => 'https://example.test/demo.git',
+        ];
     }
 
     // ------------------------------------------------------------------

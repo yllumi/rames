@@ -1546,12 +1546,20 @@ class AppController
      * app. Env sengaja juga dipersist ke `apps.json` agar `EnvManager::sync()`
      * di `LocalDeployer` tidak menghapus file env saat deploy berjalan.
      *
+     * Preflight ketersediaan nama app di server **target** dijalankan paling awal
+     * (`DeployerFactory::assertAppTargetAvailable()`, no-op untuk server lokal):
+     * app di server agent tidak boleh lahir kalau direktori `apps/<name>` di sana
+     * berisi data yang bukan milik Rames.
+     *
      * @param array<string,array>       $services  hasil ComposeParser + resolusi host port
      * @param array<string,string>      $env       map KEY => value (kosong = tanpa env)
      * @param array<string,string>|null $template  metadata asal template (bila dibuat dari template)
      * @param array<string,array{cpus:?float,memory_mb:?int}> $limits batas CPU/memori per service (kosong = tidak diatur)
      * @param string|null               $subdomain label subdomain eksplisit (null/'' = tanpa field, fallback `name`)
      * @param DeployWorkerLauncher|null $launcher  seam uji: peluncur worker (null = bawaan)
+     * @param AgentClient|null          $agentClient seam uji: klien agent untuk preflight
+     *                                  nama app di server target (null = dibangun dari
+     *                                  dokumen server, seperti produksi)
      * @return array{app:array,spawned:bool}
      */
     private function createAndDeploy(
@@ -1564,11 +1572,45 @@ class AppController
         ?array $template = null,
         array $limits = [],
         ?string $subdomain = null,
-        ?DeployWorkerLauncher $launcher = null
+        ?DeployWorkerLauncher $launcher = null,
+        ?AgentClient $agentClient = null
     ): array {
         // Server target app baru (`$pending['server_id']`, absen/kosong = lokal).
         // Fail-fast bila id server sudah tidak ada di registry.
         $server = (new ServerResolver())->resolveForApp($pending);
+
+        // Id app dibuat **di sini**, bukan diserahkan ke `AppStore::create()`:
+        // preflight di bawah harus membandingkan id yang persis sama dengan yang
+        // nanti dipakai penanda kepemilikan/`dropStaleDir()` di server agent.
+        // Formatnya sama dengan `AppStore::create()` (`bin2hex(random_bytes(8))`).
+        $appId = bin2hex(random_bytes(8));
+
+        // Preflight ketersediaan nama/direktori app di server target SEBELUM efek
+        // samping apa pun (termasuk record app di store): server agent yang
+        // direktori `apps/<name>`-nya berisi data tanpa penanda Rames menolak di
+        // sini, sehingga wizard menampilkan pesan yang bisa ditindaklanjuti —
+        // bukan "deploy gagal" sesudah record app terlanjur dibuat. Server lokal
+        // = no-op ({@see DeployerFactory::assertAppTargetAvailable()}).
+        //
+        // Dokumen minimal: hanya field yang dipakai keputusan "nama ini bisa
+        // dipakai?" (`source`/`repo_url`/`template`) + identitas app. `repo_url`
+        // diperlukan agent untuk membandingkan remote checkout yang **sudah ada di
+        // sana** (read-only) — tanpa itu app repo yang pernah di-deploy dilaporkan
+        // bentrok. `env`, deploy key, dan token tidak pernah ikut.
+        $preflightApp = [
+            'id' => $appId,
+            'name' => (string) $pending['name'],
+            'source' => (string) ($pending['source'] ?? ComposeSource::SOURCE_GIT),
+        ];
+        $repoUrl = is_scalar($pending['repo_url'] ?? null) ? trim((string) $pending['repo_url']) : '';
+        if ($repoUrl !== '') {
+            $preflightApp['repo_url'] = $repoUrl;
+        }
+        if (is_array($template) && is_scalar($template['slug'] ?? null) && trim((string) $template['slug']) !== '') {
+            $preflightApp['template'] = ['slug' => trim((string) $template['slug'])];
+        }
+
+        DeployerFactory::assertAppTargetAvailable($server, $preflightApp, $agentClient);
 
         // Fail-fast: pastikan direktori Nginx dapat ditulis sebelum deploy —
         // hanya bila ada port yang akan di-proxy ke domain. App tanpa `ports:`
@@ -1637,6 +1679,7 @@ class AppController
         }
 
         $appData = [
+            'id' => $appId,
             'name' => $pending['name'],
             // Server pemilik app (multi-server F1): selalu eksplisit — kosong
             // ternormalisasi ke server lokal oleh `AppStore::create()`.

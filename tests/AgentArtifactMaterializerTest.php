@@ -451,6 +451,358 @@ class AgentArtifactMaterializerTest extends TestCase
         $this->assertFileExists($this->tmp . '/apps/demo/penting.yml');
     }
 
+    // ==================================================================
+    // Preflight ketersediaan nama app (appDirState) — read-only
+    // ==================================================================
+
+    /**
+     * Direktori belum ada / kosong = `free`: nama app masih bebas. Direktori
+     * kosong sengaja ikut "bebas" karena itu sisa job yang gagal (perilaku yang
+     * sama dengan `ensureOwnedDir()`).
+     */
+    public function testAppDirStateReportsFreeForMissingAndEmptyDirectory(): void
+    {
+        $app = $this->app(['source' => 'compose']);
+
+        $state = $this->materializer->appDirState($app);
+        $this->assertSame('free', $state['state']);
+        $this->assertTrue($state['available']);
+        $this->assertSame('', $state['message']);
+
+        mkdir($this->tmp . '/apps/demo', 0755, true);
+        $state = $this->materializer->appDirState($app);
+        $this->assertSame('free', $state['state'], 'direktori kosong = sisa job gagal, boleh dipakai');
+        $this->assertTrue($state['available']);
+        $this->assertSame('', $state['message']);
+    }
+
+    /** Penanda milik app **ini** ⇒ `owned` (deploy ulang app yang sama = aman). */
+    public function testAppDirStateReportsOwnedWhenMarkerBelongsToThisApp(): void
+    {
+        $app = $this->app(['source' => 'compose']);
+        $this->materializer->materialize($app, [
+            'compose' => "services:\n  web:\n    image: nginx:alpine\n",
+            'compose_name' => 'docker-compose.yml',
+        ]);
+
+        $state = $this->materializer->appDirState($app);
+
+        $this->assertSame('owned', $state['state']);
+        $this->assertTrue($state['available']);
+        $this->assertSame('', $state['message']);
+    }
+
+    /**
+     * Penanda milik id app **lain** ⇒ `stale`: sisa app yang sudah dihapus di
+     * control plane. Preflight menganggapnya bebas karena `dropStaleDir()` (jalur
+     * job) yang membuangnya — bukan preflight (tanpa mutasi).
+     */
+    public function testAppDirStateReportsStaleForAnotherAppsMarker(): void
+    {
+        mkdir($this->tmp . '/apps/demo', 0755, true);
+        file_put_contents(
+            $this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE,
+            '{"app_id":"app-lama","name":"demo"}'
+        );
+        file_put_contents($this->tmp . '/apps/demo/docker-compose.yml', "services:\n  lama:\n    image: nginx:alpine\n");
+
+        $state = $this->materializer->appDirState($this->app(['source' => 'compose']));
+
+        $this->assertSame('stale', $state['state']);
+        $this->assertTrue($state['available']);
+        $this->assertSame('', $state['message']);
+
+        // Tanpa mutasi: direktori sisa tetap apa adanya (dibuang nanti oleh jalur job).
+        $this->assertDirectoryExists($this->tmp . '/apps/demo');
+        $this->assertStringContainsString(
+            'lama:',
+            (string) file_get_contents($this->tmp . '/apps/demo/docker-compose.yml')
+        );
+    }
+
+    /**
+     * Direktori non-kosong **tanpa** penanda = data tak dikenal ⇒ `blocked`:
+     * tidak tersedia, pesannya actionable (sebut `apps/<name>` + tindakan manual),
+     * dan **tidak ada** yang dihapus/ditulis.
+     */
+    public function testAppDirStateBlocksMarkerlessNonEmptyDirectoryWithActionableMessageAndNoMutation(): void
+    {
+        mkdir($this->tmp . '/apps/demo/conf.d', 0755, true);
+        file_put_contents($this->tmp . '/apps/demo/penting.yml', 'jangan hilang');
+        file_put_contents($this->tmp . '/apps/demo/conf.d/site.conf', "server { listen 80; }\n");
+
+        $before = $this->snapshotTree($this->tmp . '/apps/demo');
+
+        $state = $this->materializer->appDirState($this->app(['source' => 'compose']));
+
+        $this->assertSame('blocked', $state['state']);
+        $this->assertFalse($state['available']);
+        $this->assertStringContainsString('apps/demo', $state['message'], 'pesannya menyebut direktori yang bentrok');
+        $this->assertStringContainsString('pindahkan atau hapus', $state['message'], 'tindakan manual harus jelas');
+        $this->assertStringContainsString('deploy ulang', $state['message']);
+        $this->assertStringContainsString('tidak pernah menghapus', $state['message'], 'data tak dikenal tidak dihapus otomatis');
+        $this->assertFileDoesNotExist($this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE);
+
+        // Bukti read-only: seluruh isi (termasuk subdirektori) identik sebelum/sesudah.
+        $this->assertSame($before, $this->snapshotTree($this->tmp . '/apps/demo'));
+    }
+
+    /**
+     * Direktori berisi penanda **tanpa** `app_id` yang terbaca juga diperlakukan
+     * `blocked` (data tak dikenal) — bukan `owned`/`stale` yang menebak pemiliknya.
+     */
+    public function testAppDirStateTreatsUnreadableMarkerOwnershipAsBlocked(): void
+    {
+        mkdir($this->tmp . '/apps/demo', 0755, true);
+        file_put_contents($this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE, '{"name":"demo"}');
+
+        $state = $this->materializer->appDirState($this->app(['source' => 'compose']));
+
+        $this->assertSame('blocked', $state['state']);
+        $this->assertFalse($state['available']);
+        $this->assertNotSame('', $state['message']);
+    }
+
+    /** Nama app tak sah dibiarkan melempar (pemanggil menerjemahkannya jadi 400). */
+    public function testAppDirStateRejectsUnsafeAppName(): void
+    {
+        foreach (['', '  ', '../demo', 'a/b'] as $name) {
+            try {
+                $this->materializer->appDirState(['id' => self::APP_ID, 'name' => $name]);
+                $this->fail("nama app \"{$name}\" harus ditolak");
+            } catch (RuntimeException $e) {
+                $this->assertStringContainsString('name', $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Fix R-2: direktori **tanpa penanda** yang berisi checkout git dengan remote
+     * origin **sama** dengan `repo_url` payload ⇒ `owned`/`available` — cermin
+     * `ensureRepoClone()` yang menerima remote sama (tidak clone ulang) sehingga
+     * jalur job akan lanjut. Probe remote read-only (isi & mtime tak berubah).
+     */
+    public function testAppDirStateTreatsMarkerlessCheckoutWithTheSameRemoteAsOwned(): void
+    {
+        $runner = new MaterializerFakeRunner();
+        $materializer = $this->materializer(new MaterializerFakeGit(), $runner);
+
+        $dir = $this->tmp . '/apps/demo';
+        mkdir($dir . '/.git', 0755, true);
+        file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n");
+        $runner->remotes[$dir] = 'https://example.test/app.git';
+        $before = $this->snapshotTree($dir);
+
+        // Bentuk URL berbeda (akhiran `.git`/garis miring) ⇒ dinormalisasi sama.
+        $state = $materializer->appDirState([
+            'id' => self::APP_ID,
+            'name' => 'demo',
+            'repo_url' => 'https://example.test/app',
+        ]);
+
+        $this->assertSame('owned', $state['state']);
+        $this->assertTrue($state['available']);
+        $this->assertSame('', $state['message']);
+        $this->assertSame(['git', '-C', $dir, 'remote', 'get-url', 'origin'], $runner->commands[0] ?? null);
+        $this->assertSame($before, $this->snapshotTree($dir), 'probe remote tidak mengubah apa pun');
+    }
+
+    /**
+     * Fix R-2: checkout git tanpa penanda tapi remote origin **berbeda** ⇒
+     * `blocked` dengan pesan yang menyebut repo lain (cermin `ensureRepoClone()`)
+     * + tindakan manual. Data tidak disentuh.
+     */
+    public function testAppDirStateBlocksMarkerlessCheckoutWithADifferentRemote(): void
+    {
+        $runner = new MaterializerFakeRunner();
+        $materializer = $this->materializer(new MaterializerFakeGit(), $runner);
+
+        $dir = $this->tmp . '/apps/demo';
+        mkdir($dir . '/.git', 0755, true);
+        file_put_contents($dir . '/penting.yml', 'jangan hilang');
+        $runner->remotes[$dir] = 'https://example.test/repo-lain.git';
+        $before = $this->snapshotTree($dir);
+
+        $state = $materializer->appDirState([
+            'id' => self::APP_ID,
+            'name' => 'demo',
+            'repo_url' => 'https://example.test/app.git',
+        ]);
+
+        $this->assertSame('blocked', $state['state']);
+        $this->assertFalse($state['available']);
+        $this->assertStringContainsString('repo-lain', $state['message'], 'repo lain wajib disebut (cermin pesan ensureRepoClone)');
+        $this->assertStringContainsString('apps/demo', $state['message']);
+        $this->assertStringContainsString('deploy ulang', $state['message']);
+        $this->assertSame($before, $this->snapshotTree($dir), 'read-only');
+    }
+
+    /**
+     * Fix R-2: tanpa `repo_url` di payload, perilaku lama dipertahankan (tanpa
+     * probe git sama sekali) — pemanggil lama tidak berubah, dan preflight tidak
+     * menebak-nebak remote.
+     */
+    public function testAppDirStateWithoutRepoUrlNeverProbesGitAndStaysBlocked(): void
+    {
+        $runner = new MaterializerFakeRunner();
+        $materializer = $this->materializer(new MaterializerFakeGit(), $runner);
+
+        $dir = $this->tmp . '/apps/demo';
+        mkdir($dir . '/.git', 0755, true);
+        file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n");
+        $runner->remotes[$dir] = 'https://example.test/app.git';
+
+        $state = $materializer->appDirState(['id' => self::APP_ID, 'name' => 'demo']);
+
+        $this->assertSame('blocked', $state['state']);
+        $this->assertFalse($state['available']);
+        $this->assertSame([], $runner->commands, 'tanpa repo_url tidak ada proses git yang dijalankan');
+    }
+
+    /**
+     * Pesan `blocked` untuk repo lain **tidak** menggemakan kredensial yang
+     * tertanam di URL repo (`https://user:token@host/…`) — pesan itu tampil di
+     * wizard, dan URL private sering ditulis dengan kredensial di dalamnya.
+     */
+    public function testAppDirStateRepoMessageNeverEchoesUrlCredentials(): void
+    {
+        $runner = new MaterializerFakeRunner();
+        $materializer = $this->materializer(new MaterializerFakeGit(), $runner);
+
+        $dir = $this->tmp . '/apps/demo';
+        mkdir($dir . '/.git', 0755, true);
+        file_put_contents($dir . '/penting.yml', 'jangan hilang');
+        $runner->remotes[$dir] = 'https://user:rahasia@example.test/repo-lain.git';
+
+        $state = $materializer->appDirState([
+            'id' => self::APP_ID,
+            'name' => 'demo',
+            'repo_url' => 'https://user:rahasia-lain@example.test/app.git',
+        ]);
+
+        $this->assertSame('blocked', $state['state']);
+        $this->assertStringContainsString('example.test/repo-lain', $state['message'], 'alamat repo tetap bisa didiagnosis');
+        $this->assertStringNotContainsString('rahasia', $state['message'], 'kredensial URL tidak boleh ikut');
+        $this->assertStringNotContainsString('user:', $state['message']);
+    }
+
+    /**
+     * N-1: pesan `blocked` membuang **seluruh** userinfo URL repo — termasuk
+     * password yang memuat `@` (`https://user:p@ss@host/x.git`) — karena pesan ini
+     * tampil di wizard. Regex lama (`[^/@]*@`, berhenti di `@` pertama) menyisakan
+     * ekor password (`https://ss@host/x.git`); dibuktikan mutation check di
+     * `/tmp` (bukan di repo) sebelum uji ini ditulis.
+     *
+     * @return array<string,array{0:string,1:string,2:array<int,string>}> repo_url, remote, potongan terlarang
+     */
+    public static function repoUrlUserinfoCases(): array
+    {
+        return [
+            'password biasa' => [
+                'https://user:secret@host/x.git',
+                'https://other.test/y.git',
+                ['secret', 'user:'],
+            ],
+            'password memuat @' => [
+                'https://user:p@ss@host/x.git',
+                'https://other.test/y.git',
+                ['ss@', 'p@ss', 'user:'],
+            ],
+            'userinfo tanpa password' => [
+                'http://user@host/x.git',
+                'https://other.test/y.git',
+                ['user@'],
+            ],
+        ];
+    }
+
+    /**
+     * @param array<int,string> $forbidden
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('repoUrlUserinfoCases')]
+    public function testBlockedRepoMessageStripsAllUrlCredentials(string $repoUrl, string $remote, array $forbidden): void
+    {
+        $runner = new MaterializerFakeRunner();
+        $materializer = $this->materializer(new MaterializerFakeGit(), $runner);
+
+        $dir = $this->tmp . '/apps/demo';
+        mkdir($dir . '/.git', 0755, true);
+        file_put_contents($dir . '/penting.yml', 'jangan hilang');
+        $runner->remotes[$dir] = $remote;
+
+        $state = $materializer->appDirState([
+            'id' => self::APP_ID,
+            'name' => 'demo',
+            'repo_url' => $repoUrl,
+        ]);
+
+        $this->assertSame('blocked', $state['state']);
+        $this->assertStringContainsString('other.test/y.git', $state['message'], 'alamat repo tetap bisa didiagnosis');
+        foreach ($forbidden as $needle) {
+            $this->assertStringNotContainsString($needle, $state['message'], "kredensial `{$needle}` tidak boleh ikut");
+        }
+    }
+
+    /**
+     * N-1: URL scp-like (`git@host:org/repo.git`) **tidak** punya skema `://`
+     * sehingga tidak punya userinfo berpassword — bentuknya dibiarkan utuh supaya
+     * pesannya tetap informatif.
+     */
+    public function testBlockedRepoMessageKeepsScpLikeRemoteIntact(): void
+    {
+        $runner = new MaterializerFakeRunner();
+        $materializer = $this->materializer(new MaterializerFakeGit(), $runner);
+
+        $dir = $this->tmp . '/apps/demo';
+        mkdir($dir . '/.git', 0755, true);
+        file_put_contents($dir . '/penting.yml', 'jangan hilang');
+        $runner->remotes[$dir] = 'git@github.com:org/repo.git';
+
+        $state = $materializer->appDirState([
+            'id' => self::APP_ID,
+            'name' => 'demo',
+            'repo_url' => 'https://example.test/app.git',
+        ]);
+
+        $this->assertSame('blocked', $state['state']);
+        $this->assertStringContainsString('git@github.com:org/repo.git', $state['message']);
+        $this->assertStringContainsString('https://example.test/app.git', $state['message']);
+    }
+
+    /**
+     * Fix R-4: path ada tetapi **bukan direktori** (berkas biasa) ⇒ `blocked`
+     * (bukan `free`) — `mkdir()` di jalur job akan gagal. Berkasnya dibiarkan utuh.
+     */
+    public function testAppDirStateBlocksAPlainFileWithTheSameName(): void
+    {
+        $dir = $this->tmp . '/apps/demo';
+        file_put_contents($dir, 'bukan direktori');
+
+        $state = $this->materializer->appDirState(['id' => self::APP_ID, 'name' => 'demo']);
+
+        $this->assertSame('blocked', $state['state']);
+        $this->assertFalse($state['available']);
+        $this->assertStringContainsString('apps/demo', $state['message']);
+        $this->assertStringContainsString('bukan direktori', $state['message']);
+        $this->assertStringContainsString('deploy ulang', $state['message']);
+        $this->assertFileExists($dir, 'berkas tidak boleh dihapus/ditimpa');
+        $this->assertSame('bukan direktori', (string) file_get_contents($dir));
+    }
+
+    /** Fix R-4: symlink dangling bernama sama juga `blocked` (tidak bisa di-`mkdir`). */
+    public function testAppDirStateBlocksADanglingSymlinkWithTheSameName(): void
+    {
+        $dir = $this->tmp . '/apps/demo';
+        symlink($this->tmp . '/tidak-ada', $dir);
+
+        $state = $this->materializer->appDirState(['id' => self::APP_ID, 'name' => 'demo']);
+
+        $this->assertSame('blocked', $state['state']);
+        $this->assertFalse($state['available']);
+        $this->assertStringContainsString('bukan direktori', $state['message']);
+        $this->assertTrue(is_link($dir), 'symlink dibiarkan apa adanya');
+    }
+
     /** `forget()` = artefak app dibuang: direktori, deploy key (+ `.pub`), managed env. */
     public function testForgetRemovesAppDirectoryDeployKeyAndManagedEnv(): void
     {
@@ -686,6 +1038,66 @@ class AgentArtifactMaterializerTest extends TestCase
         );
     }
 
+    /** N-1b: pesan "Clone repo … gagal" tidak memuat userinfo URL repo. */
+    public function testCloneFailureMessageStripsUrlUserinfo(): void
+    {
+        $git = new MaterializerFakeGit();
+        $git->fail = true;
+        $git->failMessage = 'fatal: repository not found';
+        $materializer = $this->materializer($git, new MaterializerFakeRunner());
+
+        try {
+            $materializer->materialize($this->app([
+                'source' => 'git',
+                'repo_url' => 'https://user:secret@example.test/privat.git',
+            ]), []);
+            $this->fail('clone yang gagal tidak boleh dianggap sukses');
+        } catch (RuntimeException $e) {
+            $message = $e->getMessage();
+            $this->assertStringContainsString('https://example.test/privat.git', $message, 'host/path tetap terbaca');
+            $this->assertStringContainsString('gagal di server agent ini', $message);
+            $this->assertStringNotContainsString('secret', $message, 'password URL bocor ke pesan clone gagal');
+            $this->assertStringNotContainsString('user:', $message);
+        }
+
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/demo', 'direktori app tidak boleh setengah jadi');
+    }
+
+    /**
+     * N-1b: pesan jalur job `ensureRepoClone()` ("sudah berisi repo lain …") juga
+     * membuang **seluruh** userinfo URL repo — kelas kebocoran yang sama dengan
+     * pesan preflight (`appDirState()`), kini memakai helper yang sama
+     * (`redactRepoUrl()`). Host/path tetap terbaca supaya bisa didiagnosis.
+     */
+    public function testForeignRepoMessageStripsUrlUserinfoOnTheJobPath(): void
+    {
+        $git = new MaterializerFakeGit();
+        $runner = new MaterializerFakeRunner();
+        $materializer = $this->materializer($git, $runner);
+        mkdir($this->tmp . '/apps/demo', 0777, true);
+        file_put_contents($this->tmp . '/apps/demo/penting.yml', 'jangan hilang');
+        $runner->remotes[$this->tmp . '/apps/demo'] = 'https://user:secret@example.test/repo-lain.git';
+
+        try {
+            $materializer->materialize($this->app([
+                'source' => 'git',
+                'repo_url' => 'https://user:p@ss@example.test/app.git',
+            ]), []);
+            $this->fail('direktori repo milik repo lain harus ditolak');
+        } catch (RuntimeException $e) {
+            $message = $e->getMessage();
+            $this->assertStringContainsString('repo lain', $message);
+            $this->assertStringContainsString('example.test/repo-lain.git', $message, 'host/path remote tetap terbaca');
+            $this->assertStringContainsString('example.test/app.git', $message, 'host/path repo_url tetap terbaca');
+            foreach (['secret', 'p@ss', 'ss@', 'user:', 'user@'] as $needle) {
+                $this->assertStringNotContainsString($needle, $message, "userinfo `{$needle}` bocor ke pesan jalur job");
+            }
+        }
+
+        $this->assertSame([], $git->clones, 'tidak boleh clone di atas repo lain');
+        $this->assertFileExists($this->tmp . '/apps/demo/penting.yml');
+    }
+
     /** Direktori kosong (sisa job gagal) ⇒ boleh dipakai untuk clone. */
     public function testEmptyAppDirIsClonedInto(): void
     {
@@ -901,6 +1313,34 @@ class AgentArtifactMaterializerTest extends TestCase
             'auth_method' => 'none',
             'ssh_key' => null,
         ], $overrides);
+    }
+
+    /**
+     * Sidik isi direktori (nama relatif ⇒ isi/mode/**mtime**) untuk membuktikan
+     * sebuah operasi read-only: urutan & isi harus identik sebelum/sesudah.
+     *
+     * `mtime` ikut disidik supaya "menulis ulang berkas dengan isi yang sama" juga
+     * tertangkap sebagai mutasi (bukan lolos hanya karena `sha1` isinya sama).
+     *
+     * @return array<string,string>
+     */
+    private function snapshotTree(string $dir): array
+    {
+        $out = [];
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+        foreach ($items as $item) {
+            $path = $item->getPathname();
+            $rel = substr($path, strlen($dir) + 1);
+            $out[$rel] = $item->isDir()
+                ? 'dir:' . substr(sprintf('%o', $item->getPerms()), -4) . ':' . $item->getMTime()
+                : 'file:' . sha1((string) file_get_contents($path)) . ':' . $item->getMTime() . ':' . $item->getSize();
+        }
+        ksort($out);
+
+        return $out;
     }
 
     private static function removeTree(string $dir): void

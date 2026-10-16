@@ -19,6 +19,7 @@ use app\library\Template\TemplatePullService;
 use app\library\Template\TemplatePullState;
 use app\library\Update\AgentVersionGate;
 use InvalidArgumentException;
+use RuntimeException;
 use support\Request;
 use Webman\Http\Response;
 
@@ -36,6 +37,7 @@ use Webman\Http\Response;
  * GET  /apps/{id}                                        → {code:0, app:{…}} | 404
  * GET  /apps/{id}/nginx                                  → {code:0, config} (F2)
  * POST /nginx/check                                      → {code:0, op:'nginx_check'} (F2)
+ * POST /apps/check   {app:{id, name, repo_url?}}           → {code:0, op:'app_check', available, state, message} (F1 lanjutan)
  * GET  /backups/dump?volume=…&offset=N&limit=M           → potongan berkas .sql (F4 lanjutan)
  * ```
  *
@@ -52,7 +54,13 @@ use Webman\Http\Response;
  *    supaya control plane tidak perlu menyalin logika/path Nginx;
  *  - `POST /nginx/check` — preflight `ensureWritable()` server itu. Bukan job
  *    karena `DeployerInterface::ensureWritable()` tidak membawa app, sedangkan
- *    `POST /jobs` selalu butuh app (proyeksi + log per-app).
+ *    `POST /jobs` selalu butuh app (proyeksi + log per-app);
+ *  - `POST /apps/check` — preflight **ketersediaan nama/direktori app**
+ *    (`apps/<name>`) di server ini, dipakai control plane **sebelum** ia menulis
+ *    record app baru ({@see \app\library\Deploy\AgentDeployer::assertAppTargetAvailable()}).
+ *    Bukan job karena ia read-only dan justru harus berjalan saat belum ada job:
+ *    proyeksi + log per-app tidak berlaku, dan menjadikannya job berarti
+ *    "deploy gagal" tetap muncul setelah record app terlanjur dibuat.
  *
  * Alur `POST /jobs` (mediator tipis — logika di library):
  *   1. `op` wajib ada di allowlist {@see self::OPS} (mode `cli/deploy.php` yang
@@ -211,6 +219,22 @@ class AgentJobController
 
     /** Bentuk domain yang boleh masuk payload (FQDN huruf kecil, tanpa skema/path/port). */
     private const DOMAIN_PATTERN = '/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/';
+
+    /**
+     * Bentuk id app yang boleh masuk payload preflight (`POST /apps/check`).
+     * Pola yang sama dipakai {@see \app\library\Agent\AgentAppProjection::normalizeId()}
+     * & {@see \app\library\Agent\AgentJobStore} — id dipakai sebagai nama berkas
+     * (penanda direktori, rekaman job), jadi bentuknya dibatasi sebelum menyentuh
+     * disk.
+     */
+    private const APP_ID_PATTERN = '/^[A-Za-z0-9_-]{1,128}$/';
+
+    /**
+     * Plafon panjang `repo_url` di payload preflight. URL lebih panjang dari ini
+     * bukan alamat repo yang wajar, dan nilainya hanya dipakai sebagai pembanding
+     * remote (bukan path/I/O) — jadi diabaikan, bukan dijadikan alasan gagal.
+     */
+    private const MAX_REPO_URL_LENGTH = 2048;
 
     private const DOMAIN_MAX_LENGTH = 253;
 
@@ -728,6 +752,78 @@ class AgentJobController
     }
 
     /**
+     * `POST /apps/check` (F1 lanjutan) — preflight **ketersediaan nama app**:
+     * apakah direktori artefak `apps/<name>` di server ini bisa dipakai app yang
+     * akan dibuat, dipakai `AgentDeployer::assertAppTargetAvailable()` dari
+     * `AppController::createAndDeploy()` **sebelum** record app ditulis.
+     *
+     * Bukan job, dan memang tidak boleh jadi job: tidak ada proyeksi app
+     * (app-nya belum ada di control plane), tidak ada worker untuk di-spawn, dan
+     * tidak ada rekaman job yang perlu — endpoint ini **read-only** dan selesai
+     * dalam satu pembacaan direktori ({@see AgentArtifactMaterializer::appDirState()}).
+     * Menjadikannya job justru salah: control plane butuh jawabannya sebelum
+     * membuat efek samping apa pun, bukan setelah.
+     *
+     * Payload sempit: `{app:{id,name}}` plus `repo_url` **opsional** (hanya bila
+     * app ini app repo) — `name` dipakai menghitung direktori, `id` dipakai
+     * membandingkan penanda kepemilikan, dan `repo_url` dipakai membandingkan
+     * remote checkout yang sudah ada di server ini (metadata non-rahasia;
+     * `env`/deploy key/token **tidak pernah** diminta maupun digemakan). Pesan
+     * galat tidak pernah menggemakan isi payload (aturan yang sama dengan
+     * `create()`), dan kegagalan tak terduga tetap dijawab JSON (bukan halaman HTML).
+     */
+    public function checkApp(Request $request): Response
+    {
+        $payload = json_decode((string) $request->rawBody(), true);
+        if (!is_array($payload)) {
+            return $this->error('Body request harus JSON objek yang valid.', 'invalid_json', 400);
+        }
+
+        $app = $payload['app'] ?? null;
+        $appId = is_array($app) && is_scalar($app['id'] ?? null) ? trim((string) $app['id']) : '';
+        $appName = is_array($app) && is_scalar($app['name'] ?? null) ? trim((string) $app['name']) : '';
+        if (preg_match(self::APP_ID_PATTERN, $appId) !== 1 || $appName === '') {
+            // Pesan sengaja tidak menggemakan nilai id/name yang dikirim klien.
+            return $this->error('`app.id` dan `app.name` wajib diisi dengan bentuk yang sah.', 'invalid_request', 400);
+        }
+
+        // `repo_url` hanya dipakai library sebagai pembanding remote (read-only),
+        // bukan I/O: nilai absurd diabaikan (bukan alasan menggagalkan create).
+        $repoUrl = is_array($app) && is_scalar($app['repo_url'] ?? null) ? trim((string) $app['repo_url']) : '';
+        if (strlen($repoUrl) > self::MAX_REPO_URL_LENGTH) {
+            $repoUrl = '';
+        }
+
+        // Bentuk nama diperiksa lebih dulu (tanpa I/O): nama tak sah adalah
+        // kesalahan pemanggil ⇒ 400, sedangkan kegagalan pembacaan direktori
+        // (izin, config path) adalah kegagalan sisi agent ⇒ 500.
+        try {
+            AgentArtifactMaterializer::appDirName(['name' => $appName]);
+        } catch (RuntimeException) {
+            return $this->error('`app.name` tidak sah sebagai nama direktori di server ini.', 'invalid_request', 400);
+        }
+
+        $probe = ['id' => $appId, 'name' => $appName];
+        if ($repoUrl !== '') {
+            $probe['repo_url'] = $repoUrl;
+        }
+
+        try {
+            $state = $this->materializer()->appDirState($probe);
+        } catch (\Throwable $e) {
+            return $this->error($this->sanitizeMessage($e->getMessage()), 'app_check_failed', 500);
+        }
+
+        return json([
+            'code' => 0,
+            'op' => 'app_check',
+            'available' => $state['available'],
+            'state' => $state['state'],
+            'message' => $state['message'],
+        ]);
+    }
+
+    /**
      * `GET /backups/volumes` (F4) — baris ringkasan volume backup **server ini**
      * (target + strategi + state container + jumlah snapshot), dibaca dari daemon
      * & repo restic server ini (`BackupJobRunner::volumeRows()` ⇒ library yang
@@ -861,11 +957,17 @@ class AgentJobController
      * Pesan galat dari library untuk respons API mesin: dipangkas (≤300 karakter)
      * supaya respons tetap ringkas. Dipakai apa adanya — endpoint ini hanya bisa
      * diakses pemegang token agent, dan tidak ada nilai sensitif di pesan
-     * `NginxConfigGenerator` (yang dilaporkan justru path + saran izin).
+     * `NginxConfigGenerator` / `AgentArtifactMaterializer` (yang dilaporkan justru
+     * path + saran izin).
+     *
+     * Fallback `'Operasi gagal di server agent.'` **sengaja generik** dan dipakai
+     * beberapa endpoint (`checkNginx`, `checkApp`): pesan asli bisa kosong (mis.
+     * `RuntimeException` tanpa argumen), dan pesan yang menyebut endpoint tertentu
+     * akan menyesatkan pemanggil berikutnya.
      */
     private function sanitizeMessage(string $message): string
     {
-        return substr(trim($message), 0, 300) ?: 'Operasi Nginx gagal di server agent.';
+        return substr(trim($message), 0, 300) ?: 'Operasi gagal di server agent.';
     }
 
     /**

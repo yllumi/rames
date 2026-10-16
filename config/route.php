@@ -105,6 +105,12 @@ if ($ramesMode === 'agent') {
         Route::get('/apps/{id}/nginx', [AgentJobController::class, 'renderNginx']);
         Route::post('/nginx/check', [AgentJobController::class, 'checkNginx']);
 
+        // Preflight create app (F1 lanjutan): ketersediaan direktori artefak
+        // `apps/<name>` di server ini **sebelum** control plane membuat record
+        // app, supaya create gagal cepat di wizard (bukan "deploy gagal"
+        // sesudah record app terlanjur ada). Read-only, bukan job.
+        Route::post('/apps/check', [AgentJobController::class, 'checkApp']);
+
         // F3a multi-server (plan §5, operasional per server): **log container**
         // & **terminal** app yang berjalan di server ini. Sesi terminal hidup di
         // sini (`DockerExec`); control plane mem-proxy aliran SSE-nya apa adanya

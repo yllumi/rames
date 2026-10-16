@@ -417,6 +417,11 @@ final class AgentArtifactMaterializer
      *
      * Idempoten: clone kedua tidak menghapus/menimpa apa pun (tidak ada clone).
      *
+     * **Higienitas kredensial**: semua pesan di sini mencetak URL repo lewat
+     * {@see self::redactRepoUrl()} — userinfo (`user:pass@`, termasuk password yang
+     * memuat `@`) tidak pernah tampil di pesan yang dibaca user/log; host & path
+     * tetap ada supaya pesannya bisa didiagnosis.
+     *
      * @param array<string,mixed> $app
      * @param string|null $sshKeyContent isi deploy key job ini (hanya untuk sanitasi pesan galat)
      * @throws RuntimeException clone gagal / direktori bentrok / direktori tak bisa dipasang
@@ -429,9 +434,13 @@ final class AgentArtifactMaterializer
 
         if ($remote !== '') {
             if (!self::sameRepoUrl($remote, $repoUrl)) {
+                // Kedua URL masuk pesan yang bisa dibaca user ⇒ **wajib** lewat
+                // `redactRepoUrl()`: userinfo (`user:pass@`) tidak pernah tampil,
+                // host/path tetap ada supaya pesannya bisa didiagnosis.
                 throw new RuntimeException(
-                    'Direktori artefak app (' . $dir . ') sudah berisi repo lain (' . $remote . '), bukan "'
-                    . $repoUrl . '". Dibiarkan utuh — pindahkan/hapus direktori itu lebih dulu (penimpaan '
+                    'Direktori artefak app (' . $dir . ') sudah berisi repo lain ('
+                    . self::redactRepoUrl($remote) . '), bukan "' . self::redactRepoUrl($repoUrl)
+                    . '". Dibiarkan utuh — pindahkan/hapus direktori itu lebih dulu (penimpaan '
                     . 'diam-diam dilarang).'
                 );
             }
@@ -476,7 +485,7 @@ final class AgentArtifactMaterializer
         } catch (\Throwable $e) {
             $this->removeTree($tmp);
             throw new RuntimeException(
-                'Clone repo "' . $repoUrl . '" gagal di server agent ini: '
+                'Clone repo "' . self::redactRepoUrl($repoUrl) . '" gagal di server agent ini: '
                 . self::sanitizeError($e->getMessage(), [AgentArtifactPackager::KEY_SSH_KEY => $sshKeyContent])
                 . ' Direktori sementara dibersihkan; perbaiki akses repo (deploy key di repo / cabang) lalu '
                 . 'deploy ulang.',
@@ -675,6 +684,141 @@ final class AgentArtifactMaterializer
         }
 
         return true;
+    }
+
+    /**
+     * Keadaan direktori artefak `apps/<name>` **di server ini** — preflight
+     * **read-only** untuk create app di control plane (`POST /apps/check`).
+     *
+     * Kenapa perlu: jalur materialisasi memang menolak direktori milik orang lain
+     * (`ensureOwnedDir()` / `ensureRepoClone()`), tetapi penolakan itu baru terjadi
+     * **sesudah** record app dibuat di control plane — user melihatnya sebagai
+     * "deploy gagal", bukan sebagai "nama app tidak bisa dipakai". Preflight ini
+     * memindahkan penolakan itu ke depan, sebelum ada efek samping apa pun.
+     *
+     * Keadaan **aman** bagi app ini (cermin keputusan jalur job):
+     *  - `free`  — path belum ada / direktori kosong (sisa job yang gagal);
+     *  - `owned` — penanda kepemilikannya milik **app ini** (deploy ulang app yang
+     *              sama), **atau** direktori tanpa penanda yang berisi checkout git
+     *              dengan remote origin **sama** dengan `repo_url` app
+     *              (⟷ `ensureRepoClone()` menerimanya: remote sama ⇒ tidak clone
+     *              ulang, deploy lanjut). Yang kedua hanya diperiksa bila payload
+     *              membawa `repo_url`;
+     *  - `stale` — penanda kepemilikannya milik **id app lain**: sisa app yang
+     *              sudah dihapus di control plane ⇒ nanti dibuang
+     *              {@see self::dropStaleDir()} saat job benar-benar datang
+     *              (keputusan pembuangan tetap milik pemanggil jalur job).
+     *
+     * `blocked` = jalur job pasti menolaknya, jadi create harus berhenti lebih
+     * dulu. Tiga sebab, semuanya **tidak pernah** dihapus otomatis Rames:
+     *  1. path ada tetapi **bukan direktori** (berkas/symlink dangling) — `mkdir`
+     *     di jalur job akan gagal;
+     *  2. direktori non-kosong tanpa penanda kepemilikan yang **sah**, dan (bila
+     *     `repo_url` dikirim) bukan checkout git ber-remote sama — cermin pesan
+     *     `ensureRepoClone()` yang menyebut repo lain, atau data tak dikenal;
+     *  3. penanda ada tetapi `app_id`-nya tidak terbaca (data tak dikenal).
+     *
+     * ## Probe remote (read-only, tanpa jaringan)
+     * Perbandingan remote memakai `repoRemote()` yang sama dengan jalur job
+     * (`git -C <dir> remote get-url origin`, `REMOTE_TIMEOUT`), dan **hanya**
+     * dijalankan bila: direktori ada & non-kosong, **tanpa** penanda kepemilikan,
+     * `{dir}/.git` ada (cek murah sebelum menyentuh proses), **dan** payload
+     * membawa `repo_url` non-kosong. Tanpa salah satu syarat itu tidak ada proses
+     * yang dijalankan sama sekali. `.git` yang berupa **berkas** (git worktree /
+     * submodule) sengaja tidak diprobe: hasilnya `blocked` — fail-safe, karena
+     * kepemilikannya tidak bisa dipastikan dengan murah.
+     *
+     * Tanpa mutasi apa pun: tidak ada `mkdir`/`unlink`/`rename`/penulisan penanda,
+     * dan isi direktori (termasuk `mtime`) dibiarkan apa adanya (dibuktikan uji).
+     *
+     * @param array<string,mixed> $app minimal `{id,name}`; `repo_url` opsional
+     *                                 (metadata non-rahasia — JANGAN kirim `env`,
+     *                                 deploy key, atau token ke sini)
+     * @return array{state:string,available:bool,message:string}
+     * @throws RuntimeException nama app tidak sah (pemanggil menerjemahkannya jadi 400)
+     */
+    public function appDirState(array $app): array
+    {
+        $name = self::appDirName($app);
+        $dir = $this->appDir($name);
+
+        // (1) Path ada tetapi bukan direktori: berkas biasa atau symlink dangling.
+        // `mkdir()` di jalur job akan gagal, jadi ini `blocked` — bukan `free`.
+        if (!is_dir($dir) && (file_exists($dir) || is_link($dir))) {
+            return [
+                'state' => 'blocked',
+                'available' => false,
+                'message' => 'Di server ini sudah ada berkas bernama `apps/' . $name . '` (bukan direktori), '
+                    . 'sehingga direktori artefak app tidak bisa dibuat. Rames tidak pernah menghapus data yang '
+                    . 'tidak dikenalinya: pindahkan atau hapus berkas `apps/' . $name . '` secara manual di '
+                    . 'server agent itu, lalu deploy ulang — atau pakai nama app lain.',
+            ];
+        }
+
+        if (!is_dir($dir) || $this->isEmptyDir($dir)) {
+            return ['state' => 'free', 'available' => true, 'message' => ''];
+        }
+
+        $marker = $this->readMarker($dir);
+        $owner = is_array($marker) && is_scalar($marker['app_id'] ?? null)
+            ? trim((string) $marker['app_id'])
+            : '';
+
+        if ($marker !== null && $owner !== '') {
+            return $owner === (string) ($app['id'] ?? '')
+                ? ['state' => 'owned', 'available' => true, 'message' => '']
+                : ['state' => 'stale', 'available' => true, 'message' => ''];
+        }
+
+        // (2) Direktori non-kosong tanpa penanda yang sah. Bila pemanggil mengirim
+        // `repo_url`, keputusannya harus sama dengan `ensureRepoClone()`: checkout
+        // git ber-remote **sama** diterima jalur job ⇒ bukan `blocked`.
+        $repoUrl = is_scalar($app['repo_url'] ?? null) ? trim((string) $app['repo_url']) : '';
+        if ($repoUrl !== '' && is_dir($dir . '/.git')) {
+            $remote = $this->repoRemote($dir);
+            if ($remote !== '' && self::sameRepoUrl($remote, $repoUrl)) {
+                return ['state' => 'owned', 'available' => true, 'message' => ''];
+            }
+            if ($remote !== '') {
+                return [
+                    'state' => 'blocked',
+                    'available' => false,
+                    'message' => 'Direktori `apps/' . $name . '` di server ini sudah berisi repo lain ('
+                        . self::redactRepoUrl($remote) . '), bukan "' . self::redactRepoUrl($repoUrl)
+                        . '". Rames tidak menimpa checkout orang lain '
+                        . 'diam-diam: pindahkan atau hapus direktori `apps/' . $name . '` secara manual di '
+                        . 'server agent itu, lalu deploy ulang — atau pakai nama app lain.',
+                ];
+            }
+        }
+
+        return [
+            'state' => 'blocked',
+            'available' => false,
+            'message' => 'Direktori `apps/' . $name . '` di server ini sudah ada dan berisi data tanpa '
+                . 'penanda kepemilikan Rames. Rames tidak pernah menghapus data yang tidak dikenalinya: '
+                . 'pindahkan atau hapus direktori `apps/' . $name . '` secara manual di server agent itu, '
+                . 'lalu deploy ulang — atau pakai nama app lain.',
+        ];
+    }
+
+    /**
+     * URL repo **tanpa userinfo** (`user:password@`) untuk pesan yang bisa dibaca
+     * user: URL repo private sering ditulis dengan kredensial di dalamnya, dan
+     * pesan ini tampil di wizard/log. Sisanya dibiarkan apa adanya supaya pesannya
+     * tetap bisa didiagnosis.
+     *
+     * Seluruh userinfo dibuang — **termasuk password yang memuat `@`**
+     * (`https://user:p@ss@host/x.git`): pola `[^/]*@` (serakah, berhenti di `/`
+     * pertama) memakan sampai `@` **terakhir** sebelum path. Pola `[^/@]*@` salah:
+     * ia berhenti di `@` pertama sehingga menyisakan ekor password.
+     *
+     * URL scp-like (`git@host:org/repo.git`) tidak punya skema `://`, jadi tidak
+     * punya userinfo berpassword — regex ini sengaja **tidak** menyentuhnya.
+     */
+    private static function redactRepoUrl(string $url): string
+    {
+        return (string) preg_replace('#^([a-z][a-z0-9+.-]*://)[^/]*@#i', '$1', $url);
     }
 
     /**

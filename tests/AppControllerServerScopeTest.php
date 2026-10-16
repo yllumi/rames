@@ -6,6 +6,7 @@ namespace Tests;
 use app\controller\AppController;
 use app\library\Agent\AgentArtifactPackager;
 use app\library\Agent\AgentClient;
+use app\library\Agent\AgentError;
 use app\library\Agent\TlsPinMaterializer;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ComposeSource;
@@ -507,6 +508,16 @@ class AppControllerServerScopeTest extends TestCase
         $create = $this->methodBody('createAndDeploy');
         $this->assertStringContainsString('ServerResolver::isLocal($server)', $create, 'ensureWritable hanya untuk server lokal');
         $this->assertStringContainsString("'server_id' => AppStore::normalizeServerId(", $create);
+
+        // Preflight nama app di server target wajib dijalankan SEBELUM record app
+        // ditulis (satu tempat, semua jalur create lewat sini).
+        $this->assertStringContainsString('DeployerFactory::assertAppTargetAvailable(', $create);
+        $this->assertStringContainsString('(new AppStore())->create($appData)', $create);
+        $this->assertLessThan(
+            (int) strpos($create, '(new AppStore())->create($appData)'),
+            (int) strpos($create, 'DeployerFactory::assertAppTargetAvailable('),
+            'preflight ketersediaan nama app wajib berjalan sebelum record app dibuat'
+        );
     }
 
     /**
@@ -695,6 +706,19 @@ class AppControllerServerScopeTest extends TestCase
         $name = 'app-agent';
         $this->writeCompose($name, "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"80\"\n");
 
+        // Preflight ketersediaan nama app (`POST /apps/check`) dijalankan
+        // `createAndDeploy()` SEBELUM record app ditulis — agen palsu menjawab
+        // "bebas" supaya jalur sukses tetap bisa diperiksa di sini.
+        $preflight = new AppControllerServerFakeAgent();
+        $preflight->reply(200, (string) json_encode([
+            'code' => 0,
+            'op' => 'app_check',
+            'available' => true,
+            'state' => 'free',
+            'message' => '',
+        ]));
+        $preflightClient = new AgentClient($server, $preflight, 25, new TlsPinMaterializer($this->tmp . '/agent-tls'));
+
         $result = $this->invoke('createAndDeploy', [
             $this->pending($name, self::AGENT_ID),
             $this->services(30500),
@@ -706,9 +730,24 @@ class AppControllerServerScopeTest extends TestCase
             [],
             null,
             $this->fakeLauncher(),
+            $preflightClient,
         ]);
 
         $app = $result['app'];
+
+        // Preflight benar-benar berjalan ke agent sebelum record ditulis, dan id
+        // yang diperiksanya = id app yang lahir (id dibuat di control plane, bukan
+        // oleh `AppStore::create()`), sehingga sama dengan id penanda di agent.
+        $this->assertSame(1, count($preflight->calls), 'hanya preflight yang bicara ke agent pada tahap create');
+        $this->assertSame('/apps/check', $preflight->call(0)['path']);
+        $this->assertSame('POST', $preflight->call(0)['method']);
+        $this->assertSame($app['id'], $preflight->jsonBody(0)['app']['id'] ?? null);
+        $this->assertSame($name, $preflight->jsonBody(0)['app']['name'] ?? null);
+        $this->assertArrayNotHasKey(
+            'repo_url',
+            (array) ($preflight->jsonBody(0)['app'] ?? []),
+            'app compose tidak mengirim `repo_url` (payload preflight tetap sempit untuk app non-repo)'
+        );
 
         $this->assertTrue($result['spawned']);
         $this->assertSame(self::AGENT_ID, $app['server_id'], 'app harus lahir di server yang dipilih admin');
@@ -745,6 +784,163 @@ class AppControllerServerScopeTest extends TestCase
         $this->assertSame(self::AGENT_ID, $handler->jsonBody(0)['app']['server_id']);
         $this->assertSame('running', $deployed['status'], 'state eksekusi ditarik dari agent');
         $this->assertNotSame([], $lines, 'log agent diteruskan ke logger worker');
+    }
+
+    /**
+     * Preflight nama app **menolak** ⇒ create dibatalkan **sebelum** record app
+     * ditulis di store control plane: tidak ada baris `apps.json`, tidak ada worker
+     * yang di-spawn, tidak ada artefak lokal — dan pesan galat sampai ke pemanggil
+     * (wizard menampilkan pesan itu apa adanya). Inilah bukti "gagal cepat sebelum
+     * build", bukan "deploy gagal" sesudah record app lahir.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testCreateOnAgentServerIsRefusedBeforeAnyRecordWhenNameIsBlocked(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $server = $this->agent(self::AGENT_ID);
+        $name = 'app-bentrok';
+
+        // Direktori `apps/<name>` di agent berisi data tanpa penanda kepemilikan
+        // Rames ⇒ agent menjawab `available:false` (state `blocked`).
+        $handler = new AppControllerServerFakeAgent();
+        $handler->reply(200, (string) json_encode([
+            'code' => 0,
+            'op' => 'app_check',
+            'available' => false,
+            'state' => 'blocked',
+            'message' => 'Direktori `apps/' . $name . '` di server ini sudah ada dan berisi data tanpa '
+                . 'penanda kepemilikan Rames. Pindahkan atau hapus direktori itu manual, lalu deploy ulang.',
+        ]));
+        $client = new AgentClient($server, $handler, 25, new TlsPinMaterializer($this->tmp . '/agent-tls'));
+
+        try {
+            $this->invoke('createAndDeploy', [
+                $this->pending($name, self::AGENT_ID),
+                $this->services(30500),
+                'web',
+                30500,
+                '',
+                [],
+                null,
+                [],
+                null,
+                $this->fakeLauncher(),
+                $client,
+            ]);
+            $this->fail('preflight yang menolak harus menggagalkan create');
+        } catch (\Throwable $e) {
+            // Kontrak: penolakan preflight = pesan ramah (RuntimeException), BUKAN
+            // AgentError — AgentError hanya untuk masalah transport/agent.
+            $this->assertNotInstanceOf(AgentError::class, $e);
+            $this->assertInstanceOf(RuntimeException::class, $e);
+            $this->assertStringContainsString($name, $e->getMessage(), 'nama app wajib disebut');
+            $this->assertStringContainsString(self::AGENT_ID, $e->getMessage(), 'server target wajib disebut');
+            $this->assertStringContainsString('pakai nama app lain', $e->getMessage());
+            $this->assertStringContainsString(
+                'apps/' . $name,
+                $e->getMessage(),
+                'catatan dari agent (tindakan yang bisa ditempuh) ikut disampaikan'
+            );
+        }
+
+        // Tidak ada record app yang tertulis — id yang diperiksa preflight pun
+        // tidak pernah masuk store.
+        $this->assertSame([], (new AppStore())->all(), 'tidak boleh ada record app sesudah preflight menolak');
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'worker deploy tidak boleh di-spawn');
+        $this->assertSame([], $this->appFiles($name), 'tidak ada artefak lokal yang ditulis');
+
+        // Hanya preflight yang bicara ke agent (tanpa job deploy).
+        $this->assertSame(1, count($handler->calls));
+        $this->assertSame('/apps/check', $handler->call(0)['path']);
+        $this->assertMatchesRegularExpression(
+            '/^[0-9a-f]{16}$/',
+            (string) ($handler->jsonBody(0)['app']['id'] ?? ''),
+            'id app sudah final (dibuat control plane) saat preflight dijalankan'
+        );
+    }
+
+    /**
+     * Agent **lama** (belum punya `POST /apps/check`) menjawab 404 ⇒ preflight
+     * dilewati dan create berjalan seperti sebelumnya: record app tertulis, worker
+     * di-spawn, tanpa galat ke user. Guard di jalur job tetap berlaku di sana.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testCreateOnAgentServerContinuesWhenAgentHasNoCheckEndpoint(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $server = $this->agent(self::AGENT_ID);
+        $name = 'app-agent-lama';
+
+        $handler = new AppControllerServerFakeAgent();
+        $handler->reply(404, (string) json_encode(['code' => 1, 'error' => 'Endpoint tidak ada.']));
+        $client = new AgentClient($server, $handler, 25, new TlsPinMaterializer($this->tmp . '/agent-tls'));
+
+        $result = $this->invoke('createAndDeploy', [
+            $this->pending($name, self::AGENT_ID),
+            $this->services(30500),
+            'web',
+            30500,
+            '',
+            [],
+            null,
+            [],
+            null,
+            $this->fakeLauncher(),
+            $client,
+        ]);
+
+        $app = $result['app'];
+
+        $this->assertTrue($result['spawned'], 'create tetap jalan untuk agent lama (degradasi yang disengaja)');
+        $this->assertSame(self::AGENT_ID, (new AppStore())->find($app['id'])['server_id'] ?? null);
+        $this->assertCount(1, $GLOBALS['RAMES_SPAWN']);
+        $this->assertSame(1, count($handler->calls), 'hanya preflight yang dicoba (endpoint tidak ada)');
+        $this->assertSame('/apps/check', $handler->call(0)['path']);
+    }
+
+    /**
+     * Galat agent selain 404 (mis. 500) ⇒ preflight **tidak** dilewati: create
+     * dibatalkan dengan `AgentError` (masalah transport/agent, bukan penolakan
+     * data) dan **tidak ada** record app/worker.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testCreateOnAgentServerIsAbortedWhenPreflightFails(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $server = $this->agent(self::AGENT_ID);
+        $name = 'app-agent-error';
+
+        $handler = new AppControllerServerFakeAgent();
+        $handler->reply(500, (string) json_encode(['code' => 1, 'error' => 'gagal membaca direktori app']));
+        $client = new AgentClient($server, $handler, 25, new TlsPinMaterializer($this->tmp . '/agent-tls'));
+
+        try {
+            $this->invoke('createAndDeploy', [
+                $this->pending($name, self::AGENT_ID),
+                $this->services(30500),
+                'web',
+                30500,
+                '',
+                [],
+                null,
+                [],
+                null,
+                $this->fakeLauncher(),
+                $client,
+            ]);
+            $this->fail('galat agent selain 404 harus membatalkan create');
+        } catch (AgentError $e) {
+            $this->assertSame(AgentError::SERVER_ERROR, $e->reason);
+            $this->assertStringContainsString('tidak bisa memastikan', $e->getMessage());
+            $this->assertStringContainsString(self::AGENT_ID, $e->getMessage());
+        }
+
+        $this->assertSame([], (new AppStore())->all(), 'tidak ada record app saat preflight gagal');
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'worker deploy tidak boleh di-spawn');
+        $this->assertSame([], $this->appFiles($name));
     }
 
     // ==================================================================
@@ -818,8 +1014,18 @@ class AppControllerServerScopeTest extends TestCase
     public function testAgentRepoAppCreateSkipsLocalArtifactsAndStillEnqueuesDeploy(): void
     {
         $this->installStubs(self::ADMIN);
-        $this->agent(self::AGENT_ID);
+        $server = $this->agent(self::AGENT_ID);
         $name = 'app-repo-agent';
+
+        // Preflight nama app di agent (agen palsu menjawab "bebas").
+        $preflight = new AppControllerServerFakeAgent();
+        $preflight->reply(200, (string) json_encode([
+            'code' => 0,
+            'op' => 'app_check',
+            'available' => true,
+            'state' => 'free',
+            'message' => '',
+        ]));
 
         $result = $this->invoke('createAndDeploy', [
             $this->repoPending($name, self::AGENT_ID),
@@ -832,6 +1038,7 @@ class AppControllerServerScopeTest extends TestCase
             [],
             null,
             $this->fakeLauncher(),
+            new AgentClient($server, $preflight, 25, new TlsPinMaterializer($this->tmp . '/agent-tls')),
         ]);
 
         $app = $result['app'];
@@ -852,6 +1059,15 @@ class AppControllerServerScopeTest extends TestCase
             $app['compose_files']
         );
         $this->assertSame([['service' => 'web', 'container' => 80, 'host' => 31500]], $app['host_ports']);
+
+        // Preflight app repo membawa `repo_url` supaya agent bisa membandingkan
+        // remote checkout yang sudah ada di sana — payload tetap sempit
+        // (`id`,`name`,`repo_url`), tanpa `env`/kunci.
+        $body = $preflight->jsonBody(0);
+        $this->assertSame('https://example.test/app.git', $body['app']['repo_url'] ?? null);
+        $this->assertSame($app['id'], $body['app']['id'] ?? null);
+        $this->assertArrayNotHasKey('env', (array) $body['app']);
+        $this->assertArrayNotHasKey('ssh_key', (array) $body['app']);
     }
 
     /**

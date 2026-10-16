@@ -12,6 +12,7 @@ use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Git\GitService;
 use app\library\Storage\AppStore;
 use app\library\Storage\ServerStore;
+use app\library\Support\ProcessRunner;
 use app\library\Template\TemplateCatalog;
 use app\library\Template\TemplatePullService;
 use app\library\Template\TemplatePullState;
@@ -71,6 +72,34 @@ final class AgentJobControllerFakeGit extends GitService
 }
 
 /**
+ * `ProcessRunner` tiruan untuk probe read-only `git remote get-url origin` di
+ * endpoint preflight (`POST /apps/check`): tanpa proses nyata, remote per
+ * direktori diatur lewat {@see self::$remotes}.
+ *
+ * Dideklarasikan di berkas uji ini supaya tetap dapat di-autoload saat dijalankan
+ * dengan `--filter` (kelas di berkas uji lain tidak ikut PSR-4).
+ */
+final class AgentJobControllerFakeRunner extends ProcessRunner
+{
+    /** @var array<string,string> direktori ⇒ URL remote `origin` */
+    public array $remotes = [];
+
+    /** @var array<int,array<int,string>> */
+    public array $commands = [];
+
+    public function run(array $command, ?string $cwd = null, int $timeout = 300, array $env = [], ?string $stdin = null): array
+    {
+        $this->commands[] = $command;
+        $dir = (string) ($command[2] ?? '');
+        $remote = $this->remotes[$dir] ?? null;
+
+        return $remote === null
+            ? ['code' => 128, 'stdout' => '', 'stderr' => 'fatal: not a git repository', 'timedOut' => false]
+            : ['code' => 0, 'stdout' => $remote . "\n", 'stderr' => '', 'timedOut' => false];
+    }
+}
+
+/**
  * Endpoint job async server agent (`AgentJobController`, plan §4.1/§4.3 — F1).
  *
  * Yang dikunci:
@@ -104,6 +133,9 @@ class AgentJobControllerTest extends TestCase
     private AgentJobController $controller;
     private AgentJobControllerFakeGit $git;
 
+    /** Seam uji probe remote (`git remote get-url origin`) di preflight. */
+    private AgentJobControllerFakeRunner $runner;
+
     /** @var array<int,array<int,string>> */
     private array $spawned = [];
 
@@ -136,6 +168,7 @@ class AgentJobControllerTest extends TestCase
         $this->jobs = new AgentJobStore($this->tmp . '/jobs');
         $this->projection = new AgentAppProjection($this->tmp . '/rames.sqlite');
         $this->git = new AgentJobControllerFakeGit();
+        $this->runner = new AgentJobControllerFakeRunner();
         $this->controller = new AgentJobController(
             $this->jobs,
             $this->launcher(),
@@ -976,7 +1009,7 @@ class AgentJobControllerTest extends TestCase
         }
 
         $this->assertEqualsCanonicalizing(
-            ['__construct', 'create', 'show', 'log', 'showApp', 'renderNginx', 'checkNginx', 'backupVolumes', 'backupSnapshots', 'backupDump'],
+            ['__construct', 'create', 'show', 'log', 'showApp', 'renderNginx', 'checkNginx', 'checkApp', 'backupVolumes', 'backupSnapshots', 'backupDump'],
             get_class_methods(AgentJobController::class)
         );
 
@@ -987,6 +1020,187 @@ class AgentJobControllerTest extends TestCase
         $this->assertStringContainsString("Route::get('/apps/{id}'", $source);
         $this->assertStringContainsString("Route::get('/apps/{id}/nginx'", $source);
         $this->assertStringContainsString("Route::post('/nginx/check'", $source);
+        $this->assertStringContainsString("Route::post('/apps/check'", $source);
+    }
+
+    // ==================================================================
+    // POST /apps/check (preflight nama app — read-only, bukan job)
+    // ==================================================================
+
+    /**
+     * Direktori yang aman bagi app ini — `free` (belum ada/kosong), `owned`
+     * (milik app ini), `stale` (sisa app yang sudah dihapus) — dijawab
+     * `available:true`: create app tidak boleh dihalangi oleh ketiganya.
+     */
+    public function testCheckAppAnswersAvailableForFreeOwnedAndStaleDirectories(): void
+    {
+        $app = ['id' => self::APP_ID, 'name' => 'demo'];
+
+        [$status, , $body] = $this->decode($this->controller->checkApp(
+            $this->request('POST', '/apps/check', (string) json_encode(['app' => $app]))
+        ));
+        $this->assertSame(200, $status);
+        $this->assertSame(0, $body['code']);
+        $this->assertSame('app_check', $body['op']);
+        $this->assertTrue($body['available']);
+        $this->assertSame('free', $body['state']);
+        $this->assertSame('', $body['message']);
+
+        // `owned`: penanda kepemilikan milik app ini sendiri.
+        mkdir($this->tmp . '/apps/demo', 0777, true);
+        file_put_contents($this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE, (string) json_encode([
+            'app_id' => self::APP_ID,
+            'name' => 'demo',
+        ]));
+        [, , $body] = $this->decode($this->controller->checkApp(
+            $this->request('POST', '/apps/check', (string) json_encode(['app' => $app]))
+        ));
+        $this->assertTrue($body['available']);
+        $this->assertSame('owned', $body['state']);
+        $this->assertSame('', $body['message']);
+
+        // `stale`: penanda milik id app lain (sisa app yang sudah dihapus).
+        file_put_contents($this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE, (string) json_encode([
+            'app_id' => 'app-lama',
+            'name' => 'demo',
+        ]));
+        [, , $body] = $this->decode($this->controller->checkApp(
+            $this->request('POST', '/apps/check', (string) json_encode(['app' => $app]))
+        ));
+        $this->assertTrue($body['available']);
+        $this->assertSame('stale', $body['state']);
+        $this->assertSame('', $body['message']);
+
+        // Read-only mutlak: tanpa spawn, tanpa rekaman job, tanpa mutasi direktori.
+        $this->assertSame([], $this->spawned, 'preflight tidak pernah meluncurkan worker');
+        $this->assertSame([], $this->jobs->all(), 'preflight bukan job');
+        $this->assertFileExists($this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE);
+    }
+
+    /**
+     * Direktori non-kosong tanpa penanda = data tak dikenal ⇒ `available:false`
+     * beserta `state`/`message` yang bisa ditindaklanjuti operator (bukan pesan
+     * kosong, dan bukan penghapusan diam-diam).
+     */
+    public function testCheckAppReportsBlockedDirectoryWithStateAndMessage(): void
+    {
+        mkdir($this->tmp . '/apps/demo', 0777, true);
+        file_put_contents($this->tmp . '/apps/demo/docker-compose.yml', "services:\n  lain:\n    image: nginx:alpine\n");
+
+        [$status, , $body] = $this->decode($this->controller->checkApp(
+            $this->request('POST', '/apps/check', (string) json_encode(['app' => ['id' => self::APP_ID, 'name' => 'demo']]))
+        ));
+
+        $this->assertSame(200, $status);
+        $this->assertSame(0, $body['code']);
+        $this->assertFalse($body['available']);
+        $this->assertSame('blocked', $body['state']);
+        $this->assertNotSame('', (string) $body['message']);
+        $this->assertStringContainsString('apps/demo', (string) $body['message']);
+        $this->assertStringContainsString('deploy ulang', (string) $body['message']);
+
+        $this->assertFileExists($this->tmp . '/apps/demo/docker-compose.yml', 'data tak dikenal tidak dihapus');
+        $this->assertFileDoesNotExist($this->tmp . '/apps/demo/' . AgentArtifactMaterializer::MARKER_FILE);
+        $this->assertSame([], $this->jobs->all());
+        $this->assertSame([], $this->spawned);
+    }
+
+    /** Payload tidak sah ⇒ 400 `invalid_request` tanpa menggemakan isinya. */
+    public function testCheckAppRejectsInvalidPayloadWithoutEchoingIt(): void
+    {
+        $cases = [
+            'bukan-json' => ['bukan-json', 'invalid_json'],
+            'tanpa app' => [(string) json_encode(['op' => 'deploy']), 'invalid_request'],
+            'id kosong' => [(string) json_encode(['app' => ['name' => 'demo']]), 'invalid_request'],
+            'id tak sah' => [(string) json_encode(['app' => ['id' => '../etc/passwd', 'name' => 'demo']]), 'invalid_request'],
+            'name kosong' => [(string) json_encode(['app' => ['id' => self::APP_ID]]), 'invalid_request'],
+            'name spasi' => [(string) json_encode(['app' => ['id' => self::APP_ID, 'name' => '   ']]), 'invalid_request'],
+            'name traversal' => [(string) json_encode(['app' => ['id' => self::APP_ID, 'name' => '../demo']]), 'invalid_request'],
+        ];
+
+        foreach ($cases as $label => [$payload, $reason]) {
+            [$status, , $body, $raw] = $this->decode($this->controller->checkApp(
+                $this->request('POST', '/apps/check', $payload)
+            ));
+
+            $this->assertSame(400, $status, $label . ' harus ditolak 400');
+            $this->assertSame(1, $body['code'], $label);
+            $this->assertSame($reason, $body['reason'], $label);
+            $this->assertStringNotContainsString('etc/passwd', $raw, $label . ': pesan tidak boleh menggemakan payload');
+            $this->assertStringNotContainsString('../demo', $raw, $label . ': pesan tidak boleh menggemakan payload');
+        }
+
+        $this->assertSame([], $this->jobs->all());
+        $this->assertSame([], $this->spawned);
+    }
+
+    /** Path direktori app yang seharusnya bebas tetap tidak berubah karena preflight. */
+    public function testCheckAppDoesNotCreateAnythingForAFreeName(): void
+    {
+        $this->decode($this->controller->checkApp(
+            $this->request('POST', '/apps/check', (string) json_encode(['app' => ['id' => self::APP_ID, 'name' => 'demo']]))
+        ));
+
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/demo', 'preflight tidak boleh membuat direktori app');
+        $this->assertSame([], (new AppStore($this->tmp . '/rames.sqlite'))->all(), 'tanpa proyeksi app');
+    }
+
+    /**
+     * Fix R-2 lewat endpoint: `repo_url` diteruskan ke library, sehingga direktori
+     * tanpa penanda yang berisi checkout git **remote sama** dijawab
+     * `available:true`/`owned` — bukan `blocked` yang membuat create gagal padahal
+     * jalur job akan melanjutkan.
+     */
+    public function testCheckAppForwardsRepoUrlSoSameRemoteCheckoutIsAvailable(): void
+    {
+        $dir = $this->tmp . '/apps/demo';
+        mkdir($dir . '/.git', 0777, true);
+        file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n");
+        $this->runner->remotes[$dir] = 'https://example.test/app.git';
+
+        [$status, , $body] = $this->decode($this->controller->checkApp($this->request('POST', '/apps/check', (string) json_encode([
+            'app' => ['id' => self::APP_ID, 'name' => 'demo', 'repo_url' => 'https://example.test/app.git'],
+        ]))));
+
+        $this->assertSame(200, $status);
+        $this->assertTrue($body['available']);
+        $this->assertSame('owned', $body['state']);
+        $this->assertSame([['git', '-C', $dir, 'remote', 'get-url', 'origin']], $this->runner->commands);
+
+        // Remote berbeda ⇒ `blocked` (create harus berhenti di sini).
+        $this->runner->remotes[$dir] = 'https://example.test/repo-lain.git';
+        [, , $body] = $this->decode($this->controller->checkApp($this->request('POST', '/apps/check', (string) json_encode([
+            'app' => ['id' => self::APP_ID, 'name' => 'demo', 'repo_url' => 'https://example.test/app.git'],
+        ]))));
+        $this->assertFalse($body['available']);
+        $this->assertSame('blocked', $body['state']);
+        $this->assertStringContainsString('repo-lain', (string) $body['message']);
+    }
+
+    /**
+     * `repo_url` absurd (di luar plafon) diabaikan — hanya dipakai sebagai
+     * pembanding remote, jadi ia tidak boleh menggagalkan create **maupun**
+     * memicu proses git.
+     */
+    public function testCheckAppIgnoresAbsurdRepoUrlWithoutProbingGit(): void
+    {
+        $dir = $this->tmp . '/apps/demo';
+        mkdir($dir . '/.git', 0777, true);
+        file_put_contents($dir . '/penting.yml', 'jangan hilang');
+        $this->runner->remotes[$dir] = 'https://example.test/app.git';
+
+        [$status, , $body] = $this->decode($this->controller->checkApp($this->request('POST', '/apps/check', (string) json_encode([
+            'app' => [
+                'id' => self::APP_ID,
+                'name' => 'demo',
+                'repo_url' => 'https://example.test/' . str_repeat('a', 4096) . '.git',
+            ],
+        ]))));
+
+        $this->assertSame(200, $status);
+        $this->assertFalse($body['available']);
+        $this->assertSame('blocked', $body['state']);
+        $this->assertSame([], $this->runner->commands, 'URL di luar plafon tidak boleh memicu probe git');
     }
 
     // ==================================================================
@@ -1021,7 +1235,8 @@ class AgentJobControllerTest extends TestCase
             $this->tmp . '/database',
             $this->tmp . '/database/keys',
             new TemplateCatalog($this->tmp . '/templates'),
-            $this->git
+            $this->git,
+            $this->runner
         );
     }
 

@@ -195,6 +195,7 @@ class AgentModeTest extends TestCase
                 'OPTIONS /adminer/{container}[/{path:.*}]',
                 'PATCH /adminer/{container}[/{path:.*}]',
                 'POST /adminer/{container}[/{path:.*}]',
+                'POST /apps/check',
                 'POST /files/delete',
                 'POST /files/extract',
                 'POST /files/mkdir',
@@ -252,6 +253,12 @@ class AgentModeTest extends TestCase
         $this->assertSame(
             [AgentJobController::class, 'checkNginx'],
             $routes['pairs']['POST /nginx/check']->getCallback()
+        );
+        // Preflight create app (F1 lanjutan): ketersediaan direktori `apps/<name>`
+        // di server ini sebelum control plane menulis record app.
+        $this->assertSame(
+            [AgentJobController::class, 'checkApp'],
+            $routes['pairs']['POST /apps/check']->getCallback()
         );
         // Operasional per server (F3a): log container + terminal yang berjalan di
         // server ini (sesi hidup di agent, control plane mem-proxy aliran SSE-nya).
@@ -387,9 +394,10 @@ class AgentModeTest extends TestCase
             $routes['pairs']['GET /healthz']->getCallback()
         );
         $this->assertCount(
-            38,
+            39,
             $routes['definitions'],
-            'route agent F0 (diagnostik) + F1 (3 job + proyeksi app) + F2 (nginx) + F3a (log + 5 terminal)'
+            'route agent F0 (diagnostik) + F1 (3 job + proyeksi app + preflight nama app) + F2 (nginx)'
+            . ' + F3a (log + 5 terminal)'
             . ' + F3b/F3c (10 file manager + 2 monitoring) + F3d (1 database + 1 adminer + 7 network/volume)'
             . ' + F4 (3 route data: daftar volume backup + daftar snapshot + unduh dump bertahap)'
         );
