@@ -224,6 +224,112 @@ class ComposeBindsTest extends TestCase
     }
 
     // ==================================================================
+    // create_host_path (bind long syntax)
+    // ==================================================================
+
+    /**
+     * `collect()` melaporkan flag `create` dari bind long syntax:
+     * `create_host_path: false` (bool maupun string) → false, tanpa kunci / true
+     * dan short syntax → true.
+     */
+    public function testCollectReportsCreateHostPathFlag(): void
+    {
+        $this->writeCompose("services:\n  web:\n    image: nginx:alpine\n    volumes:\n"
+            . "      - type: bind\n        source: ./a\n        target: /a\n"
+            . "        bind:\n          create_host_path: false\n"
+            . "      - type: bind\n        source: ./b\n        target: /b\n"
+            . "      - type: bind\n        source: ./c\n        target: /c\n"
+            . "        bind: {create_host_path: \"false\"}\n"
+            . "      - ./d:/d\n");
+
+        $create = [];
+        foreach (ComposeBinds::collect($this->tmp, ['docker-compose.yml'], []) as $bind) {
+            $create[basename($bind['path'])] = $bind['create'];
+        }
+
+        $this->assertFalse($create['a'], 'create_host_path: false → tidak boleh dibuat dashboard');
+        $this->assertTrue($create['b'], 'long syntax tanpa kunci → perilaku lama (dibuat)');
+        $this->assertFalse($create['c'], 'string "false" diperlakukan konservatif sebagai larangan');
+        $this->assertTrue($create['d'], 'short syntax → perilaku lama (dibuat)');
+    }
+
+    /**
+     * Cacat T2: bind `create_host_path: false` di DALAM direktori app tidak boleh
+     * dibuatkan diam-diam (dulu `mkdir -p` membuatnya sehingga `up` "sukses"
+     * dengan mount kosong). Harus masuk `missing` + hint.
+     */
+    public function testEnsureDoesNotCreateHostPathFalseInsideAppDirectory(): void
+    {
+        $this->writeCompose("services:\n  web:\n    image: nginx:alpine\n    volumes:\n"
+            . "      - type: bind\n        source: ./sub/hilang\n        target: /workspace\n"
+            . "        bind:\n          create_host_path: false\n");
+
+        $result = ComposeBinds::ensure($this->tmp, ['docker-compose.yml'], []);
+
+        $this->assertSame([], $result['created']);
+        $this->assertCount(1, $result['missing']);
+        $this->assertStringContainsString($this->tmp . '/sub/hilang', $result['missing'][0]);
+        $this->assertStringContainsString('create_host_path: false', $result['missing'][0]);
+        $this->assertDirectoryDoesNotExist($this->tmp . '/sub');
+        $this->assertStringContainsString(
+            'Bind mount di compose belum siap',
+            ComposeBinds::missingHint($result['missing'])
+        );
+    }
+
+    /**
+     * Regresi: `create_host_path: true`, long syntax TANPA kunci, dan short syntax
+     * tetap dibuat seperti sebelumnya.
+     */
+    public function testEnsureStillCreatesForCreateHostPathTrueAndMissingKey(): void
+    {
+        $this->writeCompose("services:\n  web:\n    image: nginx:alpine\n    volumes:\n"
+            . "      - type: bind\n        source: ./dibuat-true\n        target: /a\n"
+            . "        bind:\n          create_host_path: true\n"
+            . "      - type: bind\n        source: ./dibuat-tanpa-kunci\n        target: /b\n"
+            . "      - ./dibuat-short:/c\n"
+            . "volumes:\n  data:\n    driver: local\n    driver_opts:\n"
+            . "      type: none\n      device: \${PWD}/dibuat-device\n      o: bind\n");
+
+        $result = ComposeBinds::ensure($this->tmp, ['docker-compose.yml'], ['PWD' => $this->tmp]);
+
+        $this->assertDirectoryExists($this->tmp . '/dibuat-true');
+        $this->assertDirectoryExists($this->tmp . '/dibuat-tanpa-kunci');
+        $this->assertDirectoryExists($this->tmp . '/dibuat-short');
+        $this->assertDirectoryExists($this->tmp . '/dibuat-device');
+        $this->assertEqualsCanonicalizing(
+            [
+                $this->tmp . '/dibuat-device',
+                $this->tmp . '/dibuat-true',
+                $this->tmp . '/dibuat-tanpa-kunci',
+                $this->tmp . '/dibuat-short',
+            ],
+            $result['created']
+        );
+        $this->assertSame([], $result['missing']);
+    }
+
+    /**
+     * `create_host_path: false` di LUAR direktori app: tetap `missing`, tidak
+     * dibuat (perilaku lama untuk path luar direktori app juga tidak membuat).
+     */
+    public function testEnsureDoesNotCreateHostPathFalseOutsideAppDirectory(): void
+    {
+        $outside = sys_get_temp_dir() . '/rames-binds-nocreate-' . bin2hex(random_bytes(4));
+        $this->writeCompose("services:\n  web:\n    image: nginx:alpine\n    volumes:\n"
+            . "      - type: bind\n        source: {$outside}/sub\n        target: /workspace\n"
+            . "        bind:\n          create_host_path: false\n");
+
+        $result = ComposeBinds::ensure($this->tmp, ['docker-compose.yml'], []);
+
+        $this->assertSame([], $result['created']);
+        $this->assertCount(1, $result['missing']);
+        $this->assertStringContainsString($outside . '/sub', $result['missing'][0]);
+        $this->assertStringContainsString('create_host_path: false', $result['missing'][0]);
+        $this->assertDirectoryDoesNotExist($outside);
+    }
+
+    // ==================================================================
     // missingHint()
     // ==================================================================
 

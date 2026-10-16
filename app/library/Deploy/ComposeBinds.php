@@ -26,7 +26,19 @@ use Symfony\Component\Yaml\Yaml;
  *  - dotfile (`.env`, `.gitignore`) & nama ber-ekstensi (`nginx.conf`, `app.json`)
  *    → dianggap **file** → TIDAK dibuat, hanya dilaporkan (file harus diunggah
  *    lewat tab Compose atau dibuat manual di host);
- *  - path hasil resolve yang keluar dari direktori app → TIDAK dibuat, hanya dilaporkan.
+ *  - path hasil resolve yang keluar dari direktori app → TIDAK dibuat, hanya dilaporkan;
+ *  - bind **long syntax** yang menyatakan `bind: {create_host_path: false}` →
+ *    TIDAK dibuat, hanya dilaporkan (deklarasi compose dihormati; lihat di bawah).
+ *
+ * Semantik `create_host_path` (bind long syntax): template boleh mematikan
+ * pembuatan sumber otomatis lewat `bind: {create_host_path: false}` — niatnya
+ * "deploy WAJIB gagal bila path salah tulis", bukan "dibuatkan diam-diam oleh
+ * dashboard". Tanpa menghormati opsi itu, `mkdir -p` di sini bisa membuat
+ * subdirektori **di dalam direktori app** (mis. `OPENCODE_PROJECTS_DIR` yang
+ * salah ketik ke `<appdir>/sub/hilang`), `up` sukses, dan app berjalan dengan
+ * mount kosong — persis mode kegagalan yang dicegah `create_host_path: false`.
+ * Short syntax (tidak punya opsi ini) dan long syntax tanpa kunci / dengan
+ * `create_host_path: true` tetap dibuat seperti sebelumnya.
  *
  * Substitusi variabel mengikuti docker compose: `${PWD}` = direktori app (nilai
  * yang dipakai local deployer saat menjalankan compose), `${VAR}`/`$VAR` dari
@@ -42,8 +54,10 @@ final class ComposeBinds
      * @param string            $dir   direktori app (absolut)
      * @param array<int,string> $files nama file compose relatif terhadap $dir
      * @param array<string,string> $env nilai untuk substitusi variabel (termasuk `PWD`)
-     * @return array<int,array{raw:string,path:string,dir:bool,file:string,type:string}>
-     *         `type`: `volume` (device volume bernama) | `bind` (bind mount service)
+     * @return array<int,array{raw:string,path:string,dir:bool,create:bool,file:string,type:string}>
+     *         `type`: `volume` (device volume bernama) | `bind` (bind mount service);
+     *         `create`: `false` bila compose menyatakan `create_host_path: false`
+     *         (source tidak boleh dibuat otomatis oleh dashboard)
      */
     public static function collect(string $dir, array $files, array $env = []): array
     {
@@ -78,6 +92,11 @@ final class ComposeBinds
     /**
      * Pastikan sumber bind mount ada; buat direktori yang aman dibuat.
      *
+     * Sumber yang compose-nya menyatakan `create_host_path: false` TIDAK pernah
+     * dibuat di sini — entri seperti itu selalu masuk `missing` supaya pesan/hint
+     * Rames muncul dan `up` gagal dengan pesan compose yang jelas ("bind source
+     * path does not exist") alih-alih berjalan dengan mount kosong.
+     *
      * @param string            $dir   direktori app (absolut)
      * @param array<int,string> $files nama file compose relatif terhadap $dir
      * @param array<string,string> $env nilai untuk substitusi variabel (termasuk `PWD`)
@@ -96,7 +115,7 @@ final class ComposeBinds
                 continue;
             }
 
-            if ($bind['dir'] && self::insideDir($dir, $path)) {
+            if ($bind['create'] && $bind['dir'] && self::insideDir($dir, $path)) {
                 if (@mkdir($path, 0775, true) || is_dir($path)) {
                     $created[] = $path;
                     continue;
@@ -135,7 +154,7 @@ final class ComposeBinds
     /**
      * Volume bernama dengan driver `local` + opsi `bind` → device adalah direktori data.
      *
-     * @return array<int,array{raw:string,path:string,dir:bool,type:string}>
+     * @return array<int,array{raw:string,path:string,dir:bool,create:bool,type:string}>
      */
     private static function volumeDevices(array $data, string $dir, array $env): array
     {
@@ -170,7 +189,7 @@ final class ComposeBinds
             if ($resolved === null) {
                 continue;
             }
-            $result[] = ['raw' => $device, 'path' => $resolved, 'dir' => true, 'type' => 'volume'];
+            $result[] = ['raw' => $device, 'path' => $resolved, 'dir' => true, 'create' => true, 'type' => 'volume'];
         }
 
         return $result;
@@ -180,7 +199,11 @@ final class ComposeBinds
      * Bind mount pada service (short syntax `./data:/data` atau long syntax
      * `{type: bind, source: ...}`). Named/anonymous volume dilewati.
      *
-     * @return array<int,array{raw:string,path:string,dir:bool,type:string}>
+     * Long syntax bisa mematikan pembuatan sumber otomatis lewat
+     * `bind: {create_host_path: false}` → entri seperti itu diberi `create` =
+     * `false` (dihormati `ensure()`; lihat docblock kelas).
+     *
+     * @return array<int,array{raw:string,path:string,dir:bool,create:bool,type:string}>
      */
     private static function serviceBinds(array $data, string $dir, array $env): array
     {
@@ -202,6 +225,7 @@ final class ComposeBinds
             foreach ($volumes as $entry) {
                 $source = '';
                 $target = '';
+                $create = true; // short syntax tidak punya opsi ini → selalu boleh dibuat
                 if (is_string($entry)) {
                     [$source, $target] = self::splitShortSyntax($entry, $env);
                     if ($source === '') {
@@ -216,6 +240,7 @@ final class ComposeBinds
                     if (trim($source) === '') {
                         continue;
                     }
+                    $create = self::allowsHostPathCreation($entry['bind'] ?? null);
                 } else {
                     continue;
                 }
@@ -228,12 +253,39 @@ final class ComposeBinds
                     'raw' => $source,
                     'path' => $resolved,
                     'dir' => !self::looksLikeFile($source),
+                    'create' => $create,
                     'type' => 'bind',
                 ];
             }
         }
 
         return $result;
+    }
+
+    /**
+     * Apakah dashboard boleh membuat source bind ini? Hanya bind **long syntax**
+     * dengan `bind: {create_host_path: false}` yang melarangnya; short syntax
+     * (tidak menerima opsi ini) dan long syntax tanpa kunci / `true` tetap boleh
+     * dibuat seperti sebelumnya.
+     */
+    private static function allowsHostPathCreation(mixed $bind): bool
+    {
+        if (!is_array($bind) || !array_key_exists('create_host_path', $bind)) {
+            return true;
+        }
+
+        $value = $bind['create_host_path'];
+        if (is_bool($value)) {
+            return $value;
+        }
+        // compose sendiri menuntut boolean; string `"false"` diperlakukan
+        // konservatif sebagai larangan (jangan sampai dashboard membuat direktori
+        // yang justru ditolak compose).
+        if (is_string($value)) {
+            return strtolower(trim($value)) !== 'false';
+        }
+
+        return true;
     }
 
     /**
@@ -379,10 +431,14 @@ final class ComposeBinds
     }
 
     /**
-     * @param array{raw:string,path:string,dir:bool,file:string,type:string} $bind
+     * @param array{raw:string,path:string,dir:bool,create:bool,file:string,type:string} $bind
      */
     private static function reason(array $bind, string $dir): string
     {
+        if (!$bind['create']) {
+            return 'compose menetapkan `create_host_path: false` — buat dulu di host '
+                . '(dashboard sengaja TIDAK membuatnya otomatis)';
+        }
         if (!self::insideDir($dir, $bind['path'])) {
             return 'di luar direktori app — buat dulu di host';
         }

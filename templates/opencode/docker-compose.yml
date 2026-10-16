@@ -1,0 +1,207 @@
+# Template OpenCode — server `opencode serve` + UI web di domain app (image
+# prebuilt resmi; repo berpindah dari sst/opencode ke anomalyco/opencode).
+#
+# Aturan template Rames yang dipatuhi di sini:
+#  - Hanya SATU service, image prebuilt (tanpa `build:`), tanpa `container_name`,
+#    tanpa `name:` level atas, dan tanpa replica/`scale` > 1 — nama project &
+#    nama container dikelola dashboard (prefix otomatis = nama app).
+#  - `ports:` hanya 4096 (port server/UI opencode); host port-nya dikelola Rames
+#    untuk reverse proxy Nginx.
+#  - Named volume untuk state opencode + SATU bind mount project dari host
+#    (${OPENCODE_PROJECTS_DIR}) yang WAJIB sudah ada dan WAJIB writable:
+#    project read-only membuat bootstrap opencode gagal (EROFS). Kewajiban "sudah
+#    ada" ditegakkan `create_host_path: false` (lihat `volumes:` di bawah) supaya
+#    salah ketik path tidak diam-diam membuat direktori root-owned di host.
+services:
+  opencode:
+    # Tag `latest` (1.19.1 saat template ini ditulis). Untuk menyematkan versi,
+    # ganti tag lewat tab Compose lalu Deploy Ulang; tombol "Tarik image" di
+    # Config → tab Template dipakai untuk menyegarkan tag ini dari registry.
+    image: ghcr.io/anomalyco/opencode:latest
+    restart: unless-stopped
+
+    # Image resmi TIDAK membawa init/tini dan SIGTERM-nya kurang dihormati
+    # (tanpa init, PID 1 adalah skrip shell yang tidak meneruskan sinyal) →
+    # `docker stop` menunggu sampai SIGKILL. init:true + grace period kecil
+    # membuat stop/restart dari dashboard cepat.
+    init: true
+    stop_grace_period: 5s
+
+    # Project host di-mount di sini (opencode membaca konfigurasi project,
+    # termasuk `.opencode/`, BILA ADA).
+    working_dir: /workspace
+
+    # Entrypoint diganti (image bawaan: ENTRYPOINT ["opencode"]) karena skrip
+    # perlu menyiapkan git dan menurunkan hak ke pemilik direktori project.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+
+        # 1) git + bash + su-exec dipasang tiap start: image resmi (Alpine, root)
+        #    TIDAK memuat git/bash, sementara layer container hilang saat container
+        #    dibuat ulang, jadi tidak bisa dipasang sekali saja. Butuh egress ke
+        #    repo Alpine; FAIL-SOFT — bila gagal, container TETAP hidup dengan fitur
+        #    git mati (server opencode tidak bergantung pada git).
+        if ! apk add --no-cache git bash su-exec >/dev/null 2>&1; then
+          echo "[opencode] WARN: gagal memasang git/bash/su-exec (butuh akses repo Alpine) — fitur git dimatikan" >&2
+        fi
+
+        # 2) Tentukan uid:gid tujuan: OPENCODE_RUN_AS bila nilainya SAH, kalau tidak
+        #    pemilik direktori project (mount /workspace). Validasi memakai bentuk
+        #    kanonik ^(0|[1-9][0-9]{0,9}):(0|[1-9][0-9]{0,9})$ — nilai salah tulis
+        #    (mis. `abc`, `33:33:33`, `-1:0`, `33`, `0033:33`) TIDAK boleh membuat
+        #    container restart loop: diabaikan + WARN, lalu lanjut ke deteksi
+        #    otomatis (gagal => 0:0). Bentuk kanonik (tanpa nol di depan) sengaja
+        #    diwajibkan supaya pemeriksaan kepemilikan di langkah 3 bisa
+        #    membandingkan string apa adanya dengan keluaran `stat`.
+        #    Rentang 0..4294967295 (batas uid/gid 32-bit kernel) juga DIWAJIBKAN,
+        #    bukan sekadar kerapian: `4294967296:0` dan `999999999999:0` LOLOS
+        #    `su-exec` (uid di-truncate, `id` sukses) tetapi `chown` GAGAL
+        #    ("unknown user/group") sehingga /home/opencode tetap milik root →
+        #    opencode (Bun) mati dengan `EACCES ... mkdir '/home/opencode/.local'`
+        #    dan `restart: unless-stopped` bikin restart loop TANPA WARN. Nilai di
+        #    luar rentang sekarang diabaikan + WARN → deteksi otomatis.
+        #    CATATAN: hasil disimpan di parameter posisi ($$1 = uid:gid, $$2/$$3
+        #    dipakai `valid_uidgid` untuk uid/gid hasil pisah), BUKAN variabel
+        #    shell bernama — linter template Rames menandai setiap rujukan
+        #    variabel shell (tanda dolar + nama) yang tidak dideklarasikan di
+        #    template.yml, sedangkan $$1/$$2/$$3 tidak pernah cocok dengan pola itu.
+        valid_uidgid() {
+          # Bentuk + rentang sekaligus. Tiap bagian dibatasi maksimum 10 digit
+          # (lebar maksimum nilai <= 4294967295) sehingga uji aritmetika di bawah
+          # tidak mungkin overflow walau nilai yang dikirim sangat panjang.
+          printf '%s' "$$1" | grep -Eq '^(0|[1-9][0-9]{0,9}):(0|[1-9][0-9]{0,9})$' || return 1
+          set -- $$(printf '%s' "$$1" | tr ':' ' ')
+          [ "$$1" -le 4294967295 ] && [ "$$2" -le 4294967295 ]
+        }
+
+        set -- ""
+        if [ -n "$${OPENCODE_RUN_AS}" ]; then
+          if valid_uidgid "$${OPENCODE_RUN_AS}"; then
+            set -- "$${OPENCODE_RUN_AS}"
+          else
+            echo "[opencode] WARN: OPENCODE_RUN_AS \"$${OPENCODE_RUN_AS}\" diabaikan (butuh uid:gid kanonik, tiap bagian 0..4294967295) — memakai deteksi otomatis" >&2
+          fi
+        fi
+
+        if [ -z "$$1" ]; then
+          set -- "$$(stat -c '%u:%g' /workspace 2>/dev/null || echo 0:0)"
+          if ! valid_uidgid "$$1"; then
+            echo "[opencode] WARN: deteksi uid:gid dari /workspace gagal (\"$$1\") — memakai 0:0" >&2
+            set -- "0:0"
+          fi
+        fi
+        echo "[opencode] project /workspace, target uid:gid=$$1"
+
+        # 3) Turunkan hak (privilege drop) supaya berkas yang dibuat opencode di
+        #    project host tetap milik pemilik project — mencegah kepemilikan campuran
+        #    yang merusak operasi git di host. Volume HOME di-chown ke user itu agar
+        #    state opencode bisa ditulis, dan project didaftarkan sebagai
+        #    safe.directory miliknya (mencegah error "dubious ownership").
+        #    CATATAN: su-exec MENIMPA HOME dari entri passwd (uid tanpa entri
+        #    passwd seperti 33 → HOME=/), jadi HOME selalu di-set ulang eksplisit
+        #    lewat `env` supaya state opencode tetap masuk volume /home/opencode
+        #    dan tidak di dalam project.
+        if [ "$$1" != "0:0" ] && command -v su-exec >/dev/null 2>&1; then
+          # GERBANG: ketiga syarat harus lulus sebelum `exec` sebagai target.
+          #   a) `chown` volume HOME berhasil (tidak lagi di-`|| true`): nilai di
+          #      luar jangkauan kernel gagal di sini ("unknown user/group");
+          #   b) kepemilikan /home/opencode benar-benar SAMA dengan target
+          #      (`stat`) — menangkap `chown` sukses-semu, mis. target
+          #      4294967295:4294967295 yang di kernel = (uid_t)-1 sehingga
+          #      chown-nya no-op (kepemilikan tetap 0:0);
+          #   c) target benar-benar bisa MENULIS /home/opencode — inilah yang
+          #      dibutuhkan opencode; `EACCES mkdir '/home/opencode/.local'`
+          #      adalah penyebab restart loop yang mau dicegah di sini.
+          # Bila salah satu gagal → JANGAN `exec` sebagai target (container akan
+          # mati lalu restart loop); lanjut sebagai root dengan WARN. Invarian:
+          # nilai salah tulis TIDAK boleh menggagalkan container, sedangkan
+          # kegagalan `opencode serve` SENDIRI tidak ditelan — karena `exec`,
+          # exit code server tetap diteruskan dan container mati sebagaimana
+          # mestinya.
+          if chown -R "$$1" /home/opencode 2>/dev/null \
+             && [ "$$(stat -c '%u:%g' /home/opencode 2>/dev/null)" = "$$1" ] \
+             && su-exec "$$1" env HOME=/home/opencode sh -c 'test -w /home/opencode' 2>/dev/null; then
+            su-exec "$$1" env HOME=/home/opencode git config --global --add safe.directory '*' 2>/dev/null || true
+            if [ -n "$${GIT_USER_NAME}" ]; then
+              su-exec "$$1" env HOME=/home/opencode git config --global user.name "$${GIT_USER_NAME}" 2>/dev/null || true
+            fi
+            if [ -n "$${GIT_USER_EMAIL}" ]; then
+              su-exec "$$1" env HOME=/home/opencode git config --global user.email "$${GIT_USER_EMAIL}" 2>/dev/null || true
+            fi
+            echo "[opencode] menjalankan opencode sebagai uid:gid=$$1"
+            exec su-exec "$$1" env HOME=/home/opencode opencode serve --hostname 0.0.0.0 --port 4096 --print-logs
+          fi
+          echo "[opencode] WARN: uid:gid=$$1 tidak dipakai (chown/kepemilikan/uji tulis /home/opencode gagal) — berjalan sebagai root" >&2
+        fi
+
+        # 4) Fallback: jalan sebagai root (deteksi gagal, owner project = root,
+        #    su-exec tidak terpasang, atau privilege drop gagal). Konsekuensinya
+        #    berkas baru di project dimiliki root — perbaiki dengan OPENCODE_RUN_AS
+        #    yang sah atau chown di host.
+        echo "[opencode] WARN: berjalan sebagai root — berkas baru di /workspace akan dimiliki root" >&2
+        exec opencode serve --hostname 0.0.0.0 --port 4096 --print-logs
+
+    ports:
+      - "4096:4096"
+
+    environment:
+      TZ: ${TZ:-Asia/Jakarta}
+      # HOME dipin ke volume supaya state/config opencode (config, opencode.db,
+      # auth.json) bertahan saat container dibuat ulang — BUKAN di dalam project.
+      HOME: /home/opencode
+      # GERBANG nilai project (bukan sekadar info): bentuk `:?` membuat
+      # `docker compose` GAGAL dengan pesan jelas bila nilainya kosong/tidak ada.
+      # Ini menutup celah long syntax bind di `volumes:` — source kosong TIDAK
+      # ditolak compose melainkan diam-diam menjadi anonymous volume, sehingga app
+      # "sukses" dengan /workspace kosong. Entri `volumes:` sengaja tetap memakai
+      # `${OPENCODE_PROJECTS_DIR}` (polos) supaya ComposeBinds::collect() (hint
+      # bind mount Rames) tetap bisa me-resolve path-nya.
+      OPENCODE_PROJECTS_DIR: ${OPENCODE_PROJECTS_DIR:?OPENCODE_PROJECTS_DIR wajib diisi (path absolut direktori project di host)}
+      # Basic auth untuk SELURUH permukaan UI/API (username bawaan opencode:
+      # "opencode"; password dibuat otomatis di form create).
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-opencode}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}
+      # uid:gid tujuan; kosong = deteksi otomatis dari pemilik direktori project.
+      OPENCODE_RUN_AS: ${OPENCODE_RUN_AS:-}
+      # Identitas commit git di dalam container (dipasang hanya bila diisi).
+      GIT_USER_NAME: ${GIT_USER_NAME:-}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
+      # Kredensial provider model (opsional; isi salah satu/sesuai provider).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+
+    volumes:
+      # Project host → READ-WRITE. opencode membaca DAN mengubah berkas di sini;
+      # mount read-only membuat bootstrap opencode gagal (EROFS).
+      # Long syntax + `create_host_path: false` dipilih SENGAJA: `docker compose up`
+      # tidak boleh membuat direktori sumber secara diam-diam. Dengan short syntax
+      # (default create_host_path: true) salah ketik path membuat daemon membuat
+      # direktori root:root 0755 baru di host — bahkan untuk path bersarang — dan
+      # app terlihat "sukses" padahal /workspace kosong. Sekarang `up` GAGAL bila
+      # path belum ada: direktori project WAJIB sudah ada di host.
+      - type: bind
+        source: ${OPENCODE_PROJECTS_DIR}
+        target: /workspace
+        bind:
+          create_host_path: false
+      # State/config/kredensial opencode. WAJIB persisten: tanpa ini login provider
+      # (auth.json) dan riwayat sesi hilang tiap container dibuat ulang.
+      - opencode-home:/home/opencode
+
+    # Healthcheck: /global/health butuh basic auth (tanpa kredensial → 401), jadi
+    # kredensial dirujuk dari environment container lewat `$$` (escape compose) —
+    # TIDAK ada password literal di berkas ini. BusyBox wget mendukung --header.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- --header=\"Authorization: Basic $$(printf '%s:%s' \"$$OPENCODE_SERVER_USERNAME\" \"$$OPENCODE_SERVER_PASSWORD\" | base64)\" http://127.0.0.1:4096/global/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  # Config (~/.config/opencode), db + auth.json (~/.local/share/opencode),
+  # state, dan cache opencode.
+  opencode-home:

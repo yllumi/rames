@@ -1,0 +1,123 @@
+title: OpenCode
+description: >-
+  OpenCode — agen koding AI open source yang dijalankan sebagai server dengan UI
+  web (`opencode serve`) di domain/subdomain app ini. Seluruh permukaan web/API
+  (UI, WebSocket, SSE) dilindungi HTTP basic auth: username
+  `OPENCODE_SERVER_USERNAME`, password `OPENCODE_SERVER_PASSWORD` yang dibuat
+  otomatis. Satu direktori project di host di-mount READ-WRITE ke `/workspace`
+  lewat `OPENCODE_PROJECTS_DIR`, sehingga opencode bisa membaca DAN mengubah
+  project tersebut; nilai ini boleh diganti kapan pun di tab Environment (apply
+  env membuat ulang container tanpa build sehingga mount ikut berubah). Karena
+  opencode adalah agen dengan akses shell di dalam container yang me-mount
+  direktori project, PERINGATAN KEAMANAN: jangan mengarahkan
+  `OPENCODE_PROJECTS_DIR` ke direktori berisi rahasia/kredensial, dan jangan
+  membagikan (sharing) app ini ke user yang tidak dipercaya. Konfigurasi project
+  opencode dibaca dari `.opencode/` dan `opencode.json` **bila ada** — tidak
+  dijamin dibuat oleh opencode; catatan lama bahwa varian v2 menulis
+  `.opencode/.gitignore` di root project BELUM DIVERIFIKASI ULANG (verifikasi
+  terakhir pada image 2.0.30 tanpa sesi model tidak menghasilkan `.opencode/`),
+  jadi jangan diandalkan. Menambahkan `.opencode/` ke `.gitignore` project tetap
+  disarankan, dan opencode menulis sebagai uid:gid pemilik direktori project,
+  jadi berkas tetap milik user host tersebut. git dipasang saat
+  start (image resmi tidak membawanya) supaya operasi git di dalam project
+  berfungsi; bila egress ke repo Alpine gagal, container tetap hidup tanpa fitur
+  git. State/konfigurasi opencode (config, `opencode.db`, `auth.json`) disimpan di
+  volume Docker persisten.
+category: AI/Asisten
+icon: "🧩"
+docs_url: https://opencode.ai/docs/
+
+# Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke
+# service (tanpa disimpan di repo). Kosong = pakai `default`; `generate: secret`
+# berarti nilai acak dibuat otomatis bila dikosongkan.
+env:
+  - key: OPENCODE_SERVER_PASSWORD
+    label: Password server opencode
+    help: >-
+      Password HTTP basic auth untuk seluruh permukaan web/API opencode
+      (username = OPENCODE_SERVER_USERNAME). Dibuat otomatis bila dikosongkan.
+      Tanpa password, server berjalan tanpa perlindungan (tidak disarankan).
+    generate: secret
+    secret: true
+  - key: OPENCODE_SERVER_USERNAME
+    label: Username basic auth
+    help: >-
+      Username HTTP basic auth. Bawaan opencode adalah "opencode"; lihat juga
+      nilai password di tab Environment.
+    default: opencode
+  - key: OPENCODE_PROJECTS_DIR
+    label: Direktori project (path absolut di host)
+    help: >-
+      Path ABSOLUT di host ke direktori project yang boleh dibaca & diubah
+      opencode. Nilainya bergantung lokasi instalasi Rames: instalasi produksi
+      umumnya <root>/apps/<nama-app> (mis. /srv/rames/apps/kuma); instalasi dev
+      bisa di tempat lain. Wajib absolut (bukan path relatif, bukan ~). Path WAJIB
+      sudah ada saat deploy — kalau tidak, deploy GAGAL (bind mount memakai
+      create_host_path: false, jadi direktori TIDAK dibuat otomatis, termasuk
+      untuk path di dalam direktori app — tidak ada pengecualian). Nilai ini
+      boleh diganti kapan pun di tab Environment: apply env membuat ulang
+      container (tanpa build) sehingga mount ikut berubah. Jangan menunjuk
+      direktori yang berisi rahasia/kredensial.
+    required: true
+  - key: OPENCODE_RUN_AS
+    label: Jalankan sebagai uid:gid (opsional)
+    help: >-
+      Format KANONIK uid:gid dengan tiap bagian 0..4294967295 (mis. 1000:1000,
+      33:33, 0:0): tanpa tanda plus/minus, tanpa nol di depan, dan tanpa spasi di
+      dalam nilai (jadi 0033:33, 33, abc, 33:33:33, -1:0, dan 4294967296:0
+      dianggap tidak sah). Nilai yang tidak lolos bentuk ATAU rentang diabaikan
+      + WARN di log container, lalu dipakai deteksi otomatis dari pemilik
+      direktori project (deteksi gagal atau pemiliknya root ⇒ opencode jalan
+      sebagai root) — container TIDAK dibuat gagal karena salah tulis nilai ini.
+      Nilai yang bentuknya sah tetapi ternyata tidak bisa dipakai (chown,
+      kepemilikan, atau uji tulis volume HOME /home/opencode gagal; mis. uid
+      besar yang tak ada padanannya) juga dicatat WARN, lalu opencode berjalan
+      sebagai root. Kosongkan untuk deteksi otomatis; isi manual bila project
+      dimiliki user lain yang bukan pemilik direktori. Spasi di ujung nilai
+      di-trim lebih dulu oleh docker compose sehingga tidak dianggap salah
+      (lihat panduan).
+    required: false
+  - key: TZ
+    label: Timezone
+    default: Asia/Jakarta
+  - key: ANTHROPIC_API_KEY
+    label: Anthropic API key (opsional)
+    help: >-
+      Kredensial provider model. Isi salah satu/sesuai provider yang dipakai;
+      provider lain bisa ditambahkan lewat tab Terminal app
+      (~/.local/share/opencode/auth.json) atau login provider di UI opencode.
+    secret: true
+    required: false
+  - key: OPENAI_API_KEY
+    label: OpenAI API key (opsional)
+    help: >-
+      Kredensial provider model. Isi salah satu/sesuai provider yang dipakai;
+      provider lain bisa ditambahkan lewat tab Terminal app
+      (~/.local/share/opencode/auth.json) atau login provider di UI opencode.
+    secret: true
+    required: false
+  - key: OPENROUTER_API_KEY
+    label: OpenRouter API key (opsional)
+    help: >-
+      Kredensial provider model (OpenRouter). Isi salah satu/sesuai provider yang
+      dipakai; provider lain bisa ditambahkan lewat tab Terminal app
+      (~/.local/share/opencode/auth.json).
+    secret: true
+    required: false
+  - key: GIT_USER_NAME
+    label: Nama git (opsional)
+    help: >-
+      Dipakai untuk `git config --global user.name` di dalam container (identitas
+      commit). Kosongkan bila tidak perlu commit dari dalam container.
+    required: false
+  - key: GIT_USER_EMAIL
+    label: Email git (opsional)
+    help: >-
+      Dipakai untuk `git config --global user.email` di dalam container (identitas
+      commit). Kosongkan bila tidak perlu commit dari dalam container.
+    required: false
+
+# Port container yang di-proxy ke domain app (host port dikelola Rames).
+primary:
+  service: opencode
+  port: 4096

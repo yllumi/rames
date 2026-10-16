@@ -111,7 +111,7 @@ class TemplateLogoMapTest extends TestCase
 
         // Template bawaan yang sudah punya logo berkas (aset diambil dari
         // Dashboard Icons / situs vendor) — dijaga agar tidak hilang tak sengaja.
-        foreach (['picoclaw', 'lemp', 'lemp74', 'openclaw', 'raisfast', 'wabaileys'] as $slug) {
+        foreach (['picoclaw', 'lemp', 'lemp74', 'openclaw', 'raisfast', 'wabaileys', 'opencode'] as $slug) {
             $this->assertArrayHasKey($slug, $map, 'Aset logo hilang: ' . $slug);
         }
     }
