@@ -12,6 +12,14 @@
 #    project read-only membuat bootstrap opencode gagal (EROFS). Kewajiban "sudah
 #    ada" ditegakkan `create_host_path: false` (lihat `volumes:` di bawah) supaya
 #    salah ketik path tidak diam-diam membuat direktori root-owned di host.
+#  - Mount project diletakkan DI DALAM HOME (/home/opencode/project): API berkas
+#    opencode MEN-SANDBOX `location.directory`, dan picker direktori UI berakar di
+#    HOME. Dengan project di luar HOME, picker hanya menampilkan isi HOME (folder
+#    state tersembunyi) sehingga project tidak pernah bisa dipilih — walau server
+#    opencode sendiri sudah benar berproyek di direktori mount-nya. Konsekuensinya
+#    entrypoint DILARANG `chown -R` seluruh HOME (lihat langkah 3 pada `command`),
+#    karena rekursi itu akan menuruni mount project dan mengubah kepemilikan
+#    berkas project DI HOST.
 services:
   opencode:
     # Tag `latest` (1.19.1 saat template ini ditulis). Untuk menyematkan versi,
@@ -28,8 +36,9 @@ services:
     stop_grace_period: 5s
 
     # Project host di-mount di sini (opencode membaca konfigurasi project,
-    # termasuk `.opencode/`, BILA ADA).
-    working_dir: /workspace
+    # termasuk `.opencode/`, BILA ADA) — DI DALAM HOME supaya terlihat & bisa
+    # dipilih di picker direktori UI opencode (picker berakar di HOME).
+    working_dir: /home/opencode/project
 
     # Entrypoint diganti (image bawaan: ENTRYPOINT ["opencode"]) karena skrip
     # perlu menyiapkan git dan menurunkan hak ke pemilik direktori project.
@@ -48,7 +57,8 @@ services:
         fi
 
         # 2) Tentukan uid:gid tujuan: OPENCODE_RUN_AS bila nilainya SAH, kalau tidak
-        #    pemilik direktori project (mount /workspace). Validasi memakai bentuk
+        #    pemilik direktori project (mount /home/opencode/project). Validasi
+        #    memakai bentuk
         #    kanonik ^(0|[1-9][0-9]{0,9}):(0|[1-9][0-9]{0,9})$ — nilai salah tulis
         #    (mis. `abc`, `33:33:33`, `-1:0`, `33`, `0033:33`) TIDAK boleh membuat
         #    container restart loop: diabaikan + WARN, lalu lanjut ke deteksi
@@ -86,13 +96,13 @@ services:
         fi
 
         if [ -z "$$1" ]; then
-          set -- "$$(stat -c '%u:%g' /workspace 2>/dev/null || echo 0:0)"
+          set -- "$$(stat -c '%u:%g' /home/opencode/project 2>/dev/null || echo 0:0)"
           if ! valid_uidgid "$$1"; then
-            echo "[opencode] WARN: deteksi uid:gid dari /workspace gagal (\"$$1\") — memakai 0:0" >&2
+            echo "[opencode] WARN: deteksi uid:gid dari /home/opencode/project gagal (\"$$1\") — memakai 0:0" >&2
             set -- "0:0"
           fi
         fi
-        echo "[opencode] project /workspace, target uid:gid=$$1"
+        echo "[opencode] project /home/opencode/project, target uid:gid=$$1"
 
         # 3) Turunkan hak (privilege drop) supaya berkas yang dibuat opencode di
         #    project host tetap milik pemilik project — mencegah kepemilikan campuran
@@ -103,6 +113,22 @@ services:
         #    passwd seperti 33 → HOME=/), jadi HOME selalu di-set ulang eksplisit
         #    lewat `env` supaya state opencode tetap masuk volume /home/opencode
         #    dan tidak di dalam project.
+        #    PENTING (project kini DI DALAM HOME): `chown -R /home/opencode`
+        #    DILARANG — rekursi itu menuruni bind mount /home/opencode/project dan
+        #    MENGUBAH KEPEMILIKAN BERKAS PROJECT DI HOST (kepemilikan campuran
+        #    yang justru merusak operasi git di host). Chown karena itu dua tahap:
+        #      a) direktori HOME saja, TANPA -R — cukup agar state baru di
+        #         bawahnya bisa dibuat user target;
+        #      b) tiap entri di HOME secara rekursif, KECUALI mount project dan
+        #         KECUALI entri yang ternyata mountpoint (uji /proc/mounts) —
+        #         supaya penambahan mount lain di bawah HOME tidak diam-diam
+        #         mengubah kepemilikan berkas host juga.
+        #    Iterasi memakai `find -mindepth 1 -maxdepth 1` (mencakup entri
+        #    tersembunyi seperti `.local`/`.config` tanpa perlu dua glob `*` dan
+        #    `.[!.]*`) dan nama entri dibaca lewat argumen POSISI di
+        #    `/bin/sh -c` ($$1/$$2): linter template Rames menandai setiap rujukan
+        #    variabel shell (tanda dolar + nama) yang tidak dideklarasikan di
+        #    template.yml, sedangkan $$1/$$2 tidak cocok dengan pola itu.
         if [ "$$1" != "0:0" ] && command -v su-exec >/dev/null 2>&1; then
           # GERBANG: ketiga syarat harus lulus sebelum `exec` sebagai target.
           #   a) `chown` volume HOME berhasil (tidak lagi di-`|| true`): nilai di
@@ -120,9 +146,22 @@ services:
           # kegagalan `opencode serve` SENDIRI tidak ditelan — karena `exec`,
           # exit code server tetap diteruskan dan container mati sebagaimana
           # mestinya.
-          if chown -R "$$1" /home/opencode 2>/dev/null \
+          if chown "$$1" /home/opencode 2>/dev/null \
              && [ "$$(stat -c '%u:%g' /home/opencode 2>/dev/null)" = "$$1" ] \
              && su-exec "$$1" env HOME=/home/opencode sh -c 'test -w /home/opencode' 2>/dev/null; then
+            # chown -R state HOME dijalankan HANYA setelah gerbang lolos, dan
+            # TIDAK PERNAH menuruni mount project (lihat komentar blok di atas).
+            # Non-fatal per entri (best-effort): entri yang gagal di-chown hanya
+            # membuat state opencode tidak bisa ditulis, bukan menggagalkan
+            # container.
+            # $$2 = path entri hasil `find`, $$1 = uid:gid target (arg pertama,
+            # karena $$0 pada `/bin/sh -c` diisi placeholder "sh").
+            find /home/opencode -mindepth 1 -maxdepth 1 -exec /bin/sh -c '
+              [ "$$2" = /home/opencode/project ] && exit 0
+              grep -qsF " $$2 " /proc/mounts && exit 0
+              chown -R "$$1" "$$2" 2>/dev/null || true
+              exit 0
+            ' sh "$$1" {} \; 2>/dev/null || true
             su-exec "$$1" env HOME=/home/opencode git config --global --add safe.directory '*' 2>/dev/null || true
             if [ -n "$${GIT_USER_NAME}" ]; then
               su-exec "$$1" env HOME=/home/opencode git config --global user.name "$${GIT_USER_NAME}" 2>/dev/null || true
@@ -140,7 +179,7 @@ services:
         #    su-exec tidak terpasang, atau privilege drop gagal). Konsekuensinya
         #    berkas baru di project dimiliki root — perbaiki dengan OPENCODE_RUN_AS
         #    yang sah atau chown di host.
-        echo "[opencode] WARN: berjalan sebagai root — berkas baru di /workspace akan dimiliki root" >&2
+        echo "[opencode] WARN: berjalan sebagai root — berkas baru di /home/opencode/project akan dimiliki root" >&2
         exec opencode serve --hostname 0.0.0.0 --port 4096 --print-logs
 
     ports:
@@ -155,7 +194,7 @@ services:
       # `docker compose` GAGAL dengan pesan jelas bila nilainya kosong/tidak ada.
       # Ini menutup celah long syntax bind di `volumes:` — source kosong TIDAK
       # ditolak compose melainkan diam-diam menjadi anonymous volume, sehingga app
-      # "sukses" dengan /workspace kosong. Entri `volumes:` sengaja tetap memakai
+      # "sukses" dengan mount project kosong. Entri `volumes:` sengaja tetap memakai
       # `${OPENCODE_PROJECTS_DIR}` (polos) supaya ComposeBinds::collect() (hint
       # bind mount Rames) tetap bisa me-resolve path-nya.
       OPENCODE_PROJECTS_DIR: ${OPENCODE_PROJECTS_DIR:?OPENCODE_PROJECTS_DIR wajib diisi (path absolut direktori project di host)}
@@ -176,15 +215,19 @@ services:
     volumes:
       # Project host → READ-WRITE. opencode membaca DAN mengubah berkas di sini;
       # mount read-only membuat bootstrap opencode gagal (EROFS).
+      # Target = DI DALAM HOME (/home/opencode/project) supaya picker direktori UI
+      # opencode (berakar di HOME) bisa melihat & memilih project; sandbox API
+      # berkas opencode mengikuti location.directory, jadi project di luar HOME
+      # tidak pernah muncul di picker.
       # Long syntax + `create_host_path: false` dipilih SENGAJA: `docker compose up`
       # tidak boleh membuat direktori sumber secara diam-diam. Dengan short syntax
       # (default create_host_path: true) salah ketik path membuat daemon membuat
       # direktori root:root 0755 baru di host — bahkan untuk path bersarang — dan
-      # app terlihat "sukses" padahal /workspace kosong. Sekarang `up` GAGAL bila
-      # path belum ada: direktori project WAJIB sudah ada di host.
+      # app terlihat "sukses" padahal direktori mount project kosong. Sekarang `up`
+      # GAGAL bila path belum ada: direktori project WAJIB sudah ada di host.
       - type: bind
         source: ${OPENCODE_PROJECTS_DIR}
-        target: /workspace
+        target: /home/opencode/project
         bind:
           create_host_path: false
       # State/config/kredensial opencode. WAJIB persisten: tanpa ini login provider

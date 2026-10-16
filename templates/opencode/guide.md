@@ -7,9 +7,17 @@ antarmuka opencode dibuka langsung lewat domain app — tidak ada desktop/VNC.
 
 Ciri yang perlu dipahami sebelum memakai (perilaku khas template ini):
 
-- **Satu direktori project di host di-mount READ-WRITE** ke `/workspace`.
-  opencode membaca **dan mengubah** project tersebut (menulis berkas, menjalankan
-  perintah, commit bila diminta).
+- **Satu direktori project di host di-mount READ-WRITE** ke
+  `/home/opencode/project` — **di dalam HOME** container. opencode membaca **dan
+  mengubah** project tersebut (menulis berkas, menjalankan perintah, commit bila
+  diminta).
+- **Project sengaja diletakkan di dalam HOME** karena picker direktori UI opencode
+  berakar di `$HOME` dan API berkasnya ter-sandbox ke lokasi project
+  (`location.directory`): di luar HOME, picker hanya menampilkan folder state
+  tersembunyi HOME (`.cache`/`.config`/`.local`/`.npm`) sehingga project tidak
+  pernah bisa dipilih. Lokasi project dilaporkan lewat field `directory` —
+  **bukan** `worktree`, yang untuk project non-git bisa bernilai `/` (perilaku
+  vendor).
 - **Basic auth wajib di seluruh permukaan** UI/API: username
   `OPENCODE_SERVER_USERNAME` (bawaan `opencode`) dan password
   `OPENCODE_SERVER_PASSWORD` yang dibuat otomatis saat create.
@@ -28,7 +36,7 @@ Ciri yang perlu dipahami sebelum memakai (perilaku khas template ini):
 | Image | `ghcr.io/anomalyco/opencode:latest` (repo berpindah dari `sst/opencode`; tag `ghcr.io/sst/opencode` **tidak** ada) |
 | Port container | `4096` (UI web + API; di-proxy ke domain app) |
 | Named volume | `opencode-home` → `/home/opencode` (config, `opencode.db`, `auth.json`, cache) |
-| Bind mount | `${OPENCODE_PROJECTS_DIR}` → `/workspace` (project host, read-write; long syntax + `create_host_path: false` ⇒ path wajib sudah ada — **termasuk** di dalam direktori app, lihat catatan di bawah) |
+| Bind mount | `${OPENCODE_PROJECTS_DIR}` → `/home/opencode/project` (project host, read-write; long syntax + `create_host_path: false` ⇒ path wajib sudah ada — **termasuk** di dalam direktori app, lihat catatan di bawah) |
 | Healthcheck | `GET /global/health` dengan basic auth (dibaca dari env, tanpa password literal) |
 | Init | `init: true` + `stop_grace_period: 5s` (image tanpa init; SIGTERM kurang dihormati) |
 
@@ -85,7 +93,7 @@ Catatan:
 2. Isi kredensial provider model: lewat env (`ANTHROPIC_API_KEY` dkk, lalu apply
    env), lewat login provider di UI, atau lewat tab **Terminal**
    (`~/.local/share/opencode/auth.json`).
-3. Pilih/konfirmasi project (`/workspace`) dan mulai sesi. Setiap perubahan yang
+3. Pilih/konfirmasi project (`/home/opencode/project`) dan mulai sesi. Setiap perubahan yang
    dilakukan opencode ditulis ke direktori project di host.
 4. opencode membaca konfigurasi project dari `.opencode/` **bila ada** (lihat
    bagian `.opencode/` di bawah) — jangan mengandalkan direktori itu dibuat
@@ -102,7 +110,7 @@ sesuatu yang dijamin **dibuat** oleh opencode.
 Yang teramati pada pengujian template ini:
 
 - Pada image tag `latest` (versi 1.19.1), setelah server start + beberapa sesi API,
-  `ls -a /workspace` **tidak** menampilkan `.opencode` — jadi jangan mengandalkan
+  `ls -a /home/opencode/project` **tidak** menampilkan `.opencode` — jadi jangan mengandalkan
   direktori itu muncul.
 - Pada varian **v2** pernah teramati opencode menulis `.opencode/.gitignore` di
   root project — klaim ini **belum diverifikasi ulang** (percobaan dengan tag
@@ -122,17 +130,19 @@ skrip entrypoint **menurunkan hak**:
 
 1. Target uid:gid = `OPENCODE_RUN_AS` bila diisi **dan** lolos bentuk kanonik
    `^(0|[1-9][0-9]{0,9}):(0|[1-9][0-9]{0,9})$` **beserta** rentang
-   `0..4294967295`; kalau tidak `stat -c '%u:%g' /workspace` (pemilik direktori
-   project di host). Nilai yang tidak sah (mis. `abc`, `33:33:33`, `-1:0`, `33`,
+   `0..4294967295`; kalau tidak `stat -c '%u:%g' /home/opencode/project`
+   (pemilik direktori project di host). Nilai yang tidak sah (mis. `abc`, `33:33:33`, `-1:0`, `33`,
    `0033:33`, `4294967296:0`) **diabaikan** dengan `WARN` di log container, lalu
    deteksi otomatis yang dipakai — container tidak dibuat gagal karenanya.
    Nilai ber-spasi di ujung (mis. ` 33:33 `) **tidak** dianggap salah: compose
    men-*trim* nilai env sebelum container menerimanya, jadi yang sampai ke skrip
    adalah `33:33` yang sah.
-2. Gerbang sebelum hak diturunkan: volume `opencode-home` di-`chown` ke target,
-   kepemilikan `/home/opencode` harus **sama dengan** target, dan target harus
-   bisa **menulis** `/home/opencode`; ketiganya lulus → `git config --global
-   --add safe.directory '*'` dijalankan **sebagai user itu** (mencegah error
+2. Gerbang sebelum hak diturunkan: **direktori** HOME (`/home/opencode`,
+   mountpoint volume) di-`chown` ke target **tanpa `-R`**, kepemilikan
+   `/home/opencode` harus **sama dengan** target, dan target harus bisa
+   **menulis** `/home/opencode`; ketiganya lulus → isi HOME di-`chown -R`
+   **per entri** (lihat catatan di bawah) dan `git config --global --add
+   safe.directory '*'` dijalankan **sebagai user itu** (mencegah error
    `detected dubious ownership` saat opencode menjalankan git). Bila salah satu
    gagal, hak **tidak** diturunkan (langkah 4 dilewati; lihat *Fallback*).
 3. Bila `GIT_USER_NAME`/`GIT_USER_EMAIL` diisi, identitas commit di-set global
@@ -143,6 +153,16 @@ skrip entrypoint **menurunkan hak**:
    tanpa entri passwd (mis. `33`) `HOME` menjadi `/` dan state opencode bisa
    tertulis di dalam project.
 
+**Chown dua tahap — `chown -R /home/opencode` DILARANG.** Setelah gerbang lulus,
+skrip meng-`chown -R` isi HOME **satu entri per satu** (`find /home/opencode
+-mindepth 1 -maxdepth 1`) sambil **melewati mountpoint project**
+`/home/opencode/project` — juga melewati entri yang ternyata mountpoint lain
+(diuji lewat `/proc/mounts`). Alasannya: `chown -R /home/opencode` akan menuruni
+bind mount project dan **mengubah kepemilikan berkas project DI HOST** —
+kepemilikan campuran yang justru merusak operasi git di host. Terbukti pada versi
+lama: sentinel `root:root` di dalam project berubah `0:0 → 1000:1000`; pada
+template sekarang tetap `0:0`.
+
 Hasilnya: berkas yang dibuat opencode di project host dimiliki **uid:gid pemilik
 project** (bukan root), sehingga operasi git di host (commit, checkout, `git gc`)
 tidak rusak karena kepemilikan campuran.
@@ -152,7 +172,7 @@ Fallback: bila deteksi gagal (mount tidak ada), owner direktori = root,
 kepemilikan, atau uji tulis `/home/opencode`; termasuk uid:gid bentuk-sah yang
 tak ada padanannya), opencode **jalan sebagai root** dan berkas baru di project
 dimiliki root. Saat itu terjadi, log container mencatat
-`WARN: berjalan sebagai root — berkas baru di /workspace akan dimiliki root`
+`WARN: berjalan sebagai root — berkas baru di /home/opencode/project akan dimiliki root`
 (atau, bila nilainya bentuk-sah tetapi tak bisa dipakai,
 `WARN: uid:gid=… tidak dipakai (chown/kepemilikan/uji tulis /home/opencode gagal) — berjalan sebagai root`).
 Perbaikannya: set `OPENCODE_RUN_AS` ke `uid:gid` yang diinginkan (mis.
@@ -193,10 +213,19 @@ Perbaikannya: set `OPENCODE_RUN_AS` ke `uid:gid` yang diinginkan (mis.
 - **Nilai `OPENCODE_PROJECTS_DIR` kosong atau hilang membuat SELURUH perintah
   compose app ini gagal** (interpolasi wajib `${OPENCODE_PROJECTS_DIR:?…}` di
   template) — itu disengaja supaya deploy gagal cepat, bukan diam-diam memakai
-  `/workspace` kosong. Konsekuensinya: perintah `docker compose` **manual** di
+  `/home/opencode/project` kosong. Konsekuensinya: perintah `docker compose` **manual** di
   direktori app harus menyertakan `--env-file database/env/<nama-app>.env`;
   dashboard selalu menyertakannya, dan penghapusan app tetap berjalan (teardown
   punya fallback lewat Docker Engine API).
+- **Fuzzy file-finder opencode (fff) mati untuk scope HOME.** opencode menolak
+  mencari di *file system root or home directories*, sehingga saat picker
+  menelusuri HOME fitur find tidak bekerja. Ini **batas vendor, bukan bug
+  template**: scope project normal (`/find/file?directory=/home/opencode/project`)
+  tetap mengembalikan hasil, dan penjelajahan direktori (`GET /file`) yang
+  dipakai picker **tidak** terpengaruh. Kotak **pencarian** di level HOME memakai
+  `/api/fs/find` (fff-backed) sehingga hasilnya kosong, sedangkan listing picker
+  lewat `/api/fs/list` (fs-backed) tetap memuat entri `project` — cukup **klik
+  folder `project`** dari daftar (listing tidak bergantung fff).
 - Path yang **ada tetapi tidak bisa diakses** (mis. mode `000`) tidak membuat
   deploy gagal: daemon menjalankan bind mount sebagai root, dan deteksi uid
   hanya membaca metadata pemilik. opencode yang berjalan sebagai user hasil
@@ -210,7 +239,9 @@ Untuk me-mount direktori tambahan (mis. cache paket, direktori referensi):
 1. Buka app → tab **Compose**.
 2. Tambahkan entri di `volumes:` service `opencode`, mis.
    `- /srv/dataset:/dataset:ro`.
-3. Simpan lalu **Deploy Ulang** (recreate container). Mount tambahan tidak
-   mengubah kepemilikan berkas: yang di-`chown` adalah **volume `/home/opencode`**
-   (state opencode), sedangkan `/workspace` hanya **dibaca** (`stat -c '%u:%g'`)
-   untuk deteksi uid tujuan.
+3. Simpan lalu **Deploy Ulang** (recreate container). Mount tambahan **tidak**
+   mengubah kepemilikan berkas host: chown hanya menyentuh **isi HOME**
+   (`/home/opencode`) dan **melewati setiap entri yang merupakan mountpoint**
+   — project maupun mount baru (diuji lewat `/proc/mounts`) — sedangkan
+   `/home/opencode/project` hanya **dibaca** (`stat -c '%u:%g'`) untuk deteksi
+   uid tujuan.

@@ -4,10 +4,15 @@ description: >-
   web (`opencode serve`) di domain/subdomain app ini. Seluruh permukaan web/API
   (UI, WebSocket, SSE) dilindungi HTTP basic auth: username
   `OPENCODE_SERVER_USERNAME`, password `OPENCODE_SERVER_PASSWORD` yang dibuat
-  otomatis. Satu direktori project di host di-mount READ-WRITE ke `/workspace`
-  lewat `OPENCODE_PROJECTS_DIR`, sehingga opencode bisa membaca DAN mengubah
-  project tersebut; nilai ini boleh diganti kapan pun di tab Environment (apply
-  env membuat ulang container tanpa build sehingga mount ikut berubah). Karena
+  otomatis. Satu direktori project di host di-mount READ-WRITE ke
+  `/home/opencode/project` lewat `OPENCODE_PROJECTS_DIR`, sehingga opencode bisa
+  membaca DAN mengubah project tersebut; nilai ini boleh diganti kapan pun di tab
+  Environment (apply env membuat ulang container tanpa build sehingga mount ikut
+  berubah). Target itu berada DI DALAM HOME container karena picker direktori UI
+  opencode berakar di `$HOME` dan API berkasnya ter-sandbox ke lokasi tersebut,
+  jadi project hanya terlihat dan bisa dipilih bila ada di dalam HOME; helper
+  container hanya mengubah kepemilikan isi volume HOME dan mengecualikan mount
+  project, sehingga kepemilikan berkas project di host tidak ikut berubah. Karena
   opencode adalah agen dengan akses shell di dalam container yang me-mount
   direktori project, PERINGATAN KEAMANAN: jangan mengarahkan
   `OPENCODE_PROJECTS_DIR` ke direktori berisi rahasia/kredensial, dan jangan
@@ -22,7 +27,8 @@ description: >-
   start (image resmi tidak membawanya) supaya operasi git di dalam project
   berfungsi; bila egress ke repo Alpine gagal, container tetap hidup tanpa fitur
   git. State/konfigurasi opencode (config, `opencode.db`, `auth.json`) disimpan di
-  volume Docker persisten.
+  volume Docker persisten (`HOME` container `/home/opencode`), terpisah dari
+  direktori project.
 category: AI/Asisten
 icon: "🧩"
 docs_url: https://opencode.ai/docs/
@@ -51,7 +57,8 @@ env:
       Path ABSOLUT di host ke direktori project yang boleh dibaca & diubah
       opencode. Nilainya bergantung lokasi instalasi Rames: instalasi produksi
       umumnya <root>/apps/<nama-app> (mis. /srv/rames/apps/kuma); instalasi dev
-      bisa di tempat lain. Wajib absolut (bukan path relatif, bukan ~). Path WAJIB
+      bisa di tempat lain. Wajib absolut (bukan path relatif, bukan ~). Di dalam
+      container direktori ini muncul sebagai `/home/opencode/project`. Path WAJIB
       sudah ada saat deploy — kalau tidak, deploy GAGAL (bind mount memakai
       create_host_path: false, jadi direktori TIDAK dibuat otomatis, termasuk
       untuk path di dalam direktori app — tidak ada pengecualian). Nilai ini

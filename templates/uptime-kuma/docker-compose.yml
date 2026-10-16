@@ -1,7 +1,7 @@
 # Template Uptime Kuma — image prebuilt, tanpa `build:`/`container_name`/`name:`.
 services:
   uptime-kuma:
-    image: louislam/uptime-kuma:latest
+    image: louislam/uptime-kuma:2
     restart: unless-stopped
 
     ports:

@@ -9,7 +9,7 @@ dashboard.
 | Item | Nilai |
 |------|-------|
 | Service | `uptime-kuma` |
-| Image | `louislam/uptime-kuma:latest` |
+| Image | `louislam/uptime-kuma:2` |
 | Port container | `3001` (di-proxy ke domain) |
 | Named volume | `uptime-kuma-data` → `/app/data` |
 
