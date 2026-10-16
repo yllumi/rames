@@ -1,0 +1,39 @@
+# Template Situs HTML Statis — semua service memakai image prebuilt (tanpa `build:`),
+# TANPA `container_name` (dashboard menulis prefix nama container = nama app),
+# dan TANPA `name:` (nama project compose ditentukan dashboard dari nama app).
+services:
+  web:
+    image: yllumi/httpd:latest
+    restart: unless-stopped
+
+    # WorkingDir image memang /www; ditulis eksplisit sebagai dokumentasi docroot
+    # sekaligus penanda volume di bawah di-mount ke docroot yang benar.
+    working_dir: /www
+
+    ports:
+      # HANYA nomor port container (tanpa host port). Dashboard menulis ulang
+      # `ports:` saat deploy dan mengalokasikan host port otomatis dari
+      # PORT_RANGE_START/END (default 30000-30999, lihat config/deploy.php
+      # `port_range`), lalu Nginx host me-reverse-proxy ke domain/subdomain app.
+      # JANGAN menulis "80:80": port 80 host sudah dipakai Nginx native Rames,
+      # sedangkan PortManager::resolve() hanya menganggap "terpakai" port milik
+      # app lain di apps.json → deploy berisiko gagal "address already in use".
+      - "80"
+
+    volumes:
+      # Docroot /www = named volume → berkas situs bertahan saat container dibuat
+      # ulang. Volume di-scope per app (nama project compose = nama app), jadi
+      # aman dipakai banyak app sekaligus. Sertakan pada backup.
+      - static-www:/www
+
+    # Log httpd relatif tenang; batasi supaya disk host tidak penuh.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # Docroot situs — berkas HTML/CSS/JS/gambar yang diunggah lewat tab Berkas
+  # atau tab Terminal app.
+  static-www:

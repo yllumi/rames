@@ -1,0 +1,16 @@
+title: Situs HTML Statis
+description: >-
+  Situs HTML statis yang disajikan BusyBox httpd dari docroot /www. Docroot
+  disimpan di named volume sehingga berkas situs bertahan saat container dibuat
+  ulang. Container start dengan /www kosong — / mengembalikan 404 sampai
+  index.html (beserta CSS/JS/gambar) diunggah lewat tab Berkas atau tab
+  Terminal app. BusyBox httpd tidak punya rewrite/SPA fallback, jadi SPA dengan
+  history router perlu hash router atau rute statis. Tanpa database dan tanpa
+  akun bawaan.
+category: Web
+icon: "📄"
+docs_url: https://busybox.net/downloads/BusyBox.html
+
+primary:
+  service: web
+  port: 80
