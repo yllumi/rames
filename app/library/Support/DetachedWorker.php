@@ -24,6 +24,35 @@ namespace app\library\Support;
  *     karena `SIG_IGN` ikut terbawa melewati fork+exec sehingga worker kehilangan
  *     exit code proses anaknya sendiri (git/docker) — lihat `SigchldGuard`.
  *
+ * Lingkungan (`envp`) — **jangan** disamakan dengan pewarisan:
+ * `pcntl_exec($path, $args, $envp)` memakai `execve()`, dan begitu argumen ke-3
+ * diberikan, lingkungan proses baru adalah **persis** isi `$envp` — bukan
+ * tambahan di atas lingkungan lama. Array kosong **bukan** berarti "warisi":
+ * anak sungguhan lahir tanpa satu pun variabel (`getenv('PATH') === false`,
+ * sudah dibuktikan dengan probe di container `rames-webman`). Konsekuensinya
+ * nyata di produksi (dashboard `RAMES_DB_DIR=/var/lib/rames`): worker deploy
+ * kehilangan `RAMES_DB_DIR` ⇒ jatuh ke default `<repo>/database` (bukan store
+ * runtime) ⇒ app tidak ada di store yang salah itu ⇒ `App tidak ditemukan` dan
+ * keluar senyap **sebelum** menulis
+ * `runtime/logs/deploy/<appId>.log`, sehingga app tertinggal
+ * `status=deploying, stage=queued` selamanya. Kehilangan `PATH`/`HOME` juga
+ * membuat `docker`/`git` (dipanggil worker) berperilaku beda — mis. `HOME`
+ * menentukan lokasi `~/.docker/config.json` dan cache credential git.
+ * Karena itu lingkungan saat ini **selalu** digabung eksplisit di
+ * {@see self::spawn()}.
+ *
+ * Efek luas yang ikut pulih: mode runtime server **agent** juga dibaca dari
+ * lingkungan (`RAMES_MODE` ⇒ `config('deploy.mode')`, `config/deploy.php:42-46`),
+ * jadi worker agent tanpa env terlihat sebagai `dashboard` ⇒ gerbang
+ * `cli/deploy.php` menolak `self_update` ("hanya berlaku di server agent") dan
+ * op agent lain kehilangan identitasnya. Dengan penggabungan ini worker agent
+ * menerima `RAMES_JOB_ID` **beserta** seluruh lingkungan asalnya.
+ *
+ * GUARDRAIL: lingkungan anak memuat rahasia (`AGENT_TOKEN`, kredensial
+ * restic/S3/DB dari `.env` yang dimuat Dotenv ke proses), sama seperti proses
+ * Webman pemanggilnya — jangan pernah mencetak/mengirim environment ke log,
+ * respons HTTP, atau UI; `/proc/<pid>/environ` anak juga memuat rahasia itu.
+ *
  * Stateless — aman untuk worker Webman persistent.
  */
 final class DetachedWorker
@@ -38,9 +67,17 @@ final class DetachedWorker
      * @param int|null             $pid  diisi pid anak (proses yang di-exec) bila spawn
      *                                   berhasil; 0 bila gagal. Dipakai pemanggil untuk
      *                                   memantau worker tanpa harus menebak-nebak.
-     * @param array<string,string> $env  variabel lingkungan tambahan yang diwariskan
-     *                                   ke worker (mis. `RAMES_JOB_ID` di server agent);
-     *                                   kosong ⇒ lingkungan diwariskan apa adanya
+     * @param array<string,string> $env  variabel lingkungan **tambahan** yang
+     *                                   di-overlay ke worker. Produksi: hanya
+     *                                   `RAMES_JOB_ID` (id job agent) yang diisi, dan
+     *                                   itu pun cuma oleh `DeployWorkerLauncher::launch()`
+     *                                   saat memuat job agent — jalur lain mengirim `[]`
+     *                                   dan **tetap** mewarisi seluruh lingkungan
+     *                                   pemanggil (lihat catatan kelas: `envp` kosong
+     *                                   BUKAN pewarisan). `RAMES_JOB_DIR` bukan env
+     *                                   produksi: itu override direktori store job yang
+     *                                   dipakai uji CLI (`cli/deploy.php` membacanya).
+     *                                   Nama yang sama di `$env` menimpa nilai pemanggil.
      * @return bool true bila anak berhasil di-fork (bukan jaminan exec berhasil)
      */
     public static function spawn(array $argv, ?int &$pid = null, array $env = []): bool
@@ -51,9 +88,14 @@ final class DetachedWorker
             return false;
         }
 
-        // pcntl_exec() mengganti SELURUH lingkungan bila envp diberikan, jadi
-        // lingkungan saat ini digabung dulu (bukan hanya variabel tambahan).
-        $envp = $env === [] ? [] : array_merge(getenv(), $env);
+        // Lingkungan saat ini SELALU digabung eksplisit: pcntl_exec() memakai
+        // execve(), jadi apa pun yang dikirim sebagai envp menggantikan SELURUH
+        // lingkungan anak — dan array kosong berarti lingkungan kosong, bukan
+        // pewarisan (dibuktikan probe: `getenv('PATH') === false` pada anak).
+        // Tanpa penggabungan ini worker deploy kehilangan `RAMES_DB_DIR`
+        // (membaca store yang salah ⇒ stage=`queued` selamanya) plus `PATH`/`HOME`.
+        // Nilai di-`strval`-kan karena pcntl_exec menuntut envp berisi string.
+        $envp = array_merge(getenv() ?: [], array_map('strval', $env));
 
         // Otomatis-reap anak saat selesai supaya tidak menumpuk zombie.
         @pcntl_signal(SIGCHLD, SIG_IGN);

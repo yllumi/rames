@@ -522,6 +522,8 @@ Menampilkan:
 - Aksi: Rebuild (pull ulang + up ulang), Stop, Start, Delete (hapus container + config nginx + file lokal) — tombol yang tidak diizinkan role user **tidak ditampilkan**, dan endpoint-nya tetap menolak di server
 - Riwayat Deployment + tombol Rollback (lihat §7.5)
 
+**Catatan operator — app macet di `stage=queued` ("Menunggu worker …"):** bila halaman detail terus menampilkan **"Menunggu worker deploy …"** (status `deploying`, tahap `queued`) tanpa progres **dan** tidak ada berkas `runtime/logs/deploy/<appId>.log`, berarti worker deploy **tidak pernah benar-benar jalan** — ini **bukan** masalah jaringan/DNS, **bukan** masalah template, dan **bukan** antrean (Rames tidak punya antrean worker). Penyebab historisnya: worker yang di-spawn dulu kehilangan **environment** proses pemanggil (mis. `RAMES_DB_DIR`), sehingga membaca store app yang salah, tidak menemukan app, lalu keluar senyap sebelum sempat menulis log — sudah diperbaiki (detail internal: `ARCHITECTURE.md` §8 GOTCHA no. 39). Penting bagi operator: record app yang sudah tertahan **tidak menyembuhkan diri** walau penyebabnya sudah diperbaiki — app harus **dipicu ulang** lewat **Rebuild (Deploy Ulang)** (atau Deploy ulang dari wizard) agar statusnya keluar dari `queued`.
+
 ### 7.4 Delete App
 
 Dua mode (dipilih di modal konfirmasi pada halaman detail app):

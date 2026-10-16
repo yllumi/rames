@@ -25,6 +25,9 @@ class TemplatePullServiceTest extends TestCase
     private string $worker;
     private TemplateCatalog $catalog;
 
+    /** @var int|string|false disposisi SIGCHLD sebelum uji (dipulihkan di tearDown) */
+    private int|string|false $prevSigchld = false;
+
     protected function setUp(): void
     {
         $this->dir = sys_get_temp_dir() . '/rames-pullsvc-' . bin2hex(random_bytes(4));
@@ -32,12 +35,22 @@ class TemplatePullServiceTest extends TestCase
         $this->state = new TemplatePullState($this->dir);
         $this->worker = dirname(__DIR__) . '/cli/pull.php';
         $this->catalog = new TemplateCatalog(dirname(__DIR__) . '/templates');
+
+        // Uji spawn sungguhan menyetel SIGCHLD=SIG_IGN lewat DetachedWorker —
+        // dipulihkan di tearDown supaya tidak bocor ke test lain.
+        if (function_exists('pcntl_signal_get_handler')) {
+            $this->prevSigchld = pcntl_signal_get_handler(SIGCHLD);
+        }
     }
 
     protected function tearDown(): void
     {
+        if ($this->prevSigchld !== false && function_exists('pcntl_signal')) {
+            @pcntl_signal(SIGCHLD, $this->prevSigchld);
+        }
+
         $this->state->clear();
-        @rmdir($this->dir);
+        GitTestFixture::removeDir($this->dir);
     }
 
     public function testPreflightAcceptsShippedTemplateWithAllImages(): void
@@ -251,6 +264,103 @@ class TemplatePullServiceTest extends TestCase
         $this->assertTrue($service->isWorkerRunning('run-1'));
         $this->assertFalse($service->isWorkerRunning('run-lain'));
         $this->assertFalse($service->isWorkerRunning(''));
+    }
+
+    /**
+     * Jalur spawn kedua yang terkena bug env: `TemplatePullService` memanggil
+     * `DetachedWorker::spawn($argv, $pid)` **tanpa env tambahan**, jadi sebelum
+     * perbaikan anak lahir tanpa satu pun variabel ⇒ `docker pull` di worker
+     * kehilangan `PATH` (dan jalur agent kehilangan `RAMES_DB_DIR`).
+     *
+     * Spawn **sungguhan** (fork+exec lewat `DetachedWorker`, bukan seam) tapi
+     * worker-nya skrip palsu di temp yang mencatat env yang dilihatnya — tanpa
+     * Docker, tanpa registry, tanpa menyentuh `runtime/` produksi (katalog
+     * template hanya dibaca; status pull ada di temp).
+     */
+    public function testSpawnedWorkerInheritsEnvironmentOfThisProcess(): void
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_exec')) {
+            $this->markTestSkipped('pcntl_fork/pcntl_exec tidak tersedia — DetachedWorker::spawn() tidak aktif.');
+        }
+
+        $out = $this->dir . '/fake-worker-env.json';
+        $worker = $this->dir . '/fake-pull-worker.php';
+        $marker = 'RAMES_TEST_PULLENV_' . bin2hex(random_bytes(4));
+        file_put_contents($worker, self::fakeWorkerSource($out, $marker));
+
+        putenv($marker . '=pull-inherit');
+        try {
+            // `null` = `DetachedWorker` sungguhan (bukan seam) — justru itu yang diuji.
+            $service = new TemplatePullService($this->catalog, $this->state, null, $worker);
+            $service->start('outline', 'budi');
+        } finally {
+            putenv($marker);
+        }
+
+        $this->assertGreaterThan(
+            0,
+            (int) $this->state->run()['pid'],
+            'start() harus benar-benar mem-fork worker (pid diisi DetachedWorker)'
+        );
+
+        $seen = $this->awaitJson($out);
+        $this->assertSame(
+            'pull-inherit',
+            $seen['env'][$marker],
+            'env proses pemanggil harus diwariskan ke worker pull (bukan envp kosong)'
+        );
+        $this->assertNotSame('', (string) $seen['env']['PATH'], 'PATH wajib ikut — docker pull bergantung padanya');
+        $this->assertSame(['outline', 'budi'], $seen['argv'], 'argv worker harus tetap [slug, actor]');
+    }
+
+    /**
+     * Skrip worker palsu: tuliskan env yang **dilihatnya** (hanya PATH/HOME +
+     * penanda uji — JANGAN pernah membuang seluruh env, isinya memuat rahasia)
+     * dan argv-nya ke berkas JSON.
+     */
+    private static function fakeWorkerSource(string $out, string $marker): string
+    {
+        return sprintf(
+            <<<'PHP'
+            <?php
+            declare(strict_types=1);
+            $read = static fn (string $name) => getenv($name) === false ? null : (string) getenv($name);
+            file_put_contents(%s, json_encode([
+                'argv' => array_slice($argv, 1),
+                'env' => [
+                    'PATH' => $read('PATH'),
+                    'HOME' => $read('HOME'),
+                    %s => $read(%s),
+                ],
+            ]));
+            exit(0);
+            PHP,
+            var_export($out, true),
+            var_export($marker, true),
+            var_export($marker, true),
+        );
+    }
+
+    /**
+     * Tunggu berkas JSON dari proses anak (stdio-nya ke `/dev/null` + auto-reap,
+     * jadi berkas penanda yang jadi kanal bukti).
+     *
+     * @return array<string,mixed>
+     */
+    private function awaitJson(string $path): array
+    {
+        $deadline = microtime(true) + 15.0;
+        while (microtime(true) < $deadline) {
+            if (is_file($path)) {
+                $decoded = json_decode((string) @file_get_contents($path), true);
+                if (is_array($decoded)) {
+                    return $decoded;
+                }
+            }
+            usleep(20_000);
+        }
+
+        $this->fail("worker palsu tidak menulis {$path} dalam 15 detik");
     }
 
     /**

@@ -21,6 +21,11 @@ use RuntimeException;
  * `AppController::spawnWorker()`) → request HTTP langsung kembali; progres
  * dipantau `panel()`. Controller hanya mediator — logika ada di sini.
  *
+ * Worker di-spawn **tanpa env tambahan** ⇒ `DetachedWorker` mewariskan seluruh
+ * lingkungan proses pemanggil (termasuk `PATH`/`HOME` yang dibutuhkan
+ * `docker pull`, dan `RAMES_DB_DIR` di jalur agent) — jangan menambahkan env
+ * kosong/parsial di sini (lihat catatan `envp` di `DetachedWorker`).
+ *
  * Stateless (tanpa cache di properti): aman untuk worker Webman persistent.
  */
 final class TemplatePullService

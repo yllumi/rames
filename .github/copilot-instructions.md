@@ -41,6 +41,7 @@ Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputus
 | 15 | **DILARANG** menyentuh/memodifikasi data runtime nyata saat menguji: `database/*.json`, `database/keys/`, `database/env/`, `apps/`, `nginx-status/`. Pakai path temp (`AppStore($path)`, `UserStore($path)`). | Merusak instalasi nyata. |
 | 16 | **DILARANG** menjalankan update/rollback dashboard sungguhan, menghapus volume, atau `docker compose down` pada project nyata saat verifikasi. | Dashboard mati / data hilang. |
 | 17 | **DILARANG** melebarkan pengecualian CSRF proxy Adminer di luar pola path-presisi `#^/database/[^/]+/adminer(/|$)#` (dicek **sebelum** `post()` agar body multipart utuh), menyunting HTML Adminer (prefix cukup lewat `X-Forwarded-Prefix`), atau menaikkan batas proxy untuk dump/import besar — timeout proxy **≤ 30 detik**, batas ukuran respons default **64 MiB**; dump/import besar lewat Volume/backup atau Terminal. | Celah CSRF/XSS, timeout, memori. |
+| 18 | **DILARANG** mencetak environment worker/proses ke log atau UI (memuat rahasia `.env`); worker detached kini mewarisi environment pemanggil — `AGENT_TOKEN`/kredensial restic-S3 ikut, dan `/proc/<pid>/environ` anak memuatnya. | Kebocoran secret ke log/UI. |
 
 ---
 
