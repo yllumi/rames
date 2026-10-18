@@ -1184,6 +1184,12 @@ Operasi panjang tidak bisa ditunggu dalam satu request (batas timeout HTTP ≤30
 
 **Pengujian**: `tests/AgentJobControllerTest.php`, `tests/AgentJobStoreTest.php`, `tests/DeployWorkerLauncherTest.php`, `tests/AgentDeployerTest.php`, `tests/CliDeployJobAwarenessTest.php`.
 
+**Ketahanan konektivitas (GOTCHA)**:
+- **Polling job toleran gangguan sesaat**: `AgentDeployer::pollJob()` mengulang (backoff) saat `jobStatus`/`jobLog` gagal dengan `unreachable`/`server_error`, hingga `MAX_POLL_FAILURES` (5) kegagalan **berturut-turut** dan selama deadline job belum lewat. `unauthorized`/`tls_failed`/`invalid_config` tetap langsung dilempar. Gejala sebelumnya: satu timeout 5 s menandai deploy gagal padahal worker agent masih jalan.
+- **Monitoring tidak menunggu agent mati berulang kali**: `MonitorController::agentEntry()` memakai `ServerHealthGate` (`runtime/agent-health.json`, cooldown 20 s, `JsonStore`). Server yang baru gagal langsung tampil `offline` dengan pesan terakhir (tersanitasi) tanpa menyentuh jaringan; sukses menghapus catatan. **DILARANG** memakai gate ini untuk operasi mutasi/job. Saat monitoring berhasil menjangkau server yang tercatat `offline`, status registry dipulihkan ke `online` (`markServerOnline()`), sehingga kegagalan Test connection sesaat tidak memblokir `assertReadyForCreate()` selamanya.
+- **`NonceStore` di-shard 16 berkas** (`agent-nonces.<0-f>.json`, menurut karakter pertama hash nonce): antrean `flock` antar worker dan ukuran tulis ulang turun ±16×; replay selalu jatuh ke shard yang sama. Berkas lama `agent-nonces.json` diabaikan (TTL 120 s). `count()` menghitung entri tersimpan di semua shard; shard dingin dipangkas saat ditulis atau lewat `purge()`.
+- **Selisih jam ≠ token salah**: `AgentAuthMiddleware` menolak timestamp di luar ±60 s; **setelah token terbukti sah**, 401-nya membawa header `X-Rames-Server-Time` (body tetap generik; token salah tidak mendapat header ini). `AgentClient::httpError()` memakainya untuk pesan "selisih jam N detik — sinkronkan NTP". **WAJIB**: header ini jangan dipasang pada 401 sebelum cek token (menjadi oracle).
+
 ### 5.24 Materialisasi Artefak di Agent
 
 Agent hanya memegang **metadata** (proyeksi) + direktori artefaknya sendiri, jadi tiga hal yang tidak bisa ia regenerasi harus dikirim control plane di payload job:

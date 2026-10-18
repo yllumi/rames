@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Agent\AgentError;
+use app\library\Agent\ServerHealthGate;
 use app\library\Auth\AppAccess;
 use app\library\Auth\ServerAccess;
 use app\library\Deploy\AgentDeployer;
@@ -176,6 +177,16 @@ class MonitorController
             'at' => null,
         ];
 
+        // Server yang baru saja gagal tidak dihubungi lagi sampai masa dingin
+        // habis — satu agent mati tidak boleh menahan worker tiap polling.
+        $gate = $this->healthGate();
+        $cached = $gate->coolingDown($entry['id']);
+        if ($cached !== null) {
+            $entry['error'] = $cached;
+
+            return $entry;
+        }
+
         try {
             $deployer = $this->agentDeployerFor($server);
             if ($deployer === null) {
@@ -198,12 +209,15 @@ class MonitorController
                 ? AgentError::sanitizeForServer($stats['error'], $server)
                 : null;
             $entry['at'] = date('H:i:s');
+            $gate->recordSuccess($entry['id']);
+            $this->markServerOnline($server);
         } catch (Throwable $e) {
             // Termasuk AgentError (token/TLS/transport) — pesan disanitasi lewat
             // **satu pintu** `AgentError::sanitizeForServer()` supaya token,
             // `base_url`/host internal, dan blok PEM tidak pernah muncul di UI.
             $detail = AgentError::sanitizeForServer($e->getMessage(), $server);
             $entry['error'] = $detail === '' ? 'Server agent tidak dapat dihubungi.' : $detail;
+            $gate->recordFailure($entry['id'], $entry['error']);
         }
 
         return $entry;
@@ -394,6 +408,38 @@ class MonitorController
     protected function serverResolver(): ServerResolver
     {
         return new ServerResolver();
+    }
+
+    /**
+     * Pemutus sirkuit pemanggilan monitoring (seam uji: subclass memakai path temp
+     * supaya `runtime/` nyata tidak tersentuh).
+     */
+    protected function healthGate(): ServerHealthGate
+    {
+        return ServerHealthGate::default();
+    }
+
+    /**
+     * Server yang tercatat `offline` tetapi baru saja menjawab ⇒ pulihkan status
+     * registry, supaya kegagalan sesaat tidak memblokir create app sampai ada
+     * Test connection manual. Hanya menulis bila status memang `offline`; gagal
+     * menulis tidak boleh mengganggu halaman (seam uji).
+     *
+     * @param array<string,mixed> $server
+     */
+    protected function markServerOnline(array $server): void
+    {
+        if (strtolower(trim((string) ($server['status'] ?? ''))) !== 'offline') {
+            return;
+        }
+        try {
+            (new ServerStore())->update((string) ($server['id'] ?? ''), static function (array &$row): void {
+                $row['status'] = 'online';
+                $row['last_seen_at'] = date('c');
+            });
+        } catch (Throwable) {
+            // registry tidak bisa ditulis: abaikan, monitoring tetap tampil
+        }
     }
 
     /**

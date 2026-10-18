@@ -76,8 +76,10 @@ class NonceStoreTest extends TestCase
         }
         $this->assertSame(5, $store->count());
 
-        // Satu request pada t=1000+TTL+1 memicu prune oportunistik.
-        $this->assertTrue($store->consume('nonce-later-00000000', 1000 + NonceStore::DEFAULT_TTL + 1));
+        // Prune oportunistik per shard (pada consume) + purge berkala untuk shard dingin.
+        $later = 1000 + NonceStore::DEFAULT_TTL + 1;
+        $this->assertTrue($store->consume('nonce-later-00000000', $later));
+        $store->purge($later);
         $this->assertSame(1, $store->count(), 'entri kedaluwarsa dibuang, bukan menumpuk selamanya');
     }
 
@@ -87,7 +89,7 @@ class NonceStoreTest extends TestCase
         $nonce = 'nonce-rahasia-1234567890';
         $this->assertTrue($store->consume($nonce, 1000));
 
-        $raw = (string) file_get_contents($this->path());
+        $raw = (string) file_get_contents($store->shardPath($nonce));
         $this->assertStringNotContainsString($nonce, $raw, 'berkas runtime tidak boleh memuat nonce mentah');
         $this->assertStringContainsString(NonceStore::key($nonce), $raw, 'yang disimpan adalah hash nonce');
     }
@@ -105,8 +107,8 @@ class NonceStoreTest extends TestCase
 
     public function testCorruptFileDoesNotBreakConsume(): void
     {
-        file_put_contents($this->path(), "bukan json\n");
         $store = new NonceStore($this->path());
+        file_put_contents($store->shardPath('nonce-aaaaaaaaaaaaaa'), "bukan json\n");
 
         $this->assertTrue($store->consume('nonce-aaaaaaaaaaaaaa', 1000));
         $this->assertSame(1, $store->count());
@@ -114,15 +116,27 @@ class NonceStoreTest extends TestCase
 
     public function testUnsupportedEntryShapeIsDiscarded(): void
     {
+        $store = new NonceStore($this->path());
         file_put_contents(
-            $this->path(),
+            $store->shardPath('nonce-aaaaaaaaaaaaaa'),
             json_encode(['abc' => 'bukan-angka', 'def' => 0], JSON_PRETTY_PRINT) . PHP_EOL
         );
-        $store = new NonceStore($this->path());
 
         $at = NonceStore::DEFAULT_TTL + 1; // `def` sudah kedaluwarsa, `abc` berbentuk asing
         $this->assertTrue($store->consume('nonce-aaaaaaaaaaaaaa', $at));
         $this->assertSame(1, $store->count(), 'entri berbentuk asing & kedaluwarsa dibuang saat prune');
+    }
+
+    public function testReplayIsRejectedAcrossShardsAndNonceLandsInOneShard(): void
+    {
+        $store = $this->store(1000);
+        for ($i = 0; $i < 40; $i++) {
+            $nonce = sprintf('nonce-shard-%010d', $i);
+            $this->assertTrue($store->consume($nonce, 1000));
+            $this->assertFalse($store->consume($nonce, 1001), 'replay harus ditolak di shard yang sama');
+        }
+        $this->assertSame(40, $store->count());
+        $this->assertGreaterThan(1, count(glob($this->tmp . '/agent-nonces.*.json') ?: []), 'nonce tersebar ke beberapa shard');
     }
 
     private function path(): string

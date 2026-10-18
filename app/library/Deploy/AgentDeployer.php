@@ -93,6 +93,12 @@ final class AgentDeployer implements DeployerInterface
     public const MIN_POLL_INTERVAL_MS = 50;
     public const MAX_POLL_INTERVAL_MS = 30000;
 
+    /** Galat polling job yang dianggap sementara (boleh diulang). */
+    private const TRANSIENT_REASONS = [AgentError::UNREACHABLE, AgentError::SERVER_ERROR];
+
+    /** Batas kegagalan polling **berturut-turut** sebelum job dianggap gagal. */
+    public const MAX_POLL_FAILURES = 5;
+
     /** Batas total waktu satu job (detik) bila config tidak tersedia. */
     public const DEFAULT_TIMEOUT_SECONDS = 600;
 
@@ -2290,9 +2296,25 @@ final class AgentDeployer implements DeployerInterface
         $deadline = ($this->clock)() + $this->timeout;
         $job = [];
 
+        $failures = 0;
+
         while (true) {
-            $job = $this->jobRecord($jobId);
-            $offset = $this->drainLog($jobId, $offset, $logger);
+            try {
+                $job = $this->jobRecord($jobId);
+                $offset = $this->drainLog($jobId, $offset, $logger);
+                $failures = 0;
+            } catch (AgentError $e) {
+                // Gangguan jaringan/5xx sesaat tidak boleh menggagalkan job yang
+                // masih berjalan di agent: ulangi sampai batas berturut-turut.
+                // Galat permanen (token, TLS, config) tetap langsung dilempar.
+                if (!in_array($e->reason, self::TRANSIENT_REASONS, true)
+                    || ++$failures > self::MAX_POLL_FAILURES
+                    || ($this->clock)() >= $deadline) {
+                    throw $e;
+                }
+                ($this->sleep)($this->pollIntervalMs * 1000 * min($failures, 5));
+                continue;
+            }
             $status = strtolower(trim((string) ($job['status'] ?? 'pending')));
 
             if ($status === 'done') {

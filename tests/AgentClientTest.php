@@ -488,6 +488,38 @@ class AgentClientTest extends TestCase
 
     // ----------------------------------------------------------- higienitas token
 
+    public function testUnauthorizedWithServerTimeReportsClockSkewNotToken(): void
+    {
+        $agentTime = time() - 300;
+        $client = $this->mockClient([
+            new Response(401, [
+                'Content-Type' => 'application/json',
+                \app\middleware\AgentAuthMiddleware::HEADER_SERVER_TIME => (string) $agentTime,
+            ], '{"code":401,"msg":"Unauthorized"}'),
+        ]);
+
+        try {
+            $client->health();
+            $this->fail('401 harus melempar AgentError');
+        } catch (AgentError $e) {
+            $this->assertSame(AgentError::UNAUTHORIZED, $e->reason);
+            $this->assertStringContainsString('selisih jam', $e->getMessage());
+            $this->assertStringNotContainsString('menolak token', $e->getMessage());
+        }
+    }
+
+    public function testUnauthorizedWithoutServerTimeStillReportsToken(): void
+    {
+        $client = $this->mockClient([new Response(401, [], '{"code":401,"msg":"Unauthorized"}')]);
+
+        try {
+            $client->health();
+            $this->fail('401 harus melempar AgentError');
+        } catch (AgentError $e) {
+            $this->assertStringContainsString('menolak token', $e->getMessage());
+        }
+    }
+
     public function testErrorMessagesNeverContainToken(): void
     {
         $token = 'tok-unik-untuk-uji-7b1f4c9d';

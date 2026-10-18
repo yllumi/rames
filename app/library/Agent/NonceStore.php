@@ -27,6 +27,13 @@ use app\library\Storage\JsonStore;
  * supaya berkas tidak tumbuh tanpa batas; ukurannya proporsional dengan jumlah
  * request agent dalam 2 menit terakhir, bukan umur instalasi.
  *
+ * **Sharding**: nonce dipecah ke 16 berkas menurut karakter pertama hash
+ * (`agent-nonces.<0-f>.json`). Setiap request agent menulis ulang satu berkas
+ * di bawah `flock`; dengan satu berkas, semua worker (`cpu_count()*4`) antre di
+ * satu kunci dan tiap tulis menyalin seluruh isi. Dengan 16 shard, antrean dan
+ * ukuran berkas turun ±16×. Replay selalu jatuh ke shard yang sama (shard
+ * ditentukan hash nonce), jadi jaminan sekali-pakai tidak berubah.
+ *
  * Jam diterima lewat konstruktor (`$now`) agar uji tidak bergantung `sleep()`
  * (pola sama dengan `EnvManager`/`TemplateCatalog`: path & dependency
  * di-inject, kelas tanpa state lintas-request).
@@ -35,6 +42,9 @@ final class NonceStore
 {
     /** TTL default (detik) = 2× jendela timestamp agent (`±60 s`). */
     public const DEFAULT_TTL = 120;
+
+    /** Karakter hex pertama hash nonce = id shard. */
+    private const SHARDS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
 
     private readonly string $path;
 
@@ -55,9 +65,16 @@ final class NonceStore
         $this->clock = $now === null ? static fn (): int => time() : Closure::fromCallable($now);
     }
 
+    /** Path dasar (nama shard diturunkan darinya, lihat {@see self::shardPath()}). */
     public function path(): string
     {
         return $this->path;
+    }
+
+    /** Berkas shard tempat nonce ini disimpan. */
+    public function shardPath(string $nonce): string
+    {
+        return $this->shardFile(self::key($nonce)[0]);
     }
 
     public function ttl(): int
@@ -83,7 +100,7 @@ final class NonceStore
         $ttl = $this->ttl;
         $accepted = false;
 
-        $this->store()->update(
+        $this->store($this->shardFile($key[0]))->update(
             static function (array &$data) use ($key, $at, $ttl, &$accepted): void {
                 $data = self::prune($data, $at, $ttl);
                 if (array_key_exists($key, $data)) {
@@ -109,21 +126,28 @@ final class NonceStore
         $ttl = $this->ttl;
         $removed = 0;
 
-        $this->store()->update(
-            static function (array &$data) use ($at, $ttl, &$removed): void {
-                $before = count($data);
-                $data = self::prune($data, $at, $ttl);
-                $removed = $before - count($data);
-            }
-        );
+        foreach (self::SHARDS as $shard) {
+            $this->store($this->shardFile($shard))->update(
+                static function (array &$data) use ($at, $ttl, &$removed): void {
+                    $before = count($data);
+                    $data = self::prune($data, $at, $ttl);
+                    $removed += $before - count($data);
+                }
+            );
+        }
 
         return $removed;
     }
 
-    /** Jumlah nonce hidup saat ini (untuk uji prunning — tidak menyentuh store lain). */
+    /** Jumlah entri tersimpan di semua shard (shard dingin baru dipangkas saat ditulis/`purge()`). */
     public function count(): int
     {
-        return count($this->store()->read());
+        $total = 0;
+        foreach (self::SHARDS as $shard) {
+            $total += count($this->store($this->shardFile($shard))->read());
+        }
+
+        return $total;
     }
 
     /**
@@ -155,8 +179,20 @@ final class NonceStore
         return $kept;
     }
 
-    private function store(): JsonStore
+    /** `agent-nonces.json` + shard `a` ⇒ `agent-nonces.a.json`. */
+    private function shardFile(string $shard): string
     {
-        return new JsonStore($this->path);
+        $dot = strrpos($this->path, '.');
+        $slash = strrpos($this->path, '/');
+        if ($dot === false || ($slash !== false && $dot < $slash)) {
+            return $this->path . '.' . $shard;
+        }
+
+        return substr($this->path, 0, $dot) . '.' . $shard . substr($this->path, $dot);
+    }
+
+    private function store(string $file): JsonStore
+    {
+        return new JsonStore($file);
     }
 }

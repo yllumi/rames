@@ -63,6 +63,9 @@ class AgentAuthMiddlewareTest extends TestCase
         @rmdir($this->tmp . '/config');
         @unlink($this->noncePath());
         @unlink($this->noncePath() . '.bak');
+        foreach (glob(dirname($this->noncePath()) . '/agent-nonces*') ?: [] as $shard) {
+            @unlink($shard);
+        }
         @rmdir($this->tmp);
     }
 
@@ -127,6 +130,21 @@ class AgentAuthMiddlewareTest extends TestCase
 
         $this->assertSame(401, $result['response']->getStatusCode());
         $this->assertFalse($result['handled']);
+    }
+
+    public function testStaleTimestampExposesServerTimeOnlyAfterTokenIsValid(): void
+    {
+        $stale = $this->runAgent($this->request($this->agentHeaders(timestamp: self::NOW - 61, nonce: 'nonce-skew-aaaaaaaa')));
+        $this->assertSame(401, $stale['response']->getStatusCode());
+        $this->assertSame(
+            (string) self::NOW,
+            $stale['response']->getHeader(AgentAuthMiddleware::HEADER_SERVER_TIME)
+        );
+
+        // Token salah: tidak boleh ada petunjuk jam (bukan oracle untuk pihak tak sah).
+        $wrong = $this->runAgent($this->request($this->agentHeaders(token: 'token-salah', timestamp: self::NOW - 61, nonce: 'nonce-skew-bbbbbbbb')));
+        $this->assertSame(401, $wrong['response']->getStatusCode());
+        $this->assertNull($wrong['response']->getHeader(AgentAuthMiddleware::HEADER_SERVER_TIME));
     }
 
     public function testFutureTimestampIsRejected(): void

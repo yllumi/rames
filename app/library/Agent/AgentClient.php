@@ -6,6 +6,7 @@ namespace app\library\Agent;
 use app\library\Adminer\AdminerProxyLimitExceeded;
 use app\library\Adminer\AdminerTempDir;
 use app\library\Adminer\LimitedTempSink;
+use app\middleware\AgentAuthMiddleware;
 use Closure;
 use GuzzleHttp\Client;
 use GuzzleHttp\Handler\CurlHandler;
@@ -397,7 +398,7 @@ final class AgentClient
         $headers = $response->getHeaders();
         if ($status < 200 || $status >= 300) {
             if (!$allowHttpErrors) {
-                throw $this->httpError($status, (string) $response->getBody());
+                throw $this->httpError($status, (string) $response->getBody(), $response->getHeaderLine(AgentAuthMiddleware::HEADER_SERVER_TIME));
             }
 
             // Galat domain (JSON pendek) — dibaca habis di sini supaya tidak ada
@@ -576,7 +577,7 @@ final class AgentClient
         $status = $response->getStatusCode();
         $raw = (string) $response->getBody();
         if ($status < 200 || $status >= 300) {
-            throw $this->httpError($status, $raw);
+            throw $this->httpError($status, $raw, $response->getHeaderLine(AgentAuthMiddleware::HEADER_SERVER_TIME));
         }
 
         return $this->decode($raw);
@@ -758,7 +759,7 @@ final class AgentClient
         $status = $response->getStatusCode();
         $raw = (string) $response->getBody();
         if ($status < 200 || $status >= 300) {
-            throw $this->httpError($status, $raw);
+            throw $this->httpError($status, $raw, $response->getHeaderLine(AgentAuthMiddleware::HEADER_SERVER_TIME));
         }
 
         return ['status' => $status, 'body' => $raw, 'headers' => $response->getHeaders()];
@@ -881,8 +882,20 @@ final class AgentClient
     }
 
     /** @throws AgentError */
-    private function httpError(int $status, string $raw): AgentError
+    private function httpError(int $status, string $raw, string $serverTime = ''): AgentError
     {
+        // 401 + jam agent ⇒ penyebabnya selisih jam, bukan token.
+        if ($status === 401 && preg_match('/^\d{1,12}$/', $serverTime) === 1) {
+            $skew = time() - (int) $serverTime;
+
+            return new AgentError(
+                'Agent menolak request karena selisih jam ' . abs($skew) . ' detik dengan control plane '
+                . '(toleransi ' . AgentAuthMiddleware::TIMESTAMP_WINDOW . ' detik; jam control plane '
+                . ($skew > 0 ? 'lebih maju' : 'tertinggal') . '). Sinkronkan jam (NTP) kedua server.',
+                AgentError::UNAUTHORIZED
+            );
+        }
+
         $reason = match (true) {
             $status === 401, $status === 403 => AgentError::UNAUTHORIZED,
             $status === 404 => AgentError::NOT_FOUND,

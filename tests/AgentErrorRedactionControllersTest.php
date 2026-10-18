@@ -513,6 +513,17 @@ final class AgentRedactionFileController extends FileController
 /** `MonitorController` dengan seam uji (tanpa session/Engine nyata). */
 final class AgentRedactionMonitorController extends MonitorController
 {
+    protected function healthGate(): \app\library\Agent\ServerHealthGate
+    {
+        // Gate baru per panggilan di berkas temp unik: tanpa cooldown lintas uji,
+        // tanpa menyentuh `runtime/` nyata.
+        return new \app\library\Agent\ServerHealthGate(sys_get_temp_dir() . '/rames-health-' . uniqid('', true) . '.json');
+    }
+
+    protected function markServerOnline(array $server): void
+    {
+    }
+
     /**
      * @param array<int,array>            $apps   app yang "boleh dilihat" user
      * @param array<string,AgentDeployer> $agents deployer per server id

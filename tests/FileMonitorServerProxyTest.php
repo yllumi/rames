@@ -359,6 +359,17 @@ final class FileMonitorProxyFileController extends FileController
 /** `MonitorController` dengan seam uji (tanpa session, `apps/`, `/proc` nyata). */
 final class FileMonitorProxyMonitorController extends MonitorController
 {
+    protected function healthGate(): \app\library\Agent\ServerHealthGate
+    {
+        // Gate baru per panggilan di berkas temp unik: tanpa cooldown lintas uji,
+        // tanpa menyentuh `runtime/` nyata.
+        return new \app\library\Agent\ServerHealthGate(sys_get_temp_dir() . '/rames-health-' . uniqid('', true) . '.json');
+    }
+
+    protected function markServerOnline(array $server): void
+    {
+    }
+
     /**
      * @param array<int,array>          $apps     app yang "boleh dilihat" user
      * @param array<string,AgentDeployer> $agents  deployer agent per server id

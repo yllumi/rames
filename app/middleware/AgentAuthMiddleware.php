@@ -52,6 +52,9 @@ final class AgentAuthMiddleware implements MiddlewareInterface
     /** Panjang minimum nonce (entropi yang layak untuk sekali pakai). */
     public const NONCE_MIN_LENGTH = 16;
 
+    /** Header jam agent pada 401 karena timestamp di luar jendela (hanya setelah token sah). */
+    public const HEADER_SERVER_TIME = 'X-Rames-Server-Time';
+
     /** Batas atas panjang nonce — menahan header absurd tanpa membatasi praktik wajar. */
     public const NONCE_MAX_LENGTH = 256;
 
@@ -99,7 +102,10 @@ final class AgentAuthMiddleware implements MiddlewareInterface
         $timestamp = $this->timestamp($request);
         $now = $this->now();
         if ($timestamp === null || abs($now - $timestamp) > $this->window) {
-            return $this->denied();
+            // Token sudah terbukti sah di titik ini, jadi pemanggil boleh tahu jam
+            // agent: tanpa ini selisih jam tampil sebagai "token ditolak". Body
+            // tetap generik; hanya header yang membedakan.
+            return $this->denied($now);
         }
 
         $nonce = $this->nonce($request);
@@ -131,9 +137,14 @@ final class AgentAuthMiddleware implements MiddlewareInterface
      * 401 generik: bentuk respons identik untuk semua penyebab kegagalan.
      * Tidak ada token, nonce, path, atau alasan spesifik di body.
      */
-    private function denied(): Response
+    private function denied(?int $serverTime = null): Response
     {
-        return json(['code' => 401, 'msg' => 'Unauthorized'])->withStatus(401);
+        $response = json(['code' => 401, 'msg' => 'Unauthorized'])->withStatus(401);
+        if ($serverTime !== null) {
+            $response->header(self::HEADER_SERVER_TIME, (string) $serverTime);
+        }
+
+        return $response;
     }
 
     private function isAgentMode(): bool

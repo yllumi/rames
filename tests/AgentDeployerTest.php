@@ -425,6 +425,52 @@ class AgentDeployerTest extends TestCase
     // (iv) batas waktu total
     // ==================================================================
 
+    public function testPollingToleratesTransientServerErrorsThenSucceeds(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'job_id' => 'job-t', 'log_offset' => 0]))
+            ->reply(503, '{"error":"sibuk"}')
+            ->reply(503, '{"error":"sibuk"}')
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'done']]))
+            ->reply(200, '')
+            ->reply(200, '')
+            ->reply(200, json_encode(['code' => 0, 'app' => $this->agentAppState()]));
+
+        $result = $this->deployer($handler)->deploy($this->app(), $this->logger());
+
+        $this->assertIsArray($result);
+    }
+
+    public function testPollingGivesUpAfterTooManyConsecutiveFailures(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, json_encode(['code' => 0, 'job_id' => 'job-f', 'log_offset' => 0]));
+        for ($i = 0; $i < AgentDeployer::MAX_POLL_FAILURES + 1; $i++) {
+            $handler->reply(503, '{"error":"mati"}');
+        }
+
+        $this->expectException(\app\library\Agent\AgentError::class);
+        $this->deployer($handler)->deploy($this->app(), $this->logger());
+    }
+
+    public function testPollingFailsFastOnUnauthorized(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'job_id' => 'job-u', 'log_offset' => 0]))
+            ->reply(401, '{"code":401}')
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'done']]));
+
+        try {
+            $this->deployer($handler)->deploy($this->app(), $this->logger());
+            $this->fail('401 tidak boleh diulang');
+        } catch (\app\library\Agent\AgentError $e) {
+            $this->assertSame(\app\library\Agent\AgentError::UNAUTHORIZED, $e->reason);
+            $this->assertSame(2, $handler->count());
+        }
+    }
+
     public function testTotalTimeoutThrowsInsteadOfHanging(): void
     {
         $handler = new AgentDeployerFakeHandler();
