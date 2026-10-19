@@ -66,6 +66,17 @@ function copyDetailKey() {
     if (timer) { clearInterval(timer); timer = null; }
   }
 
+  function reloadPage() {
+    // Jangan menutup modal log deploy yang sedang dibaca: tunda reload sampai
+    // user menutupnya (log build terakhir tetap terlihat).
+    var logModal = document.getElementById('deploy-log-modal');
+    if (logModal && logModal.classList.contains('show')) {
+      logModal.addEventListener('hidden.bs.modal', function () { window.location.reload(); }, { once: true });
+      return;
+    }
+    window.location.reload();
+  }
+
   function startPoll(initialStage, initialMessage) {
     stopPoll();
     ticks = 0;
@@ -88,7 +99,7 @@ function copyDetailKey() {
               showError(d.app.error || d.app.message || 'Proses gagal.');
             } else {
               // selesai: reload sebentar lagi agar halaman menampilkan state final
-              setTimeout(function () { window.location.reload(); }, 600);
+              setTimeout(reloadPage, 600);
             }
           }
         })

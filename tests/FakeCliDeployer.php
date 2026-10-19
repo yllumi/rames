@@ -38,6 +38,11 @@ class FakeCliDeployer implements DeployerInterface
     {
         $this->note('deploy');
 
+        if ((string) getenv('FAKE_DEPLOYER_OUTPUT') !== '') {
+            $logger('output', "Step 1/2 : FROM alpine\n");
+            $logger('output', 'Step 2/2 : RUN echo hi');
+        }
+
         return $this->finish($app, 'deploy');
     }
 

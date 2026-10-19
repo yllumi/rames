@@ -7,6 +7,7 @@ use app\library\Agent\AgentError;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\DeployLog;
 use app\library\Deploy\ServerResolver;
 use app\library\Docker\AppContainers;
 use app\library\Docker\ContainerLogs;
@@ -116,6 +117,46 @@ class LogController
             'text' => ContainerLogs::demultiplex($raw),
             'at' => date('H:i:s'),
         ]]);
+    }
+
+    /**
+     * `GET /api/apps/{id}/deploy-log?offset=N[&tail=1]` — potongan log deploy
+     * app (≤256 KiB) + header `X-Rames-Offset` = offset lanjutan untuk polling.
+     *
+     * Sumbernya berkas yang ditulis worker (`runtime/logs/deploy/{appId}.log`),
+     * termasuk output build `docker compose` yang dialirkan live. Karena worker
+     * di server agent meneruskan log job agent ke log yang sama, endpoint ini
+     * berlaku untuk app lokal **maupun** app server agent (tanpa proxy kedua).
+     *
+     * `tail=1` = mulai dari ekor log (dipakai saat modal dibuka). Ability `logs`
+     * (Viewer ke atas) — sama dengan log container.
+     */
+    public function deployLog(Request $request, string $id)
+    {
+        $app = $this->requireApp($id);
+
+        $offset = max(0, (int) $request->get('offset', '0'));
+        $tail = (string) $request->get('tail', '') === '1';
+
+        try {
+            $chunk = $this->deployLogReader()->read((string) $app['id'], $offset, $tail);
+        } catch (\Throwable $e) {
+            return json(['code' => 500, 'msg' => 'Gagal membaca log deploy.']);
+        }
+
+        return response($chunk['text'], 200, [
+            'Content-Type' => 'text/plain; charset=utf-8',
+            'Cache-Control' => 'no-store',
+            'X-Rames-Offset' => (string) $chunk['offset'],
+        ]);
+    }
+
+    /**
+     * Seam pembaca log deploy (uji memakai direktori temp, bukan `runtime/`).
+     */
+    protected function deployLogReader(): DeployLog
+    {
+        return new DeployLog();
     }
 
     /**

@@ -76,11 +76,15 @@ class AgentModeTest extends TestCase
      * `POST /api/ssl/{id}/enable` — ability `ssl` (operator+); keduanya
      * dashboard-only (halaman/JSON tabel SSL tidak ada di agent) dan tetap wajib
      * CSRF (`CsrfMiddleware` tanpa pengecualian baru).
+     *
+     * +1 (log deploy on-demand, modal detail app): `GET /api/apps/{id}/deploy-log`
+     * — ability `logs` (Viewer+), dashboard-only (membaca log worker di host ini;
+     * log app server agent sudah diteruskan worker ke berkas yang sama).
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 118;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 119;
 
-    /** Definisi di atas menghasilkan 124 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 124;
+    /** Definisi di atas menghasilkan 125 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 125;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [

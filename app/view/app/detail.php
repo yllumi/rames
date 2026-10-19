@@ -21,7 +21,8 @@
 //  18. detail-modal-run.php       Modal one-shot run command (non-interaktif)
 //  19. detail-modal-files.php     Modal file manager container (bila $canFiles & ada container)
 //  20. detail-modal-log.php       Modal log container + script pemuatnya (bila $canLogs & ada container)
-//  21. detail-scripts.php         Penutup: xterm.css, script aktifkan tab dari hash, script xterm/app-terminal/app-files
+//  21. detail-modal-deploy-log.php Modal log deploy on-demand (tahap worker + output build live)
+//  22. detail-scripts.php         Penutup: xterm.css, script aktifkan tab dari hash, script xterm/app-terminal/app-files
 // ---------------------------------------------------------------------------
 // PERINGATAN PEMELIHARAAN — keluaran view ini byte-exact; jangan diubah tanpa verifikasi render:
 //  * Partial di app/view/app/partials/ adalah hasil potong-tempel byte-exact dari berkas ini.
@@ -83,12 +84,23 @@ include app_path() . '/view/app/partials/detail-setup.php'; ?>
            style="width:5%" aria-valuenow="5" aria-valuemin="0" aria-valuemax="100"></div>
     </div>
     <div id="deploy-error" class="alert alert-danger py-2 small mt-3 mb-0 d-none" role="alert"></div>
-    <p class="text-muted small mt-2 mb-0">Proses berjalan di latar belakang — Anda boleh me-refresh halaman atau pindah halaman; build tetap berjalan dan progres dilanjutkan otomatis.</p>
+    <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
+      <p class="text-muted small mb-0">Proses berjalan di latar belakang — Anda boleh me-refresh halaman atau pindah halaman; build tetap berjalan dan progres dilanjutkan otomatis.</p>
+      <?php if ($canLogs): ?>
+        <button type="button" class="btn btn-outline-secondary btn-sm ms-auto" data-bs-toggle="modal" data-bs-target="#deploy-log-modal"
+                title="Lihat tahap worker &amp; output build docker compose (live)">⧉ Log build</button>
+      <?php endif; ?>
+    </div>
   </div>
 </div>
 
 <?php if ($status === 'error'): ?>
-  <div class="alert alert-danger" role="alert"><strong>Error:</strong> <?= e($app['error'] ?? $app['message'] ?? '') ?></div>
+  <div class="alert alert-danger d-flex align-items-start gap-2 flex-wrap" role="alert">
+    <div class="flex-grow-1"><strong>Error:</strong> <?= e($app['error'] ?? $app['message'] ?? '') ?></div>
+    <?php if ($canLogs): ?>
+      <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deploy-log-modal">⧉ Lihat log deploy</button>
+    <?php endif; ?>
+  </div>
 <?php endif; ?>
 
 <?php if (!$isBusy && $canOperate): ?>
@@ -179,6 +191,10 @@ include app_path() . '/view/app/partials/detail-modal-files.php'; ?>
 <?php
 // Partial: Modal log container + <script> pemuatnya (bila $canLogs & ada container)
 include app_path() . '/view/app/partials/detail-modal-log.php'; ?>
+
+<?php
+// Partial: Modal log deploy on-demand (tahap worker + output build live)
+include app_path() . '/view/app/partials/detail-modal-deploy-log.php'; ?>
 
 <?php
 // Partial: Penutup: xterm.css, script aktifkan tab dari hash, script xterm/app-terminal/app-files

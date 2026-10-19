@@ -26,6 +26,41 @@ class ProcessRunner
      */
     public function run(array $command, ?string $cwd = null, int $timeout = 300, array $env = [], ?string $stdin = null): array
     {
+        return $this->guardSigchld($command, $cwd, $timeout, $env, $stdin, null);
+    }
+
+    /**
+     * Sama seperti {@see self::run()}, tetapi setiap potongan output
+     * (stdout/stderr) diteruskan ke `$onChunk` **saat diterima** — dipakai log
+     * build docker agar operator melihat progres live, bukan hanya hasil akhir.
+     *
+     * Kesalahan di dalam `$onChunk` diabaikan: kegagalan menulis log tidak boleh
+     * menggagalkan proses yang sedang berjalan (dan proses tidak ditinggalkan).
+     *
+     * @param array<int,string>    $command list program + argumen (mentah, tanpa escaping)
+     * @param array<string,string> $env     environment tambahan
+     * @param callable(string):void $onChunk penerima potongan output mentah
+     * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
+     */
+    public function runStreaming(
+        array $command,
+        ?string $cwd,
+        int $timeout,
+        array $env,
+        ?string $stdin,
+        callable $onChunk
+    ): array {
+        return $this->guardSigchld($command, $cwd, $timeout, $env, $stdin, $onChunk);
+    }
+
+    /**
+     * @param array<int,string>     $command
+     * @param array<string,string>  $env
+     * @param callable|null         $onChunk
+     * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
+     */
+    private function guardSigchld(array $command, ?string $cwd, int $timeout, array $env, ?string $stdin, ?callable $onChunk): array
+    {
         // Worker Webman persistent bisa sudah mewarisi SIGCHLD=SIG_IGN dari spawn
         // worker deploy / sesi terminal (lihat SigchldGuard). Tanpa dipulihkan,
         // proses anak ikut meng-ignore SIGCHLD → git/docker compose kehilangan
@@ -33,7 +68,7 @@ class ProcessRunner
         // dan proc_get_status() di sini kehilangan exit code (selalu -1).
         $restoreSigchld = SigchldGuard::disableIgnore();
         try {
-            return $this->execute($command, $cwd, $timeout, $env, $stdin);
+            return $this->execute($command, $cwd, $timeout, $env, $stdin, $onChunk);
         } finally {
             if ($restoreSigchld) {
                 SigchldGuard::ignoreAndReap();
@@ -47,9 +82,10 @@ class ProcessRunner
      *
      * @param array<int,string>    $command list program + argumen (mentah, tanpa escaping)
      * @param array<string,string> $env     environment tambahan
+     * @param callable|null        $onChunk penerima potongan output (opsional)
      * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
      */
-    private function execute(array $command, ?string $cwd, int $timeout, array $env, ?string $stdin): array
+    private function execute(array $command, ?string $cwd, int $timeout, array $env, ?string $stdin, ?callable $onChunk = null): array
     {
         $descriptors = [
             0 => ['pipe', 'r'],
@@ -99,6 +135,13 @@ class ProcessRunner
                             $stdout .= $chunk;
                         } else {
                             $stderr .= $chunk;
+                        }
+                        if ($onChunk !== null) {
+                            try {
+                                $onChunk($chunk);
+                            } catch (\Throwable) {
+                                // Log (best-effort) tidak boleh menggagalkan proses.
+                            }
                         }
                     }
                 }

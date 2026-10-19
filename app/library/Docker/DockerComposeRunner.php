@@ -46,15 +46,27 @@ class DockerComposeRunner
         return $args;
     }
 
-    public function up(string $project, string $dir, array $files, bool $build = true, ?string $envFile = null): void
-    {
+    /**
+     * @param array<int,string>    $files
+     * @param callable|null        $onOutput penerima potongan output mentah
+     *                                       `docker compose` (log build live);
+     *                                       null = perilaku lama (buffer saja)
+     */
+    public function up(
+        string $project,
+        string $dir,
+        array $files,
+        bool $build = true,
+        ?string $envFile = null,
+        ?callable $onOutput = null
+    ): void {
         $args = $this->baseArgs($project, $dir, $files, $envFile);
         $args[] = 'up';
         $args[] = '-d';
         if ($build) {
             $args[] = '--build';
         }
-        $this->mustRun($args, $dir, 'docker compose up', $this->timeout);
+        $this->mustRun($args, $dir, 'docker compose up', $this->timeout, $onOutput);
     }
 
     public function down(string $project, string $dir, array $files, bool $volumes = true, ?string $envFile = null): void
@@ -149,9 +161,11 @@ class DockerComposeRunner
         return ['PWD' => $dir];
     }
 
-    private function mustRun(array $args, string $dir, string $label, int $timeout): void
+    private function mustRun(array $args, string $dir, string $label, int $timeout, ?callable $onOutput = null): void
     {
-        $result = $this->runner->run($args, $dir, $timeout, $this->env($dir));
+        $result = $onOutput !== null
+            ? $this->runner->runStreaming($args, $dir, $timeout, $this->env($dir), null, $onOutput)
+            : $this->runner->run($args, $dir, $timeout, $this->env($dir));
         if ($result['code'] !== 0) {
             $msg = trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']);
             if ($result['timedOut']) {

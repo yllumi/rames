@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\library\Agent;
 
 use app\library\Storage\JsonStore;
+use app\library\Support\LogChunkReader;
 
 /**
  * Registry job **di sisi agent** (plan §4.1/§4.2) — fondasi `POST /jobs` (F1).
@@ -34,10 +35,10 @@ final class AgentJobStore
     public const STATUSES = ['pending', 'running', 'done', 'error'];
 
     /** Plafon baca log per panggilan (256 KiB) — log deploy bisa panjang. */
-    public const MAX_LOG_READ = 262144;
+    public const MAX_LOG_READ = LogChunkReader::MAX_READ;
 
     /** Batas offset yang diterima (menahan angka absurd dari query string). */
-    public const MAX_LOG_OFFSET = 1073741824; // 1 GiB
+    public const MAX_LOG_OFFSET = LogChunkReader::MAX_OFFSET;
 
     private const DIR_MODE = 0700;
 
@@ -226,46 +227,7 @@ final class AgentJobStore
      */
     public function readLog(string $id, int $offset = 0): string
     {
-        $path = $this->logPath($id);
-        if (!is_file($path)) {
-            return '';
-        }
-
-        $offset = max(0, min($offset, self::MAX_LOG_OFFSET));
-        $size = filesize($path);
-        if ($size === false || $offset >= $size) {
-            return '';
-        }
-
-        $handle = @fopen($path, 'rb');
-        if ($handle === false) {
-            return '';
-        }
-
-        try {
-            if (fseek($handle, $offset) !== 0) {
-                return '';
-            }
-            $chunk = fread($handle, self::MAX_LOG_READ);
-        } finally {
-            fclose($handle);
-        }
-
-        if ($chunk === false || $chunk === '') {
-            return '';
-        }
-
-        // Berakhir persis di EOF ⇒ tidak ada yang dipangkas.
-        if ($offset + strlen($chunk) >= $size || str_ends_with($chunk, "\n")) {
-            return $chunk;
-        }
-
-        $lastNewline = strrpos($chunk, "\n");
-        if ($lastNewline === false || $lastNewline === 0) {
-            return $chunk; // satu baris raksasa: serahkan apa adanya
-        }
-
-        return substr($chunk, 0, $lastNewline + 1);
+        return LogChunkReader::read($this->logPath($id), $offset);
     }
 
     /**

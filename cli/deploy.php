@@ -569,6 +569,21 @@ try {
 
 /** @var callable(string,string):void */
 $logger = function (string $stage, string $message) use ($store, $appId, $logFile, $markJob): void {
+    // Stage `output` = output mentah proses (mis. progres build `docker compose`).
+    // Tulis apa adanya ke log TANPA memperbarui apps.json: satu baris build bukan
+    // perubahan status app, dan menulis ulang JSON tiap baris akan membanjiri
+    // store (flock + backup) selama build.
+    if ($stage === 'output') {
+        $message = str_replace(["\r\n", "\r"], "\n", $message);
+        if ($message !== '') {
+            if (!str_ends_with($message, "\n")) {
+                $message .= "\n";
+            }
+            file_put_contents($logFile, $message, FILE_APPEND);
+        }
+
+        return;
+    }
     file_put_contents($logFile, '[' . date('c') . "] [{$stage}] {$message}" . PHP_EOL, FILE_APPEND);
     $store->update($appId, function (array &$s) use ($stage, $message): void {
         $s['status'] = 'deploying';

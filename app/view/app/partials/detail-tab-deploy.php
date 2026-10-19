@@ -3,7 +3,11 @@
     <section class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <h2 class="h6 mb-0">Riwayat Deployment</h2>
-    <div class="d-flex align-items-center gap-2">
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      <?php if ($canLogs): ?>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#deploy-log-modal"
+                title="Lihat log deploy terakhir / output build">⧉ Log deploy</button>
+      <?php endif; ?>
       <?php if ($isCompose): ?>
         <span class="text-muted small">Sumber: file compose <span class="mono"><?= e((string) ($compose['main_file'] ?? 'docker-compose.yml')) ?></span> · tanpa checkpoint Git</span>
       <?php else: ?>

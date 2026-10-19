@@ -252,6 +252,8 @@ Route::get('/apps/{id}/versions', [AppController::class, 'versions']);
 Route::get('/api/apps/{id}/status', [AppController::class, 'status']);
 // Log container app (popup modal di detail app)
 Route::get('/api/apps/{id}/logs', [LogController::class, 'index']);
+// Log deploy app (popup modal; output build live + tahap worker)
+Route::get('/api/apps/{id}/deploy-log', [LogController::class, 'deployLog']);
 
 // Aksi app
 Route::post('/apps/{id}/rebuild', [AppController::class, 'rebuild']);

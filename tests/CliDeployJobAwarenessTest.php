@@ -163,6 +163,22 @@ class CliDeployJobAwarenessTest extends TestCase
         $this->assertStringContainsString('tidak ditemukan', (string) $job['error']);
     }
 
+    public function testWorkerWritesRawBuildOutputWithoutChangingAppStageMessage(): void
+    {
+        $result = $this->worker('deploy', self::APP_ID, '', ['FAKE_DEPLOYER_OUTPUT' => '1']);
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr']);
+
+        $log = (string) file_get_contents($this->root . '/runtime/logs/deploy/' . self::APP_ID . '.log');
+        $this->assertStringContainsString("Step 1/2 : FROM alpine\n", $log, 'baris build ditulis mentah ke log');
+        $this->assertStringContainsString("Step 2/2 : RUN echo hi\n", $log, 'baris tanpa newline tetap dipisahkan');
+        $this->assertStringNotContainsString('[output]', $log, 'output mentah tidak diberi prefix stage');
+
+        $app = $this->storedApp();
+        $this->assertSame('running', (string) $app['status']);
+        $this->assertSame('Running', (string) $app['message'], 'baris build tidak boleh menimpa pesan status app');
+    }
+
     // ==================================================================
     // Mode baru
     // ==================================================================

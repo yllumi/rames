@@ -79,7 +79,7 @@ class NoPortFakeComposeRunner extends DockerComposeRunner
         parent::__construct(new ProcessRunner(), 'docker', 10);
     }
 
-    public function up(string $project, string $dir, array $files, bool $build = true, ?string $envFile = null): void
+    public function up(string $project, string $dir, array $files, bool $build = true, ?string $envFile = null, ?callable $onOutput = null): void
     {
         $this->upCalls[] = ['project' => $project, 'dir' => $dir, 'files' => $files, 'build' => $build];
     }

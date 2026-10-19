@@ -8,7 +8,12 @@ namespace app\library\Deploy;
  *
  * Implementasi lokal (LocalDeployer) mengeksekusi docker compose di mesin yang
  * sama; di fase berikutnya bisa diganti implementasi yang memanggil agent HTTP
- * (multi-server) tanpa mengubah controller/business logic dashboard.
+ * (multi-server) tanpa mengubah controller/business logic library.
+ *
+ * Kontrak `$logger`: `callable(string $stage, string $message): void`. Stage
+ * khusus **`output`** berarti output mentah proses (mis. progres build
+ * `docker compose`) — pemanggil boleh menuliskannya apa adanya ke log tanpa
+ * memperbarui status app (jangan menulis ulang `apps.json` per baris).
  */
 interface DeployerInterface
 {

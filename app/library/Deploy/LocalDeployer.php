@@ -418,10 +418,36 @@ class LocalDeployer implements DeployerInterface
             }
         }
 
+        // Output `docker compose` dialirkan baris demi baris ke logger stage
+        // `output` (worker menuliskannya mentah ke log deploy tanpa menulis ulang
+        // apps.json per baris) supaya build yang lama bisa dipantau dari modal
+        // log. Baris yang belum lengkap ditahan sampai newline berikutnya.
+        $buffer = '';
+        $onOutput = null;
+        if ($logger !== null) {
+            $onOutput = static function (string $chunk) use (&$buffer, $logger): void {
+                $buffer .= str_replace(["\r\n", "\r"], ["\n", "\n"], $chunk);
+                while (($pos = strpos($buffer, "\n")) !== false) {
+                    $logger('output', substr($buffer, 0, $pos + 1));
+                    $buffer = substr($buffer, $pos + 1);
+                }
+                // Baris progress sangat panjang tanpa newline: jangan tahan memori.
+                if (strlen($buffer) > 8192) {
+                    $logger('output', $buffer . "\n");
+                    $buffer = '';
+                }
+            };
+        }
+
         try {
-            $this->compose->up($project, $dir, $files, $build, $this->appEnvFile($app));
+            $this->compose->up($project, $dir, $files, $build, $this->appEnvFile($app), $onOutput);
         } catch (\Throwable $e) {
             throw new RuntimeException($e->getMessage() . ComposeBinds::missingHint($binds['missing']), 0, $e);
+        } finally {
+            if ($logger !== null && $buffer !== '') {
+                $logger('output', $buffer . "\n");
+                $buffer = '';
+            }
         }
     }
 
