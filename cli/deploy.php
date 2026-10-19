@@ -569,6 +569,19 @@ try {
 
 /** @var callable(string,string):void */
 $logger = function (string $stage, string $message) use ($store, $appId, $logFile, $markJob): void {
+    // Stage `job` = id job agent untuk app remote (dikirim AgentDeployer) —
+    // disimpan agar pembatalan deploy tahu job mana yang harus dihentikan di
+    // server agent. Bukan perubahan status.
+    if ($stage === 'job') {
+        $agentJobId = trim($message);
+        if (preg_match('/^[A-Za-z0-9_-]{1,128}$/', $agentJobId) === 1) {
+            $store->update($appId, static function (array &$s) use ($agentJobId): void {
+                $s['agent_job_id'] = $agentJobId;
+            });
+        }
+
+        return;
+    }
     // Stage `output` = output mentah proses (mis. progres build `docker compose`).
     // Tulis apa adanya ke log TANPA memperbarui apps.json: satu baris build bukan
     // perubahan status app, dan menulis ulang JSON tiap baris akan membanjiri
@@ -696,6 +709,7 @@ try {
         $s['error'] = null;
         $s['containers'] = $app['containers'] ?? [];
         $s['deploy_history'] = $app['deploy_history'] ?? $s['deploy_history'] ?? [];
+        unset($s['worker_pid'], $s['worker_mode'], $s['worker_started_at'], $s['agent_job_id']);
     });
 
     // Reload nginx host agar config baru (subdomain/custom domain) aktif.
@@ -719,6 +733,7 @@ try {
             $s['stage'] = null;
             $s['message'] = $msg;
             $s['error'] = $msg;
+            unset($s['worker_pid'], $s['worker_mode'], $s['worker_started_at'], $s['agent_job_id']);
         });
     } catch (\Throwable $ignored) {
         // abaikan jika store juga bermasalah

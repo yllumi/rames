@@ -89,6 +89,8 @@ if ($ramesMode === 'agent') {
         Route::post('/jobs', [AgentJobController::class, 'create']);
         Route::get('/jobs/{id}', [AgentJobController::class, 'show']);
         Route::get('/jobs/{id}/log', [AgentJobController::class, 'log']);
+        // Pembatalan job: hentikan worker + grup proses build di server ini.
+        Route::post('/jobs/{id}/cancel', [AgentJobController::class, 'cancel']);
 
         // Proyeksi app di agent (F1, plan §4.3 sisi pull): control plane menarik
         // state eksekusi app (status/containers/deploy_history/ssl) sesudah job.
@@ -257,6 +259,8 @@ Route::get('/api/apps/{id}/deploy-log', [LogController::class, 'deployLog']);
 
 // Aksi app
 Route::post('/apps/{id}/rebuild', [AppController::class, 'rebuild']);
+// Batalkan deploy/build yang sedang berjalan (hentikan worker + grup proses)
+Route::post('/apps/{id}/deploy/cancel', [AppController::class, 'cancelDeploy']);
 Route::post('/apps/{id}/rollback', [AppController::class, 'rollback']);
 Route::post('/apps/{id}/stop', [AppController::class, 'stop']);
 Route::post('/apps/{id}/start', [AppController::class, 'start']);

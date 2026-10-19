@@ -21,9 +21,16 @@ $breadcrumbs = [
 </div>
 
 <?php if ($isBusy): ?>
-  <div class="alert alert-info d-flex align-items-start gap-2" role="alert">
+  <div class="alert alert-info d-flex align-items-start gap-2 flex-wrap" role="alert">
     <span class="spinner-border spinner-border-sm text-info mt-1 flex-shrink-0" role="status" aria-hidden="true"></span>
-    <div>Sedang <strong><?= e($app['stage'] ?? 'deploying') ?></strong>: <?= e($app['message'] ?? '') ?></div>
+    <div class="flex-grow-1">Sedang <strong><?= e($app['stage'] ?? 'deploying') ?></strong>: <?= e($app['message'] ?? '') ?></div>
+    <?php if (app_can('deploy', $app)): ?>
+      <form method="post" action="/apps/<?= e($app['id']) ?>/deploy/cancel" class="ms-auto"
+            onsubmit="return confirm('Batalkan proses build/deploy yang sedang berjalan?\n\nContainer yang sudah ada tidak dihapus.');">
+        <?= csrf_field() ?>
+        <button type="submit" class="btn btn-outline-danger btn-sm">■ Batalkan build</button>
+      </form>
+    <?php endif; ?>
   </div>
 <?php endif; ?>
 

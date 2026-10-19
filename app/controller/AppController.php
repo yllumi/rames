@@ -18,6 +18,7 @@ use app\library\Deploy\AppNginxReloader;
 use app\library\Deploy\AppSslRevoker;
 use app\library\Deploy\ComposeSource;
 use app\library\Deploy\ContainerNames;
+use app\library\Deploy\DeployCanceller;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Deploy\EnvManager;
@@ -1820,6 +1821,96 @@ class AppController
             flash_set('success', 'Rebuild dijalankan.');
         }
         return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Batalkan deploy/rebuild/rollback yang sedang berjalan.
+     *
+     * Bukan sekadar reset status: `DeployCanceller` menghentikan worker (grup
+     * proses, termasuk `docker compose`/build) dan — untuk app server agent —
+     * membatalkan job di agent lebih dulu. Status app dipulihkan (`running`
+     * bila container lama masih hidup, selain itu `stopped`) sehingga UI tidak
+     * tertahan di `deploying` meski worker sudah mati tanpa jejak.
+     *
+     * Otorisasi: ability `deploy` (Operator ke atas) — sama dengan tombol
+     * rebuild/rollback. App tanpa hak tetap **404** lewat `findApp()`.
+     */
+    public function cancelDeploy(Request $request, string $id)
+    {
+        $store = new AppStore();
+        $app = $this->findApp($id, 'deploy');
+
+        if (($app['status'] ?? '') !== 'deploying') {
+            $msg = 'Tidak ada deploy yang sedang berjalan untuk app ini.';
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $msg, 'idle' => true]);
+            }
+            flash_set('error', $msg);
+
+            return redirect('/apps/' . $id);
+        }
+
+        // Job di server agent harus dihentikan di sana; bila konfigurasi server
+        // cacat, jangan gagalkan pembatalan worker lokal — laporkan sebagai
+        // peringatan (build di agent mungkin masih berjalan).
+        $agent = null;
+        $agentError = '';
+        try {
+            $agent = AgentDeployer::forApp($app);
+        } catch (\Throwable $e) {
+            $agentError = $e->getMessage();
+        }
+
+        $user = current_user();
+        $actor = trim((string) ($user['username'] ?? ($user['id'] ?? '')));
+
+        try {
+            $result = $this->deployCanceller($app)->cancelApp($app, $agent, $actor);
+        } catch (\Throwable $e) {
+            $msg = 'Gagal membatalkan deploy: ' . $e->getMessage();
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $msg]);
+            }
+            flash_set('error', $msg);
+
+            return redirect('/apps/' . $id);
+        }
+
+        $warnings = $result['warnings'];
+        if ($agentError !== '') {
+            $warnings[] = 'Server agent bermasalah: ' . $agentError;
+        }
+
+        $summary = 'Deploy dibatalkan (' . ($result['killed'] > 0 ? $result['killed'] . ' proses dihentikan' : 'tidak ada proses aktif') . ').';
+        if ($warnings !== []) {
+            $summary .= ' ' . implode(' ', $warnings);
+        }
+
+        if ($request->expectsJson()) {
+            flash_set($warnings === [] ? 'success' : 'error', $summary);
+
+            return json([
+                'code' => 0,
+                'status' => $result['status'],
+                'message' => $summary,
+                'warnings' => $warnings,
+            ]);
+        }
+
+        flash_set($warnings === [] ? 'success' : 'error', $summary);
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Seam uji: canceller dengan proses/Engine palsu. Produksi: implementasi
+     * bawaan (proc nyata + Docker Engine host ini).
+     *
+     * @param array<string,mixed> $app
+     */
+    protected function deployCanceller(array $app): DeployCanceller
+    {
+        return new DeployCanceller();
     }
 
     /**
@@ -4294,7 +4385,25 @@ class AppController
         ?string $actorId = null,
         ?DeployWorkerLauncher $launcher = null
     ): bool {
-        return ($launcher ?? new DeployWorkerLauncher())->launch($appId, $mode, $arg, (string) $actorId);
+        $pid = 0;
+        $ok = ($launcher ?? new DeployWorkerLauncher())->launch($appId, $mode, $arg, (string) $actorId, '', $pid);
+
+        // Catat PID worker supaya deploy bisa dibatalkan (`DeployCanceller`).
+        // Best-effort: kegagalan mencatat PID tidak boleh menggagalkan deploy —
+        // canceller masih bisa menemukan worker lewat pemindaian `/proc`.
+        if ($ok && $pid > 0) {
+            try {
+                (new AppStore())->update($appId, static function (array &$s) use ($pid, $mode): void {
+                    $s['worker_pid'] = $pid;
+                    $s['worker_mode'] = $mode;
+                    $s['worker_started_at'] = date('c');
+                });
+            } catch (\Throwable) {
+                // abaikan
+            }
+        }
+
+        return $ok;
     }
 
     /**

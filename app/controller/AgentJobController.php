@@ -11,7 +11,9 @@ use app\library\Backup\BackupJobRunner;
 use app\library\Backup\DumpStaging;
 use app\library\Backup\ResticRunner;
 use app\library\Backup\VolumeStateGuard;
+use app\library\Deploy\DeployCanceller;
 use app\library\Deploy\DeployerFactory;
+use app\library\Deploy\DeployLog;
 use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Storage\AppStore;
 use app\library\Template\TemplateCatalog;
@@ -287,6 +289,9 @@ class AgentJobController
      */
     private ?TemplatePullService $templatePull;
 
+    /** Pembatalan job (seam uji; null ⇒ bawaan dengan proses/Engine nyata). */
+    private ?DeployCanceller $canceller;
+
     public function __construct(
         ?AgentJobStore $jobs = null,
         ?DeployWorkerLauncher $launcher = null,
@@ -294,6 +299,7 @@ class AgentJobController
         ?AgentArtifactMaterializer $materializer = null,
         ?BackupJobRunner $backup = null,
         ?TemplatePullService $templatePull = null,
+        ?DeployCanceller $canceller = null,
     ) {
         $this->jobs = $jobs;
         $this->launcher = $launcher;
@@ -301,6 +307,7 @@ class AgentJobController
         $this->materializer = $materializer;
         $this->backup = $backup;
         $this->templatePull = $templatePull;
+        $this->canceller = $canceller;
     }
 
     /**
@@ -486,7 +493,8 @@ class AgentJobController
             return $this->error($message, 'materialize_failed', 500, $jobId);
         }
 
-        if (!$this->launcher()->launch($appId, $op, $ref, $actorId, $jobId)) {
+        $workerPid = 0;
+        if (!$this->launcher()->launch($appId, $op, $ref, $actorId, $jobId, $workerPid)) {
             // Jangan pernah mengaku sukses: job ditandai error agar control plane
             // tidak menunggu pekerjaan yang tidak pernah berjalan.
             $this->jobs()->update($jobId, static function (array &$record): void {
@@ -497,6 +505,14 @@ class AgentJobController
             });
 
             return $this->error('Gagal menjalankan worker deploy di server agent.', 'spawn_failed', 500, $jobId);
+        }
+
+        // PID worker disimpan agar control plane bisa membatalkan job ini
+        // (`POST /jobs/{id}/cancel` → `DeployCanceller`).
+        if ($workerPid > 0) {
+            $this->jobs()->update($jobId, static function (array &$record) use ($workerPid): void {
+                $record['worker_pid'] = $workerPid;
+            });
         }
 
         return json(['code' => 0, 'job_id' => $jobId, 'op' => $op, 'log_offset' => $logOffset]);
@@ -622,7 +638,8 @@ class AgentJobController
         // plane supaya baris run sebelumnya tidak terulang.
         $logOffset = $this->logOffset($target);
 
-        if (!$this->launcher()->launch($target, $op, null, $actorId, $jobId)) {
+        $workerPid = 0;
+        if (!$this->launcher()->launch($target, $op, null, $actorId, $jobId, $workerPid)) {
             $this->jobs()->update($jobId, static function (array &$record): void {
                 $record['status'] = 'error';
                 $record['message'] = 'Gagal menjalankan worker di server agent.';
@@ -631,6 +648,12 @@ class AgentJobController
             });
 
             return $this->error('Gagal menjalankan worker di server agent.', 'spawn_failed', 500, $jobId);
+        }
+
+        if ($workerPid > 0) {
+            $this->jobs()->update($jobId, static function (array &$record) use ($workerPid): void {
+                $record['worker_pid'] = $workerPid;
+            });
         }
 
         return json(['code' => 0, 'job_id' => $jobId, 'op' => $op, 'log_offset' => $logOffset]);
@@ -674,6 +697,77 @@ class AgentJobController
             'Content-Type' => 'text/plain; charset=utf-8',
             'X-Rames-Offset' => (string) $next,
         ]);
+    }
+
+    /**
+     * `POST /jobs/{id}/cancel` — hentikan job yang masih `pending|running`.
+     *
+     * Worker job di server ini adalah pemimpin sesi (`pcntl_setsid`), sehingga
+     * `DeployCanceller` mematikan **grup proses** — `docker compose`/build yang
+     * sedang berjalan ikut berhenti, bukan hanya ditinggal. Job yang sudah
+     * `done`/`error` ditolak (409) supaya rekaman final tidak ditimpa.
+     *
+     * Untuk job yang terikat app, status proyeksi app juga dipulihkan
+     * (`running`/`stopped`) supaya tidak tertahan `deploying` di server ini.
+     * Op tingkat server (target bukan app) cukup mematikan worker.
+     */
+    public function cancel(Request $request, string $id): Response
+    {
+        $job = $this->jobs()->find($id);
+        if ($job === null) {
+            return $this->error('Job tidak ditemukan.', 'not_found', 404);
+        }
+
+        $status = strtolower(trim((string) ($job['status'] ?? '')));
+        if (!in_array($status, ['pending', 'running'], true)) {
+            return $this->error('Job sudah selesai dan tidak dapat dibatalkan.', 'not_running', 409);
+        }
+
+        $target = is_scalar($job['app_id'] ?? null) ? trim((string) $job['app_id']) : '';
+        $pid = (int) ($job['worker_pid'] ?? 0);
+
+        $app = null;
+        if ($target !== '') {
+            try {
+                $app = $this->appStore()->find($target);
+            } catch (\Throwable) {
+                $app = null;
+            }
+        }
+
+        try {
+            if ($app !== null) {
+                $result = $this->canceller()->cancelApp($app, null, 'control plane');
+            } else {
+                $terminated = $this->canceller()->terminate($target, $pid);
+                $result = [
+                    'killed' => $terminated['killed'],
+                    'running' => $terminated['running'],
+                    'warnings' => [],
+                ];
+            }
+        } catch (\Throwable $e) {
+            return $this->error('Gagal membatalkan job: ' . $e->getMessage(), 'cancel_failed', 500);
+        }
+
+        $this->jobs()->update($id, static function (array &$record): void {
+            $record['status'] = 'error';
+            $record['stage'] = 'cancelled';
+            $record['message'] = 'Job dibatalkan.';
+            $record['error'] = 'Job dibatalkan.';
+            $record['finished_at'] = date('c');
+            unset($record['worker_pid']);
+        });
+
+        if ($result['running'] !== []) {
+            return $this->error(
+                'Job dibatalkan, tetapi sebagian proses masih hidup (PID ' . implode(', ', $result['running']) . ').',
+                'cancel_partial',
+                500
+            );
+        }
+
+        return json(['code' => 0, 'killed' => (int) $result['killed'], 'message' => 'Job dibatalkan.']);
     }
 
     /**
@@ -1059,6 +1153,17 @@ class AgentJobController
     private function launcher(): DeployWorkerLauncher
     {
         return $this->launcher ??= new DeployWorkerLauncher();
+    }
+
+    private function canceller(): DeployCanceller
+    {
+        // Log pembatalan ditulis ke direktori log worker agent (seam `logDir`
+        // launcher), bukan default `runtime/logs/deploy` — menjaga uji tidak
+        // menyentuh runtime nyata saat launcher diarahkan ke temp.
+        return $this->canceller ??= new DeployCanceller(
+            store: new AppStore($this->projection()->path()),
+            log: new DeployLog($this->launcher()->logDir())
+        );
     }
 
     private function projection(): AgentAppProjection

@@ -200,10 +200,15 @@ final class DeployWorkerLauncher
      *                             spawn bukan bagian dari job agent (jalur control
      *                             plane) — worker memakainya untuk menandai status
      *                             job di `AgentJobStore` (multi-server F1)
+     * @param int|null    $pid     diisi PID worker yang di-spawn (0 bila gagal).
+     *                             Disimpan pemanggil (`apps.worker_pid` /
+     *                             `jobs.worker_pid`) agar deploy bisa dibatalkan
+     *                             lewat `DeployCanceller`.
      * @return bool true bila proses anak berhasil di-fork (bukan jaminan exec sukses)
      */
-    public function launch(string $appId, string $mode, ?string $ref = null, string $actorId = '', string $jobId = ''): bool
+    public function launch(string $appId, string $mode, ?string $ref = null, string $actorId = '', string $jobId = '', ?int &$pid = null): bool
     {
+        $pid = 0;
         $appId = trim($appId);
         $mode = trim($mode);
         if ($appId === '' || !in_array($mode, self::MODES, true)) {
@@ -232,8 +237,6 @@ final class DeployWorkerLauncher
         // Env job hanya diisi bila ada (perilaku lama tanpa env tidak berubah).
         $jobId = trim($jobId);
         $env = $jobId !== '' ? ['RAMES_JOB_ID' => $jobId] : [];
-
-        $pid = 0;
 
         // SIGCHLD=SIG_DFL selama fork supaya anak mewarisi disposisi normal;
         // disposisi sebelumnya (SIG_IGN di HTTP worker) dipulihkan sesudahnya

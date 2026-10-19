@@ -344,6 +344,9 @@ final class AgentDeployer implements DeployerInterface
 
         $offset = $this->initialOffset($data, $logKey, $logger);
         if ($logger !== null) {
+            // Stage `job`: worker deploy mencatat id ini (`apps.agent_job_id`)
+            // supaya pembatalan tahu job mana yang harus dihentikan di agent.
+            $logger('job', $jobId);
             $logger('agent', "Job `{$op}` dikirim ke {$this->label()} (job {$jobId}, target {$logKey}).");
         }
 
@@ -588,6 +591,31 @@ final class AgentDeployer implements DeployerInterface
         }
 
         return $name;
+    }
+
+    /**
+     * `POST /jobs/{id}/cancel` — hentikan job yang sedang berjalan **di server
+     * agent** (worker + grup proses `docker compose`-nya).
+     *
+     * Dipakai pembatalan deploy di control plane: mematikan worker control
+     * plane saja tidak menghentikan build yang berjalan di server lain.
+     * Agent lama yang belum punya endpoint ini menjawab 404 → `AgentError`;
+     * pemanggil menampilkannya sebagai peringatan, bukan sukses palsu.
+     *
+     * @throws AgentError|RuntimeException id tidak sah atau agent menolak
+     */
+    public function cancelJob(string $jobId): void
+    {
+        $jobId = trim($jobId);
+        if (preg_match(self::ID_PATTERN, $jobId) !== 1) {
+            throw new RuntimeException($this->label() . ': id job agent tidak valid.');
+        }
+
+        $data = $this->short('membatalkan job', fn (): array => $this->client->post(
+            '/jobs/' . rawurlencode($jobId) . '/cancel',
+            []
+        ));
+        $this->ok($data, 'membatalkan job');
     }
 
     /**

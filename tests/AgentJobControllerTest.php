@@ -8,6 +8,8 @@ use app\controller\AgentJobController;
 use app\library\Agent\AgentAppProjection;
 use app\library\Agent\AgentArtifactMaterializer;
 use app\library\Agent\AgentJobStore;
+use app\library\Deploy\DeployCanceller;
+use app\library\Deploy\DeployLog;
 use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Git\GitService;
 use app\library\Storage\AppStore;
@@ -1009,7 +1011,7 @@ class AgentJobControllerTest extends TestCase
         }
 
         $this->assertEqualsCanonicalizing(
-            ['__construct', 'create', 'show', 'log', 'showApp', 'renderNginx', 'checkNginx', 'checkApp', 'backupVolumes', 'backupSnapshots', 'backupDump'],
+            ['__construct', 'create', 'show', 'log', 'cancel', 'showApp', 'renderNginx', 'checkNginx', 'checkApp', 'backupVolumes', 'backupSnapshots', 'backupDump'],
             get_class_methods(AgentJobController::class)
         );
 
@@ -1017,6 +1019,7 @@ class AgentJobControllerTest extends TestCase
         $this->assertStringContainsString("Route::post('/jobs'", $source);
         $this->assertStringContainsString("Route::get('/jobs/{id}'", $source);
         $this->assertStringContainsString("Route::get('/jobs/{id}/log'", $source);
+        $this->assertStringContainsString("Route::post('/jobs/{id}/cancel'", $source);
         $this->assertStringContainsString("Route::get('/apps/{id}'", $source);
         $this->assertStringContainsString("Route::get('/apps/{id}/nginx'", $source);
         $this->assertStringContainsString("Route::post('/nginx/check'", $source);
@@ -1201,6 +1204,106 @@ class AgentJobControllerTest extends TestCase
         $this->assertFalse($body['available']);
         $this->assertSame('blocked', $body['state']);
         $this->assertSame([], $this->runner->commands, 'URL di luar plafon tidak boleh memicu probe git');
+    }
+
+    // ==================================================================
+    // POST /jobs/{id}/cancel
+    // ==================================================================
+
+    public function testCancelStopsWorkerAndRestoresProjectedAppStatus(): void
+    {
+        $job = $this->jobs->create('deploy', self::APP_ID, ['app_id' => self::APP_ID]);
+        $jobId = (string) $job['id'];
+        $this->jobs->update($jobId, static function (array &$record): void {
+            $record['status'] = 'running';
+            $record['worker_pid'] = 4242;
+        });
+        $this->projection->upsert($this->appPayload(['status' => 'deploying', 'stage' => 'build']));
+
+        $proc = $this->tmp . '/proc';
+        mkdir($proc . '/4242', 0775, true);
+        file_put_contents(
+            $proc . '/4242/cmdline',
+            implode("\0", [PHP_BINARY, dirname(__DIR__) . '/cli/deploy.php', self::APP_ID, 'deploy']) . "\0"
+        );
+
+        $kills = [];
+        $alive = [4242 => true];
+        $canceller = new DeployCanceller(
+            new AppStore($this->projection->path()),
+            new DeployCancellerFakeDocker(['running']),
+            $proc,
+            function (int $pid, int $signal) use (&$kills, &$alive): bool {
+                $kills[] = [$pid, $signal];
+                if ($signal === 0) {
+                    return $alive[abs($pid)] ?? false;
+                }
+                if (in_array($signal, [SIGTERM, SIGKILL], true)) {
+                    $alive[abs($pid)] = false;
+                }
+
+                return true;
+            },
+            function (int $pid) use (&$alive): bool {
+                return $alive[$pid] ?? false;
+            },
+            new DeployLog($this->logDir)
+        );
+
+        $controller = new AgentJobController(
+            $this->jobs,
+            $this->launcher(),
+            $this->projection,
+            $this->materializer(),
+            null,
+            null,
+            $canceller
+        );
+
+        [$status, , $body] = $this->decode($controller->cancel(
+            $this->request('POST', '/jobs/' . $jobId . '/cancel', ''),
+            $jobId
+        ));
+
+        $this->assertSame(200, $status);
+        $this->assertSame(0, $body['code'] ?? null);
+        $this->assertTrue(
+            in_array([4242, SIGTERM], $kills, true) || in_array([-4242, SIGTERM], $kills, true),
+            'worker harus menerima SIGTERM (langsung atau lewat grup proses)'
+        );
+
+        $record = (array) $this->jobs->find($jobId);
+        $this->assertSame('error', (string) $record['status']);
+        $this->assertSame('cancelled', (string) $record['stage']);
+        $this->assertArrayNotHasKey('worker_pid', $record);
+
+        $projected = (array) (new AppStore($this->projection->path()))->find(self::APP_ID);
+        $this->assertSame('running', (string) $projected['status'], 'container lama masih hidup');
+        $this->assertSame('Deploy dibatalkan.', (string) $projected['message']);
+        $this->assertStringContainsString(
+            '[cancelled] Deploy dibatalkan',
+            (string) file_get_contents($this->logDir . '/' . self::APP_ID . '.log')
+        );
+    }
+
+    public function testCancelRefusesFinishedJob(): void
+    {
+        $job = $this->jobs->create('deploy', self::APP_ID);
+        $jobId = (string) $job['id'];
+        $this->jobs->update($jobId, static function (array &$record): void {
+            $record['status'] = 'done';
+        });
+
+        $controller = new AgentJobController($this->jobs, $this->launcher(), $this->projection, $this->materializer());
+
+        [$status, , $body] = $this->decode($controller->cancel(
+            $this->request('POST', '/jobs/' . $jobId . '/cancel', ''),
+            $jobId
+        ));
+
+        $this->assertSame(409, $status);
+        $this->assertSame('not_running', (string) ($body['reason'] ?? ''));
+        $this->assertSame('done', (string) $this->jobs->find($jobId)['status'], 'rekaman final tidak ditimpa');
     }
 
     // ==================================================================

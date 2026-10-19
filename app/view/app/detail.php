@@ -86,10 +86,19 @@ include app_path() . '/view/app/partials/detail-setup.php'; ?>
     <div id="deploy-error" class="alert alert-danger py-2 small mt-3 mb-0 d-none" role="alert"></div>
     <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
       <p class="text-muted small mb-0">Proses berjalan di latar belakang — Anda boleh me-refresh halaman atau pindah halaman; build tetap berjalan dan progres dilanjutkan otomatis.</p>
-      <?php if ($canLogs): ?>
-        <button type="button" class="btn btn-outline-secondary btn-sm ms-auto" data-bs-toggle="modal" data-bs-target="#deploy-log-modal"
-                title="Lihat tahap worker &amp; output build docker compose (live)">⧉ Log build</button>
-      <?php endif; ?>
+      <div class="d-flex align-items-center gap-2 ms-auto">
+        <?php if ($canLogs): ?>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#deploy-log-modal"
+                  title="Lihat tahap worker &amp; output build docker compose (live)">⧉ Log build</button>
+        <?php endif; ?>
+        <?php if ($canOperate): ?>
+          <form method="post" action="/apps/<?= e($app['id']) ?>/deploy/cancel" id="cancel-deploy-form" class="d-inline">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-outline-danger btn-sm" id="cancel-deploy-btn"
+                    title="Hentikan worker deploy &amp; proses docker compose yang sedang build">■ Batalkan build</button>
+          </form>
+        <?php endif; ?>
+      </div>
     </div>
   </div>
 </div>

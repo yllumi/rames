@@ -150,5 +150,38 @@ function copyDetailKey() {
       });
     });
   }
+  // Batalkan build via AJAX: respons JSON, lalu reload agar status final tampil.
+  var cancelForm = document.getElementById('cancel-deploy-form');
+  if (cancelForm) {
+    cancelForm.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (!window.confirm('Batalkan proses build/deploy yang sedang berjalan?\n\nContainer yang sudah ada tidak dihapus. Worker deploy & proses docker compose/build akan dihentikan.')) {
+        return;
+      }
+      var btn = document.getElementById('cancel-deploy-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Membatalkan ...'; }
+      fetch(cancelForm.action, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: new FormData(cancelForm)
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; });
+      }).then(function (d) {
+        if (d && d.code === 0) {
+          stopPoll();
+          window.location.reload();
+          return;
+        }
+        showError((d && (d.error || d.msg)) ? (d.error || d.msg) : 'Gagal membatalkan deploy.');
+        if (btn) { btn.disabled = false; btn.textContent = '■ Batalkan build'; }
+      }).catch(function () {
+        showError('Gagal terhubung ke server. Periksa koneksi lalu coba lagi.');
+        if (btn) { btn.disabled = false; btn.textContent = '■ Batalkan build'; }
+      });
+    });
+  }
 })();
 </script>

@@ -80,11 +80,13 @@ class AgentModeTest extends TestCase
      * +1 (log deploy on-demand, modal detail app): `GET /api/apps/{id}/deploy-log`
      * — ability `logs` (Viewer+), dashboard-only (membaca log worker di host ini;
      * log app server agent sudah diteruskan worker ke berkas yang sama).
+     * +1 (batalkan build): `POST /apps/{id}/deploy/cancel` — ability `deploy`
+     * (Operator+), dashboard-only (menghentikan worker + grup proses build).
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 119;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 120;
 
-    /** Definisi di atas menghasilkan 125 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 125;
+    /** Definisi di atas menghasilkan 126 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 126;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -208,6 +210,7 @@ class AgentModeTest extends TestCase
                 'POST /files/upload',
                 'POST /files/write',
                 'POST /jobs',
+                'POST /jobs/{id}/cancel',
                 'POST /networks/create',
                 'POST /networks/{id}/connect',
                 'POST /networks/{id}/delete',
@@ -398,9 +401,9 @@ class AgentModeTest extends TestCase
             $routes['pairs']['GET /healthz']->getCallback()
         );
         $this->assertCount(
-            39,
+            40,
             $routes['definitions'],
-            'route agent F0 (diagnostik) + F1 (3 job + proyeksi app + preflight nama app) + F2 (nginx)'
+            'route agent F0 (diagnostik) + F1 (3 job + proyeksi app + preflight nama app + cancel job) + F2 (nginx)'
             . ' + F3a (log + 5 terminal)'
             . ' + F3b/F3c (10 file manager + 2 monitoring) + F3d (1 database + 1 adminer + 7 network/volume)'
             . ' + F4 (3 route data: daftar volume backup + daftar snapshot + unduh dump bertahap)'

@@ -73,6 +73,43 @@ final class DeployLog
     }
 
     /**
+     * Tambahkan satu baris ke log deploy (append atomic + `LOCK_EX`).
+     *
+     * Dipakai pembatalan deploy (`DeployCanceller`) agar jejak cancel ikut
+     * terlihat di modal log. Baris dinormalkan dan selalu diakhiri newline.
+     */
+    public function append(string $id, string $line): void
+    {
+        $line = trim(str_replace(["\r\n", "\r"], "\n", $line));
+        if ($line === '') {
+            return;
+        }
+
+        $path = $this->path($id);
+        $dir = dirname($path);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+
+        @file_put_contents($path, $line . "\n", FILE_APPEND | LOCK_EX);
+    }
+
+    /**
+     * Id job agent terakhir yang tercatat di log (`Job ... (job <id>)`) — jalur
+     * cadangan untuk membatalkan job di server agent bila field
+     * `apps.agent_job_id` tidak tersedia (worker lama).
+     */
+    public function lastAgentJobId(string $id): string
+    {
+        $text = $this->read($id, 0, true)['text'];
+        if ($text === '' || preg_match_all('/\(job ([A-Za-z0-9_-]{1,128})\)/', $text, $matches) === 0) {
+            return '';
+        }
+
+        return (string) ($matches[1][count($matches[1]) - 1] ?? '');
+    }
+
+    /**
      * Offset awal untuk membaca ekor berkas (≤ {@see LogChunkReader::MAX_READ}
      * byte terakhir) lalu maju ke awal baris berikutnya agar potongan pertama
      * tidak dimulai di tengah baris.

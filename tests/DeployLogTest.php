@@ -147,7 +147,10 @@ class DeployLogTest extends TestCase
         $this->assertStringContainsString('id="deploy-log-modal"', $html);
         $this->assertStringContainsString('/api/apps/app-1/deploy-log', $html);
         $this->assertStringContainsString('X-Rames-Offset', $html);
-        $this->assertStringContainsString('data-bs-toggle="modal"', (string) file_get_contents(dirname(__DIR__) . '/app/view/app/detail.php'));
+
+        $detail = (string) file_get_contents(dirname(__DIR__) . '/app/view/app/detail.php');
+        $this->assertStringContainsString('data-bs-toggle="modal"', $detail);
+        $this->assertStringContainsString('/deploy/cancel', $detail, 'tombol batalkan build tersedia saat deploy berjalan');
 
         $canLogs = false;
         ob_start();
