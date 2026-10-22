@@ -32,6 +32,7 @@ use app\controller\NetworkController;
 use app\controller\NginxController;
 use app\controller\AppController;
 use app\controller\DatabaseController;
+use app\controller\DomainController;
 use app\controller\FileController;
 use app\controller\HealthController;
 use app\controller\PaymentController;
@@ -306,6 +307,23 @@ Route::post('/nginx/reload', [NginxController::class, 'reload']);
 Route::post('/nginx/templates/pull', [NginxController::class, 'pullTemplates']);
 Route::get('/nginx/templates/pull/status', [NginxController::class, 'pullStatus']);
 
+// Domain & SSL (global, di luar app; fase 1 server lokal).
+// `GET /domains` (tabel "Semua Domain": app + parkir) terbuka untuk semua user
+// login — baris app disaring `AppAccess::visible()`, tombol mengikuti ability
+// `ssl`. Pengelolaan domain parkir tetap admin-only: non-admin ⇒ 404 (bukan
+// 403) dari `DomainController`. /domains/create didaftarkan sebelum pola
+// /domains/{id}/edit agar tidak tertukar.
+Route::get('/domains', [DomainController::class, 'index']);
+Route::get('/api/domains/status', [DomainController::class, 'apiStatus']);
+Route::get('/domains/create', [DomainController::class, 'createForm']);
+Route::post('/domains', [DomainController::class, 'create']);
+Route::get('/domains/{id}/edit', [DomainController::class, 'editForm']);
+Route::post('/domains/{id}', [DomainController::class, 'update']);
+Route::post('/domains/{id}/delete', [DomainController::class, 'delete']);
+// Aktifkan SSL domain parkir (halaman & AJAX) — admin-only (non-admin ⇒ 404).
+Route::post('/domains/parked/{id}/ssl', [DomainController::class, 'enableParked']);
+Route::post('/api/domains/parked/{id}/enable', [DomainController::class, 'apiEnableParked']);
+
 // Self-update dashboard (panel di halaman /nginx) — cek, jalankan, rollback, status.
 // Mutasi hanya admin; status boleh dibaca semua user yang sudah login.
 Route::post('/api/update/check', [UpdateController::class, 'check']);
@@ -342,8 +360,10 @@ Route::post('/servers/{id}/agent-update', [ServerController::class, 'agentUpdate
 // Daftar server untuk JS dashboard (tanpa token/PEM).
 Route::get('/api/servers', [ServerController::class, 'apiIndex']);
 
-// SSL otomatis (Let's Encrypt)
-Route::get('/ssl', [SslController::class, 'index']);
+// SSL otomatis (Let's Encrypt). Tabel SSL kini menyatu di `/domains`; route
+// lama dipertahankan sebagai alias kompatibel: `GET /ssl` ⇒ redirect `/domains`,
+// sedangkan aksi enable & status JSON tetap dilayani `SslController`.
+Route::get('/ssl', [DomainController::class, 'legacySsl']);
 Route::post('/ssl/{id}/enable', [SslController::class, 'enable']);
 // Status tabel SSL (JSON, read-only) untuk memperbarui halaman `/ssl` di tempat.
 Route::get('/api/ssl/status', [SslController::class, 'apiStatus']);

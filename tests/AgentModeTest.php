@@ -85,11 +85,24 @@ class AgentModeTest extends TestCase
      * +1 (upload file .env): `POST /apps/{id}/env/upload` — ability `env`
      * (Operator+), dashboard-only (menulis artefak env app di host ini; app
      * server agent ditolak guard `appArtifactDirOrFail()` sebelum file dibaca).
+     * +6 (halaman domain parking): `GET /domains`, `GET /domains/create`,
+     * `POST /domains`, `GET /domains/{id}/edit`, `POST /domains/{id}`,
+     * `POST /domains/{id}/delete` — pengelolaan admin-only (non-admin ⇒ 404),
+     * fase 1 hanya server lokal, dan **tidak** boleh terdaftar di mode agent.
+     * `GET /domains` sendiri terbuka untuk semua user login (tabel app+parkir).
+     *
+     * +3 (penyatuan SSL ke `/domains`, SPECS §8a/§8j): `GET /api/domains/status`,
+     * `POST /domains/parked/{id}/ssl`, `POST /api/domains/parked/{id}/enable` —
+     * status memakai otorisasi baris yang sama (`AppAccess::visible()`), aksi
+     * aktifkan SSL parkir admin-only; semuanya dashboard-only (agent tidak
+     * mengenal store domain parkir/SSL control plane) dan tetap wajib CSRF.
+     * `GET /ssl` sekarang handler `DomainController::legacySsl` (redirect
+     * `/domains`) tetapi route-nya **tetap terdaftar** satu definisi.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 121;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 130;
 
-    /** Definisi di atas menghasilkan 127 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 127;
+    /** Definisi di atas menghasilkan 136 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 136;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -109,6 +122,11 @@ class AgentModeTest extends TestCase
         // bocor ke mode agent (agent tidak melayani tabel SSL control plane).
         'GET /api/ssl/status',
         'POST /api/ssl/{id}/enable',
+        // Penyatuan SSL ke /domains (§8a/§8j): status tabel gabungan + aksi SSL
+        // domain parkir juga dashboard-only.
+        'GET /api/domains/status',
+        'POST /domains/parked/{id}/ssl',
+        'POST /api/domains/parked/{id}/enable',
         // Registry server (F0 multi-server): halaman & daftar JSON-nya tidak boleh
         // bocor ke mode agent (agent tidak mengenal server lain).
         'GET /servers',

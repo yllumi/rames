@@ -140,6 +140,12 @@ return [
     'ssl_ca_server' => getenv('SSL_CA_SERVER') ?: 'production',  // production | staging
     'ssl_webroot' => getenv('SSL_WEBROOT') ?: (base_path() . '/webroot'),
     'letsencrypt_path' => getenv('LETSENCRYPT_PATH') ?: '/etc/letsencrypt',
+
+    // Akar berkas halaman **domain parking** (`{parked_root}/{id}/index.html`).
+    // Nginx HOST membacanya lewat direktif `root` di config `_parked_*.conf`,
+    // jadi path ini WAJIB sama di host & container — letakkan di bawah `${PWD}`
+    // (bind mount) agar terlihat identik. Isi HTML dikelola `ParkedDomainContent`.
+    'parked_root' => getenv('PARKED_ROOT') ?: (base_path() . '/database/parked'),
     // Direktori kerja & log debug certbot. Bisa diarahkan ke path lain (mis.
     // `${PWD}/runtime/logs/letsencrypt`) supaya log diagnosa challenge tidak
     // hilang saat container di-recreate; nilai tak masuk akal (kosong, relatif,

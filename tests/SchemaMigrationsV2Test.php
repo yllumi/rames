@@ -101,7 +101,11 @@ class SchemaMigrationsV2Test extends TestCase
     {
         $this->createV1Fixture();
 
-        $this->assertSame(1, SchemaMigrations::migrate($this->pdo), 'hanya migrasi 2 yang tertunda');
+        $this->assertSame(
+            SchemaMigrations::LATEST - 1,
+            SchemaMigrations::migrate($this->pdo),
+            'semua migrasi setelah v1 (v2..LATEST) tertunda'
+        );
         $this->assertSame(SchemaMigrations::LATEST, (int) $this->pdo->query('PRAGMA user_version')->fetchColumn());
 
         // (a) kolom turunan `server_id` ditambahkan ke tabel apps yang sudah ada.
@@ -145,14 +149,14 @@ class SchemaMigrationsV2Test extends TestCase
             'intval',
             $this->pdo->query('SELECT "version" FROM "schema_migrations" ORDER BY "version"')->fetchAll(PDO::FETCH_COLUMN)
         );
-        $this->assertSame([1, 2], $versions);
+        $this->assertSame(range(1, SchemaMigrations::LATEST), $versions);
     }
 
     public function testMigrateIsIdempotentOnV1Database(): void
     {
         $this->createV1Fixture();
 
-        $this->assertSame(1, SchemaMigrations::migrate($this->pdo));
+        $this->assertSame(SchemaMigrations::LATEST - 1, SchemaMigrations::migrate($this->pdo));
         $this->assertSame(0, SchemaMigrations::migrate($this->pdo), 'panggilan kedua tidak menerapkan apa pun');
 
         $serverTable = SchemaMigrations::tableName('servers', 'servers');
@@ -170,7 +174,7 @@ class SchemaMigrationsV2Test extends TestCase
     {
         $this->createV1Fixture('{"id":"app1","name":"app1","server_id":"agent-7"}');
 
-        $this->assertSame(1, SchemaMigrations::migrate($this->pdo));
+        $this->assertSame(SchemaMigrations::LATEST - 1, SchemaMigrations::migrate($this->pdo));
 
         $row = $this->pdo->query('SELECT "server_id", "data" FROM "apps_apps" WHERE "id" = \'app1\'')->fetch();
         $this->assertSame('agent-7', $row['server_id'], 'kolom disinkronkan dari JSON');
@@ -181,7 +185,7 @@ class SchemaMigrationsV2Test extends TestCase
     {
         $this->createV1Fixture('"bukan-objek"');
 
-        $this->assertSame(1, SchemaMigrations::migrate($this->pdo));
+        $this->assertSame(SchemaMigrations::LATEST - 1, SchemaMigrations::migrate($this->pdo));
 
         $row = $this->pdo->query('SELECT "server_id", "data" FROM "apps_apps" WHERE "id" = \'app1\'')->fetch();
         $this->assertNull($row['server_id'], 'dokumen non-objek dilewati');
@@ -191,7 +195,7 @@ class SchemaMigrationsV2Test extends TestCase
     public function testFreshDatabaseEndsWithSameSchemaAsUpgradedV1(): void
     {
         $this->createV1Fixture();
-        $this->assertSame(1, SchemaMigrations::migrate($this->pdo));
+        $this->assertSame(SchemaMigrations::LATEST - 1, SchemaMigrations::migrate($this->pdo));
         $upgradedAppsColumns = $this->columns('apps_apps');
         $upgradedServersColumns = $this->columns(SchemaMigrations::tableName('servers', 'servers'));
 

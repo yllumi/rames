@@ -58,7 +58,7 @@
         </form>
         <div id="subdomain-alert" class="alert d-none mt-3 mb-0 py-2 small" role="alert"></div>
         <p class="text-muted small mb-0 mt-2">
-          Sertifikat SSL lama tidak lagi cocok untuk domain baru — terbitkan ulang di halaman <a href="/ssl">SSL</a> bila app memakai HTTPS.
+          Sertifikat SSL lama tidak lagi cocok untuk domain baru — terbitkan ulang di halaman <a href="/domains">Domains</a> bila app memakai HTTPS.
           <?php if (is_admin()): ?>Bila Nginx host belum mereload config baru, muat ulang di halaman <a href="/nginx">Nginx</a>.<?php endif; ?>
         </p>
         <?php endif; ?>
@@ -153,7 +153,7 @@
       <div class="card-header d-flex justify-content-between align-items-center">
         <h2 class="h6 mb-0">Custom Domain</h2>
     <?php if ($customDomain): ?>
-      <a class="btn btn-outline-secondary btn-sm" href="/ssl">Kelola SSL &rarr;</a>
+      <a class="btn btn-outline-secondary btn-sm" href="/domains">Kelola SSL &rarr;</a>
     <?php endif; ?>
   </div>
   <div class="card-body">

@@ -750,7 +750,7 @@ Setiap app **dimiliki satu user (owner)** dan hanya terlihat oleh user yang berh
 - `/apps` — hanya app yang boleh diakses; tab filter **Semua (admin) / Milik Saya / Dibagikan ke Saya**; kolom **Owner** untuk admin. Filter query-string **`?name=`/`?domain=`/`?owner=`** (§8e) lewat `AppFilter`; **`?owner=` hanya dihormati untuk admin** (non-admin: parameter diabaikan total) dan id di luar peta `user_names()` diabaikan.
 - `/database` — non-admin hanya melihat container MySQL/MariaDB milik app yang bisa diaksesnya (milik sendiri + yang dibagikan); container app user lain dan container eksternal hanya tampil untuk admin. Tombol **Kelola →** (membuka proxy Adminer, §7.10) hanya muncul bila user punya ability `database` (operator ke atas) — endpoint proxy tetap menolak 404 bila dipaksa. Kolom Owner ditampilkan untuk admin.
 - Nilai **environment variable** (bisa berisi kredensial) hanya ditampilkan untuk role **operator** ke atas; viewer hanya melihat keterangan tanpa nilainya.
-- `/ssl`, `/database`, `/volumes`, `/networks` — daftar disaring ke app yang boleh diakses (admin: semua). Volume **yatim** (project sudah tidak ada di `apps.json`) hanya tampil untuk admin.
+- `/domains` (tab **Semua Domain**), `/database`, `/volumes`, `/networks` — daftar disaring ke app yang boleh diakses (admin: semua); baris domain parkir hanya untuk admin. Volume **yatim** (project sudah tidak ada di `apps.json`) hanya tampil untuk admin.
 - Operasi global (buat/hapus network, connect/disconnect container, reload Nginx, purge volume) hanya admin.
 - Resource teknis tetap **global** secara sengaja: keunikan `name` app, dan deteksi konflik port (`PortManager`) — agar tidak ada tabrakan port/project compose antar user.
 
@@ -974,7 +974,7 @@ flowchart LR
 3. Idempoten: bila FQDN efektif baru **sama** dengan lama → `noop` tanpa efek samping.
 4. Simpan `subdomain` → tulis ulang config Nginx → `nginx -t` + reload host. Gagal pada tahap mana pun ⇒ **rollback state** (`subdomain` + seluruh status SSL) **dan** config lama (best-effort, pola §5.6a); reload **tidak** dipanggil bila tidak ada config valid.
 
-**Reset SSL wajib**: sertifikat Let's Encrypt **terikat nama domain lama**, jadi status SSL subdomain di-reset (`ssl_status=disabled`, `ssl_stage`/`ssl_message`/`ssl_error`/`ssl_expires_at` kosong, `needs_ssl=false`) saat subdomain berubah. Berkas sertifikat **tidak** dihapus/dipindah — user harus **menerbitkan ulang** di tab SSL bila app memakai HTTPS.
+**Reset SSL wajib**: sertifikat Let's Encrypt **terikat nama domain lama**, jadi status SSL subdomain di-reset (`ssl_status=disabled`, `ssl_stage`/`ssl_message`/`ssl_error`/`ssl_expires_at` kosong, `needs_ssl=false`) saat subdomain berubah — hanya slot `ssl`; `custom_ssl_*` tidak diubah. Berkas sertifikat **tidak** dihapus/dipindah — user harus **menerbitkan ulang** di tab **Semua Domain** (`/domains`) bila app memakai HTTPS (termasuk bila subdomain hanya redirect).
 
 **Alur create (tiga mode: git / compose / template)**: field `subdomain` **opsional** divalidasi format + keunikan **sebelum** menyentuh disk, lalu disimpan di session `pending_app['subdomain']` **hanya bila tidak kosong**. Halaman konfirmasi menampilkan **FQDN efektif** (read-only, tanpa field POST subdomain di view). Form create mem-prefill `{nama}-{6 karakter alfanumerik acak}` dengan *dirty flag* (berhenti begitu user menyentuh field), `pattern` HTML **identik** `app_subdomain_valid()`, dan pengaman panjang 63 sehingga bagian acak tidak pernah dipotong.
 
@@ -1357,10 +1357,10 @@ Prasyarat: image helper `NGINX_RELOAD_IMAGE` (default `alpine`, cukup `sh`+`chro
 
 ## 8a. SSL Otomatis (Let's Encrypt)
 
-Nginx tetap native di host; **certbot dijalankan di dalam dashboard container** (root) oleh worker `cli/ssl.php`, dipicu tombol "Aktifkan SSL" di halaman `/ssl`. Dashboard tetap satu-satunya penulis file config Nginx — blok `listen 443 ssl` di-render sendiri, bukan dimodifikasi certbot (menghindari konflik kepemilikan config).
+Nginx tetap native di host; **certbot dijalankan di dalam dashboard container** (root) oleh worker `cli/ssl.php`, dipicu tombol "Aktifkan SSL" di halaman `/domains` (tab **Semua Domain**; `GET /ssl` kini **302 → `/domains`**). Dashboard tetap satu-satunya penulis file config Nginx — blok `listen 443 ssl` di-render sendiri, bukan dimodifikasi certbot (menghindari konflik kepemilikan config).
 
 ### Alur penerbitan sertifikat
-1. Halaman `/ssl` menampilkan daftar domain (= subdomain tiap app) + status SSL (`disabled`/`pending`/`active`/`failed`); tombol **Aktifkan SSL** / **Retry**. Untuk domain non-publik (`APP_DOMAIN` `.local` dll) fitur dinonaktifkan. App **tanpa port terpublish** tidak muncul di daftar ini (tidak punya vhost/domain yang bisa di-SSL, §7.2); endpoint enable-nya juga menolak dengan pesan jelas.
+1. Halaman `/domains` (tab **Semua Domain**) menampilkan satu tabel domain app **dan** domain parkir (parkir hanya untuk admin) beserta status SSL (`disabled`/`pending`/`active`/`failed`) + tombol **Aktifkan SSL** / **Retry**. Status SSL **per slot**: bila `custom_domain` di-set, app menampilkan **dua baris** — custom domain (`serve`, slot `custom_ssl`) dan subdomain (`redirect`, slot `ssl`) — sehingga subdomain redirect pun bisa punya SSL sendiri (blok 80→https + 443 yang meneruskan redirect). Untuk domain non-publik (`APP_DOMAIN` `.local` dll) fitur dinonaktifkan. App **tanpa port terpublish** tidak muncul di daftar ini (tidak punya vhost/domain yang bisa di-SSL, §7.2); endpoint enable-nya juga menolak dengan pesan jelas. Domain parkir memakai alur terpisah (§8j.6a) yang tetap berujung pada `certbot`/cert yang sama.
 2. Klik tombol → dashboard set `ssl_status=pending`, `needs_ssl=true`, spawn worker `cli/ssl.php` (detached; log `runtime/logs/ssl/{appId}.log`).
 3. Worker menentukan domain = `{name}.{APP_DOMAIN}` lalu menjalankan `certbot certonly`:
    - `SSL_CHALLENGE=http` (default): `--webroot -w {SSL_WEBROOT}` — webroot dilayani nginx host lewat `location /.well-known/acme-challenge/` yang selalu dirender di tiap app conf; berlaku untuk semua DNS provider asal port 80 publik terbuka.
@@ -1370,14 +1370,16 @@ Nginx tetap native di host; **certbot dijalankan di dalam dashboard container** 
 5. Gagal → `ssl_status=failed` + pesan error; app tetap `running` via HTTP, tombol **Retry SSL** muncul. Pesan galat **memuat blok `Detail:` dari `stdout` certbot** (mis. `404`, `Timeout during connect`, `DNS problem`) — bukan hanya ringkasan `stderr` ("Some challenges have failed") — sehingga sebabnya terbaca langsung di UI & log worker `runtime/logs/ssl/{appId}.log` (state `ssl_error`) tanpa membuka log container.
 
 ### Mode AJAX (tanpa reload halaman)
-Tombol **Aktifkan SSL** / **Retry SSL** di halaman `/ssl` kini berjalan **tanpa reload halaman** (detail teknis: `ARCHITECTURE.md` §5.36): baris tabel diperbarui **di tempat** dari JSON (menggantikan `window.location.reload()` tiap 5 dtk yang lama — **sudah dihapus**). Rentang kontrak:
-- `POST /api/ssl/{id}/enable` (`SslController::apiEnable`) — inti kerjanya **sama** dengan jalur halaman `POST /ssl/{id}/enable` (keduanya memanggil privat `enableDomain()`): validasi → efek samping (status store + spawn worker) → hasil terstruktur. Sukses ⇒ `{"code":0,"ok":true,"status":"pending","domain":…,"message":…}`. **Penolakan bisnis apa pun** (tanpa host port, domain bukan milik app, domain non-publik, sudah `active`/`pending`, atau **gagal spawn worker**) ⇒ HTTP **200** `{"code":1,"ok":false,"error":…}` (amplop sengaja sama supaya JS membedakan lewat `code`/`error` lalu menyinkronkan ulang status). App tidak ada / tanpa ability `ssl` ⇒ **404** `{"code":404,…}` (bukan 403). CSRF **wajib** dan **tidak dikecualikan** (tidak ada pengecualian baru di `CsrfMiddleware`; `_token` dikirim di body) — CSRF salah ⇒ **419**.
-- `GET /api/ssl/status` (`SslController::apiStatus`) — **read-only** (hanya membaca store; Docker/agent tidak disentuh): `{"code":0,"ssl_supported":bool,"pending":bool,"rows":[{"app_id","app_name","domain","is_custom","status","message","expires_at","error","can_ssl"}]}`. Baris dipakai ulang dari `sslRows()` (tanpa duplikasi logika domain/`hasHostPort`) dan disaring `AppAccess::visible()` — hanya app yang boleh dilihat user yang dikembalikan.
-- **Fallback tanpa JS tetap ada**: tombol tetap `<form method="post" action="/ssl/{id}/enable">` (progressive enhancement) sehingga halaman tetap bekerja penuh tanpa JavaScript (302 → `/ssl` + flash).
-- **Polling browser**: 5 dtk **hanya** selama ada baris `pending`, **dijeda saat tab tidak terlihat** (`visibilitychange`) dan **dibersihkan saat halaman ditinggalkan** (`pagehide`/`beforeunload`, plus `AbortController`) — tidak ada permintaan latar belakang. Peta status→kelas badge tetap milik view (`$badges`) dan dikirim ke JS lewat `data-ssl-badge-map` (tidak diduplikasi di JS).
+Tombol **Aktifkan SSL** / **Retry SSL** di halaman `/domains` (tab **Semua Domain**) berjalan **tanpa reload halaman** (detail teknis: `ARCHITECTURE.md` §5.36): baris tabel diperbarui **di tempat** dari JSON (menggantikan `window.location.reload()` tiap 5 dtk yang lama — **sudah dihapus**). Rentang kontrak:
+- `GET /api/domains/status` (`DomainController::apiStatus`) — **endpoint status utama** halaman, **read-only** (hanya membaca store; Docker/agent tidak disentuh): `{"code":0,"ssl_supported":bool,"pending":bool,"rows":[…]}`. Baris memakai dekorasi yang sama dengan `index()`: app disaring `AppAccess::visible()` + parkir hanya admin, dengan kunci `kind` (`app|parked`), `id`, `role` (`serve|redirect|parkir`), `ssl_slot` (`ssl|custom_ssl`, khusus baris app), `can_ssl`, `form_url`, `ajax_url`, `source`, serta `ssl_status`/`ssl_message`/`ssl_expires_at`/`ssl_error`. Objek `app` **dibuang** dari payload (tidak membocorkan dokumen app mentah).
+- `POST /api/ssl/{id}/enable` (`SslController::apiEnable`) — jalur AJAX **baris app**. Inti kerjanya **sama** dengan jalur halaman `POST /ssl/{id}/enable` (keduanya memanggil privat `enableDomain()`): validasi → efek samping (status store + spawn worker) → hasil terstruktur. Sukses ⇒ `{"code":0,"ok":true,"status":"pending","domain":…,"message":…}`. **Penolakan bisnis apa pun** (tanpa host port, domain bukan milik app, domain non-publik, sudah `active`/`pending`, atau **gagal spawn worker**) ⇒ HTTP **200** `{"code":1,"ok":false,"error":…}` (amplop sengaja sama supaya JS membedakan lewat `code`/`error` lalu menyinkronkan ulang status). App tidak ada / tanpa ability `ssl` ⇒ **404** `{"code":404,…}` (bukan 403). CSRF **wajib** dan **tidak dikecualikan** (tidak ada pengecualian baru di `CsrfMiddleware`; `_token` dikirim di body) — CSRF salah ⇒ **419**.
+- `POST /api/domains/parked/{id}/enable` (`DomainController::apiEnableParked`) — jalur AJAX **baris parkir**, **admin-only** (non-admin ⇒ JSON **404** tanpa menyentuh store): penolakan bisnis ⇒ HTTP 200 `{code:1,ok:false,error}`, sukses ⇒ `{code:0,ok:true,status:"pending",domain,message}`.
+- `GET /api/ssl/status` (`SslController::apiStatus`) — **alias kompatibel** untuk konsumen lama: baris **app saja** (`app_id`,`app_name`,`domain`,`is_custom`,`status`,`message`,`expires_at`,`error`,`can_ssl`, ditambah `kind`/`role`), read-only dan disaring `AppAccess::visible()`. Halaman `/domains` **tidak** memakainya lagi.
+- **Fallback tanpa JS tetap ada**: baris app memakai `<form method="post" action="/ssl/{id}/enable">`, baris parkir `<form method="post" action="/domains/parked/{id}/ssl">` (progressive enhancement); keduanya berakhir **302 → `/domains`** + flash.
+- **Polling browser**: 5 dtk **hanya** selama ada baris `pending`, **dijeda saat tab tidak terlihat** (`visibilitychange`) dan **dibersihkan saat halaman ditinggalkan** (`pagehide`/`beforeunload`, plus `AbortController`) — tidak ada permintaan latar belakang. URL status dibaca dari `data-ssl-status-url` pada `<table>` (`/api/domains/status`); peta status→kelas badge tetap milik view (`$badges`) dan dikirim ke JS lewat `data-ssl-badge-map` (tidak diduplikasi di JS).
 
 ### Renewal
-Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (atau tombol Enable/Retry) tidak menerbitkan ulang selama masih valid. Otomasi renewal di host memakai **systemd timer**: script `host/certbot-renew.sh` menjalankan `certbot renew` (2×/hari, `RandomizedDelaySec`), lalu `nginx -s reload` + tulis status **hanya bila** ada sertifikat yang benar-benar diperbarui (bandingkan mtime `live/*/fullchain.pem`). Unit `host/systemd/certbot-renew.{service,timer}` dipasang otomatis oleh `host/install.sh` (fitur 3).
+Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (atau tombol Enable/Retry) tidak menerbitkan ulang selama masih valid. Ini berlaku untuk **semua** cert di `{LETSENCRYPT_PATH}/live/*`, termasuk cert domain parkir (§8j.6a). Otomasi renewal di host memakai **systemd timer**: script `host/certbot-renew.sh` menjalankan `certbot renew` (2×/hari, `RandomizedDelaySec`), lalu `nginx -s reload` + tulis status **hanya bila** ada sertifikat yang benar-benar diperbarui (bandingkan mtime `live/*/fullchain.pem`). Unit `host/systemd/certbot-renew.{service,timer}` dipasang otomatis oleh `host/install.sh` (fitur 3).
 
 ### Prasyarat
 - DNS wildcard/record subdomain mengarah ke server (untuk HTTP-01 juga butuh port 80 publik terbuka di firewall host)
@@ -1401,7 +1403,7 @@ Field tambahan per app:
 - `custom_ssl_stage`, `custom_ssl_message`, `custom_ssl_error`
 - `custom_ssl_expires_at` — tanggal kedaluwarsa cert custom domain
 
-`ssl_status`/`ssl_stage`/`ssl_message`/`ssl_error`/`ssl_expires_at` (yang lama) tetap berlaku untuk subdomain bawaan. Semua field diakses dengan default (`??`), sehingga app lama tanpa field ini tetap aman (tanpa migrasi data).
+`ssl_status`/`ssl_stage`/`ssl_message`/`ssl_error`/`ssl_expires_at` (yang lama) tetap berlaku untuk **subdomain bawaan** — termasuk saat custom domain aktif, karena subdomain hanya redirect dan status SSL-nya tetap disimpan di slot `ssl` (`custom_ssl_*` terpisah). Semua field diakses dengan default (`??`), sehingga app lama tanpa field ini tetap aman (tanpa migrasi data).
 
 ### Alur set / ganti / hapus custom domain
 1. Halaman detail app → form **Set Custom Domain**. Validasi:
@@ -1409,14 +1411,14 @@ Field tambahan per app:
    - bukan subdomain bawaan app itu sendiri
    - **unik** di semua app (tidak boleh sama dengan subdomain maupun custom domain app lain)
 2. Set → simpan `custom_domain` + reset status SSL custom → tulis ulang config Nginx:
-   - subdomain bawaan → server block **redirect `301`** ke `http(s)://{custom_domain}`
+   - subdomain bawaan → server block **redirect `301`** ke `http(s)://{custom_domain}`; bila slot subdomain (`ssl_status`) `active`, generator juga merender blok **`listen 443 ssl`** untuk subdomain + blok 80 yang mengalihkan ke https (subdomain redirect punya cert sendiri — bukan cert custom domain)
    - custom domain → server block serve app (80, +443 ssl bila `custom_ssl_status=active`)
-   - Redirect memakai `https` hanya bila SSL custom sudah `active`; sebelum itu `http` agar akses tidak terputus
+   - Target redirect memakai `https` **hanya** bila SSL custom sudah `active`; sebelum itu `http` agar akses tidak terputus. Ini **disengaja**: cert subdomain yang aktif tidak mengubah target redirect — target mengikuti kesiapan cert custom domain.
 3. Ganti custom domain → custom domain lama (bila punya cert) di-`revoke` dulu, lalu set yang baru
 4. Hapus → `certbot revoke` cert custom domain (bila ada) + hapus field + tulis ulang config Nginx (subdomain kembali melayani app). Bila revoke gagal, domain tetap dihapus dari config (recovery via Rebuild)
 
 ### SSL custom domain
-- Tombol **Aktifkan SSL** / **Retry** muncul di halaman detail app & halaman `/ssl` (baris custom domain ditandai `(custom)`)
+- Tombol **Aktifkan SSL** / **Retry** muncul di halaman detail app & halaman `/domains` (tab **Semua Domain**) — bila custom domain aktif, app tampil sebagai **dua baris**: custom domain (`serve`, slot `custom_ssl`) dan subdomain (`redirect`, slot `ssl`) — masing-masing dengan status & tombolnya sendiri
 - Worker `cli/ssl.php <appId> <domain>` — argumen domain menentukan slot:
   - `domain == custom_domain` → update `custom_ssl_*`
   - `domain == subdomain` (atau argumen kosong → default) → update `ssl_*`
@@ -1728,8 +1730,8 @@ Image dashboard harus memuat binary `restic` (`Dockerfile`: paket `restic` dari 
 
 ### 8i.1 Skema & penyimpanan
 - **Satu berkas** `rames.sqlite` (`config('deploy.sqlite_file')`, default `<RAMES_DB_DIR>/rames.sqlite`) memuat semua store logis; di produksi `<RAMES_DB_DIR>` = isi named volume `rames` (mount `/var/lib/rames`). Berkas DB gitignored (`database/*.sqlite*`, §11) sehingga tidak pernah ter-commit.
-- **Store → koleksi** (`SchemaMigrations::storeDefinitions()`): `apps.apps`; `auth.users`; `billing.{users,usage,orders}`; `backup.{volumes,registry}`. Nama tabel fisik = `{store}_{koleksi}` (mis. `apps_apps`, `auth_users`, `billing_users`, `billing_usage`, `billing_orders`, `backup_volumes`, `backup_registry`) — prefiks store mencegah tabrakan koleksi bernama sama (`users` di `auth` vs `billing`).
-- **Kolom** tiap tabel: `id` (PK), `ord` (urutan list), `data` (dokumen JSON = **sumber kebenaran**), `updated_at`, plus kolom **turunan terindeks** dari dot-path (mis. `apps`: `name`, `owner_id`, `status`, `source`, `subdomain`; `auth`: `username`, `role`, `email`). Kolom turunan hanya indeks bantu kueri; tipe JSON asli tetap di `data`.
+- **Store → koleksi** (`SchemaMigrations::storeDefinitions()`): `apps.apps`; `auth.users`; `billing.{users,usage,orders}`; `backup.{volumes,registry}`; `servers.servers`; `parked.domains` (§8j). Nama tabel fisik = `{store}_{koleksi}` (mis. `apps_apps`, `auth_users`, `billing_users`, `billing_usage`, `billing_orders`, `backup_volumes`, `backup_registry`, `servers_servers`, `parked_domains`) — prefiks store mencegah tabrakan koleksi bernama sama (`users` di `auth` vs `billing`).
+- **Kolom** tiap tabel: `id` (PK), `ord` (urutan list), `data` (dokumen JSON = **sumber kebenaran**), `updated_at`, plus kolom **turunan terindeks** dari dot-path (mis. `apps`: `name`, `owner_id`, `status`, `source`, `subdomain`; `auth`: `username`, `role`, `email`; `parked`: `domain`, `server_id`, `mode`). Kolom turunan hanya indeks bantu kueri; tipe JSON asli tetap di `data`. Field SSL domain parkir (`ssl_status`, `ssl_stage`, `ssl_message`, `ssl_error`, `ssl_expires_at`) berada **di dokumen JSON `data`** — tidak ada kolom baru dan **tidak perlu migrasi skema** (`SchemaMigrations::LATEST` tetap 3).
 - **Versi skema** di tabel `schema_migrations` (`version`, `applied_at`); migrasi dijalankan otomatis saat koneksi pertama (`SchemaMigrations::migrate()`, idempoten multi-proses lewat `BEGIN IMMEDIATE`).
 - **PRAGMA** koneksi: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5000`. Semua mutasi lewat transaksi `BEGIN IMMEDIATE` yang re-entrant per berkas (`SqliteDatabase::transaction()`).
 - **API tidak berubah**: `SqliteStore` menyediakan `path()/read()/write()/update()` identik `JsonStore`, sehingga `AppStore` (store `apps`), `UserStore` (`auth`), `BillingStore` (`billing`, bentuk `{version,users,usage,orders}` dipertahankan), `BackupSelection`/`BackupRegistry` (`backup`) tidak berubah dari sisi pemakai.
@@ -1774,6 +1776,109 @@ Semua route **admin-only** — non-admin → **404** (bukan 403).
 **Config (.env):** §9 (`RAMES_DB_*`, `DB_BACKUP_*`, `DB_IMPORT_LEGACY_JSON`).
 
 **Pengujian:** `tests/SqliteDatabaseTest.php`, `tests/SqliteStoreTest.php`, `tests/DomainStoreSqliteTest.php`, `tests/JsonImporterTest.php`, `tests/LegacyAutoImportTest.php`, `tests/SqliteConcurrencyTest.php`, `tests/DbBackupTest.php`, `tests/DbBackupUiTest.php`.
+
+## 8j. Domain Parking (halaman /domains)
+
+**Tujuan:** mengelola **FQDN global di luar app** — tidak terikat `apps.json`, tidak punya container, tidak lewat deploy. Satu entri parkir melayani **halaman statis** (`mode='html'`) atau **redirect** (`mode='redirect'`, 301/302) lewat config Nginx tersendiri. Varian `www` adalah **entri terpisah** (bukan alias), dan opsi cepat **`add_www`** saat create membuat entri kedua dengan domain `www.{domain}` + isi/mode identik tetapi **id & direktori konten sendiri**.
+
+### 8j.1 Non-goals fase 1
+- **Hanya server lokal**: `server_id` selain `local` ditolak fail-fast (`ParkedDomainManager::LOCAL_ONLY_MESSAGE`) di create/update/delete **sebelum** efek samping.
+- **Tanpa wildcard**: `*.contoh.com` bukan domain sah (validasi label DNS).
+- **Tanpa query/fragment pada target redirect**: path & query **permintaan asli** dipertahankan (`$request_uri`), bukan dari target.
+
+**Bukan non-goal lagi:** SSL/`listen 443` **didukung per entri parkir** (Let's Encrypt) — lihat §8j.6a. Blok ACME tetap dirender hanya di blok 80.
+
+### 8j.2 Data model
+- Store logis **`parked`** (SQLite, §8i) → tabel fisik **`parked_domains`**; kolom turunan `domain`, `server_id`, `mode`. Bentuk dokumen entri:
+  `{id:'pd_'+12 hex, domain, mode, redirect_to, redirect_code, server_id:'local', created_by, created_at, updated_at, ssl_status, ssl_stage, ssl_message, ssl_error, ssl_expires_at}` (`created_at`/`updated_at` = ISO 8601 `date('c')`; field `ssl_*` = §8j.6a, tanpa kolom/migrasi baru — §8i.1).
+- `id` dibuat `ParkedDomainStore::ID_PREFIX . bin2hex(random_bytes(6))` = `pd_` + 12 heksadesimal; pola ini **wajib** (`ParkedDomainContent::ID_PATTERN = /^pd_[a-f0-9]{12}\z/`) karena id masuk ke path berkas & nama config.
+- **Konten mode HTML tidak disimpan di SQLite**: berkas `{PARKED_ROOT}/{id}/index.html` (ditulis `ParkedDomainContent`, atomik via `index.html.tmp` + `rename()`). `PARKED_ROOT` default `{proyek}/database/parked` (`config('deploy.parked_root')`, env `PARKED_ROOT`) dan direktori ini **gitignored**.
+- Keunikan `domain` case-insensitive ditegakkan **di dalam transaksi tulis** (`SqliteStore::update()`) — dua penulis paralel tidak bisa lolos. `all()` mengurutkan `domain` menaik (case-insensitive), tie-break `id`.
+
+### 8j.3 Hak akses & route
+Halaman `/domains` adalah **satu halaman domain + SSL** dengan **dua tab**: **Semua Domain** (`?tab=all`) dan **Domain Parkir** (`?tab=parking`).
+
+- **`GET /domains` + `GET /api/domains/status` terbuka untuk semua user login.** Baris app difilter `AppAccess::visible()` dan tombol SSL mengikuti ability `ssl` (`can_ssl`); baris domain parkir **hanya** dikirim untuk admin (`$parked = []` untuk non-admin). Non-admin **tidak** pernah mendapat tab/aksi parkir (`tab()` selalu `all`).
+- **Pengelolaan domain parkir (CRUD) + aktivasi SSL parkir tetap admin-only.** Non-admin ⇒ **404** (bukan 403) dari `DomainController::guard()`/`apiEnableParked()` — dievaluasi **sebelum** membaca store/memanggil manager. Konsisten dengan halaman host lain (`/nginx`, `/servers`, `/backups/db/*`).
+- Menu **Domains** di `app/view/partials/header.php` tampil untuk user login; tombol/tab pengelolaan parkir hanya dirender untuk admin — lapisan kedua, bukan pengaman.
+
+| Method | Path | Method controller | Akses |
+|---|---|---|---|
+| GET | `/domains` | `DomainController::index()` | semua user login (baris app difilter; baris parkir admin) |
+| GET | `/api/domains/status` | `DomainController::apiStatus()` | semua user login (baris sama dengan `index()`, tanpa objek `app`) |
+| GET | `/domains/create` | `DomainController::createForm()` | admin (non-admin ⇒ 404) |
+| POST | `/domains` | `DomainController::create()` | admin (non-admin ⇒ 404) |
+| GET | `/domains/{id}/edit` | `DomainController::editForm()` | admin (non-admin ⇒ 404) |
+| POST | `/domains/{id}` | `DomainController::update()` | admin (non-admin ⇒ 404) |
+| POST | `/domains/{id}/delete` | `DomainController::delete()` | admin (non-admin ⇒ 404) |
+| POST | `/domains/parked/{id}/ssl` | `DomainController::enableParked()` | admin (non-admin ⇒ 404) |
+| POST | `/api/domains/parked/{id}/enable` | `DomainController::apiEnableParked()` | admin (non-admin ⇒ JSON 404) |
+| GET | `/ssl` | `DomainController::legacySsl()` | semua user login — **302 → `/domains`** |
+| POST | `/ssl/{id}/enable` | `SslController::enable()` | jalur halaman SSL **app** (ability `ssl`; 302 → `/domains` + flash) |
+| GET | `/api/ssl/status` | `SslController::apiStatus()` | **alias kompatibel** — baris app saja |
+| POST | `/api/ssl/{id}/enable` | `SslController::apiEnable()` | jalur AJAX SSL **app** (ability `ssl`) |
+
+`/domains/create` didaftarkan **sebelum** pola `/domains/{id}/edit` agar tidak tertukar. Entri tidak ada ⇒ 404 sebelum efek samping (`editForm`/`update`/`delete`/`enableParked`); `add_www` **hanya** diproses di create.
+
+### 8j.4 Validasi
+- **Domain** (`ParkedDomainValidator::normalizeDomain()` + `isValidDomain()`): trim, lowercase, buang satu titik akhir FQDN; panjang ≤ **253**; minimal 2 label; tiap label ≤ **63** (`[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`); TLD alfabet `^[a-z]{2,63}$`. Ditolak: IP literal (v4/v6), `localhost`, wildcard (`*`), underscore, spasi, skema/path (`http://`, `/`), dan `..`.
+- **Mode**: hanya `html` | `redirect`.
+- **HTML**: wajib non-kosong setelah `trim()`; ukuran ≤ **`ParkedDomainValidator::MAX_HTML_BYTES` = 1048576 (1 MiB)**. Upload `html_file` (satu berkas) **menimpa** isi textarea; ukuran diperiksa dari metadata (`getSize()`) **dan** diulang setelah isi dibaca; kode error upload selain `UPLOAD_ERR_OK`/`UPLOAD_ERR_NO_FILE` ditolak dengan pesan berisi kodenya.
+- **Target redirect** (`isValidRedirectTarget()`, panjang ≤ **2048**): wajib `http://`/`https://`; host FQDN publik **atau IPv4**; port opsional 1–65535; path opsional **absolut**. Ditolak: userinfo (`@`/`user`/`pass`), query (`?`), fragment (`#`), spasi & seluruh karakter kontrol `\x00-\x20\x7f`, karakter yang bisa memecah quoting direktif (`"'\\<>{}$;`|^`), dan segmen `..` (termasuk ter-encode `%2e%2e`).
+- **Kode redirect** (`normalizeRedirectCode()`): hanya **301**/**302** (int atau string numerik); kosong ⇒ default **301**; nilai lain ditolak.
+- Domain parkir divalidasi **ulang** saat render config (`ParkedNginxConfig::render()`) — pertahanan berlapis bila data store rusak/diedit manual.
+
+### 8j.5 Keunikan dua arah
+- Arah **parkir → app**: `ParkedDomainValidator::assertDomainAvailable(domain, AppStore, ParkedDomainStore, excludeId)` menolak bila domain sama dengan **FQDN efektif app** (`app_subdomain_of()`), **`custom_domain`** app mana pun, atau **domain entri parkir lain** (`excludeId` untuk edit entri sendiri).
+- Arah **app → parkir**: `SubdomainManager::assertAvailable()` menerima `ParkedDomainStore` opsional (disuntik `AppController`; `null` = pemeriksaan dilewati untuk kompatibilitas) dan menolak subdomain yang FQDN efektifnya sudah diparkir; `AppController::assertDomainUnique()` juga menolak `custom_domain` yang sudah diparkir. Tanpa ini dua `server_name` identik akan ditulis ke Nginx.
+
+### 8j.6 Config Nginx
+- Satu entri = satu berkas **`_parked_{id}.conf`** di direktori config host + symlink `sites-enabled` (ditulis lewat `NginxConfigGenerator::write()`, yang kini atomik: berkas `.tmp.{hex}` → `rename()`). Prefiks `_parked_` tidak mungkin bentrok: nama app tidak boleh berawalan `_`.
+- Mode `html`: `listen 80` + `server_name {domain}` + `root {PARKED_ROOT}/{id}` + `index index.html` + `try_files $uri $uri/ =404`. Bila SSL aktif: blok 80 hanya memuat ACME + `return 301 https://$host$request_uri`, sedangkan blok `listen 443 ssl` menyajikan `root`/`index`/`try_files` yang sama.
+- Mode `redirect`: `listen 80` + `server_name {domain}` + `location / { return {301|302} {target}$request_uri; }` — path & query permintaan asli dipertahankan. Bila SSL aktif: **kode & target yang sama** dirender di blok 80 **dan** blok `listen 443 ssl`; blok 80 **tidak** dialihkan ke https agar tidak terjadi redirect ganda.
+- `location ^~ /.well-known/acme-challenge/ { root {SSL_WEBROOT}; }` dirender **hanya di blok 80** (cukup untuk HTTP-01), juga saat SSL aktif. Sertifikat dibaca dari `{LETSENCRYPT_PATH}/live/{domain}/{fullchain,privkey}.pem`.
+- Path `root` wajib **absolut** dan bebas karakter berbahaya (spasi, kutip, `;`, `{}`, `#`, `\`, `$`) serta tanpa segmen `..` (`ParkedNginxConfig::assertPath()`).
+- **Tidak ada saling timpa**: config app tidak pernah menulis/menghapus `_parked_*.conf`, dan sebaliknya config parkir tidak menyentuh berkas app (nama berkas berbeda domain).
+
+### 8j.6a SSL domain parkir (Let's Encrypt)
+- Field status per entri: `ssl_status` (`disabled|pending|active|failed`), `ssl_stage`, `ssl_message`, `ssl_error`, `ssl_expires_at` — semuanya di dokumen JSON `parked` (§8i.1), **tanpa migrasi kolom**.
+- Aktivasi **admin-only** lewat `POST /domains/parked/{id}/ssl` (halaman) atau `POST /api/domains/parked/{id}/enable` (AJAX). `ParkedSslEnabler::enable()` memvalidasi entri + domain publik, menolak status `active`/`pending` sebagai info (bukan error), lalu menulis `ssl_status='pending'` + `ssl_stage='queued'` **sebelum** spawn worker detached `cli/parked-ssl.php {id}` (log `runtime/logs/ssl/parked-{id}.log`); gagal spawn ⇒ `ssl_status='failed'` + `ssl_error` (tombol Retry muncul).
+- Worker → `ParkedSslIssuer::issue()`: validasi ulang entri/domain → certbot (dilewati bila status `active` **dan** cert masih ada) → simpan `ssl_status='active'` + `ssl_expires_at` → tulis ulang config (`ParkedNginxConfig::write()` → blok 443) → reload Nginx.
+- Cert hilang saat status `active` (mis. restore DB tanpa `/etc/letsencrypt`): render **jatuh kembali ke HTTP-only** (tidak melempar) supaya `nginx -t` **seluruh host** tidak ikut gagal. Status di store tetap `active`; pemulihan dilakukan dengan menjalankan ulang worker (`php cli/parked-ssl.php {id}`) atau memulihkan berkas cert — tombol Retry UI hanya tersedia untuk status `failed` (GOTCHA `ARCHITECTURE.md` §8 no. 47).
+- Gagal terbit ⇒ `failed` + `ssl_error` dan `ssl_expires_at=null`. Gagal **tulis/reload config setelah cert terbit** ⇒ tetap `failed` + tombol Retry, tetapi `ssl_expires_at` **dipertahankan** karena sertifikatnya valid dan hanya config yang perlu diperbaiki (GOTCHA §8 no. 49).
+- **Worker idempoten/reconcile:** status `active` + cert ada (mis. worker dijalankan langsung) ⇒ config ditulis ulang + reload **tanpa certbot**; status `failed` + cert ada ⇒ certbot dipanggil dengan `--keep-until-expiring` (tidak menerbitkan ulang selama cert valid) lalu config ditulis ulang. Tidak ada penerbitan ulang yang membuang rate limit. (`ParkedSslEnabler` menolak status `active`/`pending` sebagai info, jadi jalur reconcile status `active` hanya lewat worker/pemanggilan langsung.)
+- **Rename domain** me-reset seluruh field `ssl_*` (sertifikat terikat nama domain lama) lalu me-revoke cert lama **best-effort** setelah sukses; **delete** juga me-revoke **best-effort**. Kegagalan revoke hanya `PERINGATAN` — metadata/config tetap diproses, operator dapat membersihkan cert secara manual.
+
+### 8j.7 Transaksi "uji dulu + rollback"
+`NginxReloader::reload()` menjalankan `nginx -t` atas **seluruh** config host; satu berkas invalid memblokir reload semua app + renewal SSL. Karena itu `ParkedDomainManager` memakai pola uji-dulu dan **selalu** mengembalikan `{ok, error, reloaded, rolled_back}` (tidak pernah melempar):
+
+| Operasi | Urutan | Rollback bila gagal |
+|---|---|---|
+| `create()` | validasi + keunikan → `ensureWritable()` (mode html) → simpan 1–2 entri → tulis konten (html) → tulis config tiap entri → **reload sekali** | hapus config (terbalik) → hapus direktori konten → hapus entri; `reloaded=false` |
+| `update()` | snapshot entri + konten lama → persist → tulis konten baru (html) → tulis config → reload | pulihkan entri + konten lama (`remove()` bila mode baru html & lama redirect) → tulis ulang config lama → **tanpa reload** |
+| `delete()` | hapus metadata → hapus config → reload | buat ulang entri → tulis ulang config lama → tanpa reload; direktori konten dihapus **hanya setelah** sukses (gagal = catatan di `error`) |
+
+- Reload **tidak** dipanggil bila tulis config gagal (exception ditangkap → rollback).
+- `add_www` menulis **kedua** config lalu reload **sekali**.
+- `rolled_back=false` + `PERINGATAN: rollback gagal: …` = pemulihan gagal (entri/metadata bisa tertinggal); `error` **wajib** ditampilkan konsumen termasuk saat `ok=true` (mis. konten lama gagal dibersihkan).
+- Perubahan mode `html → redirect` menghapus konten lama **setelah** reload sukses; kegagalannya hanya catatan.
+- UI: validasi gagal ⇒ form dirender ulang (HTTP 200) dengan input lama; pemanggil AJAX (`expectsJson()`) menerima JSON `{code:1,error}` status **422**. Sukses ⇒ flash + redirect `/domains`.
+
+### 8j.8 Prasyarat deploy (WAJIB)
+- **DNS**: record `A`/`AAAA` domain parkir harus menunjuk server ini (propagasi DNS di luar kendali dashboard).
+- **`PARKED_ROOT` absolut dan sama persis di host**: direktif `root` dibaca **Nginx host**, bukan container dashboard. Path relatif di-resolve relatif oleh Nginx host ⇒ halaman 404 senyap; `$` ditolak (diekspansi sebagai variabel Nginx). Arahkan ke path absolut di bawah bind mount `${PWD}` (default `{proyek}/database/parked`).
+- **Izin baca Nginx host**: direktori `0755`, berkas `index.html` `0644`, dan seluruh komponen path *traversable* (bit `x`) oleh user nginx host (pola sama dengan GOTCHA webroot SSL, `ARCHITECTURE.md` §8 no. 28).
+- **Host meng-include** `sites-enabled/*.conf` (prasyarat config Nginx yang sudah berlaku untuk app).
+- **SSL parkir** memakai prasyarat §8a: `ADMIN_EMAIL`, mount `LETSENCRYPT_PATH` (baca/tulis), `SSL_WEBROOT` yang *traversable* oleh user nginx host, port 80 publik (HTTP-01) **dan** 443 terbuka. Domain harus publik; TLD `.local`/IP ditolak `ParkedSslEnabler` sebelum spawn.
+
+### 8j.9 Batasan backup (WAJIB dicatat)
+Snapshot SQLite (§8i.4) **hanya** memuat **metadata** (`parked_domains`). Konten `database/parked/{id}/index.html` **tidak** ikut snapshot DB. Konsekuensi: restore DB saja ⇒ entri kembali tetapi **mode html 404 tanpa peringatan** (config & metadata ada, berkasnya tidak). **Penangkal**: backup host/berkas wajib mencakup `database/parked/` (mis. restic/rsync direktori proyek atau subset `database/`), dan pemulihan wajib memulihkan **pasangan** metadata + konten dari titik waktu yang sama. Urutan pemulihan yang benar: (1) restore snapshot DB, (2) restore pohon `database/parked/`, (3) `php start.php reload` (worker lama memegang handle PDO lama, §8i.8 butir 4), (4) buka `/domains` dan uji satu domain mode html. Mode `redirect` tidak membutuhkan berkas konten sehingga tidak terpengaruh.
+
+### 8j.10 Pengujian
+`tests/ParkedDomainValidatorTest.php` (domain/redirect/ukuran/kode/`suggestedWwwVariant`/konflik app+custom+parkir), `tests/ParkedDomainStoreTest.php` (CRUD, duplikat case-insensitive, migrasi v3, `parked_domains`), `tests/ParkedDomainContentTest.php` (id aman, root relatif/`..` ditolak, tulis atomik, `ensureWritable`), `tests/ParkedDomainManagerTest.php` (create/update/delete + rollback reload & tulis config, `add_www`, non-lokal, html→redirect, reset + revoke SSL saat rename/delete), `tests/ParkedNginxConfigTest.php` (render html/redirect HTTP-only, SSL 443 + 80→https untuk `html`, kode/target sama di 80 & 443 untuk `redirect`, ACME hanya di 80, fallback HTTP-only saat cert hilang, path berbahaya, symlink), `tests/ParkedSslEnablerTest.php` (pending sebelum spawn, gagal spawn ⇒ failed, status aktif/pending ditolak, domain non-publik), `tests/ParkedSslIssuerTest.php` (aktif + 443 + reload sekali, no-op saat cert ada, gagal terbit ⇒ failed, gagal reload/config pasca-issue ⇒ failed + expiry dipertahankan, domain non-publik), `tests/SslDomainRowsTest.php` (dua baris app saat custom domain, slot `ssl`/`custom_ssl`, baris parkir), `tests/DomainControllerTest.php` (non-admin: index hanya baris app yang boleh & tanpa baris parkir, method pengelolaan parkir 404, payload view, 422 AJAX, upload kebesaran, `GET /ssl` redirect tanpa menyentuh store, envelope `apiStatus`/`apiEnableParked`), `tests/ParkedDomainConflictTest.php` (arah app → parkir, `null` store = dilewati). Tes lama yang disesuaikan: `tests/SchemaMigrationsV2Test.php`, `tests/AgentModeTest.php` (baseline route).
+
+### 8j.11 Future work
+Dukungan multi-server (kolom `server_id` sudah ada; fase 1 menolak non-`local`), backup konten terintegrasi ke §8h/§8i, SSL **wildcard** (`*.contoh.com`) dan alias `www` otomatis (saat ini `www` = entri terpisah, `add_www` hanya saat create).
 
 ## 9. Environment Variables (`.env`)
 
@@ -1842,6 +1947,7 @@ ADMIN_EMAIL=                # kontak ACME Let's Encrypt — kosong ⇒ SslIssuer
 SSL_CHALLENGE=http          # http (webroot HTTP-01) | dns-cloudflare (DNS-01)
 SSL_CA_SERVER=production    # production | staging (uji; sertifikat tidak dipercaya)
 SSL_WEBROOT={proyek}/webroot  # webroot HTTP-01 — HARUS terbaca user nginx host & terlihat di dalam container (lihat ARCHITECTURE §8 GOTCHA no. 28)
+PARKED_ROOT={proyek}/database/parked  # akar konten domain parking (§8j) — WAJIB absolut & path SAMA di host (di bawah bind mount ${PWD}) agar `root` Nginx host menemukan berkas; direktori 0755/berkas 0644
 LETSENCRYPT_PATH=/etc/letsencrypt  # direktori sertifikat, dimount dari host
 # CERTBOT_WORK_DIR=/var/lib/letsencrypt   # kerja certbot (jarang diubah; env → deploy.certbot_work_dir; nilai rusak → default)
 # CERTBOT_LOGS_DIR=/var/log/letsencrypt   # log debug certbot — arahkan ke path yang di-bind (mis. {proyek}/runtime/logs/letsencrypt) agar tidak hilang saat recreate
@@ -1970,6 +2076,7 @@ rames                        # named volume DB dashboard: rames.sqlite + snapsho
 - **Backup data dashboard** (§8i): snapshot `VACUUM INTO` berkala (`DB_BACKUP_*`) + `pre-restore-*` sebelum restore; `restore()` defensif (basename+`realpath`, `integrity_check`, tabel inti wajib) — semua **admin-only** (non-admin → **404**). Nama berkas/route nyata disanitasi; bukan salinan `.bak` per berkas lagi (§8g)
 - **Backup volume (§8h):** ability `backup` = operator, `restore` = owner (destruktif) — satu pintu `AppAccess` (`BackupAccess`), penolakan **404**, volume yatim hanya admin. Kredensial S3 hanya lewat **env-file sementara 0600** (`--env-file`) dan passphrase restic lewat **`--password-file`** (file di-mount `:ro`) — **tidak pernah** di argv/`ps`, log, atau JSON. Nama volume & id snapshot divalidasi regex sebelum masuk argv helper; semua spawn berbentuk array + `bypass_shell` + `SigchldGuard`. Snapshot filesystem **hanya** sah saat container berhenti (`VolumeStateGuard`), tanpa jalur paksa dari UI
 - Direktori Nginx host yang di-mount ke dashboard container dibatasi sesempit mungkin (hanya `sites-available/`, bukan seluruh `/etc/nginx`), agar dashboard tidak bisa menimpa `nginx.conf` utama atau config app lain di luar mekanisme yang disediakan
+- **Domain parking & SSL (§8j)**: `GET /domains` + `GET /api/domains/status` terbuka untuk **semua user login**, tetapi baris app disaring `AppAccess::visible()` dan baris parkir **hanya** untuk admin; seluruh aksi pengelolaan parkir serta aktivasi SSL parkir **admin-only** ⇒ non-admin **404** (sebelum membaca store/memanggil manager). Config Nginx dirender dari data yang **divalidasi ulang** (`ParkedNginxConfig::render()` → `ParkedDomainValidator`) sehingga tidak ada karakter yang bisa menyuntik direktif: domain = FQDN (label DNS ketat), target redirect menolak userinfo/query/fragment/spasi/kontrol serta `"'\\<>{}$;`|^`, dan path `root` wajib absolut, bebas spasi/kutip/`;`/`{}`/`#`/`$` serta tanpa segmen `..`. **Path traversal** dicegah: id entri wajib `pd_` + 12 hex (`/^pd_[a-f0-9]{12}\z/`) dan diperiksa **sebelum** operasi filesystem apa pun, sehingga id berisi `../` tidak bisa menulis di luar `PARKED_ROOT`. Isi HTML mode `html` adalah **konten mentah tepercaya admin** (bukan input user biasa) — ia disajikan sebagai berkas statis oleh Nginx host, sehingga **form/CRUD parkir** tidak boleh dibuka untuk non-admin (tabel "Semua Domain" tetap boleh, tanpa baris parkir). **Fallback cert hilang**: status `active` tetapi berkas cert tidak ada ⇒ config parkir dirender HTTP-only agar `nginx -t` seluruh host tidak gagal. Rollback wajib karena `nginx -t` memvalidasi seluruh config host (satu berkas `_parked_*.conf` invalid memblokir reload semua app)
 - Watcher service di host dijalankan dengan user yang punya izin reload Nginx (lewat `sudoers` khusus untuk `nginx -s reload` saja) — bukan root penuh, dan tidak menerima input dari dashboard secara langsung (dashboard cuma menulis file, bukan mengirim perintah)
 - Deploy key SSH per repo disimpan privat (chmod 0600, gitignored); hanya public key yang ditampilkan ke user. `git` memakai `GIT_SSH_COMMAND` dengan `IdentitiesOnly=yes` & `StrictHostKeyChecking=accept-new` (host key tersimpan di file `known_hosts` sistem)
 - **File manager container (§7.9)**: ability `files` = operator (satu pintu `AppAccess`, penolakan **404**; operator sudah memegang shell penuh di container yang sama sehingga tidak menambah kuasa). Nama container dari request tidak dipercaya (`AppContainers::resolve`); semua path dinormalisasi `PathGuard` (wajib absolut, `.`/`..` diselesaikan, karakter kontrol ditolak) dan nama entri tidak boleh memuat `/` atau diawali `-` sebelum masuk `docker exec`/`docker cp`; argumen `docker exec` di-`escapeshellarg` (array + `sh -c` di dalam container), perintah host (`docker cp`/`unzip`/`tar`) array + `bypass_shell`. Ekstraksi arsip dilakukan **di host dashboard** (bukan di container app) dengan proteksi **zip-slip** (entri absolut/`..`/symlink keluar ditolak). Byte ditransfer via berkas temp `runtime/files-transfer/` yang dibersihkan (`Workerman\Timer` + `prune()`), bukan ke memori PHP. Operasi hanya ke container **berjalan** (berhenti → **409**), tanpa container sementara maupun volume langsung. **Semua `docker exec` dijalankan sebagai root** (`-u 0`) agar tidak `permission denied` atas berkas milik user lain / bind mount root host — konsekuensinya operator+ bisa memodifikasi berkas tersebut lewat UI; batasnya ability `files` (operator+) + audit `runtime/logs/files/{date}.log` (jangan turunkan ke viewer)
@@ -2001,3 +2108,4 @@ rames                        # named volume DB dashboard: rames.sqlite + snapsho
 - **Snippet Nginx mentah per app (Lapis B)** — sengaja di luar lingkup §8.2a: hanya rute **terstruktur** (path + target) yang didukung agar dashboard tetap bisa memvalidasi & membatasi sebelum menulis config; `include`/`server`/`listen`/`server_name` dari user **dilarang**. Guard rollback juga belum mencakup jalur `applyNginxConfig()` langsung (`setDomain`/`removeDomain`/`cli/ssl.php`, §8.2a G3). Belum ada **lock per-app** untuk penyimpanan rute yang bersamaan (§8.2a G5) — saat ini hanya `SqliteStore::update()` yang terkunci sehingga urutan snapshot→persist→reload→rollback tetap dapat balapan (*lost update*).
 - Monitoring resource penuh (metrik historis, graf, alerting) — ringkasan per-container sudah masuk Phase 1 (§8d)
 - **Kredit & penagihan (§7.12):** refund/void top-up, rate limiting khusus top-up, dan **rekonsiliasi tagihan berbasis riwayat Docker** (`StartedAt`) untuk menutup *under-count* saat dashboard mati (saat ini meteran tick inkremental; §7.12 batasan)
+- **Domain parking & SSL (§8j):** (1) **multi-server** — kolom `server_id` sudah disimpan tetapi fase 1 menolak non-`local`; (2) **backup konten terintegrasi** — snapshot SQLite hanya metadata sehingga `database/parked/` wajib di-backup host/berkas secara terpisah (prosedur §8j.9); (3) **SSL wildcard** (`*.contoh.com`) dan alias/`www` otomatis (saat ini `www` = entri terpisah, `add_www` hanya saat create); (4) **penyegaran `ssl_expires_at` otomatis** setelah `certbot renew` di host — timer hanya me-reload Nginx, sedangkan nilai di UI baru diperbarui saat Retry/reconcile.

@@ -8,6 +8,7 @@ use app\library\Auth\AppAccessDenied;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ServerResolver;
 use app\library\Docker\AppPorts;
+use app\library\SSL\SslDomainRows;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use support\Request;
@@ -79,46 +80,16 @@ class SslController
      */
     private function sslRows(array $apps): array
     {
-        $sslSupported = SslIssuer::isPublicDomain((string) config('deploy.app_domain', ''));
+        // Bentuk baris dimiliki `SslDomainRows` (satu sumber dengan halaman
+        // `/domains`); controller hanya menghitung dukungan SSL dari domain
+        // baris publik.
+        $rows = SslDomainRows::appRows($apps);
 
-        $rows = [];
         $anyPublicRow = false;
-        foreach ($apps as $app) {
-            // App tanpa port terpublish tidak di-proxy Nginx (vhost/subdomain
-            // dilewati saat deploy) → tidak ada domain yang bisa di-SSL.
-            if (!AppPorts::hasHostPort($app)) {
-                continue;
-            }
-
-            $subdomain = app_subdomain_of($app);
-            $customDomain = (string) ($app['custom_domain'] ?? '');
-
-            if (SslIssuer::isPublicDomain($customDomain !== '' ? $customDomain : $subdomain)) {
+        foreach ($rows as $row) {
+            if (SslIssuer::isPublicDomain((string) ($row['domain'] ?? ''))) {
                 $anyPublicRow = true;
-            }
-
-            // Bila custom domain di-set, subdomain hanya redirect → SSL yang
-            // relevan adalah SSL custom domain (subdomain tidak lagi melayani app).
-            if ($customDomain !== '') {
-                $rows[] = [
-                    'app' => $app,
-                    'domain' => $customDomain,
-                    'is_custom' => true,
-                    'ssl_status' => (string) ($app['custom_ssl_status'] ?? 'disabled'),
-                    'ssl_message' => $app['custom_ssl_message'] ?? null,
-                    'ssl_expires_at' => $app['custom_ssl_expires_at'] ?? null,
-                    'ssl_error' => $app['custom_ssl_error'] ?? null,
-                ];
-            } else {
-                $rows[] = [
-                    'app' => $app,
-                    'domain' => $subdomain,
-                    'is_custom' => false,
-                    'ssl_status' => (string) ($app['ssl_status'] ?? 'disabled'),
-                    'ssl_message' => $app['ssl_message'] ?? null,
-                    'ssl_expires_at' => $app['ssl_expires_at'] ?? null,
-                    'ssl_error' => $app['ssl_error'] ?? null,
-                ];
+                break;
             }
         }
 
@@ -127,7 +98,9 @@ class SslController
         // lewat `APP_DOMAIN` control plane.
         return [
             'rows' => $rows,
-            'sslSupported' => $rows === [] ? $sslSupported : $anyPublicRow,
+            'sslSupported' => $rows === []
+                ? SslIssuer::isPublicDomain((string) config('deploy.app_domain', ''))
+                : $anyPublicRow,
         ];
     }
 
@@ -146,7 +119,8 @@ class SslController
 
         flash_set($result['flash'], $result['message']);
 
-        return redirect('/ssl');
+        // Tabel SSL sekarang menyatu di halaman domain (`/domains`).
+        return redirect('/domains');
     }
 
     /**
@@ -196,16 +170,21 @@ class SslController
         foreach ($table['rows'] as $row) {
             $status = (string) $row['ssl_status'];
             $pending = $pending || $status === 'pending';
+            $app = is_array($row['app'] ?? null) ? $row['app'] : [];
             $rows[] = [
-                'app_id' => (string) ($row['app']['id'] ?? ''),
-                'app_name' => (string) ($row['app']['name'] ?? ''),
+                'app_id' => (string) ($app['id'] ?? ''),
+                'app_name' => (string) ($app['name'] ?? ''),
                 'domain' => (string) $row['domain'],
                 'is_custom' => (bool) $row['is_custom'],
                 'status' => $status,
                 'message' => $row['ssl_message'],
                 'expires_at' => $row['ssl_expires_at'],
                 'error' => $row['ssl_error'],
-                'can_ssl' => AppAccess::can('ssl', $row['app'], current_user()),
+                'can_ssl' => AppAccess::can('ssl', $app, current_user()),
+                // Kunci baru (halaman `/domains` menyatukan app + parkir):
+                // `kind` = app|parked, `role` = serve|redirect|parkir.
+                'kind' => (string) ($row['kind'] ?? 'app'),
+                'role' => (string) ($row['role'] ?? 'serve'),
             ];
         }
 

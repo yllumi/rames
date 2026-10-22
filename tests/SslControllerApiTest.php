@@ -383,7 +383,12 @@ class SslControllerApiTest extends TestCase
         $this->assertSame(0, $body['code']);
         $this->assertTrue($body['ssl_supported'], 'APP_DOMAIN publik ⇒ SSL didukung');
         $this->assertTrue($body['pending'], 'ada baris ber-status pending');
-        $this->assertSame(['status-biasa.example.org', 'status.example.net'], array_column($body['rows'], 'domain'));
+        // Custom domain kini menghasilkan DUA baris: custom (serve) + subdomain
+        // (redirect) — keduanya status dari slot berbeda.
+        $this->assertSame(
+            ['status-biasa.example.org', 'status.example.net', 'status-custom.example.org'],
+            array_column($body['rows'], 'domain')
+        );
 
         $this->assertSame([
             'app_id' => $plain['id'],
@@ -395,6 +400,8 @@ class SslControllerApiTest extends TestCase
             'expires_at' => null,
             'error' => null,
             'can_ssl' => true,
+            'kind' => 'app',
+            'role' => 'serve',
         ], $body['rows'][0]);
 
         $this->assertSame([
@@ -407,7 +414,14 @@ class SslControllerApiTest extends TestCase
             'expires_at' => '2026-03-01T00:00:00+00:00',
             'error' => null,
             'can_ssl' => true,
+            'kind' => 'app',
+            'role' => 'serve',
         ], $body['rows'][1]);
+
+        $this->assertSame('status-custom.example.org', $body['rows'][2]['domain']);
+        $this->assertFalse($body['rows'][2]['is_custom']);
+        $this->assertSame('redirect', $body['rows'][2]['role']);
+        $this->assertSame('disabled', $body['rows'][2]['status'], 'slot ssl subdomain belum diaktifkan');
     }
 
     /**

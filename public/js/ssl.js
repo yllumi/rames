@@ -1,6 +1,8 @@
 /**
- * Halaman `/ssl` — aksi "Aktifkan SSL" / "↻ Retry SSL" sebagai **AJAX** + polling
- * status, menggantikan `window.location.reload()` tiap 5 detik (SPECS.md §8a).
+ * Tabel domain/SSL — aksi "Aktifkan SSL" / "↻ Retry SSL" sebagai **AJAX** +
+ * polling status, menggantikan `window.location.reload()` tiap 5 detik
+ * (SPECS.md §8a/§8j). Dipakai halaman `/domains` (tab Semua Domain) dan
+ * halaman lama `/ssl`.
  *
  * Kontrak yang dikonsumsi (JANGAN diubah dari sisi UI):
  *   POST /api/ssl/{id}/enable   body `_token` (+ `domain`) form-urlencoded →
@@ -8,10 +10,14 @@
  *     ditolak bisnis   : HTTP 200 {code:1, ok:false, error}
  *     tanpa hak/tak ada: HTTP 404 {code:404,...}
  *     CSRF kedaluwarsa : HTTP 419 {code:419,...}
- *   GET /api/ssl/status →
+ *   POST /api/domains/parked/{id}/enable — envelope sama (domain parkir).
+ *   GET {data-ssl-status-url pada <table>} (default `/api/ssl/status`) →
  *     {code:0, ssl_supported:bool, pending:bool,
- *      rows:[{app_id,app_name,domain,is_custom,status,message,expires_at,error,can_ssl}]}
- *     `status` ∈ disabled|pending|active|failed|expired; hanya app yang boleh
+ *      rows:[{app_id,app_name,domain,is_custom,status,message,expires_at,error,can_ssl,
+ *             kind,role}]}
+ *     `/api/domains/status` mengirim baris terdekorasi (`ssl_status`,
+ *     `ssl_message`, `ssl_error`, `ssl_expires_at`); keduanya diterima.
+ *     `status` ∈ disabled|pending|active|failed|expired; hanya baris yang boleh
  *     dilihat user yang dikembalikan (penolakan tetap 404).
  *
  * Catatan desain:
@@ -33,7 +39,10 @@
  *    ditinggalkan (`pagehide`/`beforeunload` + `AbortController.abort()`) →
  *    tidak ada permintaan latar belakang.
  *  - Peta status → kelas badge dibaca dari `data-ssl-badge-map` pada `<table>`
- *    (satu sumber dengan `app/view/ssl/index.php`, tidak diduplikasi di JS).
+ *    (satu sumber dengan view, tidak diduplikasi di JS).
+ *  - Baris dipetakan lewat `data-domain-key` (`kind:id:role`) bila ada — dua
+ *    baris app yang sama (custom `serve` + subdomain `redirect`) dipetakan
+ *    terpisah; fallback `data-app-id` ↔ `app_id` tetap ada untuk `/ssl` lama.
  *    State form/catatan mengikuti `can_ssl` (payload) + `ssl_supported` (tabel),
  *    dengan urutan cabang yang sama seperti render awal view: catatan `pending`/
  *    `active` menang atas form/penanda; galat hanya tampil bila `can_ssl` **dan**
@@ -57,7 +66,13 @@
   var meta = document.querySelector('meta[name="csrf-token"]');
   if (meta) CSRF = meta.getAttribute('content') || '';
 
+  // Endpoint status dibaca dari tabel (`/api/domains/status` di halaman
+  // `/domains`, `/api/ssl/status` di halaman lama `/ssl`).
   var STATUS_URL = '/api/ssl/status';
+  if (table) {
+    var statusUrl = (table.getAttribute('data-ssl-status-url') || '').trim();
+    if (statusUrl.charAt(0) === '/') STATUS_URL = statusUrl;
+  }
   var POLL_MS = 5000;
   var FALLBACK_BADGE = 'badge-stopped';
   var LABEL_ENABLE = 'Aktifkan SSL';
@@ -310,18 +325,41 @@
     });
   }
 
-  /** Terapkan seluruh baris dari `/api/ssl/status` (baris tak dikenal dilewati). */
+  /**
+   * Terapkan seluruh baris dari endpoint status (baris tak dikenal dilewati).
+   *
+   * Pemetaan baris:
+   *  - baris ber-`data-domain-key` (`kind:id:role`, halaman `/domains`) dicocokkan
+   *    dengan `kind`/`id`/`role` payload → dua baris app yang sama (custom domain
+   *    `serve` + subdomain `redirect`) dipetakan terpisah;
+   *  - baris tanpa kunci (halaman lama `/ssl`) tetap memakai `data-app-id` ↔
+   *    `app_id` (perilaku lama dipertahankan).
+   *
+   * Payload `/api/domains/status` memuat baris terdekorasi (`ssl_status`,
+   * `ssl_message`, `ssl_error`, `ssl_expires_at`), sedangkan `/api/ssl/status`
+   * memakai `status`/`message`/`error`/`expires_at` — keduanya diterima.
+   */
   function applyStatus(payload) {
     var supported = payload.ssl_supported === true;
     if (table) table.setAttribute('data-ssl-supported', supported ? '1' : '0');
 
+    var byKey = {};
     var byId = {};
     payload.rows.forEach(function (item) {
-      if (item && typeof item.app_id === 'string') byId[item.app_id] = item;
+      if (!item || typeof item !== 'object') return;
+
+      var id = typeof item.id === 'string' ? item.id : '';
+      var kind = typeof item.kind === 'string' && item.kind !== '' ? item.kind : 'app';
+      var role = typeof item.role === 'string' ? item.role : '';
+      if (id !== '' && role !== '') byKey[kind + ':' + id + ':' + role] = item;
+
+      // Fallback halaman lama: hanya `app_id` (tipe string) yang dipakai.
+      if (typeof item.app_id === 'string' && item.app_id !== '') byId[item.app_id] = item;
     });
 
     rows.forEach(function (row) {
-      var data = byId[row.getAttribute('data-app-id') || ''];
+      var key = row.getAttribute('data-domain-key') || '';
+      var data = key !== '' ? byKey[key] : byId[row.getAttribute('data-app-id') || ''];
       if (!data) return;
 
       // Domain efektif bisa berubah (custom domain di-set/dihapus) — simpan
@@ -330,10 +368,23 @@
         row.setAttribute('data-domain', data.domain);
       }
 
-      setRow(row, typeof data.status === 'string' ? data.status : 'disabled', {
-        message: typeof data.message === 'string' ? data.message : '',
-        error: typeof data.error === 'string' ? data.error : '',
-        expires: typeof data.expires_at === 'string' ? data.expires_at : '',
+      var status = typeof data.status === 'string'
+        ? data.status
+        : (typeof data.ssl_status === 'string' ? data.ssl_status : 'disabled');
+      var message = typeof data.message === 'string'
+        ? data.message
+        : (typeof data.ssl_message === 'string' ? data.ssl_message : '');
+      var error = typeof data.error === 'string'
+        ? data.error
+        : (typeof data.ssl_error === 'string' ? data.ssl_error : '');
+      var expires = typeof data.expires_at === 'string'
+        ? data.expires_at
+        : (typeof data.ssl_expires_at === 'string' ? data.ssl_expires_at : '');
+
+      setRow(row, status !== '' ? status : 'disabled', {
+        message: message,
+        error: error,
+        expires: expires,
         canSsl: data.can_ssl === true,
         sslSupported: supported
       });

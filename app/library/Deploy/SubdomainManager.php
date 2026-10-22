@@ -6,6 +6,7 @@ namespace app\library\Deploy;
 use app\library\Docker\AppPorts;
 use app\library\Nginx\NginxConfigGuard;
 use app\library\Storage\AppStore;
+use app\library\Storage\ParkedDomainStore;
 use RuntimeException;
 
 /**
@@ -30,16 +31,27 @@ use RuntimeException;
  * konstruktor agar tes bisa memakai store server di path temp.
  *
  * Stateless — dependensi disuntikkan (aman untuk worker Webman persistent).
+ *
+ * Domain parking (entitas global di luar app, halaman `/domains`) ikut diperiksa
+ * agar arah app → parkir tertutup seperti arah parkir → app di
+ * {@see \app\library\Domain\ParkedDomainValidator::assertDomainAvailable()}.
+ * Store parkir **opsional**: `null` = pemeriksaan parkir dilewati (perilaku lama
+ * & kompatibilitas tes/pemanggil yang belum menyuntikkan store).
  */
 final class SubdomainManager
 {
     /** Batas panjang label subdomain (batas label DNS). */
     public const MAX_LENGTH = 63;
 
+    /**
+     * @param ParkedDomainStore|null $parked store domain parkir; `null` =
+     *        pemeriksaan bentrok parkir dilewati (backward-compat)
+     */
     public function __construct(
         private readonly AppStore $store,
         private readonly ?NginxConfigGuard $guard = null,
         private readonly ?ServerResolver $resolver = null,
+        private readonly ?ParkedDomainStore $parked = null,
     ) {
     }
 
@@ -58,8 +70,9 @@ final class SubdomainManager
     /**
      * Pastikan label (boleh kosong → fallback `name`) bisa dipakai app
      * `$excludeId`. Keunikan diperiksa atas **FQDN efektif** app lain, termasuk
-     * app yang belum punya field `subdomain` (mereka memakai `name`), serta
-     * bentrok dengan custom domain app lain.
+     * app yang belum punya field `subdomain` (mereka memakai `name`), bentrok
+     * dengan custom domain app lain, serta bentrok dengan domain parkir
+     * (`/domains`) bila store parkir disuntikkan ke konstruktor.
      *
      * Scope server (multi-server F1, plan §4.2 + §9 keputusan 4): `$serverId`
      * diisi ⇒ keunikan hanya diperiksa terhadap app di server itu (FQDN di server
@@ -94,6 +107,16 @@ final class SubdomainManager
             if ((string) ($other['custom_domain'] ?? '') === $effective) {
                 throw new RuntimeException('Subdomain ' . $effective . ' bentrok dengan custom domain app "' . (string) ($other['name'] ?? '?') . '".');
             }
+        }
+
+        // Arah sebaliknya dari ParkedDomainValidator (parkir → app): FQDN app
+        // tidak boleh sama dengan domain parkir mana pun, kalau tidak dua
+        // `server_name` identik akan ditulis ke Nginx.
+        if ($this->parked !== null && $this->parked->byDomain($effective) !== null) {
+            throw new RuntimeException(
+                'Subdomain ' . $effective . ' sudah dipakai sebagai domain parkir.'
+                . ' Hapus/ubah domain parkir itu di halaman /domains terlebih dahulu.'
+            );
         }
 
         return $effective;

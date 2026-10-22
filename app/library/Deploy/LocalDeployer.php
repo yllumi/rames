@@ -745,11 +745,15 @@ class LocalDeployer implements DeployerInterface
         // Dengan custom domain: subdomain redirect (301) ke custom domain,
         // custom domain melayani app. Redirect pakai https bila SSL custom aktif,
         // selain itu http agar tidak memutus akses sebelum cert terpasang.
+        // Subdomain redirect ikut di-SSL-kan bila SSL subdomain (`ssl_status`)
+        // aktif — user bisa memilih SSL untuk subdomain dan custom domain
+        // sekaligus. Bila belum aktif, redirect tetap HTTP (lihat generator).
         $customSsl = ($app['custom_ssl_status'] ?? null) === 'active';
         $target = ($customSsl ? 'https://' : 'http://') . $customDomain;
+        $subdomainSsl = ($app['ssl_status'] ?? null) === 'active';
 
         return $this->nginx->render($hostPort, [
-            ['server_name' => $subdomain, 'redirect_to' => $target],
+            ['server_name' => $subdomain, 'redirect_to' => $target, 'ssl' => $subdomainSsl],
             ['server_name' => $customDomain, 'ssl' => $customSsl],
         ], $routes);
     }

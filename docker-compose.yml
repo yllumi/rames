@@ -26,6 +26,9 @@ services:
       SSL_CHALLENGE: "${SSL_CHALLENGE:-http}"
       SSL_CA_SERVER: "${SSL_CA_SERVER:-production}"
       SSL_WEBROOT: "${SSL_WEBROOT:-}"
+      # Akar berkas halaman domain parking (mode html). WAJIB path yang sama di
+      # host (di bawah bind mount ${PWD}) agar Nginx host bisa membacanya.
+      PARKED_ROOT: "${PARKED_ROOT:-}"
       CLOUDFLARE_CREDS: "${CLOUDFLARE_CREDS:-}"
       # Terminal container (docker exec)
       DOCKER_BINARY: "${DOCKER_BINARY:-docker}"

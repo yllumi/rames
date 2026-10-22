@@ -39,6 +39,7 @@ use app\library\Nginx\NginxRoutes;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppFilter;
 use app\library\Storage\AppStore;
+use app\library\Storage\ParkedDomainStore;
 use app\library\Storage\ServerStore;
 use app\library\Support\Markdown;
 use app\library\System\HostUsage;
@@ -2348,7 +2349,9 @@ class AppController
 
         $manager = new SubdomainManager(
             $store,
-            new NginxConfigGuard($this->nginxReloaderFor($app, $localReloader, $agentClient), DeployerFactory::createForApp($app, null, $agentClient), $store)
+            new NginxConfigGuard($this->nginxReloaderFor($app, $localReloader, $agentClient), DeployerFactory::createForApp($app, null, $agentClient), $store),
+            null,
+            new ParkedDomainStore()
         );
         $result = $manager->change($id, $label);
 
@@ -2586,7 +2589,8 @@ class AppController
      */
     private function assertSubdomainAvailable(string $label, string $name, string $excludeId = '', ?string $serverId = null): string
     {
-        return (new SubdomainManager(new AppStore()))->assertAvailable($label, $name, $excludeId, $serverId);
+        return (new SubdomainManager(new AppStore(), null, null, new ParkedDomainStore()))
+            ->assertAvailable($label, $name, $excludeId, $serverId);
     }
 
     /**
@@ -2603,6 +2607,7 @@ class AppController
     private function assertDomainUnique(AppStore $store, string $excludeId, string $domain): void
     {
         $scope = AppStore::serverIdOf($store->find($excludeId) ?? []);
+        $parked = new ParkedDomainStore();
 
         foreach ($store->all() as $other) {
             if (($other['id'] ?? '') === $excludeId) {
@@ -2617,6 +2622,15 @@ class AppController
             if (($other['custom_domain'] ?? '') === $domain) {
                 throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai custom domain app "' . ($other['name'] ?? '?') . '".');
             }
+        }
+
+        // Domain parkir adalah entitas global (tidak terikat app/server), jadi
+        // diperiksa lintas server — cermin dari ParkedDomainValidator::assertDomainAvailable().
+        if ($parked->byDomain($domain) !== null) {
+            throw new RuntimeException(
+                'Domain ' . $domain . ' sudah dipakai sebagai domain parkir.'
+                . ' Hapus/ubah domain parkir itu di halaman /domains terlebih dahulu.'
+            );
         }
     }
 

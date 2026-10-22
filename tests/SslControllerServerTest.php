@@ -221,7 +221,7 @@ class SslControllerServerTest extends TestCase
         $response = $this->controller(true)->enable($this->post(), $app['id']);
 
         $this->assertSame(302, $response->getStatusCode());
-        $this->assertSame('/ssl', $response->getHeader('Location'));
+        $this->assertSame('/domains', $response->getHeader('Location'), 'tabel SSL menyatu di /domains');
         $this->assertSame([[$app['id'], 'remote-app.remote.example.com']], $this->spawned, 'worker SSL dijalankan dengan domain server app');
 
         $saved = (new AppStore())->find($app['id']);

@@ -25,10 +25,14 @@ class NginxConfigGenerator
      *
      *   - serve block     : `{server_name, ssl}` — proxy ke app; bila `ssl=true`
      *                       render juga blok `listen 443 ssl` + redirect 80→https.
-     *   - redirect block  : `{server_name, redirect_to}` — hanya `return 301
+     *   - redirect block  : `{server_name, redirect_to, ssl?}` — hanya `return 301
      *                       {redirect_to}$request_uri` (mis. subdomain → custom
      *                       domain). `location /.well-known/acme-challenge/`
      *                       tetap dirender SEBELUM return agar HTTP-01 tetap jalan.
+     *                       Bila `ssl=true`, blok 80 hanya 301 ke https (ACME tetap
+     *                       di 80) dan blok `listen 443 ssl` meneruskan 301 ke
+     *                       target — supaya subdomain redirect juga bisa punya
+     *                       sertifikatnya sendiri.
      *
      * Blok rute proxy tambahan (`$routes`, lihat {@see NginxRoutes}) dirender
      * SETELAH `location / { ... }` **hanya** di serve block (HTTP 80 & HTTPS 443)
@@ -63,12 +67,47 @@ ACME;
 
             // Redirect block (mis. subdomain → custom domain)
             if ($redirectTo !== null && $redirectTo !== '') {
+                if (!$ssl) {
+                    $blocks[] = <<<NGINX
+server {
+    listen 80;
+    server_name {$serverName};
+
+    {$acme}
+
+    location / {
+        return 301 {$redirectTo}\$request_uri;
+    }
+}
+NGINX;
+                    continue;
+                }
+
+                // Redirect + SSL: blok 80 (ACME + 301 ke https) lalu blok 443
+                // yang meneruskan 301 ke target. Tidak ada proxy/WebSocket di
+                // kedua blok karena tidak ada app di belakangnya.
+                $cert = $lePath . '/live/' . $serverName . '/fullchain.pem';
+                $key = $lePath . '/live/' . $serverName . '/privkey.pem';
+
                 $blocks[] = <<<NGINX
 server {
     listen 80;
     server_name {$serverName};
 
     {$acme}
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name {$serverName};
+
+    ssl_certificate {$cert};
+    ssl_certificate_key {$key};
+    ssl_protocols TLSv1.2 TLSv1.3;
 
     location / {
         return 301 {$redirectTo}\$request_uri;
@@ -205,18 +244,38 @@ NGINX;
         }
     }
 
+    /**
+     * Tulis config Nginx secara atomik: isi ditulis ke berkas sementara di
+     * direktori yang sama lalu `rename()`. Pembaca (watcher/reload host) tidak
+     * pernah melihat `.conf` terpotong bila proses berhenti di tengah tulis;
+     * kegagalan apa pun membersihkan berkas sementara.
+     */
     public function write(string $name, string $content): void
     {
         $this->ensureWritable();
         $file = $this->confPath . '/' . $name . '.conf';
-        if (@file_put_contents($file, $content, LOCK_EX) === false) {
+        $tmp = $file . '.tmp.' . bin2hex(random_bytes(6));
+
+        if (@file_put_contents($tmp, $content, LOCK_EX) === false) {
             $last = error_get_last();
             $detail = is_array($last) ? (string) ($last['message'] ?? '') : '';
+            @unlink($tmp);
             throw new RuntimeException(
                 'Gagal menulis config Nginx: ' . $file .
                 ($detail !== '' ? ' — ' . $detail : ' — periksa izin tulis direktori.')
             );
         }
+
+        if (!@rename($tmp, $file)) {
+            $last = error_get_last();
+            $detail = is_array($last) ? (string) ($last['message'] ?? '') : '';
+            @unlink($tmp);
+            throw new RuntimeException(
+                'Gagal menyimpan config Nginx: ' . $file .
+                ($detail !== '' ? ' — ' . $detail : ' — periksa izin tulis direktori.')
+            );
+        }
+
         $this->enable($name, $file);
     }
 

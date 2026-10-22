@@ -107,6 +107,81 @@ class NginxConfigGeneratorTest extends TestCase
         $this->assertStringNotContainsString('proxy_pass', $blocks[0]);
     }
 
+    public function testRedirectBlockWithoutSslStaysSingleHttpBlock(): void
+    {
+        $config = $this->generator()->render(8080, [
+            [
+                'server_name' => 'sub.app.example.com',
+                'redirect_to' => 'http://custom.example.com',
+                'ssl' => false,
+            ],
+        ]);
+
+        $blocks = $this->serverBlocks($config);
+        $this->assertCount(1, $blocks, 'redirect tanpa SSL = satu blok 80');
+        $this->assertStringContainsString('listen 80;', $blocks[0]);
+        $this->assertStringNotContainsString('listen 443', $config);
+        $this->assertStringContainsString('location ^~ /.well-known/acme-challenge/', $blocks[0]);
+        $this->assertStringContainsString('return 301 http://custom.example.com$request_uri;', $blocks[0]);
+    }
+
+    public function testRedirectBlockWithSslRendersAcme80AndSsl443(): void
+    {
+        $config = $this->generator()->render(8080, [
+            [
+                'server_name' => 'sub.app.example.com',
+                'redirect_to' => 'https://custom.example.com',
+                'ssl' => true,
+            ],
+        ], self::SAMPLE_ROUTES);
+
+        $blocks = $this->serverBlocks($config);
+        $this->assertCount(2, $blocks, 'redirect ber-SSL = blok 80→https + blok 443');
+
+        $http = '';
+        $https = '';
+        foreach ($blocks as $block) {
+            if (str_contains($block, 'listen 443')) {
+                $https = $block;
+            } else {
+                $http = $block;
+            }
+        }
+        $this->assertNotSame('', $http, 'blok 80 harus ada');
+        $this->assertNotSame('', $https, 'blok 443 harus ada');
+
+        // Blok 80: ACME tetap di sini + 301 ke https.
+        $this->assertStringContainsString('location ^~ /.well-known/acme-challenge/', $http);
+        $this->assertStringContainsString('return 301 https://$host$request_uri;', $http);
+        $this->assertStringNotContainsString('ssl_certificate ', $http);
+
+        // Blok 443: sertifikat domain redirect + 301 ke target.
+        $le = (string) config('deploy.letsencrypt_path', '/etc/letsencrypt');
+        $this->assertStringContainsString('listen 443 ssl;', $https);
+        $this->assertStringContainsString(
+            'ssl_certificate ' . $le . '/live/sub.app.example.com/fullchain.pem;',
+            $https
+        );
+        $this->assertStringContainsString(
+            'ssl_certificate_key ' . $le . '/live/sub.app.example.com/privkey.pem;',
+            $https
+        );
+        $this->assertStringContainsString('ssl_protocols TLSv1.2 TLSv1.3;', $https);
+        $this->assertStringContainsString('return 301 https://custom.example.com$request_uri;', $https);
+        $this->assertStringNotContainsString(
+            'location ^~ /.well-known/acme-challenge/',
+            $https,
+            'ACME cukup di blok 80'
+        );
+
+        // Blok redirect tidak mem-proxy: tanpa proxy_pass / WebSocket / rute.
+        $this->assertStringNotContainsString('proxy_pass', $config);
+        $this->assertStringNotContainsString('location ^~ /api/', $config);
+        foreach (self::WS_DIRECTIVES as $directive) {
+            $this->assertStringNotContainsString($directive, $config);
+        }
+    }
+
     public function testAcmeChallengeBlockStaysFreeOfProxyDirectives(): void
     {
         $config = $this->generator()->render(8080, [
@@ -275,5 +350,62 @@ NGINX;
         $this->generator()->render(8080, [
             ['server_name' => 'app.example.com'],
         ], [['path' => '/', 'target' => 'http://127.0.0.1:3001']]);
+    }
+
+    public function testWriteIsAtomicKeepsExactContentAndLeavesNoTempFile(): void
+    {
+        $base = sys_get_temp_dir() . '/rames-nginx-write-' . bin2hex(random_bytes(4));
+        $conf = $base . '/sites-available';
+        $enabled = $base . '/sites-enabled';
+        mkdir($conf, 0775, true);
+        mkdir($enabled, 0775, true);
+
+        try {
+            $generator = new NginxConfigGenerator($conf, $enabled);
+            $content = "server {\n    listen 80;\n    server_name app.example.com;\n}\n";
+
+            $generator->write('app_test', $content);
+
+            $file = $conf . '/app_test.conf';
+            $link = $enabled . '/app_test.conf';
+            $this->assertFileExists($file);
+            $this->assertSame($content, (string) file_get_contents($file), 'isi akhir harus persis');
+            $this->assertSame([], glob($conf . '/*.tmp*') ?: [], 'tidak boleh menyisakan berkas sementara');
+            $this->assertTrue(is_link($link), 'config aktif tetap di-symlink ke sites-enabled');
+            $this->assertSame($file, readlink($link));
+
+            // Tulis ulang (rename menimpa berkas lama) tetap atomik & tanpa sisa.
+            $updated = "server {\n    listen 8080;\n}\n";
+            $generator->write('app_test', $updated);
+            $this->assertSame($updated, (string) file_get_contents($file));
+            $this->assertSame([], glob($file . '.tmp*') ?: []);
+
+            $generator->remove('app_test');
+            $this->assertFileDoesNotExist($file);
+            $this->assertFalse(is_link($link));
+            $this->assertFileDoesNotExist($link);
+        } finally {
+            self::rmTree($base);
+        }
+    }
+
+    private static function rmTree(string $path): void
+    {
+        if (is_link($path) || is_file($path)) {
+            @unlink($path);
+
+            return;
+        }
+        if (!is_dir($path)) {
+            return;
+        }
+        $entries = scandir($path);
+        foreach ($entries === false ? [] : $entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            self::rmTree($path . '/' . $entry);
+        }
+        @rmdir($path);
     }
 }

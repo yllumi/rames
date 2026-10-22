@@ -20,6 +20,8 @@
 /database/*.sqlite-shm
 /database/keys/
 /database/env/
+# halaman parkir domain (isi HTML per entri `parked`: database/parked/{id}/index.html)
+/database/parked/
 # passphrase restic (backup volume ke S3) — rahasia, jangan pernah di-commit
 /database/restic/
 

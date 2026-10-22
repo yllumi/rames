@@ -12,6 +12,7 @@ use app\library\Storage\SqliteDatabase;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Tests\Support\StoreDbFiles;
+use Webman\Config;
 
 // Helper webman (`config()`, `app_subdomain*()`) tidak dimuat di luar runtime
 // webman: pastikan `app/functions.php` ikut dimuat (pola `SubdomainTest`).
@@ -175,23 +176,41 @@ class SubdomainPerServerTest extends TestCase
      */
     public function testControllerCustomDomainUniquenessIsScopedPerServer(): void
     {
-        $satu = $this->server('a.example.com');
-        $this->seed(['id' => 'app-local', 'name' => 'lokal', 'custom_domain' => 'shared.example.org']);
-        $this->seed(['id' => 'app-a', 'name' => 'alpha', 'server_id' => $satu['id'], 'custom_domain' => 'shared.example.org']);
-        $this->seed(['id' => 'app-a2', 'name' => 'alpha2', 'server_id' => $satu['id']]);
+        // `assertDomainUnique()` kini juga membaca ParkedDomainStore (default:
+        // `config('deploy.sqlite_file')`), jadi sediakan config temp minimal.
+        $configDir = sys_get_temp_dir() . '/rames-perserver-config-' . bin2hex(random_bytes(4));
+        mkdir($configDir, 0777, true);
+        file_put_contents($configDir . '/app.php', "<?php return [];\n");
+        file_put_contents(
+            $configDir . '/deploy.php',
+            '<?php return ' . var_export(['sqlite_file' => $this->appsFile], true) . ';' . PHP_EOL
+        );
+        Config::load($configDir);
 
-        $assert = new \ReflectionMethod(AppController::class, 'assertDomainUnique');
-        $controller = new AppController();
-
-        // Server berbeda: domain custom yang sama BUKAN bentrok.
-        $assert->invoke($controller, $this->store(), 'app-a', 'shared.example.org');
-
-        // Server yang sama: bentrok ⇒ melempar.
         try {
-            $assert->invoke($controller, $this->store(), 'app-a2', 'shared.example.org');
-            $this->fail('domain custom yang sama di server yang sama harus dianggap bentrok');
-        } catch (RuntimeException $e) {
-            $this->assertStringContainsString('sudah dipakai', $e->getMessage());
+            $satu = $this->server('a.example.com');
+            $this->seed(['id' => 'app-local', 'name' => 'lokal', 'custom_domain' => 'shared.example.org']);
+            $this->seed(['id' => 'app-a', 'name' => 'alpha', 'server_id' => $satu['id'], 'custom_domain' => 'shared.example.org']);
+            $this->seed(['id' => 'app-a2', 'name' => 'alpha2', 'server_id' => $satu['id']]);
+
+            $assert = new \ReflectionMethod(AppController::class, 'assertDomainUnique');
+            $controller = new AppController();
+
+            // Server berbeda: domain custom yang sama BUKAN bentrok.
+            $assert->invoke($controller, $this->store(), 'app-a', 'shared.example.org');
+
+            // Server yang sama: bentrok ⇒ melempar.
+            try {
+                $assert->invoke($controller, $this->store(), 'app-a2', 'shared.example.org');
+                $this->fail('domain custom yang sama di server yang sama harus dianggap bentrok');
+            } catch (RuntimeException $e) {
+                $this->assertStringContainsString('sudah dipakai', $e->getMessage());
+            }
+        } finally {
+            Config::clear();
+            @unlink($configDir . '/app.php');
+            @unlink($configDir . '/deploy.php');
+            @rmdir($configDir);
         }
     }
 

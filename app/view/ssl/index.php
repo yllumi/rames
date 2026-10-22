@@ -122,5 +122,5 @@ foreach ($rows as $row) {
 </div>
 
 <?php /* Status baris disegarkan lewat polling JSON `/api/ssl/status` (public/js/ssl.js). */ ?>
-<script src="/js/ssl.js?v=1"></script>
+<script src="/js/ssl.js?v=2"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

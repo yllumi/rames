@@ -22,7 +22,7 @@ use Throwable;
 final class SchemaMigrations
 {
     /** Versi skema terakhir yang dikenal. */
-    public const LATEST = 2;
+    public const LATEST = 3;
 
     /**
      * Daftar migrasi berversi. Kunci = nomor versi (menaik), nilai = callable.
@@ -53,6 +53,14 @@ final class SchemaMigrations
                 }
                 self::backfillAppServerId($pdo);
                 self::seedLocalServer($pdo);
+            },
+            3 => static function (PDO $pdo): void {
+                // Domain parking (entitas global di luar app): tabel parkir
+                // dibuat migrasi 1 untuk DB baru, di sini dipastikan ada untuk
+                // DB lama (v1/v2). Idempoten — `CREATE ... IF NOT EXISTS`.
+                foreach (self::storeDefinitions()['parked'] as $collection) {
+                    self::ensure($pdo, 'parked', $collection);
+                }
             },
         ];
     }
@@ -137,6 +145,11 @@ final class SchemaMigrations
             'backup' => [
                 ['table' => 'volumes', 'path' => 'volumes', 'idField' => null, 'columns' => ['scheduled']],
                 ['table' => 'registry', 'path' => 'registry', 'idField' => null, 'columns' => ['project', 'app_id']],
+            ],
+            // Domain parking: entitas global (tidak terikat app). Tabel fisik
+            // `parked_domains`; `server_id` disimpan demi multi-server nanti.
+            'parked' => [
+                ['table' => 'domains', 'path' => '', 'idField' => 'id', 'columns' => ['domain', 'server_id', 'mode']],
             ],
         ];
     }

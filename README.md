@@ -17,7 +17,8 @@
 - **Background worker** — deploy/rebuild berjalan async (proses terpisah) dengan status yang bisa di-*poll* dari UI.
 - **Reverse proxy** — tiap app otomatis mendapat subdomain `{name}.{APP_DOMAIN}`; subdomain bisa **diganti** (label sendiri, terpisah dari nama app) lewat tab **Domain & SSL** (SPECS §7.11).
 - **Custom domain** — app bisa diberi satu custom domain; subdomain bawaan redirect (301) ke custom domain.
-- **SSL otomatis (Let's Encrypt)** — aktifkan SSL per domain (subdomain/custom domain) lewat halaman SSL; certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri. Klik **Aktifkan SSL** berjalan **tanpa reload halaman** — baris tabel diperbarui otomatis via polling JSON sementara status `pending` (fallback tanpa JS tetap bekerja) (SPECS §8a, ARCHITECTURE §5.36).
+- **Domains & SSL** — satu halaman **`/domains`** dengan dua tab: **Semua Domain** (tabel domain app + domain parkir beserta status & aksi SSL) dan **Domain Parkir** (CRUD). Halaman terbuka untuk **semua user login** (baris app disaring kepemilikan; baris parkir + seluruh aksi kelola/SSL parkir **admin-only** ⇒ 404). Domain parkir menyajikan **halaman statis** (mode `html`, berkas `{PARKED_ROOT}/{id}/index.html`) atau **redirect** 301/302 (path & query dipertahankan), dengan `www` sebagai entri terpisah + opsi **tambah www**; SSL Let's Encrypt berlaku untuk domain app **maupun parkir**, hanya server lokal, dan wajib `PARKED_ROOT` absolut yang sama di host agar Nginx host bisa membaca berkasnya (SPECS §8j, ARCHITECTURE §5.38).
+- **SSL otomatis (Let's Encrypt)** — aktifkan SSL **per domain** lewat `/domains` (tab **Semua Domain**): subdomain app, custom domain (bila di-set, app tampil sebagai **dua baris** — custom `serve` + subdomain `redirect` — dengan SSL per slot), dan domain parkir. Certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri; klik **Aktifkan SSL** berjalan **tanpa reload halaman** (baris diperbarui via polling JSON selama `pending`, fallback tanpa JS tetap bekerja). `GET /ssl` dialihkan **302 → `/domains`** (SPECS §8a, ARCHITECTURE §5.36).
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
 - **Database manager (Adminer)** — halaman `/database` membuka **Adminer** yang disajikan helper internal Rames **tanpa port publik** (di balik login + hak akses app, ability `database` = operator ke atas): daftar container MySQL/MariaDB, tombol **Kelola →**, kredensial terisi otomatis bila terdeteksi (kalau tidak, form login Adminer muncul dengan Server ter-prefill). Dump/import besar diarahkan ke **Volume/backup** atau tab **Terminal** (proxy dibatasi ≤30 detik & ukuran respons; SPECS §7.10).
@@ -134,7 +135,7 @@ Buka `http://{app}.{APP_DOMAIN}` di browser. Pastikan DNS subdomain mengarah ke 
 ### Langkah 6 — (Opsional) Custom domain & SSL
 
 1. Buka halaman detail app → kartu **Custom Domain** → isi domain (mis. `app.example.org`) → **Set**.
-2. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi). Klik ini berjalan **tanpa reload halaman** — baris tabel `/ssl` diperbarui di tempat dan status `pending` di-*poll* via JSON hingga selesai; tombol tetap berupa `<form>` biasa sehingga **fallback tanpa JS** tetap bekerja. Untuk app yang berjalan di **server agent**, penerbitan dijalankan **di server itu** dan `ADMIN_EMAIL` diambil dari `secrets/agent.env` server itu — bukan `.env` dashboard ([detail](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
+2. Buka halaman **Domains** (`/domains`, tab **Semua Domain**). Bila custom domain di-set, app tampil sebagai **dua baris** (custom domain + subdomain redirect) — masing-masing bisa di-SSL-kan sendiri. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi). Klik ini berjalan **tanpa reload halaman** — baris tabel diperbarui di tempat dan status `pending` di-*poll* via JSON hingga selesai; tombol tetap berupa `<form>` biasa sehingga **fallback tanpa JS** tetap bekerja. Domain parkir (admin) juga bisa di-SSL-kan dari tabel yang sama. Untuk app yang berjalan di **server agent**, penerbitan dijalankan **di server itu** dan `ADMIN_EMAIL` diambil dari `secrets/agent.env` server itu — bukan `.env` dashboard ([detail](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
 
 ### Reload Nginx host (dari dashboard)
 
@@ -380,10 +381,11 @@ app/
 │   ├── Files/                   # file manager container: PathGuard, TextContent, ArchiveGuard,
 │   │                            #   ListingParser, FileError, FilesInput, ContainerFiles
 │   ├── Git/GitService.php
-│   ├── Nginx/                   # NginxConfigGenerator, NginxStatusReader, NginxReloader
-│   ├── SSL/SslIssuer.php
+│   ├── Domain/                  # ParkedDomainValidator, ParkedDomainContent, ParkedDomainManager
+│   ├── Nginx/                   # NginxConfigGenerator, ParkedNginxConfig, NginxStatusReader, NginxReloader
+│   ├── SSL/                     # SslIssuer, SslDomainRows, ParkedSslIssuer, ParkedSslEnabler
 │   ├── Storage/                 # SqliteDatabase, SqliteStore, SchemaMigrations, JsonImporter, DbBackup,
-│   │                            #   JsonStore (cache runtime, flock), AppStore
+│   │                            #   JsonStore (cache runtime, flock), AppStore, ParkedDomainStore
 │   └── Support/ProcessRunner.php
 ├── middleware/                  # AuthMiddleware, CsrfMiddleware, AgentAuthMiddleware (mode agent)
 ├── process/BillingProcess.php   # timer billing (meteran + penagihan + top-up)
@@ -392,7 +394,8 @@ app/
 cli/deploy.php                   # background worker deploy/rebuild (dipakai juga oleh agent, env RAMES_JOB_ID)
 cli/billing.php                  # worker CLI billing (status|sample|tick|invoice|expire)
 cli/db.php                       # CLI basis data SQLite (status|migrate|import-json|export-json|integrity|backup|list|prune|restore)
-cli/ssl.php                      # background worker SSL (Let's Encrypt)
+cli/ssl.php                      # background worker SSL app (Let's Encrypt)
+cli/parked-ssl.php               # background worker SSL domain parkir
 config/                          # konfigurasi Webman + config/deploy.php
 database/                        # berkas JSON warisan (diimpor sekali) + keys/env/restic (gitignored)
                                  #   DB SQLite: named volume `rames` → /var/lib/rames/rames.sqlite (§8i)

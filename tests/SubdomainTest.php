@@ -288,6 +288,51 @@ class SubdomainTest extends TestCase
         $this->assertStringContainsString('server_name blog.example.org;', $config);
     }
 
+    public function testRenderNginxConfigGivesRedirectBlockSslWhenSubdomainSslActive(): void
+    {
+        $app = $this->appWithPort('myblog', [
+            'custom_domain' => 'blog.example.com',
+            'ssl_status' => 'active',
+            'custom_ssl_status' => 'active',
+        ]);
+        $config = $this->renderer()->renderNginxConfig($app);
+        $sub = app_subdomain_of($app);
+        $le = (string) config('deploy.letsencrypt_path', '/etc/letsencrypt');
+
+        // Subdomain redirect ikut SSL: blok 80→https + blok 443 redirect.
+        $this->assertSame(2, substr_count($config, 'server_name ' . $sub . ';'));
+        $this->assertStringContainsString(
+            'ssl_certificate ' . $le . '/live/' . $sub . '/fullchain.pem;',
+            $config,
+            'sertifikat subdomain redirect dirender'
+        );
+        $this->assertStringContainsString('return 301 https://$host$request_uri;', $config);
+        $this->assertStringContainsString('return 301 https://blog.example.com$request_uri;', $config);
+        // Custom domain tetap 80→https + 443 serve.
+        $this->assertSame(2, substr_count($config, 'listen 443 ssl;'), 'subdomain + custom domain');
+    }
+
+    public function testRenderNginxConfigKeepsRedirectHttpWhenSubdomainSslInactive(): void
+    {
+        $app = $this->appWithPort('myblog', [
+            'custom_domain' => 'blog.example.com',
+            'ssl_status' => 'pending',
+            'custom_ssl_status' => 'active',
+        ]);
+        $config = $this->renderer()->renderNginxConfig($app);
+        $sub = app_subdomain_of($app);
+        $le = (string) config('deploy.letsencrypt_path', '/etc/letsencrypt');
+
+        // Subdomain belum SSL: hanya satu blok 80, tanpa cert 443.
+        $this->assertSame(1, substr_count($config, 'server_name ' . $sub . ';'));
+        $this->assertSame(1, substr_count($config, 'listen 443 ssl;'), 'hanya custom domain');
+        $this->assertStringNotContainsString(
+            'ssl_certificate ' . $le . '/live/' . $sub . '/fullchain.pem;',
+            $config
+        );
+        $this->assertStringContainsString('return 301 https://blog.example.com$request_uri;', $config);
+    }
+
     // ==================================================================
     // Alur ubah subdomain (sukses / no-op / rollback)
     // ==================================================================
