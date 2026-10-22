@@ -23,12 +23,18 @@ $tab = is_string($tab ?? null) && in_array($tab, (array) ($tabs ?? []), true) ? 
 // partial tab tidak pernah mengakses array pada null.
 $templates = is_array($templates ?? null) ? $templates : [];
 $pull = is_array($pull ?? null) ? $pull : null;
+// Versi PHP runtime dashboard — fallback konstanta agar render tanpa controller
+// (smoke) tetap utuh.
+$phpVersion = trim((string) ($php_version ?? PHP_VERSION));
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
 <div class="page-head mb-4">
   <div>
-    <h1 class="h3 mb-1">Config</h1>
+    <h1 class="h3 mb-1">Config
+      <span class="badge text-bg-light border mono fw-normal align-middle"
+            title="Versi PHP yang menjalankan dashboard ini (PHP_VERSION pada worker Webman)">PHP <?= e($phpVersion) ?></span>
+    </h1>
     <p class="text-muted mb-0">
       Konfigurasi host &amp; katalog app dalam tiga tab:
       <strong>Update Rames</strong> — self-update dashboard,

@@ -80,6 +80,9 @@ class NginxController
             // tanpa menduplikasi whitelist.
             'tab' => $this->tabFromRequest($request),
             'tabs' => self::TABS,
+            // Versi PHP proses worker yang merender halaman ini — ditampilkan di
+            // header Config supaya admin tahu runtime dashboard yang sedang aktif.
+            'php_version' => PHP_VERSION,
         ]);
     }
 

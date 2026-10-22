@@ -228,6 +228,18 @@ class NginxServerViewTest extends TestCase
 
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
+    public function testConfigHeaderShowsPhpRuntimeVersion(): void
+    {
+        $html = $this->renderView('nginx/index.php', $this->nginxVars($this->serverOptions()));
+
+        // Header Config wajib menampilkan versi PHP worker (dikirim controller
+        // sebagai `$php_version`), bukan nilai karangan di view.
+        self::assertStringContainsString('>PHP 8.3.99-smoke</span>', $html);
+        self::assertStringContainsString('Versi PHP yang menjalankan dashboard', $html);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
     public function testTemplateTabMemberNeverSeesServerPickerNorOtherServers(): void
     {
         $GLOBALS['RAMES_VIEW_ADMIN'] = false;
@@ -419,6 +431,7 @@ class NginxServerViewTest extends TestCase
             'servers' => $servers,
             'tab' => 'template',
             'tabs' => ['update', 'nginx', 'template'],
+            'php_version' => '8.3.99-smoke',
         ];
     }
 

@@ -1,4 +1,4 @@
-FROM php:8.3.22-cli-alpine
+FROM php:8.4.27-cli-alpine
 
 RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 
