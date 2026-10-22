@@ -8,12 +8,25 @@
     <section class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <h2 class="h6 mb-0">Environment Variables</h2>
-    <?php if ($envExampleExists && $canEnv): ?>
-      <form method="post" action="/apps/<?= e($app['id']) ?>/env/import" class="d-inline">
-        <?= csrf_field() ?>
-        <button class="btn btn-outline-secondary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>⇩ Import dari .env.example</button>
-      </form>
-    <?php endif; ?>
+        <?php if ($canEnv): ?>
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <form method="post" action="/apps/<?= e($app['id']) ?>/env/upload" enctype="multipart/form-data" class="d-flex flex-wrap gap-2 align-items-center">
+            <?= csrf_field() ?>
+            <input type="file" name="env_file" accept=".env,text/plain" required aria-label="File .env" class="form-control form-control-sm" style="max-width:230px;" <?= $isBusy ? 'disabled' : '' ?>>
+            <select name="mode" class="form-select form-select-sm" style="max-width:230px;" title="Gabungkan: kunci dari file ditambahkan, kunci yang sama ditimpa. Ganti semua: daftar variabel lama dibuang dan diganti isi file." <?= $isBusy ? 'disabled' : '' ?>>
+              <option value="merge">Gabungkan (timpa kunci yang sama)</option>
+              <option value="replace">Ganti semua</option>
+            </select>
+            <button class="btn btn-outline-secondary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>⇧ Upload .env</button>
+          </form>
+          <?php if ($envExampleExists): ?>
+          <form method="post" action="/apps/<?= e($app['id']) ?>/env/import" class="d-inline">
+            <?= csrf_field() ?>
+            <button class="btn btn-outline-secondary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>⇩ Import dari .env.example</button>
+          </form>
+          <?php endif; ?>
+        </div>
+        <?php endif; ?>
   </div>
   <div class="">
     <?php if (!$canEnv): ?>
@@ -25,7 +38,7 @@
     <form method="post" action="/apps/<?= e($app['id']) ?>/env" id="env-form">
       <?= csrf_field() ?>
       <?php if (empty($envVars)): ?>
-        <p class="text-muted small mb-3">Belum ada environment variable. Tambahkan variabel untuk aplikasi app (mis. kredensial database), lalu klik <strong>Simpan &amp; Terapkan</strong>.</p>
+        <p class="text-muted small mb-3 p-3 pb-0">Belum ada environment variable. Tambahkan variabel untuk aplikasi app (mis. kredensial database), lalu klik <strong>Simpan &amp; Terapkan</strong>.</p>
       <?php endif; ?>
       <div class="table-responsive">
         <table class="table align-middle mb-3" id="env-table">
@@ -60,6 +73,9 @@
           ulang container yang env-nya berubah (tanpa rebuild source). Variabel tersedia
           untuk substitusi <code>${VAR}</code> di <span class="mono">docker-compose.yml</span>
           dan di-inject ke environment <strong>semua container</strong> app.
+          Upload <span class="mono">.env</span> menambahkan/menimpa variabel dari file
+          (mode <strong>Ganti semua</strong> menghapus variabel lama yang tidak ada di file)
+          dan belum diterapkan sampai Anda menekan <strong>Simpan &amp; Terapkan</strong>.
         </p>
         <div class="d-flex flex-wrap gap-2 align-items-center">
           <button type="button" class="btn btn-outline-secondary btn-sm" id="env-add-row">＋ Tambah variabel</button>

@@ -27,6 +27,9 @@ class EnvManager
 {
     public const OVERRIDE_FILE = 'docker-compose.override.env.yml';
 
+    /** Batas ukuran file .env yang boleh di-upload (256 KiB). */
+    public const MAX_UPLOAD_BYTES = 262144;
+
     private string $envDir;
 
     public function __construct(?string $envDir = null)
@@ -181,6 +184,104 @@ class EnvManager
     }
 
     /**
+     * Parse isi file .env hasil upload dengan mode STRICT (berbeda dari
+     * {@see parseEnvExample()} yang lenient): baris rusak, kunci tidak valid,
+     * dan kunci duplikat **ditolak** dengan nomor baris — supaya user tidak
+     * diam-diam kehilangan variabel saat import.
+     *
+     * Mendukung BOM UTF-8, CRLF/CR/LF, baris kosong, komentar `#` (boleh
+     * didahului spasi), prefix opsional `export `, nilai single-quote
+     * (literal), double-quote (escape `\\ \" \n \r \t`; `\n` ditolak karena
+     * nilai env tidak boleh multi-baris), dan nilai tanpa quote (trim +
+     * komentar inline `#` hanya bila didahului whitespace).
+     *
+     * Pesan error tidak pernah memuat nilai variabel (bisa berupa secret).
+     *
+     * @return array<string,string> map KEY => value sesuai urutan file
+     * @throws RuntimeException isi file tidak valid / melebihi batas ukuran
+     */
+    public function parseEnvContent(string $content, int $maxBytes = self::MAX_UPLOAD_BYTES): array
+    {
+        $maxBytes = max(1, $maxBytes);
+        if (strlen($content) > $maxBytes) {
+            throw new RuntimeException(sprintf('File .env terlalu besar (maks %d KiB).', max(1, (int) ceil($maxBytes / 1024))));
+        }
+        if (str_contains($content, "\0") || preg_match('//u', $content) !== 1) {
+            throw new RuntimeException('File .env tidak valid: konten biner tidak didukung.');
+        }
+        if (str_starts_with($content, "\xEF\xBB\xBF")) {
+            $content = substr($content, 3); // BOM UTF-8
+        }
+
+        $result = [];
+        $seen = [];
+        $lines = explode("\n", str_replace(["\r\n", "\r"], "\n", $content));
+        foreach ($lines as $index => $rawLine) {
+            $lineNo = $index + 1;
+            $line = trim($rawLine);
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+            if (preg_match('/^export\s+(.*)$/s', $line, $m) === 1) {
+                $line = ltrim($m[1]);
+            }
+
+            $eq = strpos($line, '=');
+            if ($eq === false) {
+                throw new RuntimeException("Baris {$lineNo}: bukan format KEY=VALUE (tanda \"=\" tidak ditemukan).");
+            }
+            $key = trim(substr($line, 0, $eq));
+            if ($key === '' || preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $key) !== 1) {
+                throw new RuntimeException("Baris {$lineNo}: nama variabel tidak valid. Gunakan huruf/angka/underscore, diawali huruf atau underscore.");
+            }
+            if (isset($seen[$key])) {
+                throw new RuntimeException("Variabel \"{$key}\" didefinisikan dua kali (baris {$seen[$key]} dan {$lineNo}).");
+            }
+            $seen[$key] = $lineNo;
+
+            $value = $this->parseEnvValue(substr($line, $eq + 1), $lineNo);
+            if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $value) === 1) {
+                throw new RuntimeException("Baris {$lineNo}: nilai mengandung karakter kontrol yang tidak didukung.");
+            }
+            $result[$key] = $value;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Gabungkan env hasil upload dengan env app yang sudah ada (murni, tanpa I/O).
+     *
+     * - `$replace = true`  : hanya env hasil upload (mode "ganti semua").
+     * - `$replace = false` : env lama (hanya kunci valid & value string, urutan
+     *   dipertahankan) lalu di-overlay env upload; kunci baru masuk di akhir.
+     *
+     * @param array<mixed,mixed> $existing
+     * @param array<string,string> $uploaded
+     * @return array<string,string>
+     */
+    public static function mergeUploaded(array $existing, array $uploaded, bool $replace): array
+    {
+        if ($replace) {
+            return $uploaded;
+        }
+
+        $merged = [];
+        foreach ($existing as $key => $value) {
+            $key = (string) $key;
+            if ($key === '' || preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $key) !== 1 || !is_string($value)) {
+                continue;
+            }
+            $merged[$key] = $value;
+        }
+        foreach ($uploaded as $key => $value) {
+            $merged[(string) $key] = (string) $value;
+        }
+
+        return $merged;
+    }
+
+    /**
      * Nama-nama service dari base compose (file pertama yang bukan override).
      *
      * @param array<int,string> $composeFiles
@@ -249,5 +350,90 @@ class EnvManager
             return substr($value, 1, -1);
         }
         return $value;
+    }
+
+    /**
+     * Parse satu nilai .env (strict) dari sisi kanan tanda `=`.
+     */
+    private function parseEnvValue(string $raw, int $lineNo): string
+    {
+        $value = trim($raw);
+        if ($value === '') {
+            return '';
+        }
+
+        $quote = $value[0];
+        if ($quote === "'") {
+            $end = strpos($value, "'", 1);
+            if ($end === false) {
+                throw new RuntimeException("Baris {$lineNo}: kutip tunggal penutup tidak ditemukan.");
+            }
+            $literal = substr($value, 1, $end - 1);
+            $this->assertNoTrailingGarbage(substr($value, $end + 1), $lineNo);
+
+            return $literal;
+        }
+
+        if ($quote === '"') {
+            $len = strlen($value);
+            $out = '';
+            $closed = false;
+            for ($i = 1; $i < $len; $i++) {
+                $ch = $value[$i];
+                if ($ch === '\\') {
+                    if ($i + 1 >= $len) {
+                        throw new RuntimeException("Baris {$lineNo}: escape tidak lengkap di akhir nilai.");
+                    }
+                    $next = $value[$i + 1];
+                    $out .= match ($next) {
+                        '\\' => '\\',
+                        '"' => '"',
+                        'n' => "\n",
+                        'r' => "\r",
+                        't' => "\t",
+                        // Escape tak dikenal dipertahankan apa adanya (tidak menebak
+                        // maksud user, tidak memuat nilai di pesan error).
+                        default => '\\' . $next,
+                    };
+                    $i++;
+                    continue;
+                }
+                if ($ch === '"') {
+                    $closed = true;
+                    $i++;
+                    break;
+                }
+                $out .= $ch;
+            }
+            if (!$closed) {
+                throw new RuntimeException("Baris {$lineNo}: kutip ganda penutup tidak ditemukan.");
+            }
+            $this->assertNoTrailingGarbage(substr($value, $i), $lineNo);
+            if (str_contains($out, "\n") || str_contains($out, "\r")) {
+                throw new RuntimeException("Baris {$lineNo}: nilai tidak boleh mengandung baris baru (escape \\n/\\r tidak didukung).");
+            }
+
+            return $out;
+        }
+
+        // Tanpa quote: trim + buang komentar inline `#` hanya bila didahului
+        // whitespace (mis. `PASS=a#b` tetap `a#b`).
+        if (preg_match('/\s#/', $value, $m, PREG_OFFSET_CAPTURE) === 1) {
+            $value = rtrim(substr($value, 0, (int) $m[0][1]));
+        }
+
+        return $value;
+    }
+
+    /**
+     * Setelah nilai ber-quote hanya boleh ada whitespace atau komentar.
+     */
+    private function assertNoTrailingGarbage(string $rest, int $lineNo): void
+    {
+        $rest = trim($rest);
+        if ($rest === '' || str_starts_with($rest, '#')) {
+            return;
+        }
+        throw new RuntimeException("Baris {$lineNo}: teks setelah nilai ber-quote tidak valid.");
     }
 }

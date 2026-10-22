@@ -82,11 +82,14 @@ class AgentModeTest extends TestCase
      * log app server agent sudah diteruskan worker ke berkas yang sama).
      * +1 (batalkan build): `POST /apps/{id}/deploy/cancel` — ability `deploy`
      * (Operator+), dashboard-only (menghentikan worker + grup proses build).
+     * +1 (upload file .env): `POST /apps/{id}/env/upload` — ability `env`
+     * (Operator+), dashboard-only (menulis artefak env app di host ini; app
+     * server agent ditolak guard `appArtifactDirOrFail()` sebelum file dibaca).
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 120;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 121;
 
-    /** Definisi di atas menghasilkan 126 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 126;
+    /** Definisi di atas menghasilkan 127 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 127;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [

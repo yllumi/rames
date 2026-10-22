@@ -2741,21 +2741,162 @@ class AppController
             }
 
             // Simpan + tulis file (tanpa recreate — biarkan user meninjau dulu).
-            $composeFiles = $app['compose_files'] ?? ['docker-compose.yml'];
-            $envManager->sync(['name' => $app['name'], 'env' => $env], $dir, $composeFiles);
-            $store->update($id, function (array &$s) use ($env): void {
-                $s['env'] = $env;
-                $files = $s['compose_files'] ?? ['docker-compose.yml'];
-                $files = array_values(array_filter($files, static fn (string $f): bool => $f !== EnvManager::OVERRIDE_FILE));
-                $files[] = EnvManager::OVERRIDE_FILE;
-                $s['compose_files'] = $files;
-            });
+            $this->persistEnvForReview($store, $id, $app, $dir, $env);
 
             flash_set('success', "Diimport {$added} variabel dari .env.example. Tinjau nilainya, lalu klik \"Simpan & Terapkan\" untuk menerapkan ke container.");
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
         }
         return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Upload file .env (POST /apps/{id}/env/upload).
+     *
+     * Jalur mediator murni: parser strict ada di {@see EnvManager::parseEnvContent()}
+     * (batas ukuran, NUL/biner, kunci & format baris, quote/escape) dan
+     * penggabungan di {@see EnvManager::mergeUploaded()}. Mode `merge` (default)
+     * menimpa kunci yang sama & menambah kunci baru; `mode=replace` mengganti
+     * seluruh env app.
+     *
+     * Seperti `importEnv()`, hasil upload **tidak** auto-apply ke container —
+     * file (managed env + override) & apps.json diperbarui agar bisa ditinjau,
+     * lalu user menekan "Simpan & Terapkan". Karena tidak menyalakan/menciptakan
+     * container, tidak ada gerbang kredit di sini.
+     *
+     * Multi-server F1/F2: jalur ini menulis artefak app di host lokal, jadi
+     * app milik server **agent** ditolak lebih dulu oleh
+     * `appArtifactDirOrFail()` — sebelum file request dibaca.
+     */
+    public function uploadEnv(Request $request, string $id)
+    {
+        $store = new AppStore();
+        $app = $this->findApp($id, 'env');
+        if (($app['status'] ?? '') === 'deploying') {
+            flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
+        }
+
+        $dir = $this->appArtifactDirOrFail($app, 'Environment variable');
+        if ($dir === null) {
+            return redirect('/apps/' . $id);
+        }
+
+        try {
+            $limit = (int) config('deploy.env_upload_max_bytes', EnvManager::MAX_UPLOAD_BYTES);
+            if ($limit <= 0) {
+                $limit = EnvManager::MAX_UPLOAD_BYTES;
+            }
+
+            $envManager = new EnvManager();
+            $uploaded = $envManager->parseEnvContent($this->envUploadContent($request, $limit), $limit);
+            if ($uploaded === []) {
+                throw new RuntimeException('File .env tidak berisi variabel yang valid.');
+            }
+
+            $existing = is_array($app['env'] ?? null) ? $app['env'] : [];
+            $existingValid = EnvManager::mergeUploaded($existing, [], false);
+            $replace = $request->post('mode') === 'replace';
+            $merged = EnvManager::mergeUploaded($existing, $uploaded, $replace);
+
+            // Persist tanpa recreate — user meninjau dulu (alur "Simpan & Terapkan").
+            $this->persistEnvForReview($store, $id, $app, $dir, $merged);
+
+            $total = count($uploaded);
+            if ($replace) {
+                $removed = count(array_diff_key($existingValid, $uploaded));
+                flash_set('success', "Di-upload {$total} variabel dari .env (mode ganti semua: {$removed} variabel lama dihapus). Tinjau nilainya, lalu klik \"Simpan & Terapkan\" untuk menerapkan ke container.");
+            } else {
+                $added = 0;
+                foreach (array_keys($uploaded) as $key) {
+                    if (!array_key_exists((string) $key, $existingValid)) {
+                        $added++;
+                    }
+                }
+                $updated = $total - $added;
+                flash_set('success', "Di-upload {$total} variabel dari .env ({$added} baru, {$updated} diperbarui). Tinjau nilainya, lalu klik \"Simpan & Terapkan\" untuk menerapkan ke container.");
+            }
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Ambil isi file `.env` dari request (upload tunggal atau array, ambil yang
+     * pertama) + validasi error upload & batas ukuran.
+     *
+     * Pesan galat tidak pernah memuat isi/nilai file (bisa berisi secret).
+     *
+     * @throws RuntimeException
+     */
+    private function envUploadContent(Request $request, int $limit): string
+    {
+        $file = $request->file('env_file');
+        if (is_array($file)) {
+            // Bentuk `env_file[]` (defensif): ambil berkas pertama.
+            $file = array_values($file)[0] ?? null;
+        }
+        if (!$file instanceof \Webman\Http\UploadFile) {
+            throw new RuntimeException('Pilih file .env yang akan di-upload.');
+        }
+
+        $error = (int) ($file->getUploadErrorCode() ?? UPLOAD_ERR_NO_FILE);
+        if (trim((string) $file->getUploadName()) === '' || $error === UPLOAD_ERR_NO_FILE) {
+            throw new RuntimeException('Pilih file .env yang akan di-upload.');
+        }
+        if ($error !== UPLOAD_ERR_OK || !$file->isValid()) {
+            throw new RuntimeException('Upload file .env gagal (kode error ' . $error . ').');
+        }
+
+        try {
+            $size = (int) $file->getSize();
+        } catch (\Throwable $e) {
+            $size = 0; // biarkan panjang isi yang menentukan (cek di bawah/parser)
+        }
+        if ($size > $limit) {
+            throw new RuntimeException(sprintf('File .env terlalu besar (maks %d KiB).', max(1, (int) ceil($limit / 1024))));
+        }
+
+        $content = @file_get_contents((string) $file->getPathname());
+        if ($content === false) {
+            throw new RuntimeException('Gagal membaca file .env yang di-upload.');
+        }
+        if (strlen($content) > $limit) {
+            throw new RuntimeException(sprintf('File .env terlalu besar (maks %d KiB).', max(1, (int) ceil($limit / 1024))));
+        }
+
+        return $content;
+    }
+
+    /**
+     * Persist env app untuk ditinjau (TANPA recreate container): tulis managed
+     * env file + override YAML lewat {@see EnvManager::sync()}, lalu simpan
+     * `env` & `compose_files` ke apps.json. Override env selalu ditaruh paling
+     * akhir (menang atas compose repo); bila env kosong, entri override dihapus.
+     *
+     * Dipakai bersama oleh `importEnv()` (import .env.example) dan
+     * `uploadEnv()` (upload .env) agar tidak ada dua versi logika persist.
+     *
+     * @param array<string,mixed>  $app
+     * @param array<string,string> $env
+     */
+    private function persistEnvForReview(AppStore $store, string $id, array $app, string $dir, array $env): void
+    {
+        $envManager = new EnvManager();
+        $composeFiles = $app['compose_files'] ?? ['docker-compose.yml'];
+        $envManager->sync(['name' => $app['name'] ?? '', 'env' => $env], $dir, $composeFiles);
+
+        $store->update($id, function (array &$s) use ($env): void {
+            $s['env'] = $env;
+            $files = $s['compose_files'] ?? ['docker-compose.yml'];
+            $files = array_values(array_filter($files, static fn (string $f): bool => $f !== EnvManager::OVERRIDE_FILE));
+            if ($env !== []) {
+                $files[] = EnvManager::OVERRIDE_FILE; // selalu terakhir → menang atas repo
+            }
+            $s['compose_files'] = $files;
+        });
     }
 
     /**

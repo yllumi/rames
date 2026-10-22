@@ -543,7 +543,7 @@ class AppControllerServerScopeTest extends TestCase
      */
     public function testAppScopedPathsUseTheSingleGuard(): void
     {
-        foreach (['saveEnv', 'importEnv', 'saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
+        foreach (['saveEnv', 'importEnv', 'uploadEnv', 'saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
             $body = $this->methodBody($method);
 
             $this->assertStringContainsString('appArtifactDirOrFail(', $body, $method);
@@ -571,7 +571,7 @@ class AppControllerServerScopeTest extends TestCase
             'status' => 'running',
         ]);
 
-        foreach (['saveEnv', 'importEnv', 'saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
+        foreach (['saveEnv', 'importEnv', 'uploadEnv', 'saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
             $GLOBALS['RAMES_FLASH'] = [];
             $request = new Request("POST /apps/{$app['id']}/x HTTP/1.1\r\nHost: localhost\r\n\r\n");
 

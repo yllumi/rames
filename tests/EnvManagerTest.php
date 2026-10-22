@@ -5,6 +5,7 @@ namespace Tests;
 
 use app\library\Deploy\EnvManager;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 /**
  * Unit test EnvManager — menulis managed env file (dotenv), override YAML
@@ -140,6 +141,186 @@ class EnvManagerTest extends TestCase
         $content = (string) file_get_contents($this->envDir . '/myapp.env');
         $this->assertStringContainsString('GOOD_KEY=y', $content);
         $this->assertStringNotContainsString('BAD-KEY', $content);
+    }
+
+    // ==================================================================
+    // parseEnvContent() — parser strict untuk file .env hasil upload
+    // ==================================================================
+
+    public function testParseEnvContentHandlesFullDotenvSyntax(): void
+    {
+        $m = new EnvManager($this->envDir);
+        $content = <<<'ENV'
+# komentar
+
+  # komentar setelah spasi
+export DB_HOST='localhost'
+APP_KEY=base64:abc
+EMPTY=
+SPACED=   nilai dengan spasi
+HASH=a#b
+COMMENT=abc # komentar inline
+QUOTED="a \"b\" c"
+TABBED="kolom\tsatu"
+SINGLE='literal $HOME dan # hash'
+COMMENTED='x' # komentar setelah quote
+KEEP="a\qb"
+LAST=1
+ENV;
+
+        $this->assertSame([
+            'DB_HOST' => 'localhost',
+            'APP_KEY' => 'base64:abc',
+            'EMPTY' => '',
+            'SPACED' => 'nilai dengan spasi',
+            'HASH' => 'a#b',
+            'COMMENT' => 'abc',
+            'QUOTED' => 'a "b" c',
+            'TABBED' => "kolom\tsatu",
+            'SINGLE' => 'literal $HOME dan # hash',
+            'COMMENTED' => 'x',
+            'KEEP' => 'a\\qb',
+            'LAST' => '1',
+        ], $m->parseEnvContent($content));
+    }
+
+    public function testParseEnvContentAcceptsBomAndCrlf(): void
+    {
+        $m = new EnvManager($this->envDir);
+        $content = "\xEF\xBB\xBFA=1\r\nB=dua\r\n\r\n# komentar\r\nC=\r\n";
+
+        $this->assertSame(['A' => '1', 'B' => 'dua', 'C' => ''], $m->parseEnvContent($content));
+    }
+
+    public function testParseEnvContentAcceptsEmptyContent(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        $this->assertSame([], $m->parseEnvContent(''));
+        $this->assertSame([], $m->parseEnvContent("# hanya komentar\n\n"));
+    }
+
+    public function testParseEnvContentRejectsLineWithoutEqualsWithLineNumber(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Baris 2:');
+        $m->parseEnvContent("A=1\nTANPA_SAMA_DENGAN\n");
+    }
+
+    public function testParseEnvContentRejectsInvalidKeyWithLineNumber(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Baris 1:');
+        $m->parseEnvContent("1BAD=x\n");
+    }
+
+    public function testParseEnvContentRejectsDuplicateKeyAndNamesBothLines(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('baris 1 dan 3');
+        $m->parseEnvContent("A=satu\nB=dua\nA=tiga\n");
+    }
+
+    public function testParseEnvContentRejectsOversizedContent(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('maks 256 KiB');
+        $m->parseEnvContent(str_repeat('A', EnvManager::MAX_UPLOAD_BYTES + 1));
+    }
+
+    public function testParseEnvContentRejectsBinaryAndNulBytes(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        try {
+            $m->parseEnvContent("A=1\0B=2");
+            $this->fail('NUL byte harus ditolak');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('biner', $e->getMessage());
+        }
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('biner');
+        $m->parseEnvContent("\xFF\xFE\x00\x01");
+    }
+
+    public function testParseEnvContentRejectsNewlineEscapeInDoubleQuotes(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('baris baru');
+        $m->parseEnvContent("MULTI=\"satu\\ndua\"\n");
+    }
+
+    public function testParseEnvContentRejectsCarriageReturnEscapeInDoubleQuotes(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('baris baru');
+        $m->parseEnvContent("MULTI=\"satu\\rdua\"\n");
+    }
+
+    public function testParseEnvContentRejectsC0ControlCharactersExceptTab(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('karakter kontrol');
+        $m->parseEnvContent("A=v\x01w\n");
+    }
+
+    public function testParseEnvContentKeepsTabCharacter(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        $this->assertSame(['A' => "v\tw"], $m->parseEnvContent("A=\"v\\tw\"\n"));
+    }
+
+    public function testParseEnvContentErrorMessagesNeverLeakValues(): void
+    {
+        $m = new EnvManager($this->envDir);
+
+        try {
+            $m->parseEnvContent("SECRET=\"rahasia\\nsekali\"\n");
+            $this->fail('escape \\n harus ditolak');
+        } catch (RuntimeException $e) {
+            $this->assertStringNotContainsString('rahasia', $e->getMessage());
+        }
+    }
+
+    // ==================================================================
+    // mergeUploaded() — penggabungan murni (merge vs replace)
+    // ==================================================================
+
+    public function testMergeUploadedOverlaysExistingAndAppendsNewKeys(): void
+    {
+        $existing = ['A' => '1', 'B' => '2', 'BAD-KEY' => 'x', 'ANGKA' => 5];
+        $uploaded = ['B' => '9', 'C' => '3'];
+
+        $merged = EnvManager::mergeUploaded($existing, $uploaded, false);
+
+        // Urutan lama dipertahankan, kunci baru di akhir; kunci tidak valid &
+        // value non-string dari apps.json dibuang.
+        $this->assertSame(['A' => '1', 'B' => '9', 'C' => '3'], $merged);
+        $this->assertSame(['A', 'B', 'C'], array_keys($merged));
+    }
+
+    public function testMergeUploadedReplaceDropsOldKeys(): void
+    {
+        $existing = ['A' => '1', 'B' => '2'];
+
+        $this->assertSame(['B' => '9', 'C' => '3'], EnvManager::mergeUploaded($existing, ['B' => '9', 'C' => '3'], true));
+        $this->assertSame([], EnvManager::mergeUploaded($existing, [], true));
     }
 
     private function rrmdir(string $dir): void

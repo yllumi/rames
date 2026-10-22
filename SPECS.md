@@ -582,7 +582,7 @@ Rollback mengembalikan app ke **commit yang pernah sukses** (checkpoint otomatis
 - `LocalDeployerRollbackTest` — rollback sukses, restore otomatis saat build gagal, no-op ke versi aktif, history cap 20.
 - `CliDeployRollbackTest` — end-to-end `cli/deploy.php` mode rollback via subproses dengan fake deployer (`DEPLOYER_CLASS` env override di `DeployerFactory`, tanpa daemon Docker): persistensi status+history, jalur error, validasi argumen.
 - `AppStoreTest` — persistensi `deploy_history`.
-- `EnvManagerTest` — format managed env file, parse `.env.example`, override env ke semua service, sync/remove.
+- `EnvManagerTest` — format managed env file, parse `.env.example`, parser strict konten `.env` upload (`parseEnvContent`: batas ukuran, BOM/CRLF, quote/escape, duplikat & nomor baris, pesan tanpa nilai) + `mergeUploaded` (merge/replace), override env ke semua service, sync/remove.
 
 ### 7.6 Environment Variables per App
 
@@ -608,6 +608,14 @@ Setiap app bisa diberi **environment variable** yang dikelola dashboard (mis. kr
 **Import `.env.example` (POST `/apps/{id}/env/import`)**
 - Mengisi hanya kunci yang **belum ada** dari `.env.example` di direktori app (bila ada).
 - Tidak auto-recreate — user meninjau nilai hasil import dulu, lalu klik "Simpan & Terapkan".
+
+**Upload `.env` (POST `/apps/{id}/env/upload`)**
+- Menerima **satu** file `.env` (field `env_file`, wajib) + `mode` = `merge` (default) | `replace`. Form upload ada di header tab Environment, di samping tombol import `.env.example`; hanya dirender untuk user ber-ability `env` (= **Operator** ke atas) dan kontrolnya **disabled** saat app `deploying`.
+- `merge`: kunci dari file **menimpa** kunci yang sama, kunci baru ditambahkan, kunci lama yang tidak ada di file **dipertahankan**. `replace`: seluruh env app diganti isi file — kunci lama yang tidak ada di file **dihapus**.
+- **Tidak auto-recreate**: hasil upload ditulis ke managed env file + `docker-compose.override.env.yml` dan `env`/`compose_files` (override env selalu **terakhir**) di `apps.json`, lalu user meninjau dan menekan **Simpan & Terapkan** (`POST /apps/{id}/env`) yang tetap auto-recreate + gerbang kredit. Karena jalur upload tidak menyalakan/menciptakan container, jalur ini **tidak** melewati gerbang kredit.
+- **Validasi strict** di `EnvManager::parseEnvContent()`: batas ukuran `deploy.env_upload_max_bytes` (`ENV_UPLOAD_MAX_BYTES`, default 262144 = 256 KiB); tolak NUL/biner/non-UTF8; **nilai yang mengandung karakter kontrol C0 selain TAB** (mis. `\x01`, `\x0B`, `\x0C`) **atau DEL (`\x7F`)** ditolak dengan pesan yang menyebut **nomor baris** tanpa nilai — TAB (`\t`) tetap diizinkan; dukung BOM UTF-8, CRLF/CR/LF, komentar `#`, prefix `export `, nilai single/double quote; komentar inline hanya bila `#` didahului whitespace (`PASS=a#b` tetap utuh); baris tanpa `=` dan kunci di luar `^[A-Za-z_][A-Za-z0-9_]*$` ditolak; kunci duplikat ditolak dengan menyebut **kedua** nomor baris; escape `\n`/`\r` di double-quote ditolak (nilai tidak boleh multi-baris).
+- **File kosong ditolak** — file `.env` tanpa variabel valid (kosong atau hanya komentar/baris kosong) **sengaja** ditolak dengan pesan “File .env tidak berisi variabel yang valid.”, **termasuk pada mode `replace`**. Ini keputusan, bukan bug: mengosongkan env tetap lewat form simpan (hapus baris di tabel env).
+- **Keamanan**: pesan error & flash **tidak pernah memuat nilai** — flash hanya berisi jumlah (mis. "A baru, B diperbarui" / "R variabel lama dihapus"). App milik server **agent**/server hilang ditolak `appArtifactDirOrFail()` **sebelum** file request dibaca (jalur ini menulis artefak di host lokal).
 
 **Penerapan saat deploy/rebuild/rollback**: `LocalDeployer` selalu memanggil `EnvManager::sync()` (idempoten) sebelum `compose up`, sehingga file env di disk selalu konsisten dengan `apps.json` (aman bila file terhapus manual).
 

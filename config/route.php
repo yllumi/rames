@@ -279,6 +279,7 @@ Route::post('/apps/{id}/routes', [AppController::class, 'saveRoutes']);
 // Environment variables per app
 Route::post('/apps/{id}/env', [AppController::class, 'saveEnv']);
 Route::post('/apps/{id}/env/import', [AppController::class, 'importEnv']);
+Route::post('/apps/{id}/env/upload', [AppController::class, 'uploadEnv']);
 
 // Compose (app mode compose: edit docker-compose.yml + file pendukung)
 Route::post('/apps/{id}/compose', [AppController::class, 'saveCompose']);

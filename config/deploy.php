@@ -191,6 +191,10 @@ return [
     'compose_upload_max_file_bytes' => (int) (getenv('COMPOSE_UPLOAD_MAX_FILE_BYTES') ?: 1048576),   // 1 MB per file
     'compose_upload_max_total_bytes' => (int) (getenv('COMPOSE_UPLOAD_MAX_TOTAL_BYTES') ?: 4194304), // 4 MB total
 
+    // Batas ukuran file `.env` yang di-upload di tab Environment (256 KiB —
+    // file env hanya berisi pasangan KEY=VALUE, bukan berkas besar).
+    'env_upload_max_bytes' => (int) (getenv('ENV_UPLOAD_MAX_BYTES') ?: 262144),
+
     // Galeri template app siap-pakai (SPECS.md §7.2b). Satu template = satu
     // direktori di bawah path ini: `template.yml` (metadata + deklarasi env),
     // `docker-compose.yml` (image prebuilt, tanpa `build:`), `files/` (file
