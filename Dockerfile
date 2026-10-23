@@ -5,14 +5,27 @@ RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories \
   && apk update --no-cache
 
-# system deps: git (clone repo site), docker CLI + compose plugin (orkestrasi),
+# Paket docker diambil dari CDN resmi Alpine, bukan mirror aliyun: aliyun kadang
+# sudah menyinkronkan INDEKS lebih dulu daripada berkas .apk-nya (gejala
+# `docker-cli-29.9.2-r0: HTTP 404: Not Found` → seluruh build gagal), dan apk
+# memakai entri repo pertama tanpa fallback. `docker-cli-buildx` WAJIB ada:
+# tanpa plugin ini Compose jatuh ke legacy builder dan Dockerfile app yang
+# memakai `RUN --mount=...` gagal (`the --mount option requires BuildKit`).
+# Cabang rilis dibaca dari /etc/alpine-release agar tidak terikat nomor versi.
+RUN ALPINE_BRANCH="v$(cut -d. -f1,2 /etc/alpine-release)" \
+  && apk add --no-cache \
+       --repository="https://dl-cdn.alpinelinux.org/alpine/${ALPINE_BRANCH}/main" \
+       --repository="https://dl-cdn.alpinelinux.org/alpine/${ALPINE_BRANCH}/community" \
+       docker-cli docker-cli-compose docker-cli-buildx
+
+# system deps: git (clone repo site),
 # curl + curl-dev (extension curl utk Guzzle curl handler ke Docker Engine API),
 # util-linux (binary `script` — PTY untuk terminal interaktif `docker exec -it`),
 # oniguruma-dev (dependensi build mbstring — truncasi teks multibyte di UI),
 # unzip (ekstraksi arsip .zip file manager DI HOST dashboard — container app
 #   belum tentu punya unzip),
 # restic (backup volume ke S3 — dijalankan di container helper, PLAN_VOLUME_BACKUP.md §3)
-RUN apk add --no-cache git openssh-client openssh-keygen docker-cli docker-cli-compose curl curl-dev certbot certbot-dns-cloudflare util-linux oniguruma-dev unzip restic
+RUN apk add --no-cache git openssh-client openssh-keygen curl curl-dev certbot certbot-dns-cloudflare util-linux oniguruma-dev unzip restic
 
 # PHP extensions
 RUN docker-php-ext-install -j$(nproc) pdo pdo_mysql pcntl curl mbstring \

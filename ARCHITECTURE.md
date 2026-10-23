@@ -129,6 +129,8 @@ flowchart TD
 - **Timer**: mode agent tidak memasang timer dashboard (monitor/billing/backup DB/template pull); mode `dashboard` tidak tersentuh oleh perubahan mode.
 - **Firewall**: port agent (default `8443`) hanya boleh dibuka untuk IP control plane — allowlist lewat firewall server, bukan UI.
 
+> **GOTCHA — image dashboard wajib memuat plugin `buildx`.** **Gejala**: deploy app gagal dengan `Docker Compose requires buildx plugin to be installed` lalu `Building the --mount option requires BuildKit` (build `docker compose up --build` berhenti di `RUN --mount=…`). **Sebab**: image dashboard hanya memasang `docker-cli` + `docker-cli-compose`; tanpa plugin `docker-cli-buildx`, Compose **jatuh ke legacy builder** yang tidak mendukung `--mount`/cache mount. **Penangkal**: paket `docker-cli-buildx` dipasang di `Dockerfile`, dan paket docker (`docker-cli`/`docker-cli-compose`/`docker-cli-buildx`) diambil eksplisit dari repo `main`+`community` CDN resmi Alpine — mirror aliyun kadang sudah menyinkronkan indeks tanpa menyediakan berkas `.apk`-nya (`HTTP 404`), dan apk memakai entri repo pertama tanpa fallback. Container lama harus di-**recreate** setelah image dibangun ulang (memasang paket di container berjalan hanya bertahan sampai recreate); agent memakai image yang sama sehingga ikut terperbaiki.
+
 ---
 
 ## 4. Komponen & Lapisan

@@ -45,7 +45,7 @@
 
 ## Prasyarat (Host)
 
-- Docker Engine + Docker Compose plugin **v2.6+** (memakai tag YAML `!reset`)
+- Docker Engine + Docker Compose plugin **v2.6+** (memakai tag YAML `!reset`) — daemon harus punya **BuildKit** (Docker Engine 23+), karena image dashboard sudah menyertakan plugin `docker-cli-buildx` dan `docker compose build` memakainya; tanpa buildx, Dockerfile app yang memakai `RUN --mount=…` gagal (`the --mount option requires BuildKit`)
 - Nginx terinstall, direktori `sites-available/` & `sites-enabled/` ada
 - DNS wildcard `*.{APP_DOMAIN}` diarahkan ke IP server (prasyarat; bukan tanggung jawab dashboard)
 - Port 80/443 host terbuka untuk traffic app
