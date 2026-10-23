@@ -80,16 +80,23 @@ final class ResourceCollector
     /**
      * Snapshot metrik host saja ("total VM") — TANPA menyentuh Docker Engine.
      *
-     * Dipakai endpoint polling halaman `/monitor`: pembacaan `/proc` hanya file
-     * lokal, jadi bisa dipanggil berkala (mis. tiap 5–10 detik selagi halaman
-     * terbuka) tanpa membebani daemon seperti `stats` container.
+     * Dipakai endpoint polling halaman `/monitor`: pembacaan `/proc` dan
+     * `statvfs` storage hanya operasi filesystem lokal, jadi bisa dipanggil
+     * berkala (mis. tiap 5–10 detik selagi halaman terbuka) tanpa membebani
+     * daemon seperti `stats` container.
      *
      * @param string|null $procPath path `/proc` host; null = dari config deploy
+     * @param string|null $diskPath path yang filesystem-nya diukur sebagai storage
+     *                              server; null = dari config deploy (`DISK_PATH`)
      * @return array hasil `HostUsage::snapshot()`
      */
-    public static function hostSnapshot(?string $procPath = null): array
+    public static function hostSnapshot(?string $procPath = null, ?string $diskPath = null): array
     {
-        return HostUsage::snapshot($procPath ?? (string) config('deploy.host_proc_path', '/proc'));
+        return HostUsage::snapshot(
+            $procPath ?? (string) config('deploy.host_proc_path', '/proc'),
+            HostUsage::SAMPLE_MICROS,
+            $diskPath ?? (string) config('deploy.disk_path', '')
+        );
     }
 
     /**

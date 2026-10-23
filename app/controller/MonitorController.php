@@ -104,9 +104,9 @@ class MonitorController
      * halaman `/monitor` selama terbuka).
      *
      * Sengaja terpisah dari `overview()`: `stats` container memblokir ±1 detik
-     * per container sedangkan `/proc` hanya pembacaan file lokal, sehingga
-     * polling 5–10 detik tidak membebani daemon Docker. Hak akses sama untuk
-     * semua user yang login (angka host bersifat ringkasan).
+     * per container sedangkan `/proc` + `statvfs` hanya operasi filesystem
+     * lokal, sehingga polling 5–10 detik tidak membebani daemon Docker. Hak
+     * akses sama untuk semua user yang login (angka host bersifat ringkasan).
      *
      * **Sengaja tetap server lokal saja**: endpoint ini dipoll tiap beberapa
      * detik; memanggil seluruh agent di sini akan membanjiri jaringan. Metrik

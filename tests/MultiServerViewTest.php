@@ -224,8 +224,13 @@ class MultiServerViewTest extends TestCase
         self::assertStringNotContainsString(self::SAMPLE_BASE_URL, $html);
         self::assertStringNotContainsString('vps-jakarta', $html);
 
-        // Cache-bust JS ikut naik (perubahan render server di monitor.js).
-        self::assertStringContainsString('src="/js/monitor.js?v=2"', $html);
+        // Cache-bust JS ikut naik (perubahan render server + storage di monitor.js).
+        self::assertStringContainsString('src="/js/monitor.js?v=3"', $html);
+
+        // Kartu storage server (filesystem host) + kolom storage per server.
+        self::assertStringContainsString('Storage server', $html);
+        self::assertStringContainsString('data-m="host-disk"', $html);
+        self::assertStringContainsString('data-ms="disk-host"', $html);
 
         $this->assertNoSecretLeak($html);
     }

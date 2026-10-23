@@ -164,6 +164,12 @@ return [
     // arahkan ke mount host eksplisit bila host memakai lxcfs (nilai /proc jadi
     // ter-scope container) sehingga "total VM" tetap benar.
     'host_proc_path' => getenv('HOST_PROC_PATH') ?: '/proc',
+    // Path yang filesystem-nya dilaporkan sebagai "storage server" di /monitor.
+    // WAJIB path yang merupakan bind mount host (default: direktori repo yang
+    // di-mount `${PWD}:${PWD}`) — `statvfs` pada path itu melaporkan filesystem
+    // host, bukan overlay container. Arahkan ke titik mount lain (mis. data
+    // disk terpisah) bila app/volume disimpan di filesystem berbeda.
+    'disk_path' => getenv('DISK_PATH') ?: base_path(),
     // Timeout satu siklus pengambilan stats (semua container diambil paralel)
     'monitor_stats_timeout' => (int) (getenv('MONITOR_STATS_TIMEOUT') ?: 20),
     // Interval polling metrik host di halaman /monitor (milidetik, 0 = matikan).

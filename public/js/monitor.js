@@ -85,6 +85,19 @@
 
     setText(panel, 'host-uptime', fmtUptime(host.uptime_seconds));
     setText(panel, 'host-proc', host.available ? host.proc_path : 'tidak terbaca');
+
+    // Storage server: filesystem tempat app & volume disimpan (statvfs pada
+    // path yang di-mount dari host). N/A bila path tidak terbaca.
+    var hasDisk = host.disk_total !== null && host.disk_total !== undefined;
+    setText(panel, 'host-disk', hasDisk
+      ? fmtBytes(host.disk_used) + ' / ' + fmtBytes(host.disk_total)
+      : EMPTY);
+    setText(panel, 'host-disk-percent', fmtPercent(host.disk_percent));
+    setBar(panel, 'host-disk-bar', host.disk_percent);
+    setText(panel, 'host-disk-sub', (host.disk_available === null || host.disk_available === undefined)
+      ? EMPTY
+      : 'sisa ' + fmtBytes(host.disk_available) + ' tersedia');
+    setText(panel, 'host-disk-path', hasDisk && host.disk_path ? host.disk_path : EMPTY);
   }
 
   function renderTotals(panel, totals) {
@@ -224,6 +237,13 @@
         : 'host ' + fmtBytes(host.mem_used) + (host.mem_total ? ' / ' + fmtBytes(host.mem_total) : '') +
           (host.mem_percent === null || host.mem_percent === undefined ? '' : ' (' + host.mem_percent + '%)'));
       setNode(ms(frag, 'at'), String(server.at || EMPTY));
+
+      // Storage server (filesystem yang diukur di server itu sendiri).
+      setNode(ms(frag, 'disk-host'), (host.disk_total === null || host.disk_total === undefined)
+        ? EMPTY
+        : fmtBytes(host.disk_used) + ' / ' + fmtBytes(host.disk_total) +
+          (host.disk_available === null || host.disk_available === undefined ? '' : ' · sisa ' + fmtBytes(host.disk_available)) +
+          (host.disk_percent === null || host.disk_percent === undefined ? '' : ' (' + host.disk_percent + '%)'));
     }
 
     var diskNode = ms(frag, 'disk');
@@ -234,7 +254,7 @@
       }
     } else if (diskNode) {
       diskNode.textContent = EMPTY;
-      diskNode.title = 'Pemakaian disk per server belum tersedia di sini';
+      diskNode.title = 'Volume Docker terpakai hanya dihitung di server lokal; storage server ada di baris bawah.';
     }
 
     return row;

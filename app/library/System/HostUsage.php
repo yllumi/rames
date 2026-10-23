@@ -4,14 +4,19 @@ declare(strict_types=1);
 namespace app\library\System;
 
 /**
- * Metrik host (CPU, memori, load, uptime) dari pseudo-filesystem `/proc` —
- * "total VM" pada halaman `/monitor` (SPECS §8d).
+ * Metrik host (CPU, memori, load, uptime) dari pseudo-filesystem `/proc` dan
+ * **pemakaian storage** (filesystem) — "total VM" pada halaman `/monitor`
+ * (SPECS §8d).
  *
  * Catatan penting: `/proc` di dalam container dashboard SUDAH menampilkan nilai
  * host (Docker tidak men-*namespace*-kan `stat`/`meminfo`/`loadavg`; hanya cgroup
  * dan PID yang di-namespace), sehingga tidak perlu mount tambahan dari host.
  * Bila host memakai lxcfs (mis. lingkungan tertentu), nilai yang terbaca akan
  * ter-scope container — `host_proc_path` bisa diarahkan ke mount host eksplisit.
+ *
+ * Storage diukur `statvfs` pada satu path (`disk()`); path itu **harus** berupa
+ * bind mount host (mis. `${PWD}:${PWD}` milik container dashboard) agar angka
+ * yang dilaporkan milik filesystem host, bukan overlay container.
  *
  * Kelas ini murni (tanpa state, tanpa I/O Engine) supaya mudah diuji: seluruh
  * penafsiran file `/proc` ada di sini, pemanggil hanya menyediakan path.
@@ -29,16 +34,21 @@ final class HostUsage
      * Ringkasan pemakaian host. Field yang tidak terbaca bernilai `null`
      * (UI menampilkan N/A) — bukan exception, agar halaman tetap tampil.
      *
-     * @param string $procPath direktori `/proc` host (bisa di-override config)
-     * @param int    $sampleMicros durasi sampling CPU; 0 = lewati (cpu_percent null)
+     * @param string      $procPath     direktori `/proc` host (bisa di-override config)
+     * @param int         $sampleMicros durasi sampling CPU; 0 = lewati (cpu_percent null)
+     * @param string|null $diskPath     path di filesystem host yang diukur; null = tanpa metrik disk
      * @return array{
      *   available:bool, proc_path:string, cpu_percent:?float, cpu_count:?int,
      *   mem_total:?int, mem_used:?int, mem_available:?int, mem_percent:?float,
-     *   load_1:?float, load_5:?float, load_15:?float, uptime_seconds:?int
+     *   load_1:?float, load_5:?float, load_15:?float, uptime_seconds:?int,
+     *   disk_path:?string, disk_total:?int, disk_used:?int, disk_available:?int, disk_percent:?float
      * }
      */
-    public static function snapshot(string $procPath = '/proc', int $sampleMicros = self::SAMPLE_MICROS): array
-    {
+    public static function snapshot(
+        string $procPath = '/proc',
+        int $sampleMicros = self::SAMPLE_MICROS,
+        ?string $diskPath = null
+    ): array {
         $before = $sampleMicros > 0 ? self::cpuSample($procPath) : null;
         if ($before !== null && $sampleMicros > 0) {
             usleep($sampleMicros);
@@ -48,6 +58,7 @@ final class HostUsage
         $memory = self::memory($procPath);
         $load = self::load($procPath);
         [$load1, $load5, $load15] = $load ?? [null, null, null];
+        $disk = $diskPath !== null && $diskPath !== '' ? self::disk($diskPath) : null;
 
         return [
             'available' => $after !== null || $memory !== null,
@@ -63,7 +74,66 @@ final class HostUsage
             'load_5' => $load5,
             'load_15' => $load15,
             'uptime_seconds' => self::uptimeSeconds($procPath),
+            'disk_path' => $diskPath !== null && $diskPath !== '' ? $diskPath : null,
+            'disk_total' => $disk['total'] ?? null,
+            'disk_used' => $disk['used'] ?? null,
+            'disk_available' => $disk['available'] ?? null,
+            'disk_percent' => $disk['percent'] ?? null,
         ];
+    }
+
+    /**
+     * Pemakaian **storage** (filesystem) tempat `$path` berada.
+     *
+     * Path harus berupa mount yang sama dengan host (mis. bind mount `${PWD}` di
+     * container dashboard) — `disk_total_space()` membaca filesystem di bawah
+     * path itu, bukan overlay container-nya. `total`/`available` memakai
+     * `statvfs` (`disk_total_space`/`disk_free_space`); `used` = total −
+     * available, `percent` mengikuti cara `df` (dibulatkan satu desimal).
+     *
+     * @return array{path:string,total:int,used:int,available:int,percent:float}|null
+     *         null bila path tidak ada/tidak terbaca atau fungsi disk dinonaktifkan
+     */
+    public static function disk(string $path): ?array
+    {
+        $path = trim($path);
+        if ($path === '' || !file_exists($path) || !function_exists('disk_total_space') || !function_exists('disk_free_space')) {
+            return null;
+        }
+
+        $total = @disk_total_space($path);
+        $available = @disk_free_space($path);
+        if ($total === false || $available === false) {
+            return null;
+        }
+
+        $total = (int) $total;
+        $available = max(0, min((int) $available, $total));
+        $used = $total - $available;
+        if ($total <= 0) {
+            return null;
+        }
+
+        return [
+            'path' => $path,
+            'total' => $total,
+            'used' => $used,
+            'available' => $available,
+            'percent' => self::percent($used, $total),
+        ];
+    }
+
+    /**
+     * Persentase `$used` terhadap `$total` (0–100, satu desimal). `null` bila
+     * `$total` tidak positif.
+     */
+    public static function percent(int $used, int $total): ?float
+    {
+        if ($total <= 0) {
+            return null;
+        }
+
+        return round(min(100.0, max(0.0, $used / $total * 100)), 1);
     }
 
     /**

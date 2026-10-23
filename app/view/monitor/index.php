@@ -22,13 +22,14 @@ $breadcrumbs = [
   <div>
     <h1 class="h3 mb-1">Monitor</h1>
     <p class="text-muted mb-0">
-      Pemakaian resource tiap container dan <strong>total VM</strong> (CPU, memori, load, uptime host).
-      Metrik host dibaca dari <span class="mono">/proc</span> host, metrik container dari Docker Engine
-      (<span class="mono">stats</span> + <span class="mono">inspect</span>).
+      Pemakaian resource tiap container dan <strong>total VM</strong> (CPU, memori, <strong>storage</strong>, load, uptime host).
+      Metrik host dibaca dari <span class="mono">/proc</span> host dan <span class="mono">statvfs</span> filesystem host,
+      metrik container dari Docker Engine (<span class="mono">stats</span> + <span class="mono">inspect</span>).
       <?php if ($monitorPollMs > 0): ?>
         Kartu <strong>host</strong> diperbarui otomatis tiap <?= round($monitorPollMs / 1000) ?> detik
-        selama halaman ini terbuka (hanya membaca <span class="mono">/proc</span>, tidak membebani
-        Docker Engine); tabel container diperbarui lewat tombol <strong>Refresh</strong>.
+        selama halaman ini terbuka (hanya membaca <span class="mono">/proc</span> &amp;
+        <span class="mono">statvfs</span>, tidak membebani Docker Engine); tabel container diperbarui
+        lewat tombol <strong>Refresh</strong>.
       <?php else: ?>
         Data dimuat sekali saat halaman dibuka — diperbarui lewat tombol <strong>Refresh</strong>.
       <?php endif; ?>
@@ -55,5 +56,5 @@ $breadcrumbs = [
 include app_path() . '/view/monitor/partials/panel.php';
 ?>
 
-<script src="/js/monitor.js?v=2"></script>
+<script src="/js/monitor.js?v=3"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

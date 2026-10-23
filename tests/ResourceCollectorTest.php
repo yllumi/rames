@@ -158,6 +158,16 @@ class ResourceCollectorTest extends TestCase
             $this->assertSame(75.0, $host['mem_percent']);
             $this->assertSame(0.5, $host['load_1']);
             $this->assertSame(42, $host['uptime_seconds']);
+            $this->assertNull($host['disk_total'], 'tanpa path storage (config kosong di test) metrik disk N/A');
+
+            // Storage server diukur dari path yang diberikan (filesystem fixture).
+            $withDisk = ResourceCollector::hostSnapshot($tmp, $tmp);
+            $this->assertSame($tmp, $withDisk['disk_path']);
+            $this->assertGreaterThan(0, (int) $withDisk['disk_total']);
+            $this->assertSame(
+                (int) $withDisk['disk_total'] - (int) $withDisk['disk_available'],
+                (int) $withDisk['disk_used']
+            );
         } finally {
             foreach (glob($tmp . '/*') ?: [] as $file) {
                 @unlink($file);

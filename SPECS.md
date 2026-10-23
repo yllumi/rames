@@ -1474,6 +1474,7 @@ Field tambahan per app:
 
 **Data:**
 - **Host (total VM)** — dibaca dari pseudo-filesystem `/proc` host (`stat`, `meminfo`, `loadavg`, `uptime`, `cpuinfo`). Di dalam container dashboard, `/proc` **sudah** menampilkan nilai host (Docker tidak men-*namespace*-kan metrik ini) sehingga tidak perlu mount tambahan; path bisa di-override `HOST_PROC_PATH` bila host memakai lxcfs. Nilai yang tidak terbaca → ditampilkan **N/A**, bukan error.
+- **Storage server** — pemakaian filesystem (`statvfs`) tempat app & volume disimpan: `total`, `used`, `available` (sisa), dan `percent`. Diukur pada satu path `DISK_PATH` (default: direktori repo yang di-mount `${PWD}:${PWD}` di container dashboard), karena `statvfs` pada bind mount melaporkan filesystem **host** — bukan overlay container. Path tak terbaca → **N/A**. Ini metrik **berbeda** dari "volume terpakai" (total volume Docker): keduanya ditampilkan terpisah, tidak dijumlahkan.
 - **Per container** — dari Docker Engine API, dibaca `DockerClient`:
   - `inspect` — `State.Status`, `State.Running`, `State.StartedAt`, `RestartCount`, `State.Health` (bila healthcheck didefinisikan di compose);
   - `stats?stream=false` — CPU% (`cpu_delta/system_delta × online_cpus × 100`), memori (`usage` dikurangi page cache `inactive_file`/`total_inactive_file`, seperti `docker stats`), `pids`.
@@ -1482,9 +1483,9 @@ Field tambahan per app:
 
 **Alur:**
 1. `/monitor` merender kerangka halaman (kartu + tabel), lalu `public/js/monitor.js` memanggil `GET /api/monitor/overview` **sekali** saat halaman dibuka (metrik host + seluruh container sekaligus, paralel).
-2. Kartu ringkas: CPU host (dengan jumlah vCPU), memori host (terpakai/total + tersedia), agregat container (jumlah, yang jalan, CPU total, memori), uptime host, dan total volume terpakai.
+2. Kartu ringkas: CPU host (dengan jumlah vCPU), memori host (terpakai/total + tersedia), **storage server** (terpakai/total + bar + sisa tersedia + path), agregat container (jumlah, yang jalan, CPU total, memori), uptime host, dan total volume terpakai.
 3. Tabel per container: status (+ badge health bila ada), uptime, restart count, CPU%, memori (terpakai/limit + bar), dan jumlah PID.
-4. **Polling kartu host** — CPU, memori, load, dan uptime host diperbarui otomatis tiap `MONITOR_POLL_MS` (default **7000 ms**; `0` = tanpa polling) lewat `GET /api/monitor/host`. Endpoint ini **hanya** membaca `/proc` (±0,25 detik, **tidak** menyentuh Docker Engine), sehingga interval 5–10 detik tetap ringan — berbeda dengan `stats` container yang memblokir ±1 detik per container.
+4. **Polling kartu host** — CPU, memori, load, uptime host, dan storage server diperbarui otomatis tiap `MONITOR_POLL_MS` (default **7000 ms**; `0` = tanpa polling) lewat `GET /api/monitor/host`. Endpoint ini **hanya** membaca `/proc` + `statvfs` (±0,25 detik, **tidak** menyentuh Docker Engine), sehingga interval 5–10 detik tetap ringan — berbeda dengan `stats` container yang memblokir ±1 detik per container.
 5. **Polling hanya hidup selama halaman `/monitor` terbuka**: interval dijeda saat tab tidak terlihat (`visibilitychange`, disegarkan sekali saat kembali terlihat) dan dimatikan saat halaman ditinggalkan (`pagehide`) — tidak ada permintaan latar belakang. Tabel container **tidak** ikut dipoll; dimuat ulang lewat tombol **Refresh** (`overview`).
 6. Data **tidak persisten** (tanpa field baru di `apps.json`) dan tidak ada state/cache di server.
 
@@ -1940,6 +1941,7 @@ DB_BACKUP_KEEP_WEEKLY=4                     # retensi pekanan (ISO)
 DB_BACKUP_KEEP_MONTHLY=3                    # retensi bulanan
 DB_IMPORT_LEGACY_JSON=true                  # impor SEKALI database/*.json lama ke SQLite
 HOST_PROC_PATH=/proc        # sumber metrik "total VM" (§8d; ubah bila host pakai lxcfs)
+DISK_PATH=                  # path yang filesystem-nya dilaporkan sebagai storage server (default: direktori repo / ${PWD})
 MONITOR_STATS_TIMEOUT=20    # timeout satu siklus stats container (detik)
 MONITOR_POLL_MS=7000        # interval polling metrik host di /monitor (ms, 0 = mati)
 FILES_TIMEOUT=120           # timeout perintah singkat file manager di dalam container (detik, §7.9)

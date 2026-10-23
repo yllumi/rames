@@ -46,8 +46,8 @@ $isAdmin = (bool) ($isAdmin ?? false);
 
   <div class="alert alert-warning py-2 small d-none" role="alert" data-m="error"></div>
 
-  <div class="row g-3 mb-3">
-    <div class="col-6 col-xl-3">
+  <div class="row row-cols-2 row-cols-lg-3 row-cols-xxl-5 g-3 mb-3">
+    <div class="col">
       <div class="card h-100">
         <div class="card-body py-2">
           <div class="d-flex justify-content-between align-items-baseline">
@@ -63,7 +63,7 @@ $isAdmin = (bool) ($isAdmin ?? false);
       </div>
     </div>
 
-    <div class="col-6 col-xl-3">
+    <div class="col">
       <div class="card h-100">
         <div class="card-body py-2">
           <div class="d-flex justify-content-between align-items-baseline">
@@ -79,7 +79,24 @@ $isAdmin = (bool) ($isAdmin ?? false);
       </div>
     </div>
 
-    <div class="col-6 col-xl-3">
+    <div class="col">
+      <div class="card h-100">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-baseline">
+            <span class="text-muted small" title="Pemakaian filesystem tempat app & volume disimpan (storage server)">Storage server</span>
+            <span class="text-muted small" data-m="host-disk-percent">—</span>
+          </div>
+          <div class="h4 mb-1" data-m="host-disk">—</div>
+          <div class="progress" style="height:6px" role="progressbar" aria-label="Pemakaian storage server">
+            <div class="progress-bar bg-primary" data-m="host-disk-bar" style="width:0"></div>
+          </div>
+          <div class="text-muted small mt-1" data-m="host-disk-sub">—</div>
+          <div class="text-muted small font-monospace text-truncate" data-m="host-disk-path" title="Path yang diukur (filesystem host yang di-mount ke dashboard)">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
       <div class="card h-100">
         <div class="card-body py-2">
           <div class="d-flex justify-content-between align-items-baseline">
@@ -92,7 +109,7 @@ $isAdmin = (bool) ($isAdmin ?? false);
       </div>
     </div>
 
-    <div class="col-6 col-xl-3">
+    <div class="col">
       <div class="card h-100">
         <div class="card-body py-2">
           <div class="d-flex justify-content-between align-items-baseline">
@@ -124,7 +141,7 @@ $isAdmin = (bool) ($isAdmin ?? false);
             <th class="text-end" title="Jumlah container di server itu (dalam tanda kurung: yang berjalan)">Container</th>
             <th class="text-end" title="Total CPU seluruh container di server itu">CPU</th>
             <th title="Baris pertama: memori seluruh container; baris kedua: memori host server itu">Memori</th>
-            <th class="text-end" title="Pemakaian volume server ini; per server agent belum tersedia di sini">Disk</th>
+            <th class="text-end" title="Baris pertama: volume Docker terpakai (hanya server lokal). Baris kedua: storage server (terpakai / total · sisa).">Disk</th>
             <th>Diperbarui</th>
           </tr>
         </thead>
@@ -163,7 +180,10 @@ $isAdmin = (bool) ($isAdmin ?? false);
           <div data-ms="mem">—</div>
           <div class="text-muted" data-ms="mem-host">—</div>
         </td>
-        <td class="text-end small" data-ms="disk">—</td>
+        <td class="text-end small">
+          <div data-ms="disk">—</div>
+          <div class="text-muted" data-ms="disk-host">—</div>
+        </td>
         <td class="small text-muted" data-ms="at">—</td>
       </tr>
     </template>

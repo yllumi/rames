@@ -82,6 +82,7 @@ final class AgentDockerTestController extends AgentDockerController
         AppStore $store,
         DockerClient $docker,
         private string $procPath,
+        private ?string $diskPath = null,
     ) {
         parent::__construct($store, $docker);
     }
@@ -89,6 +90,11 @@ final class AgentDockerTestController extends AgentDockerController
     protected function hostProcPath(): string
     {
         return $this->procPath;
+    }
+
+    protected function diskPath(): ?string
+    {
+        return $this->diskPath;
     }
 }
 
@@ -137,7 +143,7 @@ class AgentDockerControllerTest extends TestCase
         file_put_contents($proc . '/stat', "cpu  10 0 10 80 0 0 0 0 0 0\n");
 
         $docker = new AgentDockerFakeDocker();
-        $controller = new AgentDockerTestController($this->store(), $docker, $proc);
+        $controller = new AgentDockerTestController($this->store(), $docker, $proc, $this->tmp);
 
         $response = $controller->hostUsage($this->get('/system/host-usage'));
         $body = $this->payload($response);
@@ -150,6 +156,14 @@ class AgentDockerControllerTest extends TestCase
         $this->assertSame(75.0, (float) $body['data']['host']['mem_percent']);
         $this->assertSame(1.5, $body['data']['host']['load_1']);
         $this->assertSame(120, $body['data']['host']['uptime_seconds']);
+        // Storage server ikut dilaporkan agent (filesystem DISK_PATH server itu).
+        $this->assertSame($this->tmp, $body['data']['host']['disk_path']);
+        $this->assertGreaterThan(0, (int) $body['data']['host']['disk_total']);
+        $this->assertSame(
+            (int) $body['data']['host']['disk_total'] - (int) $body['data']['host']['disk_available'],
+            (int) $body['data']['host']['disk_used']
+        );
+        $this->assertNotNull($body['data']['host']['disk_percent']);
         $this->assertIsString($body['data']['at']);
 
         $this->assertSame(0, $docker->listCalls, 'metrik host tidak menyentuh Engine');

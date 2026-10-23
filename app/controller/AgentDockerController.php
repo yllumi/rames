@@ -55,7 +55,8 @@ class AgentDockerController
     }
 
     /**
-     * `GET /system/host-usage` — CPU/memori/load/uptime host **server agent**.
+     * `GET /system/host-usage` — CPU/memori/load/uptime host + storage server
+     * (filesystem `DISK_PATH`) **server agent**.
      *
      * Field yang tidak terbaca bernilai `null` (bukan galat): halaman monitor
      * control plane tetap tampil walau satu server melaporkan sebagian metrik.
@@ -63,7 +64,7 @@ class AgentDockerController
     public function hostUsage(Request $request): Response
     {
         try {
-            $host = ResourceCollector::hostSnapshot($this->hostProcPath());
+            $host = ResourceCollector::hostSnapshot($this->hostProcPath(), $this->diskPath());
         } catch (\Throwable $e) {
             return $this->error('Gagal membaca metrik host di server agent: ' . $e->getMessage(), 'host_failed', 502);
         }
@@ -109,6 +110,17 @@ class AgentDockerController
     protected function hostProcPath(): string
     {
         return (string) config('deploy.host_proc_path', '/proc');
+    }
+
+    /**
+     * Path yang filesystem-nya dilaporkan sebagai storage server (seam uji).
+     * Default `deploy.disk_path` (= direktori repo yang di-mount dari host).
+     */
+    protected function diskPath(): ?string
+    {
+        $path = (string) config('deploy.disk_path', '');
+
+        return $path === '' ? null : $path;
     }
 
     /**

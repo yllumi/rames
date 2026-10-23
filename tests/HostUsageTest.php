@@ -173,6 +173,53 @@ class HostUsageTest extends TestCase
         $this->assertNull($snapshot['cpu_count']);
     }
 
+    // ==================================================================
+    // disk() — storage server (statvfs)
+    // ==================================================================
+
+    public function testDiskReportsTotalUsedAndAvailable(): void
+    {
+        $disk = HostUsage::disk($this->tmp);
+
+        $this->assertNotNull($disk, 'filesystem fixture harus terbaca');
+        $this->assertSame($this->tmp, $disk['path']);
+        $this->assertGreaterThan(0, $disk['total']);
+        $this->assertSame($disk['total'] - $disk['available'], $disk['used']);
+        $this->assertGreaterThanOrEqual(0, $disk['available']);
+        $this->assertLessThanOrEqual(100.0, $disk['percent']);
+        $this->assertGreaterThanOrEqual(0.0, $disk['percent']);
+    }
+
+    public function testDiskReturnsNullForMissingPathOrBlankInput(): void
+    {
+        $this->assertNull(HostUsage::disk($this->tmp . '/tidak-ada'));
+        $this->assertNull(HostUsage::disk('   '));
+    }
+
+    public function testPercentIsClampedAndNullWhenTotalNotPositive(): void
+    {
+        $this->assertSame(0.0, HostUsage::percent(0, 100));
+        $this->assertSame(62.5, HostUsage::percent(625, 1000));
+        $this->assertNull(HostUsage::percent(10, 0));
+    }
+
+    public function testSnapshotIncludesDiskFieldsAndSkipsThemWithoutPath(): void
+    {
+        $withDisk = HostUsage::snapshot($this->tmp, 0, $this->tmp);
+
+        $this->assertSame($this->tmp, $withDisk['disk_path']);
+        $this->assertGreaterThan(0, (int) $withDisk['disk_total']);
+        $this->assertNotNull($withDisk['disk_percent']);
+
+        $withoutDisk = HostUsage::snapshot($this->tmp, 0);
+
+        $this->assertNull($withoutDisk['disk_path']);
+        $this->assertNull($withoutDisk['disk_total']);
+        $this->assertNull($withoutDisk['disk_used']);
+        $this->assertNull($withoutDisk['disk_available']);
+        $this->assertNull($withoutDisk['disk_percent']);
+    }
+
     private function write(string $file, string $content): void
     {
         file_put_contents($this->tmp . '/' . $file, $content);
