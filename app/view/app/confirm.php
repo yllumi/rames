@@ -222,6 +222,121 @@ $breadcrumbs = [
   </div>
 
   <?php
+  // Environment variable: template dideteksi di controller dari `.env.example`
+  // repo (prioritas) atau referensi ${VAR} docker compose. Nilai default sudah
+  // di-prefill; user bisa mengubahnya di sini sebelum deploy. `$envDraft` berisi
+  // isian sebelumnya bila create gagal dan halaman ini dirender ulang.
+  $envTpl = is_array($envTemplate ?? null) ? $envTemplate : [];
+  $envSource = (string) ($envTpl['source'] ?? 'none');
+  $envSpecs = is_array($envTpl['vars'] ?? null) ? $envTpl['vars'] : [];
+  $envDraftVars = is_array($envDraft ?? null) ? $envDraft : [];
+  ?>
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h6 mb-1">Environment Variables</h2>
+      <p class="text-muted small mb-3">
+        <?php if ($envSource === 'env-example'): ?>
+          Key &amp; nilai contoh diambil dari <span class="mono">.env.example</span> repo — sesuaikan sebelum deploy.
+          Variabel yang dipakai compose tanpa nilai default ditandai <strong>wajib</strong> (termasuk yang belum tercantum di contoh).
+        <?php elseif ($envSource === 'compose'): ?>
+          Variabel diambil dari referensi <span class="mono">${VAR}</span> di
+          <span class="mono"><?= e($pending['compose_file']) ?></span>; nilai default compose sudah diisi.
+        <?php else: ?>
+          Repo tidak punya <span class="mono">.env.example</span> dan compose tidak memakai variabel
+          <span class="mono">${VAR}</span>. Tambahkan variabel bila app memerlukannya.
+        <?php endif; ?>
+        Nilai ditulis ke file env app (<span class="mono">database/env/&lt;nama app&gt;.env</span>, chmod 0600)
+        dan di-inject ke seluruh service. Kosongkan bila ingin memakai default compose.
+      </p>
+
+      <div class="table-responsive">
+        <table class="table align-middle mb-3" id="create-env-table">
+          <thead>
+            <tr>
+              <th style="width:42%;">Key</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php foreach ($envSpecs as $envSpec): ?>
+            <?php
+              if (!is_array($envSpec)) {
+                  continue;
+              }
+              $envKey = is_scalar($envSpec['key'] ?? null) ? (string) $envSpec['key'] : '';
+              if ($envKey === '' || preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $envKey) !== 1) {
+                  continue;
+              }
+              $envRequired = !empty($envSpec['required']);
+              $rawDraftValue = $envDraftVars[$envKey] ?? null;
+              $envValue = is_scalar($rawDraftValue)
+                  ? (string) $rawDraftValue
+                  : (is_scalar($envSpec['value'] ?? null) ? (string) $envSpec['value'] : '');
+              $envDefault = is_scalar($envSpec['default'] ?? null) ? (string) $envSpec['default'] : null;
+            ?>
+            <tr>
+              <td>
+                <span class="mono"><?= e($envKey) ?></span>
+                <?php if ($envRequired): ?><span class="badge text-bg-danger ms-1">wajib</span><?php endif; ?>
+                <?php if ($envDefault !== null): ?>
+                <div class="form-text">default compose: <span class="mono"><?= e($envDefault) ?></span></div>
+                <?php endif; ?>
+              </td>
+              <td>
+                <div class="input-group input-group-sm" style="max-width:520px;">
+                  <input type="password" name="env[<?= e($envKey) ?>]" value="<?= e($envValue) ?>"
+                         class="form-control mono env-value" autocomplete="off"
+                         placeholder="<?= $envRequired ? 'wajib diisi' : 'opsional' ?>"
+                         <?= $envRequired ? 'required' : '' ?>>
+                  <button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai">👁</button>
+                </div>
+              </td>
+            </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="create-env-add-row">＋ Tambah variabel</button>
+      <p class="form-text mb-0 mt-2">
+        Variabel tambahan juga bisa diubah kapan saja di tab <strong>Environment</strong> halaman detail app.
+      </p>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    var table = document.getElementById('create-env-table');
+    var addBtn = document.getElementById('create-env-add-row');
+    if (!table || !addBtn) return;
+
+    var rowIndex = 0;
+    addBtn.addEventListener('click', function () {
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><input type="text" name="env_extra[' + rowIndex + '][key]" class="form-control form-control-sm mono" placeholder="APP_KEY"></td>' +
+        '<td><div class="input-group input-group-sm" style="max-width:520px;">' +
+          '<input type="password" name="env_extra[' + rowIndex + '][value]" class="form-control mono env-value" placeholder="nilai" autocomplete="off">' +
+          '<button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai">👁</button>' +
+        '</div></td>';
+      table.querySelector('tbody').appendChild(tr);
+      rowIndex++;
+    });
+
+    // Reveal/sembunyikan nilai (delegasi — ikut berlaku untuk baris baru).
+    table.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('.env-reveal') : null;
+      if (!btn) return;
+      var group = btn.parentElement;
+      var input = group ? group.querySelector('.env-value') : null;
+      if (!input) return;
+      input.type = input.type === 'password' ? 'text' : 'password';
+      btn.textContent = input.type === 'password' ? '👁' : '🙈';
+    });
+  })();
+  </script>
+
+  <?php
   // Batas CPU/memori opsional saat create — owner/member boleh memilih (D2=a),
   // dibatasi plafon billing (divalidasi `Pricing::assertWithinCaps()` di server).
   // Gerbang kartu memakai flag `canManage` dari AppController (bukan `is_admin()`

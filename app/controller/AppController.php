@@ -22,6 +22,7 @@ use app\library\Deploy\DeployCanceller;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Deploy\EnvManager;
+use app\library\Deploy\EnvTemplate;
 use app\library\Deploy\NetworkManager;
 use app\library\Deploy\ResourceLimits;
 use app\library\Deploy\ServerResolver;
@@ -860,6 +861,11 @@ class AppController
                 'auth_method' => $authMethod,
                 'ssh_key' => $authMethod === 'ssh' ? 'keys/' . $name : null,
                 'server_id' => $serverId,
+                // Template environment variable untuk form konfirmasi: dari
+                // `.env.example` repo, atau variabel ${...} docker compose.
+                // Dihitung di sini karena checkout repo (khusus server agent)
+                // dibuang di blok `finally`.
+                'env_template' => EnvTemplate::detect($dest, [$composeFile]),
             ];
             // Kosong ⇒ jangan tulis field (fallback ke `name`).
             if ($subdomain !== '') {
@@ -985,6 +991,9 @@ class AppController
                 'auth_method' => 'none',
                 'ssh_key' => null,
                 'server_id' => $serverId,
+                // Template env dari file upload (`.env.example` bila ikut
+                // di-upload) atau variabel ${...} di compose.
+                'env_template' => EnvTemplate::detect($dest, [$composeFile]),
             ];
             if ($subdomain !== '') {
                 $pending['subdomain'] = $subdomain;
@@ -1402,6 +1411,12 @@ class AppController
             'subdomain' => app_subdomain_of($asIf),
             'subdomain_label' => $label,
             'subdomain_custom' => $label !== '',
+            // Template environment variable (dari `.env.example` repo atau
+            // referensi ${...} compose) + draft isian user bila create gagal.
+            'envTemplate' => is_array($pending['env_template'] ?? null)
+                ? $pending['env_template']
+                : ['source' => EnvTemplate::SOURCE_NONE, 'vars' => []],
+            'envDraft' => is_array($pending['env_draft'] ?? null) ? $pending['env_draft'] : [],
             'resourceLimits' => $this->limitsContext(
                 $dir,
                 [(string) $pending['compose_file']],
@@ -1427,6 +1442,12 @@ class AppController
         $serviceInput = (array) $request->post('services', []);
         $primarySelection = (string) $request->post('primary', '');
 
+        // Isian environment variable dari halaman konfirmasi. Template-nya
+        // dideteksi di langkah analisis (`createPreview()`/`composePreview()`)
+        // dan disimpan di session — POST hanya membawa nilainya.
+        $envInput = $this->collectCreateEnvInput($request);
+        $envTemplate = is_array($pending['env_template'] ?? null) ? $pending['env_template'] : [];
+
         // Server target: form konfirmasi boleh mengirim ulang `server_id`
         // (dipilih di langkah pertama); selain itu pilihan tersimpan di session
         // yang dipakai. Validasi fail-fast SEBELUM efek samping apa pun.
@@ -1442,6 +1463,7 @@ class AppController
             // (hanya hidden input), jadi jalan ini hanya bisa dicapai dengan
             // memanipulasi POST — fail-fast + target deploy tetap pilihan yang
             // sudah divalidasi lebih aman daripada diam-diam memakai id kiriman.
+            $this->persistEnvDraft($request, $pending, $envInput);
             flash_set('error', $e->getMessage());
             return redirect('/apps/create/confirm');
         }
@@ -1458,6 +1480,7 @@ class AppController
                 $serverId
             );
         } catch (\Throwable $e) {
+            $this->persistEnvDraft($request, $pending, $envInput);
             flash_set('error', $e->getMessage());
             return redirect('/apps/create/confirm');
         }
@@ -1477,6 +1500,11 @@ class AppController
                 ? SubdomainManager::normalize((string) $request->post('subdomain'))
                 : SubdomainManager::normalize((string) ($pending['subdomain'] ?? ''));
             $this->assertSubdomainAvailable($subdomain, (string) $pending['name'], '', $serverId);
+
+            // Environment variable: validasi isian + pastikan variabel yang
+            // "wajib" menurut template tidak dibiarkan kosong. Dilakukan sebelum
+            // efek samping apa pun (credit gate, pembuatan direktori app).
+            $env = EnvTemplate::resolveValues($envInput, $envTemplate);
 
             // Batas CPU/memori: owner/member boleh memilih saat create (D2=a),
             // dibatasi plafon billing. Admin bebas (billing bukan untuk admin).
@@ -1504,7 +1532,7 @@ class AppController
                 $primary['service'],
                 $primary['port'],
                 $containerPrefix,
-                [],
+                $env,
                 null,
                 $limits,
                 $subdomain
@@ -1527,14 +1555,70 @@ class AppController
             flash_set('success', 'App "' . $app['name'] . '" sedang di-deploy.');
             return redirect('/apps/' . $app['id']);
         } catch (InsufficientCredits $e) {
+            $this->persistEnvDraft($request, $pending, $envInput);
             return $this->billingBlocked($request, $e);
         } catch (\Throwable $e) {
+            // Redirect balik ke halaman konfirmasi tidak membawa POST: simpan
+            // isian env user sebagai draft supaya form terisi lagi.
+            $this->persistEnvDraft($request, $pending, $envInput);
             if ($request->expectsJson()) {
                 return json(['code' => 1, 'error' => $e->getMessage()]);
             }
             flash_set('error', $e->getMessage());
             return redirect('/apps/create/confirm');
         }
+    }
+
+    /**
+     * Kumpulkan isian environment variable dari halaman konfirmasi.
+     *
+     * Form mengirim dua bentuk:
+     *   - `env[KEY]=value`                → variabel hasil deteksi template
+     *   - `env_extra[i][key]` + `[value]` → variabel tambahan yang diketik user
+     *
+     * @return array<string,mixed>
+     */
+    private function collectCreateEnvInput(Request $request): array
+    {
+        $input = [];
+        $primary = $request->post('env', []);
+        if (is_array($primary)) {
+            foreach ($primary as $key => $value) {
+                $input[(string) $key] = $value;
+            }
+        }
+
+        $extra = $request->post('env_extra', []);
+        if (is_array($extra)) {
+            foreach ($extra as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $key = trim((string) ($row['key'] ?? ''));
+                if ($key === '') {
+                    continue;
+                }
+                $input[$key] = $row['value'] ?? '';
+            }
+        }
+
+        return $input;
+    }
+
+    /**
+     * Simpan isian env sebagai draft di session `pending_app` agar tidak hilang
+     * saat controller me-redirect kembali ke halaman konfirmasi.
+     *
+     * @param array<string,mixed> $pending
+     * @param array<string,mixed> $envInput
+     */
+    private function persistEnvDraft(Request $request, array $pending, array $envInput): void
+    {
+        if ($envInput === []) {
+            return;
+        }
+        $pending['env_draft'] = $envInput;
+        $request->session()->set('pending_app', $pending);
     }
 
     /**
@@ -2733,8 +2817,7 @@ class AppController
         }
 
         try {
-            $envManager = new EnvManager();
-            $example = $envManager->parseEnvExample($dir);
+            $example = EnvManager::parseEnvExample($dir);
             if ($example === []) {
                 flash_set('error', 'Tidak ada .env.example di direktori app (atau tidak dapat di-parse).');
                 return redirect('/apps/' . $id);

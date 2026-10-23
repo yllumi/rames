@@ -147,12 +147,13 @@ class EnvManager
     }
 
     /**
-     * Parse file .env.example di direktori app untuk fitur import.
+     * Parse file .env.example di direktori app untuk fitur import + template
+     * wizard create ({@see EnvTemplate::fromEnvExample()}).
      * Mendukung komentar (#), baris kosong, dan nilai ber-quote tunggal/ganda.
      *
      * @return array<string,string>
      */
-    public function parseEnvExample(string $dir): array
+    public static function parseEnvExample(string $dir): array
     {
         $path = $dir . '/.env.example';
         if (!is_file($path)) {
@@ -178,7 +179,7 @@ class EnvManager
             if ($key === '' || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $key)) {
                 continue;
             }
-            $result[$key] = $this->unquoteValue($value);
+            $result[$key] = self::unquoteValue($value);
         }
         return $result;
     }
@@ -343,7 +344,7 @@ class EnvManager
         return "'" . str_replace("'", "'\\''", $value) . "'";
     }
 
-    private function unquoteValue(string $value): string
+    private static function unquoteValue(string $value): string
     {
         $len = strlen($value);
         if ($len >= 2 && $value[0] === $value[$len - 1] && ($value[0] === "'" || $value[0] === '"')) {

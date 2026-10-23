@@ -65,19 +65,17 @@ class EnvManagerTest extends TestCase
         mkdir($dir, 0777, true);
         file_put_contents($dir . '/.env.example', "# contoh\nAPP_KEY=base64:abc\nDB_HOST='localhost'\n\nKOSONG=\n# komentar\ndb_port=\"5432\"\n");
 
-        $m = new EnvManager($this->envDir);
         $this->assertSame([
             'APP_KEY' => 'base64:abc',
             'DB_HOST' => 'localhost',
             'KOSONG' => '',
             'db_port' => '5432',
-        ], $m->parseEnvExample($dir));
+        ], EnvManager::parseEnvExample($dir));
     }
 
     public function testParseEnvExampleMissingFileReturnsEmpty(): void
     {
-        $m = new EnvManager($this->envDir);
-        $this->assertSame([], $m->parseEnvExample($this->tmp . '/tidak-ada'));
+        $this->assertSame([], EnvManager::parseEnvExample($this->tmp . '/tidak-ada'));
     }
 
     public function testWriteOverrideInjectsToAllServices(): void

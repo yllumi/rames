@@ -248,6 +248,8 @@ $breadcrumbs = [
         <div class="form-text">
           Unggah <code>docker-compose.yml</code> (bila tidak menempel isinya di atas) beserta file pendukung
           lain yang di-bind mount ke container (mis. <code>nginx.conf</code>). Maks 1 MB per file.
+          Bila ada, unggah juga <code>.env.example</code> — kunci &amp; nilai contohnya dipakai untuk mengisi
+          form environment variable di langkah konfirmasi.
           File override yang dikelola dashboard (<code>docker-compose.override*</code>) tidak boleh diunggah.
         </div>
       </div>
