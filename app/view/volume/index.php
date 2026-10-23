@@ -67,7 +67,6 @@ $__serverCount = count($__serverNames);
           <th>Server</th>
           <th>Driver</th>
           <th class="text-end">Ukuran</th>
-          <th>Mountpoint</th>
           <th>Dibuat</th>
           <th>Status</th>
         </tr>
@@ -88,7 +87,14 @@ $__serverCount = count($__serverNames);
               <input class="form-check-input" type="checkbox" name="volumes[]" value="<?= e($r['name']) ?>" id="<?= e($__checkboxId) ?>">
             <?php endif; ?>
           </td>
-          <td><span class="mono"><?= e($r['name']) ?></span></td>
+          <td>
+            <div class="mono"><?= e($r['name']) ?></div>
+            <?php if ($__agent): ?>
+              <div title="Dibaca dari server agent: jalur volume per-project hanya melaporkan nama">&mdash;</div>
+            <?php else: ?>
+              <div class="small text-muted"><?= e($r['mountpoint']) ?></div>
+            <?php endif; ?>
+          </td>
           <td><span class="mono"><?= e($r['project']) ?></span></td>
           <td class="small">
             <?php if ($__agent): ?>
@@ -110,13 +116,6 @@ $__serverCount = count($__serverNames);
           <?php else: ?>
             <td class="small text-end text-muted" data-volume-size="<?= e($r['name']) ?>" title="Menghitung ukuran terpakai ...">&hellip;</td>
           <?php endif; ?>
-          <td class="small text-muted">
-            <?php if ($__agent): ?>
-              <span title="Dibaca dari server agent: jalur volume per-project hanya melaporkan nama">&mdash;</span>
-            <?php else: ?>
-              <?= e($r['mountpoint']) ?>
-            <?php endif; ?>
-          </td>
           <td class="small">
             <?php if ($__agent): ?>
               <span class="text-muted">&mdash;</span>
