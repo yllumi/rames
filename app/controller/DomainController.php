@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Auth\AppAccess;
+use app\library\Domain\DomainFilter;
 use app\library\Domain\ParkedDomainContent;
 use app\library\Domain\ParkedDomainManager;
 use app\library\Domain\ParkedDomainValidator;
@@ -77,15 +78,24 @@ class DomainController
      * Docker/agent.
      *
      * Payload view: `rows`, `domains`, `isAdmin`, `tab`, `active`,
-     * `maxHtmlBytes`, `appDomain`, `errors`, `sslSupported`.
+     * `maxHtmlBytes`, `appDomain`, `errors`, `sslSupported`, `filter`,
+     * `filterActive`.
+     *
+     * Filter `?domain=` ({@see DomainFilter}) diterapkan **setelah** otorisasi:
+     * `rows` dan `domains` sama-sama disaring substring case-insensitive pada
+     * `domain`, sehingga kedua tab konsisten dan filter tidak pernah menambah
+     * baris yang tidak berhak dilihat. `sslSupported` sengaja dihitung dari
+     * baris **tidak** tersaring — ketersediaan fitur SSL tidak boleh berubah
+     * hanya karena filter menyembunyikan domain publik.
      */
     public function index(Request $request): Response
     {
         $table = $this->table();
+        $filter = DomainFilter::normalize($request->get(DomainFilter::QUERY_KEY, ''));
 
         return $this->renderView('domain/index', [
-            'rows' => $table['rows'],
-            'domains' => $table['parked'],
+            'rows' => DomainFilter::apply($table['rows'], $filter),
+            'domains' => DomainFilter::apply($table['parked'], $filter),
             'isAdmin' => $table['isAdmin'],
             'tab' => $this->tab($request, $table['isAdmin']),
             'active' => 'domains',
@@ -93,6 +103,8 @@ class DomainController
             'appDomain' => (string) config('deploy.app_domain', ''),
             'errors' => [],
             'sslSupported' => $this->sslSupported($table['rows']),
+            'filter' => $filter,
+            'filterActive' => DomainFilter::isActive($filter),
         ]);
     }
 

@@ -199,6 +199,79 @@ class DomainControllerTest extends TestCase
         $this->assertSame('Domain parkir', $vars['rows'][0]['source']);
     }
 
+    // ------------------------------------------------------------------
+    // (b2) filter `?domain=` pada halaman /domains
+    // ------------------------------------------------------------------
+
+    public function testIndexMenyaringBarisDanDaftarParkirDenganFilterDomain(): void
+    {
+        $this->apps->create([
+            'name' => 'disbuk',
+            'status' => 'running',
+            'owner_id' => self::ADMIN['id'],
+            'containers' => [['host_port' => 30011, 'internal_port' => 80]],
+        ]);
+        $this->apps->create([
+            'name' => 'renkeu',
+            'status' => 'running',
+            'owner_id' => self::ADMIN['id'],
+            'containers' => [['host_port' => 30012, 'internal_port' => 80]],
+        ]);
+        $this->parked->create(['domain' => 'disbuk-parkir.example.com', 'mode' => 'html']);
+        $this->parked->create(['domain' => 'lain.example.com', 'mode' => 'html']);
+
+        $controller = $this->controller(self::ADMIN);
+        $response = $controller->index($this->get('/domains?tab=parking&domain=DISBUK'));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $vars = $controller->rendered['vars'];
+
+        $this->assertSame('disbuk', $vars['filter'], 'nilai efektif sudah trim+lowercase');
+        $this->assertTrue($vars['filterActive']);
+        $this->assertSame('parking', $vars['tab'], 'filter tidak boleh mengubah tab');
+        $this->assertSame(
+            ['disbuk.example.org', 'disbuk-parkir.example.com'],
+            array_column($vars['rows'], 'domain'),
+            'baris tabel (app + parkir) disaring substring case-insensitive'
+        );
+        $this->assertSame(
+            ['disbuk-parkir.example.com'],
+            array_column($vars['domains'], 'domain'),
+            'daftar CRUD domain parkir memakai filter yang sama'
+        );
+    }
+
+    public function testIndexTanpaFilterMengirimSemuaBarisDanFilterNonAktif(): void
+    {
+        $this->parked->create(['domain' => 'a.example.com', 'mode' => 'html']);
+        $this->parked->create(['domain' => 'b.example.com', 'mode' => 'html']);
+
+        $controller = $this->controller(self::ADMIN);
+        $controller->index($this->get('/domains'));
+
+        $vars = $controller->rendered['vars'];
+        $this->assertSame('', $vars['filter']);
+        $this->assertFalse($vars['filterActive']);
+        $this->assertCount(2, $vars['domains']);
+    }
+
+    public function testFilterTidakMenambahBarisAppMilikUserLain(): void
+    {
+        $this->apps->create([
+            'name' => 'milik-admin',
+            'status' => 'running',
+            'owner_id' => self::ADMIN['id'],
+            'containers' => [['host_port' => 30013, 'internal_port' => 80]],
+        ]);
+
+        $controller = $this->controller(self::MEMBER);
+        $controller->index($this->get('/domains?domain=milik-admin'));
+
+        $vars = $controller->rendered['vars'];
+        $this->assertSame([], $vars['rows'], 'otorisasi tetap menang atas filter');
+        $this->assertTrue($vars['filterActive']);
+    }
+
     /**
      * `GET /api/domains/status` memakai baris terdekorasi yang sama: app +
      * parkir untuk admin, tanpa objek `app` mentah.

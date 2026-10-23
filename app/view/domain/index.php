@@ -17,7 +17,9 @@
  *   $maxHtmlBytes — batas isi HTML domain parkir (byte);
  *   $appDomain    — domain dasar dashboard (petunjuk, boleh kosong);
  *   $errors       — array pesan galat siap tampil;
- *   $sslSupported — bool (ada domain publik ⇒ Let's Encrypt bisa dipakai).
+ *   $sslSupported — bool (ada domain publik ⇒ Let's Encrypt bisa dipakai);
+ *   $filter       — kata kunci filter efektif (trim + lowercase, boleh kosong);
+ *   $filterActive — bool (filter `?domain=` sedang aktif).
  *
  * View hanya merender. Menyembunyikan tab/aksi bukan pengamanan: controller
  * tetap menyaring baris app (`AppAccess::visible()`), membuang baris parkir
@@ -67,6 +69,12 @@ if ($maxHtmlBytes <= 0) {
 $maxHtmlLabel = $maxHtmlBytes === 1048576
     ? '1 MiB'
     : number_format($maxHtmlBytes / 1024, 1, ',', '.') . ' KiB';
+
+// Filter domain (`?domain=`): nilai sudah efektif dari controller; view hanya
+// merender & membawa nilainya pada tautan tab. Kosong = tidak aktif.
+$filter = is_scalar($filter ?? null) ? trim((string) $filter) : '';
+$filterActive = isset($filterActive) ? (bool) $filterActive : $filter !== '';
+$filterSuffix = $filter !== '' ? '&' . rawurlencode('domain') . '=' . rawurlencode($filter) : '';
 
 // Tab aktif: non-admin tidak pernah mendapat tab parkir (payload pun kosong).
 $tab = is_scalar($tab ?? null) ? (string) $tab : 'all';
@@ -121,15 +129,36 @@ $breadcrumbs = [
 <nav aria-label="Bagian domain">
   <ul class="nav nav-tabs mb-3">
     <li class="nav-item">
-      <a class="nav-link <?= $tab === 'all' ? 'active' : '' ?>" href="/domains?tab=all"<?= $tab === 'all' ? ' aria-current="page"' : '' ?>>Semua Domain</a>
+      <a class="nav-link <?= $tab === 'all' ? 'active' : '' ?>" href="/domains?tab=all<?= e($filterSuffix) ?>"<?= $tab === 'all' ? ' aria-current="page"' : '' ?>>Semua Domain</a>
     </li>
     <?php if ($isAdmin): ?>
       <li class="nav-item">
-        <a class="nav-link <?= $tab === 'parking' ? 'active' : '' ?>" href="/domains?tab=parking"<?= $tab === 'parking' ? ' aria-current="page"' : '' ?>>Domain Parkir</a>
+        <a class="nav-link <?= $tab === 'parking' ? 'active' : '' ?>" href="/domains?tab=parking<?= e($filterSuffix) ?>"<?= $tab === 'parking' ? ' aria-current="page"' : '' ?>>Domain Parkir</a>
       </li>
     <?php endif; ?>
   </ul>
 </nav>
+
+<?php // Filter berbasis query string (bukan JS state) — URL tetap bisa dibagikan,
+      // dan `tab` dibawa sebagai hidden input agar "Terapkan" tidak berpindah tab. ?>
+<form class="card mb-3" method="get" action="/domains" aria-label="Filter daftar domain">
+  <div class="card-body py-3">
+    <input type="hidden" name="tab" value="<?= e($tab) ?>">
+    <div class="row g-2 g-md-3 align-items-end">
+      <div class="col-12 col-md-6 col-xl-4">
+        <label class="form-label small fw-semibold mb-1" for="domain-filter">Domain</label>
+        <input class="form-control form-control-sm" type="search" id="domain-filter" name="domain"
+               value="<?= e($filter) ?>" placeholder="mis. example.org" autocomplete="off">
+      </div>
+      <div class="col-12 col-xl-auto d-flex flex-wrap align-items-center gap-2">
+        <button class="btn btn-primary btn-sm" type="submit">Terapkan</button>
+        <?php if ($filterActive): ?>
+          <a class="btn btn-outline-secondary btn-sm" href="/domains?tab=<?= e($tab) ?>">Reset</a>
+        <?php endif; ?>
+      </div>
+    </div>
+  </div>
+</form>
 
 <?php if ($errors !== []): ?>
 <div class="alert alert-danger" role="alert">
@@ -162,14 +191,29 @@ $breadcrumbs = [
     </div>
   <?php endif; ?>
 
+  <?php if ($filterActive && $rows !== []): ?>
+    <p class="text-muted small mb-2">
+      Menampilkan <?= count($rows) ?> domain yang cocok dengan filter
+      <span class="mono"><?= e($filter) ?></span>.
+    </p>
+  <?php endif; ?>
+
   <div class="card">
     <?php if ($rows === []): ?>
       <div class="card-body">
-        <p class="mb-1 fw-semibold">Belum ada domain.</p>
-        <p class="text-muted small mb-0">
-          Deploy app dengan port terpublish agar subdomain/custom domain tampil di sini<?php if ($isAdmin): ?>,
-          atau tambahkan <a href="/domains?tab=parking">domain parkir</a><?php endif; ?>.
-        </p>
+        <?php if ($filterActive): ?>
+          <p class="mb-1 fw-semibold">Tidak ada domain yang cocok dengan filter.</p>
+          <p class="text-muted small mb-0">
+            Filter <span class="mono"><?= e($filter) ?></span> tidak menemukan domain app maupun parkir.
+            Longgarkan kata kunci atau <a href="/domains?tab=<?= e($tab) ?>">reset filter</a>.
+          </p>
+        <?php else: ?>
+          <p class="mb-1 fw-semibold">Belum ada domain.</p>
+          <p class="text-muted small mb-0">
+            Deploy app dengan port terpublish agar subdomain/custom domain tampil di sini<?php if ($isAdmin): ?>,
+            atau tambahkan <a href="/domains?tab=parking">domain parkir</a><?php endif; ?>.
+          </p>
+        <?php endif; ?>
       </div>
     <?php else: ?>
       <div class="table-responsive">
@@ -308,10 +352,18 @@ $breadcrumbs = [
   <div class="card">
     <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
       <h3 class="h6 mb-0">Daftar Domain Parkir</h3>
-      <span class="text-muted small"><?= count($domains) ?> domain</span>
+      <span class="text-muted small"><?= count($domains) ?> domain<?= $filterActive ? ' (difilter)' : '' ?></span>
     </div>
 
-    <?php if ($domains === []): ?>
+    <?php if ($domains === [] && $filterActive): ?>
+      <div class="card-body">
+        <p class="mb-1 fw-semibold">Tidak ada domain parkir yang cocok dengan filter.</p>
+        <p class="text-muted small mb-0">
+          Filter <span class="mono"><?= e($filter) ?></span> tidak menemukan domain parkir.
+          <a href="/domains?tab=parking">Reset filter</a> untuk melihat semua.
+        </p>
+      </div>
+    <?php elseif ($domains === []): ?>
       <div class="card-body">
         <p class="mb-1 fw-semibold">Belum ada domain parkir.</p>
         <p class="text-muted small mb-3">
