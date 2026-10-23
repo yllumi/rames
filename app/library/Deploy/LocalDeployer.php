@@ -412,6 +412,14 @@ class LocalDeployer implements DeployerInterface
         $env = ['PWD' => $dir] + array_map('strval', is_array($app['env'] ?? null) ? $app['env'] : []);
         $binds = ComposeBinds::ensure($dir, $files, $env);
 
+        // BuildKit menolak build yang meminta network host (`build.network: host`
+        // atau `RUN --network=host`) tanpa entitlement eksplisit — Compose tidak
+        // punya flag `--allow`, jadi entitlement ditulis ke override generated
+        // tepat sebelum build. Legacy builder dulu mengizinkannya diam-diam.
+        if ($build && BuildEntitlements::sync($dir, $files)) {
+            $files = BuildEntitlements::withOverride($files);
+        }
+
         foreach ($binds['created'] as $path) {
             if ($logger !== null) {
                 $logger('volume', 'Membuat direktori bind mount: ' . $path);

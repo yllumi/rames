@@ -714,6 +714,15 @@ Deteksi gaya **dijalankan ulang setiap `sync()`** (bukan hanya saat simpan) kare
 
 **Side effect positif**: halaman `/monitor` (memakai `ContainerStats::memLimit()`) kini menampilkan limit memori container.
 
+### 7.6c Entitlement Build `network.host` (BuildKit)
+
+Build app dijalankan BuildKit (buildx). BuildKit **menolak** build yang meminta jaringan host — `build.network: host` di compose app, atau `RUN --network=host` di Dockerfile app — dengan pesan `additional privileges requested: pass "--allow=network.host" to grant requested privileges` / `network.host is not allowed`, lalu deploy berhenti. Legacy builder dulu mengizinkannya diam-diam, jadi app yang sudah jalan bisa tiba-tiba gagal setelah buildx dipasang.
+
+- **Perilaku dashboard**: sebelum setiap build (`docker compose up -d --build` di `LocalDeployer::upCompose()`), dashboard menulis `apps/{name}/docker-compose.override.build.yml` berisi `build.entitlements: [network.host]` untuk **setiap service yang punya `build:`** dan belum menyatakan entitlement itu sendiri (`BuildEntitlements::sync()`). Repo app tidak diubah.
+- **Transien, bukan state app**: file ini **tidak** masuk `compose_files` — hanya disisipkan ke daftar `-f` untuk operasi build yang sedang berjalan (tepat sebelum override env, yang tetap paling akhir). Bila tidak ada service ber-`build:` (atau semuanya sudah mendeklarasikan entitlement), file dihapus.
+- **Cakupan**: sama untuk app di server lokal maupun agent — build selalu terjadi di host pemilik app dan melewati jalur kode yang sama.
+- **Bukan pelonggaran baru**: build app memang berjalan sebagai root pada daemon Docker host; entitlement ini memulihkan perilaku legacy builder yang hilang saat pindah ke BuildKit. Berkas/direktori app tetap tidak bisa dibaca build dari host selain lewat context build (yang dibatasi `.dockerignore`).
+
 ### 7.7 Kepemilikan & Sharing App
 
 Setiap app **dimiliki satu user (owner)** dan hanya terlihat oleh user yang berhak. App juga bisa **dibagikan** ke user lain dengan role tertentu.
