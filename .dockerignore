@@ -1,0 +1,42 @@
+# Build context image dashboard.
+#
+# Dockerfile TIDAK memakai COPY/ADD sama sekali — kode dijalankan dari bind
+# mount "${PWD}:${PWD}", bukan dari dalam image. Karena itu context hanya perlu
+# berkas non-rahasia, dan DATA RUNTIME WAJIB dikecualikan:
+#
+#   * sebagian berkas runtime dimiliki root/uid lain dengan mode 0600
+#     (`database/env/*.env`, `database/keys/*`), sehingga legacy builder gagal
+#     men-tar context → `checking context: no permission to read from …` dan
+#     build `docker compose up --build` (termasuk jalur self-update) GAGAL;
+#   * isi `apps/`/`runtime/` bisa sangat besar → context raksasa memperlambat
+#     setiap build/update;
+#   * secret (`.env`, kunci, passphrase restic) tidak boleh ikut terkirim ke
+#     daemon Docker sebagai context.
+#
+# Mengecualikan direktori berarti builder tidak menuruni isinya, jadi berkas
+# yang tidak bisa dibaca pun aman. JANGAN hapus entri di bawah tanpa memastikan
+# Dockerfile tetap tanpa COPY/ADD.
+
+# Runtime data dashboard (gitignored — lihat .gitignore)
+/runtime/
+/apps/
+/nginx-status/
+/database/
+/webroot/
+/secrets/
+
+# Riwayat git, dependensi, dan tes tidak dipakai untuk membangun image
+/.git/
+/vendor/
+/tests/
+/.github/
+/.opencode/
+/.idea/
+/.vscode/
+
+# Berkas lokal/editor
+*.log
+.env
+/docker-compose.override.yml
+/tests/.phpunit.result.cache
+/.phpunit.cache/
