@@ -66,9 +66,19 @@ class ProcessStreamingTest extends TestCase
             $chunks[] = $chunk;
         });
 
-        $this->assertSame(['Step 1/2', 'Step 2/2'], $chunks);
-        $this->assertStringContainsString('up', $runner->lastCommand);
-        $this->assertStringContainsString('--build', $runner->lastCommand);
+        // Output build dialirkan dari `docker buildx bake` (bukan `up --build`),
+        // menyusul output `up` setelah image siap.
+        $this->assertSame(['bake-1', 'bake-2', 'up-1'], $chunks);
+
+        // Build memakai definisi bake milik Compose + grant entitlement eksplisit.
+        $bake = $runner->commands[1] ?? '';
+        $this->assertStringContainsString('build --print', $runner->commands[0] ?? '');
+        $this->assertStringContainsString('buildx bake', $bake);
+        $this->assertStringContainsString('--allow network.host', $bake);
+
+        // Container diciptakan setelah image siap — tanpa `--build` (bukan build ulang).
+        $this->assertStringContainsString('up -d', $runner->lastCommand);
+        $this->assertStringNotContainsString('--build', $runner->lastCommand);
         $this->assertSame(sys_get_temp_dir(), $runner->lastEnv['PWD'] ?? null);
     }
 
@@ -81,6 +91,8 @@ class ProcessStreamingTest extends TestCase
 
         $this->assertFalse($runner->streamed);
         $this->assertStringNotContainsString('--build', $runner->lastCommand);
+        // Tanpa build tidak ada `--print`/bake sama sekali.
+        $this->assertSame(1, count($runner->commands));
     }
 }
 
@@ -92,6 +104,9 @@ final class StreamingFakeRunner extends ProcessRunner
     public bool $streamed = false;
 
     public string $lastCommand = '';
+
+    /** @var array<int,string> perintah yang dijalankan, berurutan */
+    public array $commands = [];
 
     /** @var array<string,string> */
     public array $lastEnv = [];
@@ -109,7 +124,18 @@ final class StreamingFakeRunner extends ProcessRunner
     public function run(array $command, ?string $cwd = null, int $timeout = 300, array $env = [], ?string $stdin = null): array
     {
         $this->lastCommand = implode(' ', $command);
+        $this->commands[] = $this->lastCommand;
         $this->lastEnv = $env;
+
+        // `docker compose build --print` mengeluarkan definisi bake (JSON).
+        if (in_array('--print', $command, true)) {
+            return [
+                'code' => 0,
+                'stdout' => '{"target":{"demo":{"context":"/tmp"}}}',
+                'stderr' => '',
+                'timedOut' => false,
+            ];
+        }
 
         return ['code' => 0, 'stdout' => '', 'stderr' => '', 'timedOut' => false];
     }
@@ -129,10 +155,17 @@ final class StreamingFakeRunner extends ProcessRunner
     ): array {
         $this->streamed = true;
         $this->lastCommand = implode(' ', $command);
+        $this->commands[] = $this->lastCommand;
         $this->lastEnv = $env;
-        $onChunk('Step 1/2');
-        $onChunk('Step 2/2');
 
-        return ['code' => 0, 'stdout' => 'Step 1/2Step 2/2', 'stderr' => '', 'timedOut' => false];
+        // Build (bake) dan `up` sama-sama mengalirkan output — beri penanda beda
+        // agar urutannya bisa diverifikasi.
+        $isBake = ($command[1] ?? '') === 'buildx';
+        $onChunk($isBake ? 'bake-1' : 'up-1');
+        if ($isBake) {
+            $onChunk('bake-2');
+        }
+
+        return ['code' => 0, 'stdout' => '', 'stderr' => '', 'timedOut' => false];
     }
 }

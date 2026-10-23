@@ -14,6 +14,19 @@ use RuntimeException;
  */
 class DockerComposeRunner
 {
+    /**
+     * Entitlement yang selalu di-`--allow` saat build (SPECS §7.6c).
+     *
+     * Build app boleh memakai jaringan host (`build.network: host` / `RUN
+     * --network=host`) — perilaku legacy builder yang hilang sejak build memakai
+     * BuildKit. BuildKit hanya mengizinkannya bila (a) definisi build **meminta**
+     * entitlement (override `docker-compose.override.build.yml` dari
+     * {@see \app\library\Deploy\BuildEntitlements}) dan (b) klien **memberikannya**
+     * lewat `--allow`. Compose tidak punya flag `--allow`, karena itu build
+     * dijalankan lewat `docker buildx bake` (lihat {@see self::bakeBuild()}).
+     */
+    public const BUILD_ENTITLEMENT = 'network.host';
+
     private ProcessRunner $runner;
     private string $composeBinary;
     private int $timeout;
@@ -60,13 +73,108 @@ class DockerComposeRunner
         ?string $envFile = null,
         ?callable $onOutput = null
     ): void {
+        // Build dipisah dari `up`: Compose v5 membangun lewat buildx bake dan
+        // tidak meneruskan entitlement sebagai `--allow`, sehingga build harus
+        // dijalankan sendiri (bakeBuild) agar `--allow network.host` bisa
+        // diberikan. Setelah image siap, container diciptakan tanpa `--build`.
+        if ($build) {
+            $this->bakeBuild($project, $dir, $files, $envFile, $onOutput);
+        }
+
         $args = $this->baseArgs($project, $dir, $files, $envFile);
         $args[] = 'up';
         $args[] = '-d';
-        if ($build) {
-            $args[] = '--build';
-        }
         $this->mustRun($args, $dir, 'docker compose up', $this->timeout, $onOutput);
+    }
+
+    /**
+     * Build image app lewat `docker buildx bake` memakai definisi yang
+     * di-generate Compose sendiri (`docker compose build --print`).
+     *
+     * Sebab: sejak Compose v5, `up --build`/`build` dijalankan lewat bake.
+     * Compose menulis `build.entitlements` ke definisi bake, tetapi **tidak**
+     * meneruskannya sebagai `--allow`; buildx 0.38+ menolak request yang meminta
+     * entitlement tanpa grant itu (`additional privileges requested: pass
+     * "--allow=network.host" to grant requested privileges`), sedangkan Compose
+     * tidak punya flag `--allow`. Definisi bake diambil dari Compose (bukan
+     * disusun ulang) supaya context, build args, tag, dan output identik dengan
+     * hasil `docker compose build`.
+     *
+     * @param array<int,string> $files
+     */
+    private function bakeBuild(
+        string $project,
+        string $dir,
+        array $files,
+        ?string $envFile,
+        ?callable $onOutput
+    ): void {
+        $args = $this->baseArgs($project, $dir, $files, $envFile);
+        $args[] = 'build';
+        $args[] = '--print';
+        $printed = $this->runner->run($args, $dir, 60, $this->env($dir));
+        if ($printed['code'] !== 0) {
+            throw new RuntimeException('docker compose build --print gagal: ' . self::outputMessage($printed));
+        }
+
+        $definition = self::parseBakeDefinition($printed['stdout']);
+        if ($definition === []) {
+            return; // tidak ada service ber-build
+        }
+
+        $path = sys_get_temp_dir() . '/rames-bake-' . bin2hex(random_bytes(8)) . '.json';
+        if (@file_put_contents($path, json_encode($definition, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) === false) {
+            throw new RuntimeException('Gagal menulis definisi bake sementara.');
+        }
+
+        try {
+            $bake = [$this->composeBinary, 'buildx', 'bake', '-f', $path, '--progress', 'plain'];
+            $bake[] = '--allow';
+            $bake[] = self::BUILD_ENTITLEMENT;
+
+            $result = $onOutput !== null
+                ? $this->runner->runStreaming($bake, $dir, $this->timeout, $this->env($dir), null, $onOutput)
+                : $this->runner->run($bake, $dir, $this->timeout, $this->env($dir));
+            if ($result['code'] !== 0) {
+                throw new RuntimeException('docker buildx bake gagal: ' . self::outputMessage($result));
+            }
+        } finally {
+            @unlink($path);
+        }
+    }
+
+    /**
+     * Definsi bake dari keluaran `docker compose build --print`.
+     *
+     * @return array<string,mixed> definisi lengkap, atau `[]` bila tidak ada
+     *                             service ber-`build:` (Compose tidak membangun apa pun)
+     */
+    private static function parseBakeDefinition(string $stdout): array
+    {
+        $start = strpos($stdout, '{');
+        $end = strrpos($stdout, '}');
+        if ($start === false || $end === false || $end < $start) {
+            return [];
+        }
+
+        $doc = json_decode(substr($stdout, $start, $end - $start + 1), true);
+        if (!is_array($doc)) {
+            throw new RuntimeException('Definisi bake dari `docker compose build --print` tidak valid.');
+        }
+        $targets = $doc['target'] ?? null;
+        if (!is_array($targets) || $targets === []) {
+            return [];
+        }
+        return $doc;
+    }
+
+    /**
+     * @param array{code:int, stdout:string, stderr:string, timedOut:bool} $result
+     */
+    private static function outputMessage(array $result): string
+    {
+        $message = trim($result['stderr'] !== '' ? $result['stderr'] : $result['stdout']);
+        return $message !== '' ? $message : '(tanpa pesan)';
     }
 
     public function down(string $project, string $dir, array $files, bool $volumes = true, ?string $envFile = null): void
