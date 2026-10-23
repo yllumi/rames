@@ -8,6 +8,8 @@ use RuntimeException;
 
 /**
  * Operasi Git untuk clone & update repo app (SPECS.md §7.2 langkah 3).
+ * Clone **selalu shallow** (`--depth=1 --single-branch`, SPECS §7.2); rollback
+ * mengambil SHA lama lewat `fetch`.
  * Menggunakan bentuk array + bypass_shell => bebas command injection.
  */
 class GitService
@@ -21,10 +23,19 @@ class GitService
         $this->timeout = $timeout;
     }
 
+    /**
+     * Clone repo app ke `$dest`.
+     *
+     * **Selalu shallow**: `--depth=1` (riwayat hanya commit terbaru) +
+     * `--single-branch` (hanya branch yang dipilih) — clone app besar tidak
+     * menarik seluruh riwayat/tag, jadi create app cepat & hemat disk. Konsekuensi
+     * yang disengaja: SHA lama tidak ada di lokal, rollback memakainya
+     * {@see fetchSha()} untuk mengambil commit itu dari remote.
+     */
     public function clone(string $repoUrl, string $branch, string $dest, ?string $sshKeyPath = null): void
     {
         $result = $this->runner->run(
-            ['git', 'clone', '--branch', $branch, '--depth', '1', '--single-branch', $repoUrl, $dest],
+            ['git', 'clone', '--branch', $branch, '--depth=1', '--single-branch', $repoUrl, $dest],
             null,
             $this->timeout,
             $this->sshEnv($sshKeyPath)
@@ -60,7 +71,7 @@ class GitService
     }
 
     /**
-     * Ambil commit lama (rollback) dari remote. Repo diklone shallow (--depth 1),
+     * Ambil commit lama (rollback) dari remote. Repo diklone shallow (--depth=1),
      * sehingga SHA yang tidak ada di riwayat lokal perlu di-fetch dulu.
      * Butuh server git yang mengizinkan fetch arbitrary SHA
      * (GitHub/GitLab umumnya mendukung via reachable SHA).

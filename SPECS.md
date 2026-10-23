@@ -305,7 +305,7 @@ Ada **tiga mode sumber** di halaman `/apps/create`. Link navigasi berurutan **Te
 
 1. **Input form**: nama app (slug), URL repo Git, branch (default `main`)
 2. **Validasi**: nama unik (cek `apps.json`), format slug valid (`a-z0-9-`), URL repo formatnya valid
-3. **Clone repo** ke `apps/{name}` (`git clone --branch {branch} {repo_url} apps/{name}`). Untuk repo private, sistem **membangkitkan deploy key SSH per app** (keypair ed25519 di `database/keys/{name}`), menampilkan public key agar user menambahkannya sebagai Deploy Key repo (Settings → Deploy keys), lalu clone memakai `GIT_SSH_COMMAND` (`ssh -i {key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`)
+3. **Clone repo** ke `apps/{name}` — **selalu shallow**: `git clone --branch {branch} --depth=1 --single-branch {repo_url} apps/{name}` (riwayat lokal hanya commit terbaru di branch terpilih; app besar tidak menarik seluruh riwayat/tag sehingga create cepat & hemat disk). Rollback tidak terpengaruh karena SHA lama diambil dari remote lewat `git fetch origin {sha}` (SPECS §7.5). Untuk repo private, sistem **membangkitkan deploy key SSH per app** (keypair ed25519 di `database/keys/{name}`), menampilkan public key agar user menambahkannya sebagai Deploy Key repo (Settings → Deploy keys), lalu clone memakai `GIT_SSH_COMMAND` (`ssh -i {key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`)
 4. **Cek keberadaan** `docker-compose.yml` (atau `.yaml`) di root repo — jika tidak ada, tolak dan tampilkan error
 5. **Parse** `docker-compose.yml`, ekstrak semua service beserta `ports:` mapping (`HOST:CONTAINER`)
 6. **Deteksi konflik port**: bandingkan setiap host port dengan seluruh `host_port` yang sudah terpakai di `apps.json`
@@ -564,7 +564,7 @@ Rollback mengembalikan app ke **commit yang pernah sukses** (checkpoint otomatis
 2. Validasi: ref harus ada di `deploy_history` berstatus sukses/restored, bukan versi aktif; app tidak boleh berstatus `deploying` (busy) — guard anti-bentrok.
 3. `AppController::rollback` set status `deploying` lalu spawn worker `php cli/deploy.php {id} rollback {full_sha}` (detached, pola sama dengan deploy/rebuild).
 4. `LocalDeployer::rollback`:
-   - `git fetch origin {sha}` (repo diklone **shallow `--depth 1`**, jadi SHA lama di-fetch dari remote; butuh server git yang mengizinkan fetch arbitrary SHA)
+   - `git fetch origin {sha}` (repo diklone **shallow `--depth=1`**, jadi SHA lama di-fetch dari remote; butuh server git yang mengizinkan fetch arbitrary SHA)
    - `git checkout {sha}` (detached HEAD)
    - `docker compose up -d --build` → collect container → tulis ulang config Nginx → status `running`
 5. UI polling status (sama dengan rebuild) sampai selesai.

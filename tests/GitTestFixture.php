@@ -35,7 +35,7 @@ final class GitTestFixture
     public function cloneShallow(string $dest, string $branch = 'main'): void
     {
         $this->git($this->workDir, [
-            'clone', '--quiet', '--branch', $branch, '--depth', '1', '--single-branch', $this->origin, $dest,
+            'clone', '--quiet', '--branch', $branch, '--depth=1', '--single-branch', $this->origin, $dest,
         ]);
     }
 

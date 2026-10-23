@@ -407,7 +407,7 @@ final class AgentArtifactMaterializer
      * Pastikan direktori app berisi **checkout repo yang benar** di server ini.
      *
      * Aturan (plan §4.3/§5 F1 — clone adalah pekerjaan host, bukan control plane):
-     *  - direktori belum ada / kosong ⇒ clone (`git clone --depth 1 --single-branch`
+     *  - direktori belum ada / kosong ⇒ clone (`git clone --depth=1 --single-branch`
      *    lewat `GitService` agent) memakai `repo_url`, `branch`, dan deploy key
      *    yang baru ditulis; hasilnya di-`rename()` dari direktori sementara;
      *  - direktori sudah repo dengan remote **sama** ⇒ tidak clone ulang

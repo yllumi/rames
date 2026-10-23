@@ -213,7 +213,7 @@ Semua logika bisnis ada di sini (controller tidak boleh berisi logika). Modul:
 | | `SigchldGuard` | Penjaga disposisi `SIGCHLD` worker persistent: `disableIgnore()`, `withDefault()`, `ignoreAndReap()`, `isIgnored()`; murni statik, no-op bila pcntl tidak tersedia (§4.4) |
 | | `DetachedWorker` | Spawn worker CLI **detached** (`pcntl_fork` + `posix_setsid` + `pcntl_exec`, **tanpa shell**) untuk aksi panjang dari request HTTP — dipakai `DeployWorkerLauncher` (semua op app) & `TemplatePullService` (§5.20); anak me-reset `SIGCHLD` ke `SIG_DFL` **sebelum** exec (pola `SigchldGuard`), induk `SIG_IGN` agar anak auto-reap. **Semantik env**: `spawn()` **selalu** menggabung lingkungan pemanggil dengan env tambahan (`$envp = array_merge(getenv() ?: [], array_map('strval', $env))`) karena `pcntl_exec` memakai `execve()` ⇒ argumen `envp` **menggantikan** seluruh lingkungan (array kosong = lingkungan kosong, **bukan** pewarisan; salah ⇒ worker kehilangan `RAMES_DB_DIR`/`RAMES_MODE`/`PATH`/`HOME` — GOTCHA §8 no. 39). `AppController::spawnWorker()` **hanya mendelegasikan** ke `DeployWorkerLauncher` (tak ada fork+exec di controller); sisa penyatuan tinggal `BackupController::spawnWorker()` (tech debt — GOTCHA §5.20) |
 | | `Markdown` | Konversi **Markdown → HTML aman** untuk panduan template (§5.1c): `toHtml()` (statik murni, `html_input=escape` + `allow_unsafe_links=false` + `ExternalLinkExtension` → tautan eksternal `target="_blank"`/`rel="noopener noreferrer"`; converter juga mendaftarkan `TableExtension` → **tabel pipe GFM**, selain `CommonMarkCoreExtension` + `ExternalLinkExtension`); input kosong/whitespace **atau** kegagalan apa pun → `''` (panduan tak boleh menggagalkan halaman). Converter dibangun sekali (lazy static) |
-| **Git** | `GitService` | `git clone` (depth 1) & `git pull --ff-only`; mendukung repo private via deploy key SSH (`GIT_SSH_COMMAND`) |
+| **Git** | `GitService` | `git clone --branch <branch> --depth=1 --single-branch` (**selalu shallow** — riwayat lokal 1 commit, satu branch; SHA lama diambil saat rollback via `fetch`) & `git pull --ff-only`; mendukung repo private via deploy key SSH (`GIT_SSH_COMMAND`) |
 | | `SshKeyManager` | Generate/read/hapus pasangan kunci SSH (deploy key per app) di `database/keys/` |
 | **Docker** | `ComposeParser` | Parse `docker-compose.yml` (short/long syntax port, IP binding) via `symfony/yaml` |
 | | `PortManager` | Deteksi konflik port terhadap `apps.json`, saran port dari range, validasi port |
@@ -441,7 +441,7 @@ flowchart TD
     A[Form: nama slug, repo URL, branch, akses repo] --> B[Validasi: slug unik, URL http/https/ssh]
     B --> B1{Akses private via SSH?}
     B1 -- ya --> B2[SshKeyManager generate deploy key<br/>database/keys/name + .pub]
-    B2 --> C[GitService clone → apps/name<br/>pakai GIT_SSH_COMMAND]
+    B2 --> C[GitService clone --depth=1 --single-branch → apps/name<br/>pakai GIT_SSH_COMMAND]
     B1 -- tidak --> C
     C --> D{Ada docker-compose.yml?}
     D -- tidak --> E[Tolak + error; bersihkan dir]
@@ -459,6 +459,7 @@ flowchart TD
 
 Detil penting:
 
+- **Clone selalu shallow (`GitService::clone`)**: `--depth=1 --single-branch` — riwayat lokal hanya commit terbaru di branch yang dipilih, sehingga create app cepat & tidak menghabiskan disk untuk repo besar. Konsekuensi yang disengaja: HEAD~N tidak tersedia lokal; rollback mengambil SHA lama dari remote (`fetchSha()`, §5.5) dan `git pull --ff-only` pada rebuild tetap shallow (tidak menarik riwayat penuh). **GOTCHA uji**: git **mengabaikan** `--depth` saat clone dari **path lokal polos** ("`--depth` is ignored in local clones; use `file://` instead") — uji yang memeriksa `.git/shallow` wajib memakai URL `file://`; URL app di produksi sudah divalidasi berskema `http(s)`/`ssh`.
 - **Repo private via deploy key SSH**: sistem membangkitkan keypair ed25519 per app (`database/keys/{name}`) sebelum clone. Public key ditampilkan di form/konfirmasi untuk ditambahkan user sebagai Deploy Key repo (Settings → Deploy keys). Bila clone gagal karena key belum ditambahkan, form dirender ulang bersama public key (kunci dipakai ulang saat percobaan berikutnya). `git pull` saat Rebuild memakai key yang sama.
 - **Override port dua lapis** (`writeOverride`): karena docker compose **menggabungkan** daftar `ports` (base + override, bukan mengganti), port bawaan repo harus di-reset dulu:
   1. `docker-compose.override.yml` → `ports: !reset []` (tag YAML, via `Symfony\Component\Yaml\Tag\TaggedValue`)
@@ -617,7 +618,7 @@ Lalu: hapus config Nginx (+ symlink) → hapus direktori `apps/{name}` → hapus
 1. Setiap deploy/rebuild **sukses** mencatat `git rev-parse HEAD` ke `deploy_history` (field baru di `apps.json`, maks. 20 entri) — inilah checkpoint rollback. Rollback sendiri juga menambah entri (reversibel).
 2. Halaman **Versi** (`/apps/{id}/versions`) menampilkan seluruh checkpoint; tombol **↶ Rollback** pada entri sukses/restored (bukan versi aktif). Detail app menampilkan 5 terakhir + link ke halaman versi. Guard: ditolak saat status `deploying` (busy).
 3. `AppController::rollback` → set `deploying` → spawn `cli/deploy.php <id> rollback <full_sha>` (detached).
-4. `LocalDeployer::rollback`: `git fetch origin <sha>` (repo shallow `--depth 1` → SHA lama di-fetch dari remote) → `git checkout <sha>` → `docker compose up -d --build` → collect → tulis ulang config Nginx → `running`.
+4. `LocalDeployer::rollback`: `git fetch origin <sha>` (repo shallow `--depth=1` → SHA lama di-fetch dari remote) → `git checkout <sha>` → `docker compose up -d --build` → collect → tulis ulang config Nginx → `running`.
 5. Bila build versi lama **gagal** → auto-`git checkout` kembali ke versi aktif sebelumnya + `up -d --build` (restore best-effort); bila restore gagal → status `error`.
 6. Non-destruktif: volume Docker tidak dihapus (`down -v` tidak dijalankan). Override ports dashboard (`docker-compose.override*.yml`, untracked) dipertahankan — hanya source tracked yang ikut ke versi lama. Rebuild berikutnya memanggil `git checkout {branch}` dulu untuk keluar dari detached HEAD.
 7. Unit test fitur: `tests/` (PHPUnit 10) — jalankan `composer test`. `DeployerFactory` mendukung override env `DEPLOYER_CLASS` (hook test) untuk fake deployer tanpa daemon Docker; `cli/deploy.php` mode rollback diuji end-to-end via subproses (`CliDeployRollbackTest`).
