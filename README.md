@@ -45,6 +45,7 @@
 
 ## Prasyarat (Host)
 
+- **Sistem operasi:** installer otomatis mendukung **Ubuntu 22.04/24.04** (utama) dan **Debian** (fallback), arsitektur `x86_64`/`aarch64`. Bila Docker Engine + Compose v2, Nginx, atau certbot belum terpasang, installer memasangnya otomatis.
 - Docker Engine + Docker Compose plugin **v2.6+** (memakai tag YAML `!reset`) — daemon harus punya **BuildKit** (Docker Engine 23+), karena image dashboard sudah menyertakan plugin `docker-cli-buildx` dan `docker compose build` memakainya; tanpa buildx, Dockerfile app yang memakai `RUN --mount=…` gagal (`the --mount option requires BuildKit`)
 - Nginx terinstall, direktori `sites-available/` & `sites-enabled/` ada
 - DNS wildcard `*.{APP_DOMAIN}` diarahkan ke IP server (prasyarat; bukan tanggung jawab dashboard)
@@ -54,17 +55,64 @@
 
 ## Instalasi & Menjalankan
 
-Panduan langkah demi langkah. Jalankan semua perintah dari direktori project (folder berisi `docker-compose.yml`), dan pastikan [Prasyarat](#prasyarat-host) sudah terpenuhi.
+Panduan langkah demi langkah. Langkah manual di bawah dijalankan dari direktori project (folder berisi `docker-compose.yml`), dan pastikan [Prasyarat](#prasyarat-host) sudah terpenuhi.
 
 ### Instalasi otomatis (disarankan)
 
-[`host/install.sh`](./host/install.sh) menyiapkan host & dashboard dalam satu perintah: menginstal prasyarat (nginx, inotify-tools, certbot + plugin, docker compose), membuat `.env`, memastikan direktori & include Nginx, membangun & menjalankan dashboard, membuat user admin pertama, lalu memasang **watcher reload Nginx** (`dashboard-nginx-watcher.service`) dan **timer renewal certbot** (`certbot-renew.timer`):
+Cara utama: **installer satu perintah**. Bootstrap [`install.sh`](./install.sh) di root repo menyiapkan paket dasar, meng-clone Rames, lalu menyerahkan seluruh instalasi host ke [`host/install.sh`](./host/install.sh):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.sh -o /tmp/rames-install.sh \
+  && sudo bash /tmp/rames-install.sh
+```
+
+Bentuk pipe juga didukung. Prompt tetap berjalan karena installer membuka terminal di fd 3 (`/dev/tty`, diekspor sebagai `RAMES_PROMPT_FD`) — saat pipe, stdin berisi skrip, bukan keyboard:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.sh | sudo bash
+```
+
+Yang dikerjakan installer:
+
+1. Cek distro & arsitektur, lalu pasang paket dasar (`curl`, `git`, `gnupg`, `lsb-release`, `openssl`, …).
+2. Clone `--depth=1` ke `/opt/rames` (ubah dengan `--dir`; branch/tag dengan `--ref`). Bila dijalankan dari dalam checkout Rames tanpa `--dir`, checkout itu yang dipakai; bila `/opt/rames` sudah berisi Rames, dipakai ulang **tanpa** reset/checkout sehingga perubahan lokal tidak hilang.
+3. Pasang dependensi host: `nginx`, `inotify-tools`, `certbot` + `python3-certbot-dns-cloudflare`, serta **Docker Engine + Compose v2** dari repo resmi Docker (fallback paket distro), lalu `systemctl enable --now docker`/`nginx` dan menunggu `docker info` siap.
+4. Wizard `.env`, `docker compose up -d --build`, user admin pertama (`host/create-admin.sh`), watcher reload Nginx, timer renewal certbot, dan timer backup volume.
+5. Cetak ringkasan: URL dashboard, path instalasi, perintah update, dan pengingat DNS `${APP_DOMAIN}` + `*.${APP_DOMAIN}`.
+
+Nilai yang ditanyakan wizard:
+
+| Pertanyaan | Default | Catatan |
+|---|---|---|
+| `APP_DOMAIN` | — (wajib) | Domain dasar huruf kecil, mis. `example.com` |
+| `ADMIN_EMAIL` | `admin@<domain>` | Email untuk Let's Encrypt |
+| `APP_PORT` | `8000` | Port dashboard; 80/443 dan port di dalam rentang app ditolak |
+| `PORT_RANGE_START` / `PORT_RANGE_END` | `30000` / `30999` | Rentang host port untuk container app |
+| Username admin | `admin` | Password dibuat acak oleh `host/create-admin.sh` dan dicetak **sekali** |
+| Konfigurasi lanjutan (`y/N`) | `N` | `SSL_CHALLENGE`, `CLOUDFLARE_CREDS`, `BILLING_ENABLED`, `RESTIC_REPOSITORY`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_DEFAULT_REGION` |
+
+`SESSION_SECRET` **tidak** ditanyakan wizard: dibuat acak secara default (`openssl rand -hex 32`; `--session-secret` hanya untuk otomasi tepercaya, `change-me` ditolak) dan tidak pernah dicetak/di-log. `.env` ditulis dengan permission **0600**. Rerun bersifat idempoten — `.env` yang sudah ada selalu dipertahankan; hanya `SESSION_SECRET` kosong/`change-me` yang dirotasi.
+
+Contoh **non-interaktif** (cocok untuk provisioning otomatis; wajib `--domain`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.sh -o /tmp/rames-install.sh
+sudo bash /tmp/rames-install.sh --non-interactive --domain example.com --email admin@example.com
+```
+
+Opsi bootstrap: `--dir <path>` (default `/opt/rames`), `--ref <branch|tag>` (default `main`), `--repo <url>`, `--non-interactive`, `--no-deps` (lewati instalasi paket), `--help`. Flag env (`--port`, `--port-range-start/end`, `--admin-user`, `--ssl-challenge`, `--cloudflare-creds`, `--billing`, `--restic-repository`, `--aws-*`) diteruskan ke `host/install.sh`; lihat `sudo bash /tmp/rames-install.sh --help`.
+
+Bila memakai installer, **Langkah 1–3 di bawah tidak perlu dijalankan manual** (`.env`, build, dan `make:admin` sudah ditangani; kredensial admin dicetak di akhir instalasi). Langkah manual berikut disediakan sebagai alternatif/pengecekan.
+
+#### Alternatif: dari checkout yang sudah ada
+
+Dari repo yang sudah di-clone, jalankan installer host langsung:
 
 ```bash
 sudo ./host/install.sh --domain example.com --email admin@example.com
 ```
 
-Idempoten — aman dijalankan ulang. Lihat `./host/install.sh --help` untuk opsi (mis. `--no-deps`, `--non-interactive`). Bila memakai installer, **Langkah 1–3 di bawah tidak perlu dijalankan manual** (`.env`, build, dan `make:admin` sudah ditangani; kredensial admin dicetak di akhir instalasi). Langkah manual berikut disediakan sebagai alternatif/pengecekan.
+Idempoten — aman dijalankan ulang dan `.env` yang ada dipertahankan. Update instalasi: `git -C <dir> pull && sudo <dir>/host/install.sh --no-deps`; installer mencetak perintah yang tepat (memakai `sudo git` bila direktori milik root seperti clone default `/opt/rames`, tanpa `sudo` bila checkout milik user). Jangan mencampur `sudo git` dengan repo milik user lain. Opsi lengkap: `./host/install.sh --help` (mis. `--no-deps`, `--non-interactive`, `--port-range-start`, `--ssl-challenge`).
 
 > Provisioning user admin dipisah ke [`host/create-admin.sh`](./host/create-admin.sh) — script itu **menunggu dashboard benar-benar siap** sebelum memanggil `php webman make:admin`. Container sudah berstatus `running` sejak detik pertama bootstrap compose (`composer install` bila `vendor/autoload.php` belum ada → `php cli/db.php migrate` → `import-json` → `start.php start`), sehingga `docker exec rames-webman php webman make:admin` yang dijalankan terlalu cepat gagal dengan `Failed to open stream: … vendor/autoload.php`. Script ini memprobe `GET /healthz` dari dalam container (tanda vendor siap + migrasi DB selesai + server listening) lalu membuat admin, dengan exit code jujur + potongan log container bila gagal. Jalankan manual kapan saja:
 >
@@ -396,6 +444,8 @@ cli/billing.php                  # worker CLI billing (status|sample|tick|invoic
 cli/db.php                       # CLI basis data SQLite (status|migrate|import-json|export-json|integrity|backup|list|prune|restore)
 cli/ssl.php                      # background worker SSL app (Let's Encrypt)
 cli/parked-ssl.php               # background worker SSL domain parkir
+install.sh                       # bootstrap one-liner: cek OS/paket dasar + clone + delegasi host/install.sh
+host/                            # installer host (install.sh), create-admin.sh, watcher/certbot, systemd unit
 config/                          # konfigurasi Webman + config/deploy.php
 database/                        # berkas JSON warisan (diimpor sekali) + keys/env/restic (gitignored)
                                  #   DB SQLite: named volume `rames` → /var/lib/rames/rames.sqlite (§8i)

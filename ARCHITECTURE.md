@@ -430,6 +430,22 @@ View PHP native (mesin `Raw`, tanpa build step/bundler). **Shell halaman dikelol
 > **GOTCHA — rail 72px menyembunyikan teks via `display: none`, bukan menghapus `<a>`.** Karena `.nav-label` di-`display: none` saat rail, link **wajib** mempertahankan `aria-label` agar ikon tetap punya nama aksesibel; SVG tetap `aria-hidden="true"`/`focusable="false"` agar ikon tidak diumumkan ganda. **WAJIB**: label popover diambil dari **`data-label`** (bukan `title`) — memakai `title` akan memunculkan **tooltip native + popover CSS sekaligus** (tooltip ganda) saat hover.
 > **GOTCHA — jangan turunkan/naikkan `z-index` `.app-sidebar` melewati `1045` (offcanvas) / `1055` (modal).** Gejala: rail/popover menimpa latar dialog sehingga dialog tidak lagi menutupi sidebar. Sebab: nilai > `1045` mengangkat stacking context sidebar di atas layer offcanvas/modal Bootstrap. Sebab lain (arah turun): menghapus/menaikkan ke `auto` mengembalikan bug popover terhalang card `.app-main`. Penangkal: **pertahankan `1030`** — cukup untuk mengangkat sidebar di atas konten halaman, tetap di bawah dialog.
 
+### 4.7 Skrip Host & Bootstrap
+
+Skrip shell **repo** (bukan `app/library/`, bukan data runtime) — dua lapis dengan satu arah delegasi:
+
+| Berkas | Peran |
+|---|---|
+| `install.sh` (root) | **Bootstrap one-liner** (`curl … \| sudo bash`): cek Ubuntu/Debian + arsitektur, pasang paket dasar untuk clone (`ca-certificates`, `curl`, `git`, `gnupg`, `lsb-release`, `openssl`), clone `--depth=1` atau pakai ulang checkout, lalu `exec host/install.sh` dengan argumen diteruskan utuh. **Tidak** memasang Docker/Nginx/certbot sendiri (§5.39). |
+| `host/install.sh` | **Installer host**: dependensi host (nginx, inotify-tools, certbot + plugin Cloudflare), Docker Engine + Compose v2 (repo resmi → fallback distro), wizard/validasi `.env`, direktori & include Nginx, `docker compose up -d --build`, delegasi `host/create-admin.sh`, unit systemd (watcher, certbot, volume backup), ringkasan (§5.39). |
+| `host/create-admin.sh` | Provisioning user admin pertama — menunggu `GET /healthz` siap sebelum `php webman make:admin` (§5.5 langkah 0). |
+| `host/nginx-reload-watcher.sh` + `host/systemd/dashboard-nginx-watcher.*` | Watcher reload Nginx (§8.3). |
+| `host/certbot-renew.sh` + `host/systemd/certbot-renew.*` | Renewal sertifikat Let's Encrypt (§8a). |
+| `host/backup.sh` + `host/systemd/volume-backup.*` | Timer backup volume harian (§5.15). |
+| `host/restic-setup.md` | Panduan setup restic yang dirender di UI `/backups/guide` (§5.15). |
+
+> **WAJIB — bootstrap tidak menduplikasi logika installer.** Root `install.sh` hanya menyiapkan prasyarat clone + delegasi; seluruh keputusan paket, wizard `.env`, dan orkestrasi service ada di `host/install.sh`. Menambah langkah instalasi di root membuat langkah itu hilang pada alur "checkout yang sudah ada" (`sudo ./host/install.sh`).
+
 ---
 
 ## 5. Alur Utama
@@ -1571,6 +1587,38 @@ POST /domains/parked/{id}/ssl | POST /api/domains/parked/{id}/enable
 - **Prasyarat & jebakan**: lihat SPECS §8j.8 dan GOTCHA §8 no. 40–51 (rollback wajib, `PARKED_ROOT` absolut & sama di host, izin baca nginx host, backup konten, server lokal-only, prefiks `_parked_`, `www` tak tersinkron, fallback cert hilang, redirect 443 butuh cert subdomain, config gagal pasca-issue, `/ssl` hanya alias, baris non-admin).
 
 **Pengujian**: `tests/DomainControllerTest.php` (index non-admin hanya baris app yang boleh + tanpa baris parkir, 404 method pengelolaan parkir, payload view, 422 AJAX, upload kebesaran, envelope `apiStatus`/`apiEnableParked`, `legacySsl` redirect), `tests/ParkedDomainManagerTest.php` (create/update/delete + rollback reload & tulis config, `add_www`, non-lokal, html→redirect, reset/revoke SSL), `tests/ParkedDomainValidatorTest.php`, `tests/ParkedDomainStoreTest.php`, `tests/ParkedDomainContentTest.php`, `tests/ParkedNginxConfigTest.php` (termasuk 443 + fallback), `tests/SslDomainRowsTest.php`, `tests/ParkedSslEnablerTest.php`, `tests/ParkedSslIssuerTest.php`, `tests/ParkedDomainConflictTest.php`.
+
+### 5.39 Instalasi Satu-Perintah (`install.sh` → `host/install.sh`)
+
+Dua lapis: **bootstrap** (root `install.sh`) lalu **installer host** (`host/install.sh`). Bootstrap dipakai untuk mesin baru; installer host tetap bisa dijalankan langsung dari checkout (alur lama).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.sh -o /tmp/rames-install.sh \
+  && sudo bash /tmp/rames-install.sh
+# pipe (prompt lewat /dev/tty):
+curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.sh | sudo bash
+```
+
+Urutan:
+
+1. **Bootstrap** (`install.sh`): `parse_args` (termasuk `--help` **sebelum** cek root) → eskalasi root (`exec sudo -E bash "$SELF"`) → `require_os` (Ubuntu/Debian) → `require_arch` (`x86_64`/`aarch64`) → `setup_prompt_fd` → `install_base_packages` → `resolve_install_dir` → `ensure_host_scripts_exec` → `exec "$INSTALL_DIR/host/install.sh" "${PASS_ARGS[@]}"`.
+2. **Resolusi direktori:** tanpa `--dir` dan CWD adalah checkout Rames ⇒ pakai CWD; direktori sudah berisi Rames ⇒ dipakai ulang **tanpa** reset/checkout; direktori kosong ⇒ `git clone --depth=1 --single-branch --branch "$REF"`; direktori berisi hal lain ⇒ `die` sebelum efek samping.
+3. **Installer host** (`host/install.sh`): `parse_args` → (kecuali `--env-only`) `ensure_root` → `.env` sudah ada? `handle_existing_env` (chmod 0600, rotasi `SESSION_SECRET` kosong/`change-me`) : `collect_config` + `validate_config` → `install_deps` (kecuali `--no-deps`) → `preflight` (daemon Docker + `docker compose` v2 + nginx **wajib** ada; certbot hanya peringatan karena SSL opsional saat boot; `docker-compose.yml` wajib) → **baru** `write_env` bila `.env` belum ada → `ensure_nginx_dirs`/`ensure_nginx_include` → `create_watcher_user` → `start_dashboard` (`docker compose up -d --build`) → `create_admin` (`host/create-admin.sh`, menunggu `/healthz`) → `install_watcher` → `install_certbot_timer` → `install_volume_backup_timer` → `print_summary`.
+4. `--env-only` berhenti setelah `.env` ditulis (tanpa `/etc`, Docker, systemd) — **hanya untuk pengujian**.
+
+> **WAJIB — validasi sebelum efek samping, tulis `.env` setelah preflight.** Nilai env dikumpulkan & divalidasi lebih dulu, tetapi `write_env` baru dipanggil **setelah** `preflight` lolos. Bila Docker/Nginx gagal, tidak ada `.env` setengah jadi yang pada rerun akan mengabaikan flag (`handle_existing_env` mempertahankan `.env` yang ada). Sebaliknya `--env-only` sengaja menulis `.env` tanpa preflight.
+
+> **GOTCHA — `curl … | sudo bash` membuat stdin berisi skrip, bukan keyboard.** **Gejala**: wizard `.env` tidak bertanya, `read` mengembalikan potongan skrip, atau prompt tampak "dilewati" sehingga `APP_DOMAIN` kosong. **Sebab**: `read` tanpa fd eksplisit membaca stdin = isi skrip. **Penangkal**: `setup_prompt_fd` membuka `/dev/tty` di fd 3 dan mengekspor `RAMES_PROMPT_FD=3`; `host/install.sh` memakai `PROMPT_FD="${RAMES_PROMPT_FD:-0}"` di semua `ask`/`ask_secret`/konfirmasi. Tanpa TTY (mis. cron) gunakan `--non-interactive --domain …` — jangan menambal dengan `read` dari stdin.
+
+> **GOTCHA/WAJIB — `.env` memuat `SESSION_SECRET` + kredensial S3.** **Gejala**: secret terlihat di terminal, log instalasi, atau `ps`. **Sebab**: `.env` hasil `cp` ber-permission 0644, atau nilai dicetak saat ringkasan/debug. **Penangkal**: `write_env` memakai `umask 077` + `chmod 0600`; `SESSION_SECRET` default `gen_secret()` (`openssl rand -hex 32`; `--session-secret` eksplisit tetap diterima, `change-me` ditolak); nilai secret tidak pernah dicetak; `--admin-password` lewat argv memunculkan peringatan karena terlihat di `ps`. Jangan memvalidasi compose dengan `docker compose config` tanpa `--quiet`.
+
+> **WAJIB — Docker dari repo resmi, daemon harus siap sebelum `compose up`.** Repo resmi memakai `/etc/apt/keyrings/docker.asc` + `/etc/apt/sources.list.d/docker.list` (fallback `docker.io` + `docker-compose-v2`/`docker-compose-plugin`). Setelah instalasi — atau bila Docker sudah ada tetapi daemon mati — installer menjalankan `systemctl enable --now docker` dan `wait_docker()` (`docker info`, 30×2 detik). `compose up` tanpa daemon hidup gagal dengan pesan yang menyesatkan.
+
+> **WAJIB — instalasi ulang idempoten.** Checkout Rames yang sudah ada dipakai ulang **tanpa** `git reset`/`git checkout` (perubahan lokal tidak boleh hilang); `.env` dipertahankan dan flag env diabaikan (kecuali `--admin-user`/`--admin-password`); unit systemd di-reload; user admin hanya dibuat bila store user masih kosong (`host/create-admin.sh`). Update dilakukan lewat panel self-update (§5.14) atau `git -C <dir> pull` lalu `host/install.sh --no-deps`.
+
+> **DILARANG — memakai `--env-only` sebagai jalur instalasi produksi.** Flag ini internal: berhenti setelah `.env`, tidak menyentuh `/etc`, Docker, atau systemd, dan tidak membutuhkan root. Gunanya hanya menguji wizard/penulisan `.env` tanpa menyentuh host.
+
+**Pengujian**: `tests/InstallShHostEnvWizardTest.php` — menjalankan skrip di sandbox temp (tidak menyentuh `database/`, `apps/`, `runtime/`): sintaks `bash -n`, `--help` memuat opsi baru, `--env-only` menulis nilai flag + `SESSION_SECRET` acak + permission 0600, idempotensi rerun, nilai berkarakter khusus verbatim, validasi gagal tanpa membuat `.env`, preflight gagal tidak meninggalkan `.env`, reuse checkout + argumen diteruskan utuh, penolakan direktori non-Rames, dan jalur pipe `curl | bash`.
 
 ---
 
