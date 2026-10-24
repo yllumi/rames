@@ -151,6 +151,11 @@ final class SchemaMigrations
             'parked' => [
                 ['table' => 'domains', 'path' => '', 'idField' => 'id', 'columns' => ['domain', 'server_id', 'mode']],
             ],
+            // Identitas brand dashboard (rebranding): satu dokumen tunggal
+            // ber-id `branding`; hanya nama berkas logo yang disimpan.
+            'branding' => [
+                ['table' => 'settings', 'path' => '', 'idField' => 'id', 'columns' => ['name']],
+            ],
         ];
     }
 

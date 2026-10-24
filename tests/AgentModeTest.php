@@ -102,11 +102,17 @@ class AgentModeTest extends TestCase
      * +1 (ubah password self-service di halaman Profil): `POST /profile/password`
      * — semua user login (anti-IDOR: id dari sesi), dashboard-only (agent tidak
      * punya UI/sesi), tetap wajib CSRF.
+     *
+     * +3 (rebranding dashboard, tab Branding di Config): `POST /nginx/branding`,
+     * `POST /nginx/branding/reset` (admin-only ⇒ 404, wajib CSRF), dan
+     * `GET /branding/logo` (publik **path eksak** — halaman login butuh logo
+     * sebelum sesi ada). Agent tidak punya halaman Config/login, jadi ketiganya
+     * dashboard-only.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 131;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 134;
 
-    /** Definisi di atas menghasilkan 137 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 137;
+    /** Definisi di atas menghasilkan 140 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 140;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -135,6 +141,11 @@ class AgentModeTest extends TestCase
         // bocor ke mode agent (agent tidak mengenal server lain).
         'GET /servers',
         'GET /api/servers',
+        // Rebranding (tab Branding di Config + logo publik untuk halaman login):
+        // tidak ada padanannya di agent.
+        'GET /branding/logo',
+        'POST /nginx/branding',
+        'POST /nginx/branding/reset',
     ];
 
     private string $tmp = '';

@@ -5,11 +5,14 @@ namespace app\controller;
 
 use app\library\Auth\AppAccessDenied;
 use app\library\Agent\AgentError;
+use app\library\Branding\BrandingLogo;
+use app\library\Branding\BrandingManager;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ServerResolver;
 use app\library\Nginx\NginxReloader;
 use app\library\Nginx\NginxStatusReader;
 use app\library\Storage\AppStore;
+use app\library\Storage\BrandingStore;
 use app\library\Storage\ServerStore;
 use app\library\Template\AgentTemplatePull;
 use app\library\Template\TemplateCatalog;
@@ -18,8 +21,10 @@ use app\library\Template\TemplatePullState;
 use app\library\Update\RepoInfo;
 use app\library\Update\UpdateService;
 use app\library\Update\UpdateState;
+use InvalidArgumentException;
 use RuntimeException;
 use support\Request;
+use Webman\Http\UploadFile;
 
 /**
  * Halaman & aksi Nginx (status + reload host dari dashboard).
@@ -27,10 +32,11 @@ use support\Request;
  * Nginx bersifat GLOBAL (berlaku untuk semua app) — status & tombol reload
  * dipindah ke halaman tersendiri /nginx, bukan di detail app.
  *
- * Halaman Config ini menampung tiga tab:
+ * Halaman Config ini menampung empat tab:
  *  - **Update** — panel **self-update dashboard** (SPECS.md §7.8),
  *  - **Nginx** — status reload Nginx host,
- *  - **Template** — daftar template + tombol `docker pull` (SPECS.md §7.13).
+ *  - **Template** — daftar template + tombol `docker pull` (SPECS.md §7.13),
+ *  - **Branding** — nama brand + logo dashboard (rebranding).
  *
  * Multi-server (F4 lanjutan): tab Template bisa diarahkan ke **server agent**
  * (POST/GET `server=<id>`). Pull untuk server agent dijalankan **di server itu**
@@ -46,7 +52,7 @@ use support\Request;
 class NginxController
 {
     /** Tab halaman Config yang boleh dipilih lewat POST `tab` (whitelist). */
-    private const TABS = ['update', 'nginx', 'template'];
+    private const TABS = ['update', 'nginx', 'template', 'branding'];
 
     /**
      * GET /nginx — status reload Nginx host terakhir + tombol Reload + panel update
@@ -69,6 +75,10 @@ class NginxController
             'update' => $this->updatePanel(),
             'templates' => $this->templatesPanel(),
             'pull' => $this->pullPanel(),
+            // Panel rebranding (tab Branding): identitas brand aktif + batas
+            // unggahan. Kegagalan baca store dikembalikan ke default di dalam
+            // `brandingPanel()` supaya halaman Config tidak pernah 500.
+            'branding' => $this->brandingPanel(),
             // Pemilih server untuk tab Template (multi-server F4 lanjutan): id/nama/
             // kind/capabilities — **tanpa** token/PEM/base_url. Panel per server
             // diambil on-demand lewat `GET /nginx/templates/pull/status?server=<id>`
@@ -226,6 +236,101 @@ class NginxController
         } catch (\Throwable $e) {
             return ['failed' => $e->getMessage()];
         }
+    }
+
+    /**
+     * Data tab Branding: identitas brand aktif + batas unggahan untuk view.
+     *
+     * Kegagalan membaca store (SQLite rusak/terkunci) **tidak** boleh membuat
+     * halaman Config 500 — panel jatuh ke default (`Rames` + logo bawaan) dan
+     * halaman tetap tampil. Nilai default sengaja ditulis eksplisit (bukan
+     * memanggil store lagi) agar kegagalan yang sama tidak terulang.
+     *
+     * @return array<string,mixed>
+     */
+    private function brandingPanel(): array
+    {
+        try {
+            $panel = $this->branding()->current();
+        } catch (\Throwable) {
+            $panel = [
+                'name' => BrandingStore::DEFAULT_NAME,
+                'logo_url' => BrandingManager::DEFAULT_LOGO_URL,
+                'logo_custom' => false,
+                'updated_at' => null,
+            ];
+        }
+
+        return $panel + [
+            'max_name' => BrandingManager::MAX_NAME,
+            'max_bytes' => BrandingLogo::MAX_BYTES,
+            'allowed' => 'PNG, JPEG, WebP',
+        ];
+    }
+
+    /**
+     * Orkestrasi branding (seam uji: manager dengan store/logo temp).
+     * Tanpa properti state — instance baru per pemanggilan (worker persistent).
+     */
+    protected function branding(): BrandingManager
+    {
+        return new BrandingManager();
+    }
+
+    /**
+     * Flash session (seam uji, pola `CreditController::flash()`).
+     */
+    protected function flash(string $type, string $message): void
+    {
+        flash_set($type, $message);
+    }
+
+    /**
+     * Berkas logo yang benar-benar diunggah, atau `null` bila tidak ada.
+     *
+     * Bentuk `['tmp','mime','size','error','name']` sesuai kontrak
+     * `BrandingLogo::save()`. Nama asli unggahan hanya dipakai untuk mendeteksi
+     * field kosong — **tidak** pernah dicatat/log/ditampilkan. Bentuk
+     * `logo[]=…` (defensif) diambil elemen pertamanya.
+     *
+     * @return array{tmp:string,mime:string,size:int,error:int,name:string}|null
+     */
+    protected function uploadedLogo(Request $request): ?array
+    {
+        $file = $request->file('logo');
+        if (is_array($file)) {
+            $file = array_values($file)[0] ?? null;
+        }
+        if (!$file instanceof UploadFile) {
+            return null;
+        }
+
+        $uploadName = trim((string) $file->getUploadName());
+        if ($uploadName === '') {
+            return null;
+        }
+
+        $tmp = (string) $file->getPathname();
+        $mime = trim((string) ($file->getUploadMimeType() ?? ''));
+        if ($mime === '' && $tmp !== '' && is_file($tmp)) {
+            // Klien tidak mengirim tipe: deteksi isi (validasi akhir tetap
+            // dilakukan `BrandingLogo` lewat `getimagesize()`).
+            $mime = trim((string) @mime_content_type($tmp));
+        }
+
+        try {
+            $size = (int) $file->getSize();
+        } catch (\Throwable) {
+            $size = 0;
+        }
+
+        return [
+            'tmp' => $tmp,
+            'mime' => $mime,
+            'size' => $size,
+            'error' => (int) ($file->getUploadErrorCode() ?? UPLOAD_ERR_NO_FILE),
+            'name' => $uploadName,
+        ];
     }
 
     /**
@@ -435,6 +540,60 @@ class NginxController
     }
 
     /**
+     * POST /nginx/branding — simpan nama brand (dan logo bila diunggah).
+     *
+     * **Admin-only**: penolakan **404** (`AppAccessDenied('nginx')`, pola
+     * `index()`) dan diperiksa **sebelum** efek samping apa pun. Validasi nama
+     * dilakukan `BrandingManager::update()`; pesan galatnya diteruskan apa
+     * adanya ke flash. Respons selalu redirect ke tab Branding (PRG), termasuk
+     * saat gagal — halaman tidak pernah dirender ulang dari POST.
+     */
+    public function saveBranding(Request $request)
+    {
+        if (!$this->isAdmin()) {
+            throw new AppAccessDenied('nginx');
+        }
+
+        $name = $request->post('name', '');
+        if (!is_scalar($name)) {
+            // `name[]=…` bukan string: tolak sebagai input tidak valid (bukan 500).
+            $this->flash('error', 'Nama brand tidak valid.');
+
+            return redirect('/nginx?tab=branding');
+        }
+
+        try {
+            $this->branding()->update(trim((string) $name), $this->uploadedLogo($request));
+            $this->flash('success', 'Branding diperbarui.');
+        } catch (InvalidArgumentException|RuntimeException $e) {
+            $this->flash('error', $e->getMessage());
+        }
+
+        return redirect('/nginx?tab=branding');
+    }
+
+    /**
+     * POST /nginx/branding/reset — kembalikan brand ke default (`Rames`, logo
+     * bawaan). Admin-only dengan penolakan 404 sebelum efek samping; kegagalan
+     * apa pun hanya menjadi flash error (halaman tetap dapat dibuka).
+     */
+    public function resetBranding(Request $request)
+    {
+        if (!$this->isAdmin()) {
+            throw new AppAccessDenied('nginx');
+        }
+
+        try {
+            $this->branding()->reset();
+            $this->flash('success', 'Branding dikembalikan ke default (' . BrandingStore::DEFAULT_NAME . ').');
+        } catch (\Throwable $e) {
+            $this->flash('error', $e->getMessage());
+        }
+
+        return redirect('/nginx?tab=branding');
+    }
+
+    /**
      * POST /nginx/reload — validasi (nginx -t) lalu reload (nginx -s reload)
      * pada nginx HOST. Hasil ditulis ke last-reload.json (dibaca NginxStatusReader).
      */
@@ -463,9 +622,10 @@ class NginxController
      *
      * Referer hanya boleh **path internal** (menolak URL absolut/protokol-relatif
      * → anti open redirect) — perilaku ini TIDAK berubah. Tambahan baru: bila
-     * pengirim menyertakan POST `tab` yang sah (`update|nginx|template`) dan
-     * kembali ke halaman Config, tab aktif dipertahankan (`/nginx?tab=<tab>`)
-     * supaya tidak melompat ke tab Update setiap kali reload Nginx ditekan.
+     * pengirim menyertakan POST `tab` yang sah
+     * (`update|nginx|template|branding`) dan kembali ke halaman Config, tab
+     * aktif dipertahankan (`/nginx?tab=<tab>`) supaya tidak melompat ke tab
+     * Update setiap kali reload Nginx ditekan.
      */
     protected function configBackUrl(string $referer, string $tab): string
     {

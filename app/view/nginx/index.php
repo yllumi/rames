@@ -6,10 +6,11 @@ $breadcrumbs = [
 ];
 
 // ---------------------------------------------------------------------------
-// Halaman Config = tiga tab: **Update Rames** (self-update dashboard),
+// Halaman Config = empat tab: **Update Rames** (self-update dashboard),
 // **Nginx** (status + reload nginx host), **Template** (katalog template app +
-// tarik image). Shell halaman (page-head + nav tab + include partial tab +
-// modal konfirmasi + skrip) ada di sini; isi tiap tab di `partials/tab-*.php`.
+// tarik image), **Branding** (nama & logo dashboard — rebranding). Shell halaman
+// (page-head + nav tab + include partial tab + modal konfirmasi + skrip) ada di
+// sini; isi tiap tab di `partials/tab-*.php`.
 //
 // Tab awal datang dari controller (`$tab`, dari query `?tab=` yang sudah
 // divalidasi whitelist di sana) supaya refresh/berbagi tautan mendarat di tab
@@ -36,13 +37,14 @@ $phpVersion = trim((string) ($php_version ?? PHP_VERSION));
             title="Versi PHP yang menjalankan dashboard ini (PHP_VERSION pada worker Webman)">PHP <?= e($phpVersion) ?></span>
     </h1>
     <p class="text-muted mb-0">
-      Konfigurasi host &amp; katalog app dalam tiga tab:
+      Konfigurasi host &amp; katalog app dalam empat tab:
       <strong>Update Rames</strong> — self-update dashboard,
       <strong>Nginx</strong> — status &amp; reload <strong>Nginx host</strong> (berlaku global untuk semua
       app; reload dijalankan lewat helper container via Docker socket — validasi
-      <span class="mono">nginx -t</span> lalu reload tanpa downtime), dan
+      <span class="mono">nginx -t</span> lalu reload tanpa downtime),
       <strong>Template</strong> — katalog template app siap-pakai beserta tombol tarik image
-      (<span class="mono">docker pull</span>).
+      (<span class="mono">docker pull</span>), dan
+      <strong>Branding</strong> — nama &amp; logo dashboard (default <strong>Rames</strong>).
     </p>
   </div>
 </div>
@@ -63,6 +65,11 @@ $phpVersion = trim((string) ($php_version ?? PHP_VERSION));
             data-bs-target="#pane-template" data-tab="template" type="button" role="tab"
             aria-controls="pane-template" aria-selected="<?= $tab === 'template' ? 'true' : 'false' ?>">Template<?php if ($templates !== []): ?> <span class="badge text-bg-secondary"><?= count($templates) ?></span><?php endif; ?></button>
   </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link<?= $tab === 'branding' ? ' active' : '' ?>" id="config-tab-branding" data-bs-toggle="tab"
+            data-bs-target="#pane-branding" data-tab="branding" type="button" role="tab"
+            aria-controls="pane-branding" aria-selected="<?= $tab === 'branding' ? 'true' : 'false' ?>">Branding</button>
+  </li>
 </ul>
 
 <div class="tab-content">
@@ -77,6 +84,10 @@ $phpVersion = trim((string) ($php_version ?? PHP_VERSION));
   <div class="tab-pane fade<?= $tab === 'template' ? ' show active' : '' ?>" id="pane-template" role="tabpanel"
        aria-labelledby="config-tab-template" tabindex="0">
     <?php include app_path() . '/view/nginx/partials/tab-templates.php'; ?>
+  </div>
+  <div class="tab-pane fade<?= $tab === 'branding' ? ' show active' : '' ?>" id="pane-branding" role="tabpanel"
+       aria-labelledby="config-tab-branding" tabindex="0">
+    <?php include app_path() . '/view/nginx/partials/tab-branding.php'; ?>
   </div>
 </div>
 

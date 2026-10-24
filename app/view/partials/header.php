@@ -1,9 +1,15 @@
+<?php
+// Identitas brand (rebranding) — helper global `app/functions.php`; nilai
+// dibaca per request (tanpa cache) supaya perubahan langsung terlihat.
+$__brandName = brand_name();
+$__brandLogo = brand_logo_url();
+?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title><?= e($pageTitle ?? 'Dashboard') ?> · Rames</title>
+<title><?= e($pageTitle ?? 'Dashboard') ?> · <?= e($__brandName) ?></title>
 <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/css/app.css">
 <meta name="csrf-token" content="<?= e(csrf_token()) ?>">
@@ -43,7 +49,7 @@ $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke=
   <div class="app-sidebar-inner d-flex flex-column h-100">
     <div class="app-sidebar-head">
       <button type="button" class="sidebar-toggle d-none d-lg-inline-flex" data-sidebar-toggle aria-controls="appSidebar" aria-expanded="true" aria-label="Lipat navigasi"><?= $__burger ?></button>
-      <a class="navbar-brand brand" href="/apps"><img src="/logo-small.png" alt="rames" width="28" height="28" class="rounded-2 flex-shrink-0"><span class="brand-text">rames</span></a>
+      <a class="navbar-brand brand" href="/apps"><img src="<?= e($__brandLogo) ?>" alt="<?= e($__brandName) ?>" width="28" height="28" class="rounded-2 flex-shrink-0"><span class="brand-text"><?= e($__brandName) ?></span></a>
       <button type="button" class="btn-close ms-auto d-lg-none" data-bs-dismiss="offcanvas" data-bs-target="#appSidebar" aria-label="Tutup navigasi"></button>
     </div>
     <nav class="sidebar-nav" aria-label="Menu utama">
@@ -113,7 +119,7 @@ $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke=
       <div class="container-fluid px-3">
         <div class="d-flex align-items-center gap-2">
           <button class="navbar-toggler sidebar-burger" type="button" data-bs-toggle="offcanvas" data-bs-target="#appSidebar" aria-controls="appSidebar" aria-label="Buka navigasi"><?= $__burger ?></button>
-          <a class="navbar-brand brand" href="/apps"><img src="/logo-small.png" alt="rames" width="24" height="24" class="rounded-2 flex-shrink-0"><span class="brand-text">rames</span></a>
+          <a class="navbar-brand brand" href="/apps"><img src="<?= e($__brandLogo) ?>" alt="<?= e($__brandName) ?>" width="24" height="24" class="rounded-2 flex-shrink-0"><span class="brand-text"><?= e($__brandName) ?></span></a>
         </div>
       </div>
     </nav>

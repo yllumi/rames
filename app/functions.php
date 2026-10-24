@@ -8,6 +8,7 @@ declare(strict_types=1);
 use app\library\Auth\AppAccess;
 use app\library\Auth\UserStore;
 use app\library\Billing\CreditAccount;
+use app\library\Branding\BrandingManager;
 use support\Request;
 
 if (!function_exists('e')) {
@@ -334,6 +335,55 @@ if (!function_exists('update_badge')) {
             'error' => isset($data['error']) && $data['error'] !== null ? (string) $data['error'] : null,
             'checked_at' => isset($data['checked_at']) ? (string) $data['checked_at'] : null,
         ];
+    }
+}
+
+if (!function_exists('brand_name')) {
+    /**
+     * Nama brand dashboard aktif (rebranding), default `Rames`.
+     *
+     * **Fail-safe**: kegagalan baca store (SQLite rusak/terkunci) tidak boleh
+     * merusak halaman login/UI — fallback ke default. Tanpa memo/statik
+     * lintas-request: worker Webman persistent membuat nilai statik basi setelah
+     * brand diganti.
+     */
+    function brand_name(): string
+    {
+        try {
+            return (new BrandingManager())->name();
+        } catch (\Throwable) {
+            return 'Rames';
+        }
+    }
+}
+
+if (!function_exists('brand_logo_url')) {
+    /**
+     * URL logo brand aktif: `/branding/logo?v=<etag>` bila logo kustom, atau
+     * `/logo-small.png` (bawaan). Fail-safe seperti {@see brand_name()}.
+     */
+    function brand_logo_url(): string
+    {
+        try {
+            return (new BrandingManager())->logoUrl();
+        } catch (\Throwable) {
+            return BrandingManager::DEFAULT_LOGO_URL;
+        }
+    }
+}
+
+if (!function_exists('brand_logo_is_custom')) {
+    /**
+     * Apakah logo brand aktif kustom (bukan `logo-small.png` bawaan).
+     * Fail-safe seperti {@see brand_name()}.
+     */
+    function brand_logo_is_custom(): bool
+    {
+        try {
+            return (bool) (new BrandingManager())->current()['logo_custom'];
+        } catch (\Throwable) {
+            return false;
+        }
     }
 }
 

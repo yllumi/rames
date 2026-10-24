@@ -82,6 +82,18 @@ class VolumeAppServerViewTest extends TestCase
                 return null;
             }
         }
+        if (!function_exists('brand_name')) {
+            function brand_name(): string
+            {
+                return 'Rames';
+            }
+        }
+        if (!function_exists('brand_logo_url')) {
+            function brand_logo_url(): string
+            {
+                return '/logo-small.png';
+            }
+        }
         if (!function_exists('flash_set')) {
             function flash_set(string $type, string $message): void
             {

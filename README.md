@@ -20,6 +20,7 @@
 - **Domains & SSL** — satu halaman **`/domains`** dengan dua tab: **Semua Domain** (tabel domain app + domain parkir beserta status & aksi SSL) dan **Domain Parkir** (CRUD). Halaman terbuka untuk **semua user login** (baris app disaring kepemilikan; baris parkir + seluruh aksi kelola/SSL parkir **admin-only** ⇒ 404). Domain parkir menyajikan **halaman statis** (mode `html`, berkas `{PARKED_ROOT}/{id}/index.html`) atau **redirect** 301/302 (path & query dipertahankan), dengan `www` sebagai entri terpisah + opsi **tambah www**; SSL Let's Encrypt berlaku untuk domain app **maupun parkir**, hanya server lokal, dan wajib `PARKED_ROOT` absolut yang sama di host agar Nginx host bisa membaca berkasnya (SPECS §8j, ARCHITECTURE §5.38).
 - **SSL otomatis (Let's Encrypt)** — aktifkan SSL **per domain** lewat `/domains` (tab **Semua Domain**): subdomain app, custom domain (bila di-set, app tampil sebagai **dua baris** — custom `serve` + subdomain `redirect` — dengan SSL per slot), dan domain parkir. Certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri; klik **Aktifkan SSL** berjalan **tanpa reload halaman** (baris diperbarui via polling JSON selama `pending`, fallback tanpa JS tetap bekerja). `GET /ssl` dialihkan **302 → `/domains`** (SPECS §8a, ARCHITECTURE §5.36).
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
+- **Branding (rebranding dashboard)** — halaman **Config** kini bertab (**Update Rames** | **Nginx** | **Template** | **Branding**); admin dapat mengganti **nama brand** (1–32 karakter) dan **logo** dashboard di tab **Branding**, atau menekan **Kembalikan ke default** (nama `Rames` + logo bawaan). Logo: PNG/JPEG/WebP maks **512 KB** (SVG/GIF ditolak); perubahan langsung berlaku di brand sidebar, judul tab browser, dan halaman **login**. Data tersimpan di SQLite (`branding_settings`) + berkas logo di direktori DB (named volume `rames`), sehingga ikut bertahan saat update dashboard (SPECS §7.16).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
 - **Database manager (Adminer)** — halaman `/database` membuka **Adminer** yang disajikan helper internal Rames **tanpa port publik** (di balik login + hak akses app, ability `database` = operator ke atas): daftar container MySQL/MariaDB, tombol **Kelola →**, kredensial terisi otomatis bila terdeteksi (kalau tidak, form login Adminer muncul dengan Server ter-prefill). Dump/import besar diarahkan ke **Volume/backup** atau tab **Terminal** (proxy dibatasi ≤30 detik & ukuran respons; SPECS §7.10).
 - **File manager container** — jelajah berkas, unggah multi-berkas, unduh, edit teks, buat berkas baru, buat folder, rename, pindah, hapus, dan ekstrak `.zip`/`.tar.gz` **di dalam container app** dari dashboard (tab **Container**, tombol `📁 Files`; ability `files` = operator ke atas, hanya untuk container yang berjalan; operasi berjalan sebagai root di dalam container; SPECS §7.9). Untuk app di **server agent**, seluruh operasi dijalankan **di server itu** (Docker Engine host control plane tidak disentuh); transfer berkas streaming dengan plafon **64 MiB** (ARCHITECTURE §5.29).
@@ -354,6 +355,7 @@ Selengkapnya (opsi installer, rotasi token/sertifikat dengan `--force`, firewall
 | `RAMES_DB_DIR` | `/var/lib/rames` | Direktori basis data SQLite dashboard (isi *named volume* `rames`; SPECS §8i) |
 | `RAMES_DB_FILE` | (kosong) | Berkas SQLite eksplisit (kosong = `<RAMES_DB_DIR>/rames.sqlite`) |
 | `RAMES_DB_BACKUP_DIR` | `/var/lib/rames/backup` | Direktori snapshot backup DB |
+| `BRANDING_DIR` | `<RAMES_DB_DIR>/branding` | Direktori berkas logo brand hasil rebranding (Config → tab Branding; SPECS §7.16). **Tidak** ikut snapshot backup DB |
 | `DB_BACKUP_ENABLED` | `true` | Aktifkan backup DB terjadwal (snapshot `VACUUM INTO` + retensi) |
 | `DB_BACKUP_HOUR` | `3` | Jam snapshot harian (0–23, waktu container) |
 | `DB_BACKUP_KEEP_DAILY` / `_WEEKLY` / `_MONTHLY` | `7` / `4` / `3` | Retensi snapshot harian/pekanan/bulanan (`0` = tingkat diabaikan; hanya snapshot terbaru dipertahankan bila semua `0`) |
@@ -412,10 +414,11 @@ Selengkapnya (opsi installer, rotasi token/sertifikat dengan `--force`, firewall
 app/
 ├── command/MakeAdmin.php        # php webman make:admin (provisioning user awal)
 ├── controller/                  # AuthController, AppController, CreditController, PaymentController,
-│                                #   FileController, SslController, NginxController, UserController,
+│                                #   FileController, SslController, NginxController, BrandingController, UserController,
 │                                #   ServerController (registry server), AgentController + AgentJobController + AgentLogController + AgentTerminalController + AgentFilesController + AgentDockerController (route mesin agent)
 ├── library/                     # SELURUH logika bisnis (controller hanya mediator)
 │   ├── Auth/UserStore.php
+│   ├── Branding/                # BrandingManager, BrandingLogo (nama & logo dashboard — SPECS §7.16)
 │   ├── Billing/                 # kredit & penagihan + top-up Duitku: Pricing, BillingStore, CreditAccount,
 │   │                            #   UsageMeter, Invoicer, BillingGate, BillingPeriod, InsufficientCredits,
 │   │                            #   BillingRunner, AppStopper, DuitkuClient, DuitkuSignature, DuitkuError,
@@ -433,7 +436,7 @@ app/
 │   ├── Nginx/                   # NginxConfigGenerator, ParkedNginxConfig, NginxStatusReader, NginxReloader
 │   ├── SSL/                     # SslIssuer, SslDomainRows, ParkedSslIssuer, ParkedSslEnabler
 │   ├── Storage/                 # SqliteDatabase, SqliteStore, SchemaMigrations, JsonImporter, DbBackup,
-│   │                            #   JsonStore (cache runtime, flock), AppStore, ParkedDomainStore
+│   │                            #   JsonStore (cache runtime, flock), AppStore, ParkedDomainStore, BrandingStore
 │   └── Support/ProcessRunner.php
 ├── middleware/                  # AuthMiddleware, CsrfMiddleware, AgentAuthMiddleware (mode agent)
 ├── process/BillingProcess.php   # timer billing (meteran + penagihan + top-up)
@@ -449,6 +452,7 @@ host/                            # installer host (install.sh), create-admin.sh,
 config/                          # konfigurasi Webman + config/deploy.php
 database/                        # berkas JSON warisan (diimpor sekali) + keys/env/restic (gitignored)
                                  #   DB SQLite: named volume `rames` → /var/lib/rames/rames.sqlite (§8i)
+                                 #   branding/ = berkas logo brand kustom (fallback dev; gitignored, §7.16)
 apps/                           # hasil clone tiap app (gitignored)
 agent/                           # paket server agent: install.sh + README.md (multi-server)
 docker-compose.agent.yml         # compose server agent (project rames-agent, TLS di :8443)

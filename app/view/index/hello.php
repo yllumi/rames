@@ -1,9 +1,14 @@
+<?php
+// Identitas brand (rebranding) — helper global `app/functions.php`.
+$__brandName = brand_name();
+$__brandLogo = brand_logo_url();
+?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hello World · Rames</title>
+<title>Hello World · <?= e($__brandName) ?></title>
 <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/css/app.css">
 <style>
@@ -29,11 +34,11 @@
 <div class="auth-glow"></div>
 <div class="hello-wrap">
   <div class="hello-logo">
-    <img src="/logo-rames.png" alt="rames">
+    <img src="<?= e($__brandLogo) ?>" alt="<?= e($__brandName) ?>">
   </div>
   <h1 class="hello-title">Hello, World!</h1>
   <p class="hello-sub">
-    Selamat datang di <strong>Rames</strong> — Deployment Control Panel.
+    Selamat datang di <strong><?= e($__brandName) ?></strong> — Deployment Control Panel.
     Mulai kelola app, SSL, dan pengguna dari dashboard.
   </p>
   <?php if (current_user()): ?>

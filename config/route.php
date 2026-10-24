@@ -24,6 +24,7 @@ use app\controller\AgentNetworkController;
 use app\controller\AgentTerminalController;
 use app\controller\AuthController;
 use app\controller\BackupController;
+use app\controller\BrandingController;
 use app\controller\CreditController;
 use app\controller\IndexController;
 use app\controller\LogController;
@@ -224,6 +225,11 @@ Route::get('/logout', [AuthController::class, 'logout']);
 // self-update untuk memverifikasi versi baru melayani request, + monitoring eksternal.
 Route::get('/healthz', [HealthController::class, 'index']);
 
+// Logo brand publik (tanpa login) karena dipakai halaman login sebelum sesi ada.
+// Tanpa parameter input: berkas selalu berasal dari store logo (tanpa path/nama
+// dari request), responsnya hanya byte gambar brand + ETag untuk revalidasi.
+Route::get('/branding/logo', [BrandingController::class, 'logo']);
+
 // Callback pembayaran Duitku (publik & path eksak, SPECS.md §7.12 / plan §5.7):
 // tanpa sesi — keamanannya dari signature HMAC + kecocokan amount + idempotensi
 // di PaymentController; CSRF dikecualikan hanya untuk POST path ini
@@ -306,6 +312,12 @@ Route::post('/nginx/reload', [NginxController::class, 'reload']);
 // Halaman /nginx tab Template (§7.13): tarik image template (admin-only).
 Route::post('/nginx/templates/pull', [NginxController::class, 'pullTemplates']);
 Route::get('/nginx/templates/pull/status', [NginxController::class, 'pullStatus']);
+
+// Rebranding dashboard (tab Branding di halaman Config): simpan nama + logo,
+// atau kembalikan ke default. Keduanya admin-only (non-admin ⇒ 404 di controller)
+// dan tetap wajib CSRF (tidak ada pengecualian CsrfMiddleware).
+Route::post('/nginx/branding', [NginxController::class, 'saveBranding']);
+Route::post('/nginx/branding/reset', [NginxController::class, 'resetBranding']);
 
 // Domain & SSL (global, di luar app; fase 1 server lokal).
 // `GET /domains` (tabel "Semua Domain": app + parkir) terbuka untuk semua user

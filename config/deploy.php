@@ -118,6 +118,9 @@ return [
     // keys/env/restic); lokasi SQLite punya knob sendiri.
     'sqlite_dir' => $sqliteDir,
     'sqlite_file' => $sqliteFile,
+    // Direktori berkas logo brand (rebranding). Kosong ⇒ ikut volume DB
+    // (`{sqlite_dir}/branding`) agar bertahan saat update dashboard.
+    'branding_dir' => getenv('BRANDING_DIR') ?: (dirname($sqliteFile) . '/branding'),
     // Backup berkala basis data SQLite.
     'db_backup_dir' => getenv('RAMES_DB_BACKUP_DIR') ?: (dirname($sqliteFile) . '/backup'),
     'db_backup_enabled' => $billingBool('DB_BACKUP_ENABLED', true),

@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 use support\Request;
 
 /**
- * Halaman Config `/nginx` sekarang bertab (Update / Nginx / Template).
+ * Halaman Config `/nginx` sekarang bertab (Update / Nginx / Template / Branding).
  *
  * Yang dikunci di sini:
  *  - aksi reload Nginx mempertahankan tab aktif (`/nginx?tab=template`) — tanpa

@@ -1,9 +1,14 @@
+<?php
+// Identitas brand (rebranding) — helper global `app/functions.php`.
+$__brandName = brand_name();
+$__brandLogo = brand_logo_url();
+?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Login · Rames</title>
+<title>Login · <?= e($__brandName) ?></title>
 <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/css/app.css">
 </head>
@@ -12,8 +17,8 @@
 <div class="auth-card">
   <div class="card-body p-4 p-md-5">
     <div class="auth-brand mb-2">
-      <img src="/logo-small.png" alt="rames" width="160" height="160" class="rounded-3">
-      <div>rames</div>
+      <img src="<?= e($__brandLogo) ?>" alt="<?= e($__brandName) ?>" width="160" height="160" class="rounded-3">
+      <div><?= e($__brandName) ?></div>
     </div>
     <p class="sub">Deployment Control Panel · <?= e(config('deploy.app_domain')) ?></p>
     <?php $__flash = flash_pull(); ?>

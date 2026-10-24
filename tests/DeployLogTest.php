@@ -131,7 +131,13 @@ class DeployLogTest extends TestCase
     {
         if (!function_exists('e')) {
             $stub = sys_get_temp_dir() . '/rames-deploy-log-view-stub-' . getmypid() . '.php';
-            file_put_contents($stub, "<?php\nfunction e(\$value): string { return htmlspecialchars((string) \$value, ENT_QUOTES, 'UTF-8'); }\n");
+            file_put_contents(
+                $stub,
+                "<?php\n"
+                . "function e(\$value): string { return htmlspecialchars((string) \$value, ENT_QUOTES, 'UTF-8'); }\n"
+                . "function brand_name(): string { return 'Rames'; }\n"
+                . "function brand_logo_url(): string { return '/logo-small.png'; }\n"
+            );
             require $stub;
             @unlink($stub);
         }

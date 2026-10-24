@@ -32,8 +32,13 @@ class AuthMiddleware implements MiddlewareInterface
      * key (`hash_equals`), kecocokan amount dengan order tersimpan, idempotensi
      * (`pending → paid` sekali), dan respons polos tanpa data sensitif. Endpoint
      * menjawab 404 saat fitur/kredensial tidak lengkap.
+     *
+     * `/branding/logo` publik & **path eksak** (bukan prefix): halaman login
+     * butuh logo brand **sebelum** sesi ada. Responsnya hanya byte gambar brand
+     * dari store logo (tanpa parameter path/nama dari request) — tanpa data
+     * sensitif; `Cache-Control: no-cache` + ETag membuat revalidasi murah.
      */
-    private const PUBLIC_PATHS = ['/', '/login', '/healthz', '/payments/duitku/callback'];
+    private const PUBLIC_PATHS = ['/', '/login', '/healthz', '/payments/duitku/callback', '/branding/logo'];
 
     private const STATIC_EXTENSIONS = [
         'css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp',

@@ -22,6 +22,8 @@
 /database/env/
 # halaman parkir domain (isi HTML per entri `parked`: database/parked/{id}/index.html)
 /database/parked/
+# logo brand kustom (fallback dev saat RAMES_DB_DIR tidak diarahkan ke volume)
+/database/branding/
 # passphrase restic (backup volume ke S3) — rahasia, jangan pernah di-commit
 /database/restic/
 
