@@ -24,7 +24,7 @@ $breadcrumbs = [
   <div>
     <h1 class="h3 mb-1">Profil</h1>
     <p class="text-muted mb-0">
-      Kelola email notifikasi akun Anda. Username &amp; peran hanya dapat diubah oleh admin.
+      Kelola email notifikasi dan password akun Anda. Username &amp; peran hanya dapat diubah oleh admin.
     </p>
   </div>
 </div>
@@ -75,6 +75,39 @@ $breadcrumbs = [
             </dd>
           <?php endif; ?>
         </dl>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mt-1">
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-header bg-white py-2 fw-semibold">Ubah password</div>
+      <div class="card-body">
+        <?php // Password tidak pernah dirender balik: tidak ada atribut value di form ini. ?>
+        <form method="post" action="/profile/password" class="row g-3">
+          <?= csrf_field() ?>
+          <div class="col-12">
+            <label class="form-label" for="profile-current-password">Password saat ini</label>
+            <input type="password" class="form-control" name="current_password" id="profile-current-password"
+                   required autocomplete="current-password">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="profile-new-password">Password baru</label>
+            <input type="password" class="form-control" name="new_password" id="profile-new-password"
+                   required minlength="6" autocomplete="new-password" aria-describedby="profile-new-password-hint">
+            <div class="form-text" id="profile-new-password-hint">Minimal 6 karakter.</div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="profile-new-password-confirm">Ulangi password baru</label>
+            <input type="password" class="form-control" name="new_password_confirm" id="profile-new-password-confirm"
+                   required minlength="6" autocomplete="new-password">
+          </div>
+          <div class="col-12">
+            <button type="submit" class="btn btn-primary btn-sm">Perbarui password</button>
+          </div>
+        </form>
       </div>
     </div>
   </div>

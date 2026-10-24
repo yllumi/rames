@@ -22,7 +22,10 @@ use Webman\Http\Response;
  * Membuktikan: `index()` mengirim payload kontrak ke `profile/index`,
  * `setEmail()` mengubah email user login sendiri (anti-IDOR), email tidak valid
  * / terlalu panjang ditolak dengan flash error tanpa mutasi, dan email kosong
- * diartikan menghapus email.
+ * diartikan menghapus email; `changePassword()` hanya mengubah password user
+ * login sendiri setelah password saat ini terverifikasi, menolak konfirmasi
+ * tidak cocok / password terlalu pendek / input array tanpa mutasi, serta
+ * meneruskan kebijakan panjang ke `UserStore`.
  */
 class ProfileControllerTest extends TestCase
 {
@@ -280,6 +283,300 @@ class ProfileControllerTest extends TestCase
         $this->assertNotNull($citra);
         $this->assertSame('', $this->users->emailOf($citra));
         $this->assertSame('success', $controller->flashes[0]['type']);
+    }
+
+    // ------------------------------------------------------------------
+    // (g) changePassword: sukses
+    // ------------------------------------------------------------------
+
+    public function testChangePasswordUpdatesOwnPasswordAndFlashesSuccess(): void
+    {
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $response = $controller->changePassword($this->post('/profile/password', [
+            'current_password' => 'rahasia-lama',
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-baru',
+        ]));
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/profile', $response->getHeader('Location'));
+
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-baru'));
+        $this->assertFalse($this->users->verifyPassword('u2', 'rahasia-lama'));
+
+        $this->assertCount(1, $controller->flashes);
+        $this->assertSame('success', $controller->flashes[0]['type']);
+        $this->assertStringContainsString('diperbarui', $controller->flashes[0]['message']);
+        // Password mentah tidak boleh bocor ke flash.
+        $this->assertStringNotContainsString('rahasia-baru', $controller->flashes[0]['message']);
+        $this->assertStringNotContainsString('rahasia-lama', $controller->flashes[0]['message']);
+    }
+
+    /**
+     * Password tidak di-trim: spasi dianggap bagian dari password.
+     */
+    public function testChangePasswordDoesNotTrimNewPassword(): void
+    {
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $controller->changePassword($this->post('/profile/password', [
+            'current_password' => 'rahasia-lama',
+            'new_password' => '  spasi  ',
+            'new_password_confirm' => '  spasi  ',
+        ]));
+
+        $this->assertSame('success', $controller->flashes[0]['type']);
+        $this->assertTrue($this->users->verifyPassword('u2', '  spasi  '));
+        $this->assertFalse($this->users->verifyPassword('u2', 'spasi'));
+    }
+
+    // ------------------------------------------------------------------
+    // (h) changePassword: password saat ini salah/ kosong → tanpa mutasi
+    // ------------------------------------------------------------------
+
+    public function testChangePasswordRejectsWrongCurrentPasswordWithoutMutating(): void
+    {
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $response = $controller->changePassword($this->post('/profile/password', [
+            'current_password' => 'salah',
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-baru',
+        ]));
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/profile', $response->getHeader('Location'));
+
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-lama'), 'password lama tetap berlaku');
+        $this->assertFalse($this->users->verifyPassword('u2', 'rahasia-baru'));
+
+        $this->assertSame('error', $controller->flashes[0]['type']);
+        $this->assertStringContainsString('saat ini salah', $controller->flashes[0]['message']);
+    }
+
+    public function testChangePasswordRejectsEmptyCurrentPasswordWithoutMutating(): void
+    {
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $controller->changePassword($this->post('/profile/password', [
+            'current_password' => '',
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-baru',
+        ]));
+
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-lama'));
+        $this->assertSame('error', $controller->flashes[0]['type']);
+        $this->assertStringContainsString('saat ini salah', $controller->flashes[0]['message']);
+    }
+
+    // ------------------------------------------------------------------
+    // (i) changePassword: konfirmasi tidak cocok → tanpa mutasi
+    // ------------------------------------------------------------------
+
+    public function testChangePasswordRejectsMismatchedConfirmationWithoutMutating(): void
+    {
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $response = $controller->changePassword($this->post('/profile/password', [
+            'current_password' => 'rahasia-lama',
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-lain',
+        ]));
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/profile', $response->getHeader('Location'));
+
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-lama'));
+        $this->assertSame('error', $controller->flashes[0]['type']);
+        $this->assertStringContainsString('tidak cocok', $controller->flashes[0]['message']);
+    }
+
+    // ------------------------------------------------------------------
+    // (j) changePassword: kebijakan panjang dari UserStore (bukan duplikat)
+    // ------------------------------------------------------------------
+
+    public function testChangePasswordRejectsTooShortPasswordWithoutMutating(): void
+    {
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $response = $controller->changePassword($this->post('/profile/password', [
+            'current_password' => 'rahasia-lama',
+            'new_password' => 'abc',
+            'new_password_confirm' => 'abc',
+        ]));
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/profile', $response->getHeader('Location'));
+
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-lama'));
+        $this->assertSame('error', $controller->flashes[0]['type']);
+        $this->assertStringContainsString('minimal 6', $controller->flashes[0]['message']);
+    }
+
+    // ------------------------------------------------------------------
+    // (k) changePassword: input array / field hilang → flash, bukan 500
+    // ------------------------------------------------------------------
+
+    public function testChangePasswordRejectsArrayValuedFieldWithoutMutating(): void
+    {
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $response = $controller->changePassword($this->post('/profile/password', [
+            'current_password' => ['x'],
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-baru',
+        ]));
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/profile', $response->getHeader('Location'));
+
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-lama'));
+        $this->assertSame('error', $controller->flashes[0]['type']);
+        $this->assertSame('Password tidak valid.', $controller->flashes[0]['message']);
+    }
+
+    /**
+     * Sama untuk kedua field password baru (`new_password[]`,
+     * `new_password_confirm[]`): ditolak sebagai "Password tidak valid.".
+     *
+     * @return array<string, array{0:string}>
+     */
+    public static function arrayValuedPasswordFields(): array
+    {
+        return [
+            'new password' => ['new_password'],
+            'confirmation' => ['new_password_confirm'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('arrayValuedPasswordFields')]
+    public function testChangePasswordRejectsArrayValuedNewPasswordFields(string $field): void
+    {
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $fields = [
+            'current_password' => 'rahasia-lama',
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-baru',
+        ];
+        $fields[$field] = ['x'];
+
+        $response = $controller->changePassword($this->post('/profile/password', $fields));
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/profile', $response->getHeader('Location'));
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-lama'), 'tidak boleh ada mutasi');
+        $this->assertFalse($this->users->verifyPassword('u2', 'rahasia-baru'));
+        $this->assertSame('Password tidak valid.', $controller->flashes[0]['message']);
+    }
+
+    /**
+     * Password user **lain** tidak boleh diterima sebagai `current_password`
+     * (bukti verifikasi terikat id sesi, bukan username/tebakan global).
+     */
+    public function testChangePasswordRejectsOtherUsersPasswordAsCurrent(): void
+    {
+        $this->users->changePassword('u1', 'admin-lama');
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $controller->changePassword($this->post('/profile/password', [
+            'current_password' => 'admin-lama',
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-baru',
+        ]));
+
+        $this->assertSame('error', $controller->flashes[0]['type']);
+        $this->assertStringContainsString('saat ini salah', $controller->flashes[0]['message']);
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-lama'));
+        $this->assertFalse($this->users->verifyPassword('u2', 'rahasia-baru'));
+    }
+
+    public function testChangePasswordWithoutFieldsFailsGracefullyWithoutMutating(): void
+    {
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $response = $controller->changePassword($this->post('/profile/password', []));
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/profile', $response->getHeader('Location'));
+
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-lama'));
+        $this->assertSame('error', $controller->flashes[0]['type']);
+    }
+
+    // ------------------------------------------------------------------
+    // (l) changePassword: anti-IDOR — id user lain diabaikan
+    // ------------------------------------------------------------------
+
+    public function testChangePasswordIgnoresForeignUserIdFromRequest(): void
+    {
+        $this->users->changePassword('u1', 'admin-lama');
+        $this->users->changePassword('u2', 'rahasia-lama');
+        $controller = $this->controller($this->sessionUser('u2'));
+
+        $response = $controller->changePassword($this->post('/profile/password', [
+            'current_password' => 'rahasia-lama',
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-baru',
+            // Percobaan menargetkan user lain — harus DIABAIKAN.
+            'id' => 'u1',
+            'user_id' => 'u1',
+            'username' => 'admin',
+        ]));
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/profile', $response->getHeader('Location'));
+
+        $this->assertTrue($this->users->verifyPassword('u2', 'rahasia-baru'));
+        $this->assertFalse($this->users->verifyPassword('u2', 'rahasia-lama'));
+
+        $this->assertTrue($this->users->verifyPassword('u1', 'admin-lama'), 'password user lain tidak boleh berubah');
+        $this->assertFalse($this->users->verifyPassword('u1', 'rahasia-baru'));
+        $this->assertSame('success', $controller->flashes[0]['type']);
+    }
+
+    // ------------------------------------------------------------------
+    // (m) changePassword: tanpa login → 401 JSON / redirect login
+    // ------------------------------------------------------------------
+
+    public function testChangePasswordWithoutLoggedInUserReturnsJson401ForJsonClients(): void
+    {
+        $controller = $this->controller(null);
+
+        $response = $controller->changePassword($this->postJson('/profile/password', [
+            'current_password' => 'rahasia-lama',
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-baru',
+        ]));
+
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertSame(401, json_decode($response->rawBody(), true)['code'] ?? null);
+        $this->assertCount(0, $controller->flashes, 'tanpa login tidak boleh ada flash/mutasi');
+    }
+
+    public function testChangePasswordWithoutLoggedInUserRedirectsBrowserToLogin(): void
+    {
+        $controller = $this->controller(null);
+
+        $response = $controller->changePassword($this->post('/profile/password', [
+            'current_password' => 'rahasia-lama',
+            'new_password' => 'rahasia-baru',
+            'new_password_confirm' => 'rahasia-baru',
+        ]));
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/login', $response->getHeader('Location'));
     }
 
     // ------------------------------------------------------------------

@@ -144,6 +144,38 @@ class UserStore
         return $this->publicUser($user);
     }
 
+    /**
+     * Verifikasi password milik user tertentu **berdasarkan id**.
+     *
+     * Dipakai alur self-service "ubah password" di halaman Profil: id berasal
+     * dari session user login, bukan dari username yang dikirim request.
+     * Perbandingan memakai `password_verify()` (constant-time) — hash mentah
+     * tidak pernah dibandingkan, dikembalikan, atau dicatat.
+     *
+     * Selalu `false` (tanpa exception/notice) bila user tidak ada, hash tidak
+     * tersedia (legacy/korup/bukan string), atau password tidak cocok.
+     * Password kosong selalu ditolak: kebijakan aplikasi mensyaratkan minimal
+     * 6 karakter, dan hash bcrypt dari string kosong tidak boleh lolos.
+     */
+    public function verifyPassword(string $id, string $password): bool
+    {
+        if ($password === '') {
+            return false;
+        }
+
+        $user = $this->findById($id);
+        if ($user === null) {
+            return false;
+        }
+
+        $hash = $user['password_hash'] ?? null;
+        if (!is_string($hash) || $hash === '') {
+            return false;
+        }
+
+        return password_verify($password, $hash);
+    }
+
     public function usernameExists(string $username): bool
     {
         return $this->findByUsername($username) !== null;

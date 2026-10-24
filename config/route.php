@@ -485,12 +485,14 @@ Route::post('/users/{id}/email', [UserController::class, 'setEmail']);
 |--------------------------------------------------------------------------
 | Profil self-service (semua user login)
 |--------------------------------------------------------------------------
-| `/profile` = halaman profil diri sendiri + ubah email (pindahan form email
-| dari `/credits`). `POST /profile/email` hanya mengubah email user login
-| (anti-IDOR: `id`/`user_id` dari request diabaikan).
+| `/profile` = halaman profil diri sendiri + ubah email/password (pindahan
+| form email dari `/credits`). `POST /profile/email` dan
+| `POST /profile/password` hanya mengubah data user login
+| (anti-IDOR: `id`/`user_id`/`username` dari request diabaikan).
 */
 Route::get('/profile', [ProfileController::class, 'index']);
 Route::post('/profile/email', [ProfileController::class, 'setEmail']);
+Route::post('/profile/password', [ProfileController::class, 'changePassword']);
 
 /*
 |--------------------------------------------------------------------------

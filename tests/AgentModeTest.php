@@ -98,11 +98,15 @@ class AgentModeTest extends TestCase
      * mengenal store domain parkir/SSL control plane) dan tetap wajib CSRF.
      * `GET /ssl` sekarang handler `DomainController::legacySsl` (redirect
      * `/domains`) tetapi route-nya **tetap terdaftar** satu definisi.
+     *
+     * +1 (ubah password self-service di halaman Profil): `POST /profile/password`
+     * — semua user login (anti-IDOR: id dari sesi), dashboard-only (agent tidak
+     * punya UI/sesi), tetap wajib CSRF.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 130;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 131;
 
-    /** Definisi di atas menghasilkan 136 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 136;
+    /** Definisi di atas menghasilkan 137 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 137;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [

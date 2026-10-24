@@ -9,24 +9,29 @@ use Throwable;
 use Webman\Http\Response;
 
 /**
- * Halaman **Profil** self-service user login (`GET /profile`) dan aksi ubah
- * email diri sendiri (`POST /profile/email`).
+ * Halaman **Profil** self-service user login (`GET /profile`) dan aksi
+ * self-service diri sendiri: ubah email (`POST /profile/email`) serta ubah
+ * password (`POST /profile/password`).
  *
  * Form email sebelumnya menumpang di halaman `/credits` (lihat
  * `CreditController::setEmail()`); halaman itu tetap dipertahankan untuk
  * kompatibilitas mundur, sedangkan `/profile` menjadi rumah barunya.
  *
  * Controller ini **mediator murni**: validasi email (format + batas 50
- * karakter) tidak diduplikasi di sini — seluruhnya didelegasikan ke
- * {@see UserStore::setEmail()}, sehingga aturan hanya hidup di satu tempat.
+ * karakter) dan kebijakan panjang password tidak diduplikasi di sini —
+ * seluruhnya didelegasikan ke {@see UserStore} (`setEmail()`,
+ * `verifyPassword()`, `changePassword()`), sehingga aturan hanya hidup di satu
+ * tempat.
  *
  * Invarian:
- *  - **anti-IDOR**: `id`/`user_id` dari request diabaikan mutlak; id selalu
- *    diambil dari user login (`current_user()`);
+ *  - **anti-IDOR**: `id`/`user_id`/`username` dari request diabaikan mutlak;
+ *    id selalu diambil dari user login (`current_user()`);
  *  - **tanpa state lintas-request**: satu-satunya properti adalah seam
  *    pengujian (`UserStore` berpath temp); `controller_reuse=false`
  *    (config/app.php) membuat controller baru tiap request;
- *  - input email tidak valid ⇒ flash error + redirect, **bukan** HTTP 500.
+ *  - input tidak valid ⇒ flash error + redirect, **bukan** HTTP 500;
+ *  - password/hash tidak pernah dicatat ke log, flash, atau respons, dan
+ *    tidak pernah di-trim (spasi bisa signifikan).
  */
 class ProfileController
 {
@@ -100,6 +105,74 @@ class ProfileController
             $this->users()->setEmail((string) $user['id'], $email);
             $this->flash('success', $email === '' ? 'Email dihapus.' : 'Email diperbarui.');
         } catch (Throwable $e) {
+            $this->flash('error', $e->getMessage());
+        }
+
+        return redirect('/profile');
+    }
+
+    /**
+     * `POST /profile/password` — ubah password **user login sendiri**.
+     *
+     * Field wajib: `current_password`, `new_password`, `new_password_confirm`.
+     *
+     * Urutan penjagaan (semua kegagalan ⇒ flash error + redirect `/profile`,
+     * **tanpa** mutasi dan **tanpa** HTTP 500):
+     *  1. field harus skalar (input array ditolak sebagai "Password tidak
+     *     valid.");
+     *  2. password saat ini wajib lolos `verifyPassword()` — pesan seragam
+     *     "Password saat ini salah." agar tidak membocorkan apakah user/hash
+     *     ada;
+     *  3. konfirmasi harus identik;
+     *  4. kebijakan panjang minimum **tidak** diduplikasi: `changePassword()`
+     *     yang memvalidasi dan melempar `InvalidArgumentException`, pesannya
+     *     diteruskan apa adanya.
+     *
+     * Password tidak di-trim (spasi signifikan) dan tidak pernah dicatat.
+     * Session user tidak disentuh: setelah sukses user tetap login.
+     */
+    public function changePassword(Request $request): Response
+    {
+        $user = $this->currentUser();
+        if ($user === null) {
+            return $this->unauthenticated($request);
+        }
+
+        $currentPassword = $request->post('current_password', '');
+        $newPassword = $request->post('new_password', '');
+        $newPasswordConfirm = $request->post('new_password_confirm', '');
+
+        // Input array (`current_password[]=…`) tidak boleh sampai ke store.
+        if (!is_scalar($currentPassword) || !is_scalar($newPassword) || !is_scalar($newPasswordConfirm)) {
+            $this->flash('error', 'Password tidak valid.');
+
+            return redirect('/profile');
+        }
+
+        $currentPassword = (string) $currentPassword;
+        $newPassword = (string) $newPassword;
+        $newPasswordConfirm = (string) $newPasswordConfirm;
+
+        // Anti-IDOR: id SELALU dari sesi, tak pernah dari request.
+        $id = (string) $user['id'];
+
+        if (!$this->users()->verifyPassword($id, $currentPassword)) {
+            $this->flash('error', 'Password saat ini salah.');
+
+            return redirect('/profile');
+        }
+
+        if ($newPassword !== $newPasswordConfirm) {
+            $this->flash('error', 'Konfirmasi password baru tidak cocok.');
+
+            return redirect('/profile');
+        }
+
+        try {
+            $this->users()->changePassword($id, $newPassword);
+            $this->flash('success', 'Password diperbarui.');
+        } catch (Throwable $e) {
+            // Pesan kebijakan (mis. "Password minimal 6 karakter.") dari store.
             $this->flash('error', $e->getMessage());
         }
 
