@@ -73,6 +73,8 @@ Bentuk pipe juga didukung. Prompt tetap berjalan karena installer membuka termin
 curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.sh | sudo bash
 ```
 
+> **Dua bootstrap, dua peran.** `install.sh` = **dashboard** (clone default `/opt/rames`); `install.agent.sh` = **server agent** (clone default `/opt/rames-agent`) — lihat [Menambah server kedua](#menambah-server-kedua).
+
 Yang dikerjakan installer:
 
 1. Cek distro & arsitektur, lalu pasang paket dasar (`curl`, `git`, `gnupg`, `lsb-release`, `openssl`, …).
@@ -301,14 +303,29 @@ docker exec rames-webman php cli/db.php export-json --dir=/tmp # ke direktori la
 
 Dashboard dapat mengendalikan **server tambahan** (multi-server): dashboard berperan **control plane**, server tambahan berperan **agent** — kode & image **sama**, dibedakan mode runtime (`RAMES_MODE=agent`; agent tidak punya UI). Server tempat dashboard berjalan tetap menangani app-nya sendiri sebagai server `local` (instalasi lama tidak berubah).
 
-1. **Di server baru** (Docker Engine + `docker compose` v2.6+, Nginx native + certbot, wildcard DNS `*.<APP_DOMAIN>` mengarah ke server itu), checkout repo lalu jalankan installer agent:
+1. **Di server baru** — siapkan wildcard DNS `*.<APP_DOMAIN>` mengarah ke server itu, lalu jalankan **installer satu perintah** [`install.agent.sh`](./install.agent.sh). Bootstrap ini memasang paket dasar + dependensi host (Docker Engine + Compose v2, Nginx, certbot), meng-clone Rames ke `/opt/rames-agent`, meminta domain/email (hanya bila belum ada), lalu menyerahkan instalasi ke `agent/install.sh`:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.agent.sh -o /tmp/rames-install-agent.sh \
+     && sudo bash /tmp/rames-install-agent.sh --domain agent.example.com --email ops@example.com
+
+   # bentuk pipe (prompt tetap jalan lewat /dev/tty):
+   curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.agent.sh \
+     | sudo bash -s -- --domain agent.example.com --email ops@example.com
+   ```
+
+   Dependensi host dipasang lewat `host/install.sh --deps-only` yang berhenti **sebelum** wizard `.env`, preflight, `docker compose up`, dan unit systemd — aman dijalankan di host yang sudah menjalankan dashboard. Opsi bootstrap: `--dir <path>` (default `/opt/rames-agent`), `--ref <branch|tag>` (default `main`), `--repo <url>`, `--no-deps` (lewati paket dasar + dependensi host; `agent/install.sh` hanya memeriksa prasyarat), `--help`. Flag agent diteruskan utuh & berurutan ke `agent/install.sh`: `--domain`, `--email`, `--ip`, `--bind`, `--port-range <start> <end>`, `--ssl-challenge`, `--ssl-ca-server`, `--cloudflare-creds`, `--force` — lihat `sudo bash /tmp/rames-install-agent.sh --help`.
+
+   > **Penting — agent menolak direktori instalasi dashboard.** Direktori yang sudah terpasang sebagai **dashboard** Rames (punya `.env`, `database/apps.json`, atau `apps/` berisi) **ditolak** (`die`), karena agent tidak boleh menimpa dashboard hidup. Pada host yang sama dengan dashboard, pakai `--dir` lain (default `/opt/rames-agent` sudah terpisah dari `/opt/rames`). Checkout Rames agent yang sudah ada (`secrets/agent.env`) dipakai ulang tanpa reset; rerun idempoten — domain/email tidak ditanyakan lagi bila `APP_DOMAIN` sudah tercatat.
+
+   Alternatif untuk checkout yang sudah ada atau opsi lanjutan:
 
    ```bash
    git clone <repo> /srv/rames-agent && cd /srv/rames-agent
    ./agent/install.sh --domain domain2.com --port-range 30000 30999
    ```
 
-   Installer membuat `secrets/agent.env` (0600, token acak) + **sertifikat TLS self-signed**, menjalankan `docker compose -f docker-compose.agent.yml -p rames-agent up -d --build`, lalu mencetak **blok onboarding**: URL, token, fingerprint SHA-256, PEM sertifikat, dan versi agent.
+   Installer `agent/install.sh` membuat `secrets/agent.env` (0600, token acak) + **sertifikat TLS self-signed**, menjalankan `docker compose -f docker-compose.agent.yml -p rames-agent up -d --build`, lalu mencetak **blok onboarding**: URL, token, fingerprint SHA-256, PEM sertifikat, dan versi agent. Bootstrap `install.agent.sh` sendiri tidak mencetak secret apa pun — satu-satunya sumber blok onboarding tetap `agent/install.sh`.
 
    Tambahkan juga **`ADMIN_EMAIL`** ke `secrets/agent.env` **server itu** — lewat opsi installer `--email <email>` — lalu recreate container agent (env dibaca saat create). Job `ssl_issue` dijalankan **di server agent** memakai env server itu, jadi tanpa `ADMIN_EMAIL` penerbitan SSL di sana selalu gagal ([rincian](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
 
@@ -320,7 +337,7 @@ Dashboard dapat mengendalikan **server tambahan** (multi-server): dashboard berp
 
 5. **Kelola resource server itu dari dashboard**: `Nginx`/domains/SSL, log & terminal, file manager, monitoring, **database/Adminer**, **network & volume project**, dan **backup/restore/dump volume** app di server itu semuanya dieksekusi **di server target** — host control plane tidak menyentuh daemon/restic server lain. Non-admin tidak pernah melihat pemilih server: mereka hanya melihat server yang menaungi app yang boleh mereka akses (di luar itu **404**). Catatan F4: penjadwalan backup otomatis untuk volume server agent **belum ada** (jalankan manual lewat `/backups` atau `docker exec <agent> php cli/backup.php run <volume> manual <serverId>` dari control plane) — lihat `SPECS.md` §8h.12.
 
-Selengkapnya (opsi installer, rotasi token/sertifikat dengan `--force`, firewall, operasi harian): [`agent/README.md`](./agent/README.md). Alur internal: `ARCHITECTURE.md` §5.21–§5.26, `SPECS.md` §2a/§7.14/§12.
+Selengkapnya (opsi installer, rotasi token/sertifikat dengan `--force`, firewall, operasi harian): [`agent/README.md`](./agent/README.md). Alur internal: `ARCHITECTURE.md` §5.21–§5.26 + §5.41 (bootstrap agent), `SPECS.md` §2a/§7.14/§12.
 
 ## Konfigurasi (.env)
 
@@ -448,6 +465,7 @@ cli/db.php                       # CLI basis data SQLite (status|migrate|import-
 cli/ssl.php                      # background worker SSL app (Let's Encrypt)
 cli/parked-ssl.php               # background worker SSL domain parkir
 install.sh                       # bootstrap one-liner: cek OS/paket dasar + clone + delegasi host/install.sh
+install.agent.sh                 # bootstrap one-liner server AGENT: clone /opt/rames-agent + host/install.sh --deps-only + agent/install.sh
 host/                            # installer host (install.sh), create-admin.sh, watcher/certbot, systemd unit
 config/                          # konfigurasi Webman + config/deploy.php
 database/                        # berkas JSON warisan (diimpor sekali) + keys/env/restic (gitignored)

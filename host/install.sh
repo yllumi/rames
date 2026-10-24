@@ -39,6 +39,7 @@ WATCHER_USER="rames-watcher"
 NO_DEPS=0
 NON_INTERACTIVE=0
 ENV_ONLY=0
+DEPS_ONLY=0
 OPT_DOMAIN=""
 OPT_PORT=""
 OPT_EMAIL=""
@@ -112,6 +113,10 @@ Opsi umum:
   --admin-user <u>      username admin pertama (default admin)
   --admin-password <p>  password admin (default: di-generate acak oleh create-admin.sh)
   --session-secret <s>  SESSION_SECRET (default: di-generate acak; 'change-me' ditolak)
+  --deps-only           hanya pasang dependensi host (Docker Engine + Compose v2,
+                        nginx, certbot) lalu keluar — dipakai installer agent
+                        (install.agent.sh); .env, preflight, dan compose TIDAK
+                        disentuh, jadi aman di host yang sudah punya dashboard
 
 Opsi lanjutan (opsional):
   --ssl-challenge <m>        http (default) | dns-cloudflare
@@ -209,6 +214,7 @@ parse_args() {
             --no-deps) NO_DEPS=1 ;;
             --non-interactive) NON_INTERACTIVE=1 ;;
             --env-only) ENV_ONLY=1 ;;
+            --deps-only) DEPS_ONLY=1 ;;
             --domain)
                 OPT_DOMAIN="${2:?--domain butuh nilai}"; shift
                 valid_domain "$OPT_DOMAIN" || die "--domain tidak valid: '$OPT_DOMAIN' (huruf kecil, mis. example.com)."
@@ -266,6 +272,10 @@ parse_args() {
 
     if [ -n "$OPT_ADMIN_USER" ] && ! printf '%s' "$OPT_ADMIN_USER" | grep -qE '^[a-z0-9][a-z0-9._-]{0,31}$'; then
         die "--admin-user tidak valid: '$OPT_ADMIN_USER' (huruf kecil/angka/._-, 1-32 karakter)."
+    fi
+
+    if [ "$DEPS_ONLY" -eq 1 ] && [ "$ENV_ONLY" -eq 1 ]; then
+        die "--deps-only tidak bisa digabung dengan --env-only (pilih salah satu)."
     fi
 }
 
@@ -953,6 +963,25 @@ main() {
     fi
 
     info "Rames installer — project: $PROJECT_DIR"
+
+    # --deps-only: pasang dependensi host lalu keluar SEBELUM wizard .env,
+    # preflight, dan `compose up`. Dipakai `install.agent.sh` (server agent).
+    # Aman di host yang sudah punya dashboard: .env/compose/container tidak disentuh.
+    if [ "$DEPS_ONLY" -eq 1 ]; then
+        if [ "$NO_DEPS" -eq 0 ]; then
+            install_deps
+        else
+            info "--no-deps: melewatkan instalasi paket host."
+        fi
+        # Klaim "siap" hanya bila benar-benar siap: --no-deps atau package
+        # manager tak dikenal bisa membuat instalasi di atas dilewati.
+        if docker compose version >/dev/null 2>&1 && command -v nginx >/dev/null 2>&1 && command -v certbot >/dev/null 2>&1; then
+            ok "Dependensi host siap (docker compose, nginx, certbot)."
+        else
+            warn "Sebagian dependensi host belum siap — periksa keluaran di atas (docker compose / nginx / certbot)."
+        fi
+        return 0
+    fi
 
     # Nilai env dikumpulkan & divalidasi lebih dulu, tetapi .env BARU ditulis
     # setelah preflight lolos — kegagalan Docker/Nginx tidak meninggalkan .env

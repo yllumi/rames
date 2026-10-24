@@ -444,15 +444,18 @@ Skrip shell **repo** (bukan `app/library/`, bukan data runtime) — dua lapis de
 
 | Berkas | Peran |
 |---|---|
-| `install.sh` (root) | **Bootstrap one-liner** (`curl … \| sudo bash`): cek Ubuntu/Debian + arsitektur, pasang paket dasar untuk clone (`ca-certificates`, `curl`, `git`, `gnupg`, `lsb-release`, `openssl`), clone `--depth=1` atau pakai ulang checkout, lalu `exec host/install.sh` dengan argumen diteruskan utuh. **Tidak** memasang Docker/Nginx/certbot sendiri (§5.39). |
-| `host/install.sh` | **Installer host**: dependensi host (nginx, inotify-tools, certbot + plugin Cloudflare), Docker Engine + Compose v2 (repo resmi → fallback distro), wizard/validasi `.env`, direktori & include Nginx, `docker compose up -d --build`, delegasi `host/create-admin.sh`, unit systemd (watcher, certbot, volume backup), ringkasan (§5.39). |
+| `install.sh` (root) | **Bootstrap one-liner dashboard** (`curl … \| sudo bash`): cek Ubuntu/Debian + arsitektur, pasang paket dasar untuk clone (`ca-certificates`, `curl`, `git`, `gnupg`, `lsb-release`, `openssl`), clone `--depth=1` ke `/opt/rames` atau pakai ulang checkout, lalu `exec host/install.sh` dengan argumen diteruskan utuh. **Tidak** memasang Docker/Nginx/certbot sendiri (§5.39). |
+| `install.agent.sh` (root) | **Bootstrap one-liner server agent** (peran `RAMES_MODE=agent`, §5.21): guard OS/arsitektur, paket dasar, clone ke `/opt/rames-agent` (`--dir`/`--ref`/`--repo`), tolak direktori instalasi dashboard, prompt identitas idempoten, `host/install.sh --deps-only`, lalu `exec agent/install.sh` dengan flag agent diteruskan utuh. **Mandiri** — tidak `source` berkas repo (skrip dijalankan sebelum clone) dan tidak mencetak secret (§5.41). |
+| `host/install.sh` | **Installer host**: dependensi host (nginx, inotify-tools, certbot + plugin Cloudflare), Docker Engine + Compose v2 (repo resmi → fallback distro), wizard/validasi `.env`, direktori & include Nginx, `docker compose up -d --build`, delegasi `host/create-admin.sh`, unit systemd (watcher, certbot, volume backup), ringkasan (§5.39). Mode **`--deps-only`**: hanya dependensi host lalu keluar **sebelum** wizard `.env`, preflight, `compose up`, dan unit systemd (dipakai `install.agent.sh`, §5.41); `--deps-only --env-only` ditolak. |
 | `host/create-admin.sh` | Provisioning user admin pertama — menunggu `GET /healthz` siap sebelum `php webman make:admin` (§5.5 langkah 0). |
 | `host/nginx-reload-watcher.sh` + `host/systemd/dashboard-nginx-watcher.*` | Watcher reload Nginx (§8.3). |
 | `host/certbot-renew.sh` + `host/systemd/certbot-renew.*` | Renewal sertifikat Let's Encrypt (§8a). |
 | `host/backup.sh` + `host/systemd/volume-backup.*` | Timer backup volume harian (§5.15). |
 | `host/restic-setup.md` | Panduan setup restic yang dirender di UI `/backups/guide` (§5.15). |
 
-> **WAJIB — bootstrap tidak menduplikasi logika installer.** Root `install.sh` hanya menyiapkan prasyarat clone + delegasi; seluruh keputusan paket, wizard `.env`, dan orkestrasi service ada di `host/install.sh`. Menambah langkah instalasi di root membuat langkah itu hilang pada alur "checkout yang sudah ada" (`sudo ./host/install.sh`).
+> **WAJIB — bootstrap tidak menduplikasi logika installer.** Root `install.sh` hanya menyiapkan prasyarat clone + delegasi; seluruh keputusan paket, wizard `.env`, dan orkestrasi service ada di `host/install.sh`. Menambah langkah instalasi di root membuat langkah itu hilang pada alur "checkout yang sudah ada" (`sudo ./host/install.sh`). Hal yang sama berlaku untuk `install.agent.sh`: ia hanya menyiapkan prasyarat + delegasi ke `agent/install.sh` (§5.41).
+
+> **WAJIB — kedua bootstrap root (`install.sh`, `install.agent.sh`) mandiri.** **Gejala**: `curl … | bash` gagal `No such file or directory` saat memanggil helper bersama, atau bootstrap memakai versi helper dari checkout lama. **Sebab**: skrip dijalankan **sebelum** repo ada, sehingga tidak boleh `source`/`require` berkas repo apa pun. **Penangkal**: duplikasi boilerplate (guard OS/arsitektur/root, prompt fd, clone) **disengaja**; berbagi kode hanya boleh lewat repo-setelah-clone (`host/install.sh`, `agent/install.sh`).
 
 ---
 
@@ -1237,6 +1240,8 @@ sequenceDiagram
     CP->>CP: simpan status=online, agent_version, capabilities, last_seen_at
 ```
 
+Bootstrap satu perintah `install.agent.sh` (§5.41) menjalankan bagian **clone + `agent/install.sh`** diagram ini secara otomatis (Docker/nginx/certbot dipasang lebih dulu lewat `host/install.sh --deps-only`); langkah **Add Server → Test connection** tetap manual di dashboard.
+
 - Installer **idempoten** (tanpa `--force`, token/sertifikat/nilai lama dipertahankan). `--force` mengganti token + sertifikat ⇒ admin **wajib** memperbarui server di dashboard.
 - Dashboard menghitung fingerprint **sendiri** dari PEM yang di-paste (`ServerResolver::fingerprintFromPem()`) — tidak ada peluang salah ketik; fingerprint tetap ditampilkan untuk verifikasi manual.
 - **Ambil ulang kredensial dari server tujuan (server `agent`)**: `token`/`tls_cert_pem` tidak pernah dirender ulang halaman `/servers` (payload form hanya `has_token`), jadi view `app/view/server/form.php` merender blok bantu **"Ambil token & sertifikat dari server tujuan"** — perintah siap-salin yang **bukan field form** (tidak ikut POST) untuk dijalankan **di server tujuan**: `docker exec rames-agent sh -lc 'printf "TOKEN=%s\n\n" "$AGENT_TOKEN"; cat "$AGENT_TLS_CERT"'`. Kedua nilai ada di dalam container karena `env_file: ./secrets/agent.env` (`docker-compose.agent.yml`, container `rames-agent`) ⇒ `docker exec` tidak butuh `sudo` **bila** user punya akses daemon Docker (root atau anggota grup `docker`, lihat peringatan `agent/install.sh`; jika bukan, jalankan dengan `sudo`). Seksi + `<script>`-nya hanya dirender untuk server non-`local` (`$isLocal`). Opsi lain yang **dirender view**: menjalankan ulang `./agent/install.sh` dari direktori paket agent di server tujuan (butuh akses daemon Docker) — idempoten, tanpa `--force` token/sertifikat dipertahankan — untuk mencetak ulang seluruh blok onboarding bila container agent tidak hidup. **Jalur berbasis berkas sengaja TIDAK dirender** meskipun sah di level OS (`sudo grep '^AGENT_TOKEN=' secrets/agent.env` + `sudo cat secrets/agent/tls.crt`; izin 0600/0700 ⇒ perlu root) — karena `tests/ServerViewTest.php::assertNoSecretLeak()` melarang HTML halaman `/servers` memuat substring `secret` (juga `Bearer` & token contoh); pesan view memakai id `agent-onboarding-cmd`, bukan `agent-secret-cmd`. Token & PEM tetap kredensial: **jangan** ditempel ke chat/tiket/commit.
@@ -1620,7 +1625,7 @@ POST /domains/parked/{id}/ssl | POST /api/domains/parked/{id}/enable
 
 ### 5.39 Instalasi Satu-Perintah (`install.sh` → `host/install.sh`)
 
-Dua lapis: **bootstrap** (root `install.sh`) lalu **installer host** (`host/install.sh`). Bootstrap dipakai untuk mesin baru; installer host tetap bisa dijalankan langsung dari checkout (alur lama).
+Dua lapis: **bootstrap** (root `install.sh`) lalu **installer host** (`host/install.sh`). Bootstrap dipakai untuk mesin baru; installer host tetap bisa dijalankan langsung dari checkout (alur lama). Bootstrap untuk **server agent** dibahas terpisah di §5.41 (`install.agent.sh`).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.sh -o /tmp/rames-install.sh \
@@ -1648,7 +1653,7 @@ Urutan:
 
 > **DILARANG — memakai `--env-only` sebagai jalur instalasi produksi.** Flag ini internal: berhenti setelah `.env`, tidak menyentuh `/etc`, Docker, atau systemd, dan tidak membutuhkan root. Gunanya hanya menguji wizard/penulisan `.env` tanpa menyentuh host.
 
-**Pengujian**: `tests/InstallShHostEnvWizardTest.php` — menjalankan skrip di sandbox temp (tidak menyentuh `database/`, `apps/`, `runtime/`): sintaks `bash -n`, `--help` memuat opsi baru, `--env-only` menulis nilai flag + `SESSION_SECRET` acak + permission 0600, idempotensi rerun, nilai berkarakter khusus verbatim, validasi gagal tanpa membuat `.env`, preflight gagal tidak meninggalkan `.env`, reuse checkout + argumen diteruskan utuh, penolakan direktori non-Rames, dan jalur pipe `curl | bash`.
+**Pengujian**: `tests/InstallShHostEnvWizardTest.php` — menjalankan skrip di sandbox temp (tidak menyentuh `database/`, `apps/`, `runtime/`): sintaks `bash -n`, `--help` memuat opsi baru, `--env-only` menulis nilai flag + `SESSION_SECRET` acak + permission 0600, idempotensi rerun, nilai berkarakter khusus verbatim, validasi gagal tanpa membuat `.env`, preflight gagal tidak meninggalkan `.env`, reuse checkout + argumen diteruskan utuh, penolakan direktori non-Rames, dan jalur pipe `curl | bash`. Mode `--deps-only` diuji di `tests/InstallAgentShBootstrapTest.php` (§5.41).
 
 ---
 
@@ -1678,6 +1683,61 @@ Respons **selalu** `redirect('/nginx?tab=branding')` (PRG, sukses maupun gagal).
 > **GOTCHA — berkas logo bukan bagian snapshot DB.** **Gejala**: restore snapshot DB tidak memulihkan logo; logo hilang setelah `docker compose down -v`. **Sebab**: `BrandingLogo` menulis `{RAMES_DB_DIR}/branding/logo.<ext>` (named volume `rames`), sedangkan `DbBackup` hanya `VACUUM INTO` SQLite (§5.19/§8i). **Penangkal**: ikutkan direktori store pada backup host; bila hilang, dashboard kembali ke logo bawaan (bukan error).
 
 **Pengujian**: `tests/BrandingStoreTest.php` (default/normalisasi/basename saja/reset), `tests/BrandingLogoTest.php` (SVG/GIF, isi palsu, MIME mismatch, ukuran, dimensi, atomik + varian ekstensi), `tests/BrandingManagerTest.php` (urutan efek samping, unggahan gagal tidak menyentuh store, kegagalan berkas pasca-DB), `tests/NginxControllerBrandingTest.php` (admin-only 404, PRG, validasi nama, unggahan invalid), `tests/BrandingControllerTest.php` (`/branding/logo` 200/404, header, ETag/304), `tests/BrandingRouteGuardTest.php` (publik eksak + wajib CSRF), `tests/BrandingHelperTest.php` (default saat store kosong/rusak — fail-safe), `tests/BrandingTabViewTest.php` (render tab/escape XSS).
+
+---
+
+### 5.41 Instalasi Satu-Perintah Server Agent (`install.agent.sh`)
+
+Bootstrap **kedua** di root repo, sejajar §5.39 tetapi untuk peran **agent** (bukan dashboard). Tujuannya: satu perintah di server kosong menyiapkan Docker/nginx/certbot, checkout Rames, lalu menyerahkan seluruh instalasi agent ke `agent/install.sh` (§5.21) — **satu sumber kebenaran** untuk `secrets/agent.env`, TLS, compose agent, dan blok onboarding.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.agent.sh -o /tmp/rames-install-agent.sh \
+  && sudo bash /tmp/rames-install-agent.sh --domain agent.example.com --email ops@example.com
+# pipe (prompt lewat /dev/tty, fd 3 — sama seperti §5.39):
+curl -fsSL https://raw.githubusercontent.com/yllumi/rames/main/install.agent.sh \
+  | sudo bash -s -- --domain agent.example.com --email ops@example.com
+```
+
+```mermaid
+flowchart TD
+    A["parse_args / --help<br/>(SEBELUM cek root)"] --> B["ensure_root<br/>exec sudo -E bash SELF"]
+    B --> C["require_os + require_arch"]
+    C --> D["assert_install_dir_sane<br/>tolak dashboard SEBELUM apt"]
+    D --> E["install_base_packages<br/>(kecuali --no-deps)"]
+    E --> F["resolve_install_dir<br/>clone | reuse | reject"]
+    F --> G["prompt_identity<br/>hanya bila perlu"]
+    G --> H{"--no-deps?"}
+    H -- ya --> I["lewati dependensi host (warn)"]
+    H -- tidak --> J["host/install.sh --deps-only"]
+    J --> K["verifikasi: docker compose version<br/>+ nginx + certbot"]
+    I --> L["ensure_host_scripts_exec<br/>hanya bila CLONED=1"]
+    K --> L
+    L --> M["exec agent/install.sh + PASS_ARGS"]
+```
+
+Urutan:
+
+1. **Argumen sebelum root**: `parse_args` (termasuk `-h/--help`, validasi nilai) dijalankan **sebelum** `ensure_root` ⇒ `--help` dan penolakan argumen bekerja tanpa sudo. Tanpa root, `ensure_root` mengeksekusi ulang diri sendiri (`exec sudo -E bash "$SELF" "$@"`, path absolut dihitung **sebelum** eskalasi); bentuk pipe tanpa `$SELF` (tidak bisa dieskalasi) ⇒ pesan agar mengunduh dulu. `setup_prompt_fd` membuka `/dev/tty` di fd 3 (`RAMES_PROMPT_FD`) bila stdin berisi skrip.
+2. **Guard OS/arsitektur**: `require_os` menerima `ID`/`ID_LIKE` `ubuntu`/`debian` (Ubuntu 22.04/24.04 utama, Debian fallback), `require_arch` menerima `x86_64`/`aarch64`/`arm64`; distro/arsitektur lain `die` sebelum efek samping.
+3. **Validasi direktori fail-fast**: `assert_install_dir_sane` (memakai `install_dir_verdict`) berjalan **sebelum** `install_base_packages` — direktori yang jelas tidak boleh dipakai tidak perlu menunggu `apt-get`. Tanpa `--dir`, CWD yang merupakan checkout Rames ikut dinilai.
+4. **Paket dasar** `BASE_PKGS=(ca-certificates curl git gnupg lsb-release openssl)`; `--no-deps` melewati langkah ini.
+5. **Resolusi direktori** (`resolve_install_dir`, default `/opt/rames-agent` — **berbeda** dari dashboard `/opt/rames`): CWD checkout Rames tanpa `--dir` ⇒ dipakai; direktori ada ⇒ `reuse` (checkout agent: `docker-compose.agent.yml` + `agent/install.sh` + `app/functions.php`) atau `clone` (kosong) atau `reject`; clone memakai `git clone --depth=1 --single-branch --branch "$REF"` dan menandai `CLONED=1`. Reuse **tidak** reset/checkout — update lewat `git pull`.
+6. **Prompt identitas** (`prompt_identity`): dilewati bila `--domain` diberikan **atau** `secrets/agent.env` sudah berisi `APP_DOMAIN` (rerun idempoten); bila tidak ada TTY dan `--domain` tidak ada ⇒ `die`. Nilai yang dikumpulkan ditambahkan ke `PASS_ARGS` (`--domain`, `--email`).
+7. **Dependensi host**: `bash "$INSTALL_DIR/host/install.sh" --deps-only`. Mode `--deps-only` di `host/install.sh` memanggil `install_deps` (kecuali `--no-deps`), lalu **memverifikasi** `docker compose version` + `command -v nginx` + `command -v certbot`, mencetak `ok` hanya bila ketiganya benar-benar ada (`warn` bila tidak), lalu `return 0` **sebelum** blok `handle_existing_env`/`collect_config`, `preflight`, `compose up`, dan unit systemd. Kombinasi `--deps-only --env-only` ditolak saat `parse_args`.
+8. **`chmod` selektif**: `ensure_host_scripts_exec` hanya menyentuh `host/*.sh` + `agent/install.sh` bila `CLONED=1`; checkout yang dipakai ulang tidak diubah modenya (`git diff` pemilik repo harus tetap bersih).
+9. **Delegasi**: `exec` `agent/install.sh` dengan `PASS_ARGS` (urutan dipertahankan): `--domain`, `--email`, `--ip`, `--bind`, `--port-range <start> <end>`, `--ssl-challenge`, `--ssl-ca-server`, `--cloudflare-creds`, `--force`. Flag bootstrap (`--dir`/`--ref`/`--repo`/`--no-deps`) **tidak** diteruskan; argumen asing `die`. Bila skrip agent belum executable (checkout reuse), dijalankan lewat `bash` tanpa mengubah mode. Onboarding setelahnya = §5.21 (Add Server → Test connection).
+
+> **WAJIB — `install.agent.sh` mandiri, jangan refactor dengan mengimpor berkas repo.** **Gejala**: `curl … | sudo bash` gagal karena helper "tidak ditemukan", atau memakai helper dari checkout lama. **Sebab**: skrip dijalankan **sebelum** repo ada sehingga tidak boleh `source` berkas repo. **Penangkal**: boilerplate guard OS/root/clone **diduplikasi dari `install.sh`** dengan sengaja; kode bersama hanya boleh hidup di `host/install.sh`/`agent/install.sh` (setelah clone).
+
+> **DILARANG — menjalankan `install.agent.sh` dengan `--dir` menunjuk instalasi dashboard.** **Gejala**: container `rames-agent` naik di repo dashboard + `secrets/` tertulis di sana (kasus nyata pernah terjadi). **Sebab**: repo yang sama dipakai kedua peran, sehingga pemeriksaan berbasis **struktur repo** saja tidak membedakan dashboard dari agent. **Penangkal**: `is_dashboard_install()` menang atas `is_agent_install()` — `.env`, `database/apps.json`, atau `apps/` tidak kosong ⇒ `refuse_install_dir()` `die`; host yang menjalankan dashboard memakai `--dir` lain (default `/opt/rames-agent` sudah terpisah).
+
+> **DILARANG — `--deps-only` menyentuh `.env`, `preflight`, `compose up`, atau unit systemd.** **Gejala**: instalasi dashboard yang hidup tiba-tiba ter-recreate / `.env` tertimpa saat bootstrap agent dijalankan di host yang sama. **Sebab**: memakai jalur installer penuh. **Penangkal**: `--deps-only` `return 0` sebelum blok `.env`/preflight/compose/systemd; klaim "dependensi siap" hanya dicetak setelah `docker compose version` + `nginx` + `certbot` terverifikasi (bukan setelah `apt-get` selesai).
+
+> **WAJIB — `--port-range` dua bilangan bulat 1..65535.** **Gejala**: `--port-range 31000 --force` menelan `--force` sebagai port akhir sehingga `--force` hilang. **Penangkal**: kedua nilai divalidasi `is_port_number()` dan `$#` minimal 3 (opsi + dua nilai); gagal ⇒ `die "--port-range butuh DUA bilangan bulat 1..65535"`.
+
+> **DILARANG — menambahkan berkas tracked ke `apps/`.** **Gejala**: semua checkout Rames (termasuk dashboard) tampak seperti instalasi dashboard sehingga `install.agent.sh` menolak dipakai di sana. **Sebab**: `is_dashboard_install()` menganggap `apps/` **tidak kosong** sebagai penanda instalasi. **Penangkal**: `apps/` tetap gitignored dan hanya berisi hasil clone app saat runtime; berkas contoh/placeholder dilarang.
+
+**Pengujian**: `tests/InstallAgentShBootstrapTest.php` (20 uji; sandbox temp — `id` palsu mencetak 0, `apt-get`/`docker` shim di `PATH`, tidak menyentuh `database/`, `apps/`, `runtime/`, `nginx-status/`): `bash -n` + executable `0755`, `--help` tanpa root & bentuk pipe, `host/install.sh --help` menyebut `--deps-only`, passthrough argumen agent utuh & berurutan, reuse checkout agent, penolakan direktori non-Rames, penolakan checkout dashboard (`.env`/`database/apps.json`/`apps/` berisi) + penanda dashboard menang atas penanda agent, reuse checkout agent terpasang/belum diinstal (warning), prompt identitas idempoten (`--domain` vs `APP_DOMAIN` di `secrets/agent.env`), `--no-deps` tidak memanggil host installer, `--deps-only` berhenti sebelum wizard `.env`, `--port-range` menolak flag sebagai nilai kedua, opsi bernilai wajib menolak nilai kosong, `chmod` hanya pada clone baru. Gabungan dengan suite installer lama (`InstallShHostEnvWizardTest`, `InstallShAgentBindFailFastTest`) = **75 tests, 514 assertions** di host ber-bash; container `rames-webman` (Alpine, tanpa `bash`) **skip** test installer.
 
 ---
 
