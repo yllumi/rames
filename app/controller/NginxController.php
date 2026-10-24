@@ -403,7 +403,10 @@ class NginxController
                 $serverId
             ),
             $serverId,
-            (string) ($server['name'] ?? '')
+            (string) ($server['name'] ?? ''),
+            // Dokumen server untuk redaksi pesan galat yang dipantulkan agent
+            // (`AgentError::sanitizeForServer()` — `base_url`/token/PEM).
+            $server
         );
     }
 
@@ -453,13 +456,19 @@ class NginxController
         $actor = $this->actorName();
 
         if (!$this->isLocalServer($serverId)) {
+            $server = null;
             try {
                 $server = $this->serverResolver()->resolve($serverId);
                 $result = $this->agentPull($server)->start($slug, $actor);
             } catch (AgentError $e) {
-                return json(['code' => 400, 'msg' => $e->getMessage()]);
+                // Galat transport menyisipkan `base_url`/host agent; buang identitas
+                // server lewat pintu tunggal sebelum dikirim ke UI.
+                return json(['code' => 400, 'msg' => AgentError::sanitizeForServer($e->getMessage(), is_array($server) ? $server : [])]);
             } catch (RuntimeException $e) {
-                return json(['code' => 400, 'msg' => $e->getMessage()]);
+                // Jalur yang sama bisa membawa pesan dari job agent (mis. galat
+                // pembacaan state) — tetap lewat pintu tunggal; dokumen kosong
+                // membuatnya setara `sanitize()` biasa.
+                return json(['code' => 400, 'msg' => AgentError::sanitizeForServer($e->getMessage(), is_array($server) ? $server : [])]);
             }
 
             return json([
@@ -503,11 +512,16 @@ class NginxController
         $serverId = trim((string) $request->get('server', ''));
 
         if (!$this->isLocalServer($serverId)) {
+            $server = null;
             try {
                 $server = $this->serverResolver()->resolve($serverId);
                 $panel = $this->agentPull($server)->panel();
             } catch (\Throwable $e) {
-                return json(['code' => 400, 'msg' => 'Gagal membaca status tarik image: ' . $e->getMessage()]);
+                return json([
+                    'code' => 400,
+                    'msg' => 'Gagal membaca status tarik image: '
+                        . AgentError::sanitizeForServer($e->getMessage(), is_array($server) ? $server : []),
+                ]);
             }
 
             return json([

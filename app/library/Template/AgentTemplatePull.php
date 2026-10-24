@@ -42,11 +42,20 @@ final class AgentTemplatePull
 
     private readonly string $serverName;
 
+    /**
+     * @param string              $serverId   id server agent (kunci state)
+     * @param string              $serverName nama tampilan server (label pesan)
+     * @param array<string,mixed> $server     dokumen server — **hanya** untuk
+     *                                        redaksi pesan galat
+     *                                        (`AgentError::sanitizeForServer()`);
+     *                                        kosong = tanpa identitas server
+     */
     public function __construct(
         private readonly AgentDeployer $agent,
         private readonly TemplatePullState $state,
         string $serverId,
         string $serverName = '',
+        private readonly array $server = [],
     ) {
         $this->serverId = trim($serverId);
         $this->serverName = trim($serverName);
@@ -185,10 +194,12 @@ final class AgentTemplatePull
         } catch (AgentError $e) {
             if ($e->reason !== AgentError::NOT_FOUND) {
                 // Transport bermasalah: jangan tutup run (agen bisa kembali);
-                // UI menampilkan pesan terakhir + galat ini.
+                // UI menampilkan pesan terakhir + galat ini. Identitas server
+                // (base_url/host/token/PEM) dibuang lewat pintu tunggal.
                 return $this->state->update([
                     'stage' => 'polling',
-                    'message' => 'Menunggu ' . $this->label() . ': ' . $e->getMessage(),
+                    'message' => 'Menunggu ' . $this->label() . ': '
+                        . AgentError::sanitizeForServer($e->getMessage(), $this->server),
                 ]);
             }
 
@@ -211,6 +222,10 @@ final class AgentTemplatePull
             ? (string) $job['message']
             : (string) ($run['message'] ?? '');
 
+        // Pesan job berasal dari agent — jangan sampai token/base_url/PEM yang
+        // terpantul ikut tersimpan dan tampil di panel.
+        $message = AgentError::sanitizeForServer($message, $this->server);
+
         $this->state->update([
             'log_offset' => (int) $progress['offset'],
             'stage' => $status === 'done' ? 'finished' : $stage,
@@ -218,7 +233,10 @@ final class AgentTemplatePull
         ]);
 
         if ($status === 'error') {
-            return $this->state->finalize('error', $this->agent->serverJobFailure($job, self::OP));
+            return $this->state->finalize(
+                'error',
+                AgentError::sanitizeForServer($this->agent->serverJobFailure($job, self::OP), $this->server)
+            );
         }
 
         if ($status === 'done') {

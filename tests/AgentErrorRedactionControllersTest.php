@@ -3,10 +3,12 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use app\controller\AppController;
 use app\controller\BackupController;
 use app\controller\FileController;
 use app\controller\LogController;
 use app\controller\MonitorController;
+use app\controller\NginxController;
 use app\controller\TerminalController;
 use app\library\Agent\AgentClient;
 use app\library\Agent\TlsPinMaterializer;
@@ -16,10 +18,14 @@ use app\library\Docker\DockerClient;
 use app\library\Files\ContainerFiles;
 use app\library\Storage\AppStore;
 use app\library\Storage\ServerStore;
+use app\library\Template\AgentTemplatePull;
+use app\library\Template\TemplatePullState;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Psr7\Request as GuzzleRequest;
 use GuzzleHttp\Psr7\Response as GuzzleResponse;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use support\Request;
@@ -51,6 +57,55 @@ class AgentErrorRedactionControllersTest extends TestCase
     private const APP_ID = 'a1b2c3d4e5f60718';
     private const ADMIN = ['id' => 'u9', 'username' => 'admin', 'role' => 'admin'];
 
+    /** Stub helper global untuk `AppController` (dimuat di proses anak). */
+    private const APP_STUB_SOURCE = <<<'PHP'
+        <?php
+        namespace {
+            if (!function_exists('current_user')) {
+                function current_user(): ?array
+                {
+                    return ['id' => 'u9', 'username' => 'admin', 'role' => 'admin'];
+                }
+            }
+            if (!function_exists('flash_set')) {
+                function flash_set(string $type, string $message): void
+                {
+                    $GLOBALS['RAMES_REDACT_FLASH'][] = ['type' => $type, 'message' => $message];
+                }
+            }
+            if (!function_exists('flash_pull')) {
+                function flash_pull(): ?array
+                {
+                    return null;
+                }
+            }
+            if (!function_exists('session')) {
+                function session(): object
+                {
+                    return new class {
+                        public function get(?string $key = null): mixed
+                        {
+                            return null;
+                        }
+
+                        public function set(string $key, mixed $value): void
+                        {
+                        }
+
+                        public function delete(string $key): void
+                        {
+                        }
+
+                        public function pull(string $key): mixed
+                        {
+                            return null;
+                        }
+                    };
+                }
+            }
+        }
+        PHP;
+
     private string $tmp = '';
 
     /** @var array<string,mixed> */
@@ -70,6 +125,7 @@ class AgentErrorRedactionControllersTest extends TestCase
             '<?php return ' . var_export([
                 'sqlite_file' => $this->tmp . '/rames.sqlite',
                 'docker_socket' => $this->tmp . '/tidak-ada-docker.sock',
+                'template_pull_run_dir' => $this->tmp . '/template-pull',
             ], true) . ';' . PHP_EOL
         );
         Config::load($this->tmp . '/config');
@@ -84,7 +140,7 @@ class AgentErrorRedactionControllersTest extends TestCase
                 'members' => [],
                 'primary_service' => 'web',
                 'containers' => [
-                    ['service_name' => 'web', 'container_name' => 'demo-web-1'],
+                    ['service_name' => 'web', 'container_name' => 'demo-web-1', 'host_port' => 31001, 'internal_port' => 80],
                 ],
             ],
         ]);
@@ -195,6 +251,108 @@ class AgentErrorRedactionControllersTest extends TestCase
     }
 
     // ==================================================================
+    // F4 lanjutan: aksi app, tarik template agent, snapshot backup, panel pull
+    // ==================================================================
+
+    /**
+     * `AppController::setSubdomain()` — galat `nginx_write` di agent memuat
+     * `base_url`/host; flash ke user wajib sudah teredaksi.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAppControllerHidesAgentIdentityInErrorMessage(): void
+    {
+        $this->installAppStubs();
+
+        $response = (new AppController())->setSubdomain(
+            $this->post(['subdomain' => 'baru'], '/apps/' . self::APP_ID . '/subdomain'),
+            self::APP_ID,
+            null,
+            $this->agentClientWithTransportFailure()
+        );
+
+        $this->assertSame(302, $response->getStatusCode());
+        $flash = $GLOBALS['RAMES_REDACT_FLASH'][0] ?? [];
+        $this->assertSame('error', $flash['type'] ?? '');
+        $this->assertStringContainsString('Gagal menulis config Nginx', (string) ($flash['message'] ?? ''));
+        $this->assertNoSecrets((string) ($flash['message'] ?? ''));
+    }
+
+    /**
+     * `NginxController::pullTemplates()` cabang agent — `AgentError` transport
+     * dari `startServerJob()` tidak boleh membocorkan identitas server.
+     */
+    public function testNginxControllerTemplatePullHidesAgentIdentityInErrorMessage(): void
+    {
+        $controller = new AgentRedactionNginxController($this->deployerWithTransportFailure());
+
+        $body = $this->json($controller->pullTemplates(
+            $this->post(['slug' => 'n8n', 'server' => 'srv-x'], '/nginx/templates/pull')
+        ));
+
+        $this->assertSame(400, $body['code']);
+        $this->assertNoSecrets((string) $body['msg']);
+    }
+
+    /**
+     * `BackupController::snapshots()` cabang agent — galat
+     * `AgentDeployer::backupSnapshots()` membawa `base_url`/host.
+     */
+    public function testBackupSnapshotsHidesAgentIdentityInErrorMessage(): void
+    {
+        $controller = new AgentRedactionBackupController($this->app(), $this->deployerWithTransportFailure());
+
+        $body = $this->json($controller->snapshots(
+            $this->get('/api/backups/snapshots?volume=demo_data&server_id=srv-x')
+        ));
+
+        $this->assertSame(500, $body['code']);
+        $this->assertNoSecrets((string) $body['msg']);
+    }
+
+    /**
+     * `AgentTemplatePull::panel()` menyimpan galat transport ke `run.message`
+     * (dipoll UI) — pesan itu juga harus teredaksi.
+     */
+    public function testAgentTemplatePullPanelHidesAgentIdentityInRunMessage(): void
+    {
+        $handler = new AgentRedactionFakeHandler();
+        $handler->fail(new ConnectException(
+            'cURL error 7: Failed to connect to ' . self::HOST . ' port 8443',
+            new GuzzleRequest('GET', self::BASE_URL . '/jobs/job1')
+        ));
+
+        $state = new TemplatePullState($this->tmp . '/template-pull', 'srv-x');
+        $state->startRun([
+            'id' => 'run1',
+            'slug' => 'n8n',
+            'stage' => 'starting',
+            'message' => 'Menarik image …',
+            'result' => null,
+            'error' => null,
+            'log' => 'run1.log',
+            'job' => 'job1',
+            'log_offset' => 0,
+            'pid' => 0,
+        ]);
+
+        $pull = new AgentTemplatePull(
+            $this->deployer($handler),
+            $state,
+            'srv-x',
+            'agent-x',
+            $this->serverDoc()
+        );
+
+        $panel = $pull->panel();
+        $message = (string) ($panel['run']['message'] ?? '');
+
+        $this->assertNotSame('', $message);
+        $this->assertStringContainsString('Menunggu', $message);
+        $this->assertNoSecrets($message);
+    }
+
+    // ==================================================================
     // Blok PEM yang dipantulkan agent
     // ==================================================================
 
@@ -254,6 +412,38 @@ class AgentErrorRedactionControllersTest extends TestCase
         ));
 
         return $this->deployer($handler);
+    }
+
+    /** Klien agent yang selalu gagal transport (dipakai seam `$agentClient`). */
+    private function agentClientWithTransportFailure(): AgentClient
+    {
+        $handler = new AgentRedactionFakeHandler();
+        $handler->fail(new ConnectException(
+            'cURL error 7: Failed to connect to ' . self::HOST . ' port 8443',
+            new GuzzleRequest('POST', self::BASE_URL . '/jobs')
+        ));
+
+        return new AgentClient($this->serverDoc(), $handler, 20, new TlsPinMaterializer($this->tmp . '/tls'));
+    }
+
+    /**
+     * Stub helper global untuk `AppController` (hanya dipakai di proses anak).
+     * `app/functions.php` dimuat setelah stub agar `current_user`/`flash_set`
+     * tidak menuntut session HTTP.
+     */
+    private function installAppStubs(): void
+    {
+        $GLOBALS['RAMES_REDACT_FLASH'] = [];
+
+        if (!function_exists('current_user')) {
+            $file = $this->tmp . '/app-stubs.php';
+            file_put_contents($file, self::APP_STUB_SOURCE);
+            require $file;
+        }
+
+        if (!function_exists('app_subdomain_of')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 
     private function deployer(AgentRedactionFakeHandler $handler): AgentDeployer
@@ -507,6 +697,29 @@ final class AgentRedactionFileController extends FileController
 
     protected function audit(array $app, string $container, string $action): void
     {
+    }
+}
+
+/** `NginxController` dengan seam uji: admin tetap, deployer agent disuntik. */
+final class AgentRedactionNginxController extends NginxController
+{
+    public function __construct(private ?AgentDeployer $deployer)
+    {
+    }
+
+    protected function isAdmin(): bool
+    {
+        return true;
+    }
+
+    protected function actorName(): string
+    {
+        return 'admin';
+    }
+
+    protected function agentDeployerForServer(array $server): ?AgentDeployer
+    {
+        return $this->deployer;
     }
 }
 

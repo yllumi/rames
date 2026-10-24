@@ -441,12 +441,20 @@ class BackupController
         $apps = (new AppStore())->all();
         BackupAccess::require('view', $target, $this->findApp($apps, (string) ($target['app_id'] ?? '')), $this->currentUser());
 
+        $isLocal = BackupDispatcher::isLocalServer(self::serverIdOf($target));
         try {
-            $snapshots = BackupDispatcher::isLocalServer(self::serverIdOf($target))
+            $snapshots = $isLocal
                 ? $service->snapshotsFor($volume)
                 : $this->agentDeployerForTarget($target)->backupSnapshots($volume);
         } catch (\Throwable $e) {
-            return json(['code' => 500, 'msg' => 'Gagal membaca snapshot: ' . $e->getMessage()]);
+            // Cabang agent: pesan transport memuat `base_url`/host & token server
+            // ⇒ wajib lewat pintu redaksi. Cabang lokal dipertahankan apa adanya
+            // (tidak ada identitas server yang mungkin bocor).
+            $detail = $isLocal
+                ? $e->getMessage()
+                : AgentError::sanitizeForServer($e->getMessage(), $this->agentServerOf($target));
+
+            return json(['code' => 500, 'msg' => 'Gagal membaca snapshot: ' . $detail]);
         }
 
         return json(['code' => 0, 'data' => ['volume' => $volume, 'snapshots' => $snapshots]]);

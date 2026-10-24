@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Agent\AgentClient;
+use app\library\Agent\AgentError;
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Auth\ServerAccess;
@@ -647,6 +648,42 @@ class AppController
     }
 
     /**
+     * Dokumen server app untuk **redaksi** pesan galat (bukan keputusan hak).
+     *
+     * Server hilang dari registry / dokumen cacat ⇒ `[]`;
+     * `AgentError::sanitizeForServer()` dengan dokumen kosong berperilaku seperti
+     * `sanitize()` biasa, jadi pemanggil tidak perlu bercabang.
+     *
+     * @param array<string,mixed> $app
+     * @return array<string,mixed>
+     */
+    private function agentServerDocFor(array $app): array
+    {
+        try {
+            return $this->serverForApp($app);
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * Pesan galat aksi app yang tampil ke user (flash/JSON/view).
+     *
+     * Jalur agent menyisipkan `base_url`/host internal pada galat transport
+     * (`AgentClient`) dan blok PEM bisa ikut terpantul — redaksi **wajib** lewat
+     * satu pintu `AgentError::sanitizeForServer()`. Untuk app lokal hasilnya
+     * no-op (server tanpa `base_url`/token), jadi aman dipakai tanpa percabangan.
+     *
+     * @param array<string,mixed> $app
+     */
+    private function appErrorText(array $app, \Throwable|string $error): string
+    {
+        $message = $error instanceof \Throwable ? $error->getMessage() : $error;
+
+        return AgentError::sanitizeForServer($message, $this->agentServerDocFor($app));
+    }
+
+    /**
      * Direktori artefak app **di host ini** untuk jalur yang masih menulis file
      * lokal (env/limits/network/nama container) — atau `null` + flash error.
      *
@@ -1250,16 +1287,19 @@ class AppController
             if ($app === null && $dest !== '' && is_dir($dest)) {
                 $this->cleanupDir($dest);
             }
+            // `createAndDeploy()` dapat memanggil agent (preflight nama app):
+            // pesan transport memuat `base_url`/host server — redaksi dulu.
+            $errorText = $this->appErrorText(['server_id' => $serverId], $e);
             if ($request->expectsJson()) {
-                return json(['code' => 1, 'error' => $e->getMessage()]);
+                return json(['code' => 1, 'error' => $errorText]);
             }
-            flash_set('error', $e->getMessage());
+            flash_set('error', $errorText);
 
             return view('app/template', $this->serverFormContext(current_user(), $this->requestedServerId($request)) + [
                 'template' => $template,
                 'form_name' => $name,
                 'form_env' => $envInput,
-                'form_error' => $e->getMessage(),
+                'form_error' => $errorText,
                 'limitsScaleMax' => $this->limitsScaleMax(),
             ]);
         }
@@ -1561,10 +1601,13 @@ class AppController
             // Redirect balik ke halaman konfirmasi tidak membawa POST: simpan
             // isian env user sebagai draft supaya form terisi lagi.
             $this->persistEnvDraft($request, $pending, $envInput);
+            // `createAndDeploy()` dapat memanggil agent (preflight nama app):
+            // pesan transport memuat `base_url`/host server — redaksi dulu.
+            $errorText = $this->appErrorText($pending, $e);
             if ($request->expectsJson()) {
-                return json(['code' => 1, 'error' => $e->getMessage()]);
+                return json(['code' => 1, 'error' => $errorText]);
             }
-            flash_set('error', $e->getMessage());
+            flash_set('error', $errorText);
             return redirect('/apps/create/confirm');
         }
     }
@@ -1943,7 +1986,7 @@ class AppController
         try {
             $agent = AgentDeployer::forApp($app);
         } catch (\Throwable $e) {
-            $agentError = $e->getMessage();
+            $agentError = $this->appErrorText($app, $e);
         }
 
         $user = current_user();
@@ -1952,7 +1995,7 @@ class AppController
         try {
             $result = $this->deployCanceller($app)->cancelApp($app, $agent, $actor);
         } catch (\Throwable $e) {
-            $msg = 'Gagal membatalkan deploy: ' . $e->getMessage();
+            $msg = 'Gagal membatalkan deploy: ' . $this->appErrorText($app, $e);
             if ($request->expectsJson()) {
                 return json(['code' => 1, 'error' => $msg]);
             }
@@ -1961,7 +2004,12 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
-        $warnings = $result['warnings'];
+        // Peringatan bisa berasal dari agent (mis. `cancelJob` transport) —
+        // identitas server tetap wajib dibuang sebelum masuk flash/JSON.
+        $warnings = array_map(
+            fn (string $warning): string => $this->appErrorText($app, $warning),
+            $result['warnings']
+        );
         if ($agentError !== '') {
             $warnings[] = 'Server agent bermasalah: ' . $agentError;
         }
@@ -2089,7 +2137,7 @@ class AppController
             });
             flash_set('success', 'App dihentikan.');
         } catch (\Throwable $e) {
-            flash_set('error', 'Gagal stop: ' . $e->getMessage());
+            flash_set('error', 'Gagal stop: ' . $this->appErrorText($app, $e));
         }
         return redirect('/apps/' . $id);
     }
@@ -2114,7 +2162,7 @@ class AppController
             });
             flash_set('success', 'App dijalankan.');
         } catch (\Throwable $e) {
-            flash_set('error', 'Gagal start: ' . $e->getMessage());
+            flash_set('error', 'Gagal start: ' . $this->appErrorText($app, $e));
         }
         return redirect('/apps/' . $id);
     }
@@ -2163,7 +2211,7 @@ class AppController
             $store->delete($id);
             flash_set('success', 'App "' . $app['name'] . '" dihapus.');
         } catch (\Throwable $e) {
-            flash_set('error', 'Gagal menghapus: ' . $e->getMessage());
+            flash_set('error', 'Gagal menghapus: ' . $this->appErrorText($app, $e));
         }
         return redirect('/apps');
     }
@@ -2317,7 +2365,7 @@ class AppController
                 try {
                     $this->revokeDomainCert($app, $oldCustom, $localIssuer, $agentClient);
                 } catch (\Throwable $e) {
-                    flash_set('info', 'Peringatan: gagal revoke sertifikat lama ' . $oldCustom . ' — ' . $e->getMessage());
+                    flash_set('info', 'Peringatan: gagal revoke sertifikat lama ' . $oldCustom . ' — ' . $this->appErrorText($app, $e));
                 }
             }
 
@@ -2337,7 +2385,7 @@ class AppController
             try {
                 $this->applyNginxConfig($app, $agentClient);
             } catch (\Throwable $e) {
-                flash_set('error', 'Custom domain ' . $domain . ' tersimpan, tetapi gagal menulis config Nginx: ' . $e->getMessage() . ' (jalankan Rebuild untuk menerapkan).');
+                flash_set('error', 'Custom domain ' . $domain . ' tersimpan, tetapi gagal menulis config Nginx: ' . $this->appErrorText($app, $e) . ' (jalankan Rebuild untuk menerapkan).');
                 return redirect('/apps/' . $id);
             }
 
@@ -2345,7 +2393,7 @@ class AppController
             $reloadNote = $this->reloadNginxNote($app, $localReloader, $agentClient);
             flash_set('success', 'Custom domain ' . $domain . ' diset. Subdomain bawaan kini redirect ke domain tersebut.' . ($reloadNote !== '' ? ' ' . $reloadNote : '') . ' Jangan lupa arahkan DNS domain ke server, lalu aktifkan SSL-nya.');
         } catch (\Throwable $e) {
-            flash_set('error', $e->getMessage());
+            flash_set('error', $this->appErrorText($app, $e));
         }
         return redirect('/apps/' . $id);
     }
@@ -2375,7 +2423,7 @@ class AppController
             // Pencabutan terjadi di server pemilik app (agent ⇒ op `ssl_revoke`).
             $this->revokeDomainCert($app, $customDomain, $localIssuer, $agentClient);
         } catch (\Throwable $e) {
-            $revokeError = $e->getMessage();
+            $revokeError = $this->appErrorText($app, $e);
         }
 
         $store->update($id, function (array &$s): void {
@@ -2399,7 +2447,7 @@ class AppController
                 $revokeError = ($revokeError ?? '') . ' ' . $reloadNote;
             }
         } catch (\Throwable $e) {
-            $revokeError = ($revokeError ?? '') . ' Gagal menulis config Nginx: ' . $e->getMessage();
+            $revokeError = ($revokeError ?? '') . ' Gagal menulis config Nginx: ' . $this->appErrorText($app, $e);
         }
 
         if ($revokeError !== null) {
@@ -2441,7 +2489,7 @@ class AppController
 
         if ($request->expectsJson()) {
             if (!$result['ok']) {
-                return json(['code' => 1, 'error' => $result['error'], 'subdomain' => $result['previous']]);
+                return json(['code' => 1, 'error' => $this->appErrorText($app, $result['error']), 'subdomain' => $result['previous']]);
             }
             return json([
                 'code' => 0,
@@ -2454,7 +2502,7 @@ class AppController
         }
 
         if (!$result['ok']) {
-            flash_set('error', $result['error']);
+            flash_set('error', $this->appErrorText($app, $result['error']));
         } elseif ($result['noop']) {
             flash_set('info', 'Subdomain sudah ' . $result['effective'] . ' — tidak ada perubahan.');
         } else {
@@ -2521,14 +2569,14 @@ class AppController
             $result = $guard->applyRoutes($id, $routes);
 
             if (!$result['ok']) {
-                flash_set('error', 'Rute proxy TIDAK diterapkan' . ($result['rolled_back'] ? ' — rute dikembalikan ke kondisi sebelumnya' : '') . ': ' . $result['error']);
+                flash_set('error', 'Rute proxy TIDAK diterapkan' . ($result['rolled_back'] ? ' — rute dikembalikan ke kondisi sebelumnya' : '') . ': ' . $this->appErrorText($app, $result['error']));
                 return redirect('/apps/' . $id);
             }
 
             $count = count($routes);
             flash_set('success', ($count > 0 ? $count . ' rute proxy disimpan & diterapkan.' : 'Semua rute proxy dihapus.') . (!$result['reloaded'] ? ' Nginx host belum ter-reload — klik "Reload Nginx".' : ''));
         } catch (\Throwable $e) {
-            flash_set('error', $e->getMessage());
+            flash_set('error', $this->appErrorText($app, $e));
         }
 
         return redirect('/apps/' . $id);
@@ -2656,9 +2704,9 @@ class AppController
         try {
             $r = $this->nginxReloaderFor($app, $localReloader, $agentClient)->reload();
 
-            return $r['ok'] ? '' : 'Reload Nginx GAGAL: ' . ($r['error'] ?? 'unknown error') . ' — klik tombol "Reload Nginx" untuk mencoba lagi.';
+            return $r['ok'] ? '' : 'Reload Nginx GAGAL: ' . $this->appErrorText($app, (string) ($r['error'] ?? 'unknown error')) . ' — klik tombol "Reload Nginx" untuk mencoba lagi.';
         } catch (\Throwable $e) {
-            return 'Reload Nginx gagal: ' . $e->getMessage() . ' — klik tombol "Reload Nginx" untuk mencoba lagi.';
+            return 'Reload Nginx gagal: ' . $this->appErrorText($app, $e) . ' — klik tombol "Reload Nginx" untuk mencoba lagi.';
         }
     }
 
@@ -2789,10 +2837,10 @@ class AppController
                 });
                 flash_set('success', 'Environment variable disimpan & container diciptakan ulang.');
             } catch (\Throwable $e) {
-                flash_set('error', 'Environment variable tersimpan, tetapi gagal menerapkan ke container: ' . $e->getMessage() . ' — coba Rebuild untuk menerapkan.');
+                flash_set('error', 'Environment variable tersimpan, tetapi gagal menerapkan ke container: ' . $this->appErrorText($app, $e) . ' — coba Rebuild untuk menerapkan.');
             }
         } catch (\Throwable $e) {
-            flash_set('error', $e->getMessage());
+            flash_set('error', $this->appErrorText($app, $e));
         }
         return redirect('/apps/' . $id);
     }
@@ -3066,7 +3114,7 @@ class AppController
                     }
                 }
             } catch (\Throwable $e) {
-                flash_set('error', 'Tidak dapat membaca daftar network server app: ' . $e->getMessage());
+                flash_set('error', 'Tidak dapat membaca daftar network server app: ' . $this->appErrorText($app, $e));
                 return redirect('/apps/' . $id);
             }
         }
@@ -3107,10 +3155,10 @@ class AppController
                 });
                 flash_set('success', 'External networks disimpan & container diciptakan ulang.');
             } catch (\Throwable $e) {
-                flash_set('error', 'External networks tersimpan, tetapi gagal diterapkan ke container: ' . $e->getMessage() . ' — pastikan network eksternal ada, lalu coba Rebuild.');
+                flash_set('error', 'External networks tersimpan, tetapi gagal diterapkan ke container: ' . $this->appErrorText($app, $e) . ' — pastikan network eksternal ada, lalu coba Rebuild.');
             }
         } catch (\Throwable $e) {
-            flash_set('error', $e->getMessage());
+            flash_set('error', $this->appErrorText($app, $e));
         }
         return redirect('/apps/' . $id);
     }
