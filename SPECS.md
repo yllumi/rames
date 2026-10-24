@@ -48,6 +48,7 @@ Dashboard manajemen deployment sederhana (mirip cPanel) untuk mengelola:
 - [x] Data domain dashboard (app/user/billing/seleksi+riwayat volume) disimpan di **SQLite** dalam named volume `rames` + **backup berkala** & impor otomatis JSON lama (§8i)
 - [x] File manager container per container app (jelajah, unggah multi-berkas, unduh, edit teks, buat berkas baru, buat folder, rename, pindah, hapus, ekstrak arsip) — ability `files` = operator+, hanya saat container berjalan (§7.9)
 - [x] Kredit, deposit & penagihan resource (role `member`) — meteran CPU/RAM per jam, tagihan periode otomatis, deposit manual admin + top-up mandiri online via Duitku (§7.12)
+- [x] **Tema tampilan (mode gelap)** — mode `light`/`dark`/`system` (default ikut sistem), disimpan di `localStorage['rames.theme']` (**bukan** akun), kontrol di footer sidebar + halaman `/profile`, tanpa flash tema saat halaman dimuat (§7.17)
 
 ## 2a. Goals Multi-Server (fase F0–F4; F4 sebagian)
 
@@ -1322,6 +1323,37 @@ Container `rames-webman` berbasis Alpine tanpa `bash` ⇒ test installer **skip*
 Helper `app/functions.php`: `brand_name()`, `brand_logo_url()` (`/branding/logo?v=<etag>` saat kustom, `/logo-small.png` saat default), `brand_logo_is_custom()`. Semua **fail-safe** (`try/catch \Throwable` → default) dan **tanpa cache statik** (worker Webman persistent ⇒ nilai basi setelah brand diganti). Dipakai `app/view/partials/header.php` (judul `<title>` + brand sidebar + brand topbar mobile), `app/view/auth/login.php`, dan `app/view/index/hello.php`; seluruh output di-escape `e()`.
 
 **Pengujian**: `tests/BrandingStoreTest.php`, `tests/BrandingLogoTest.php` (SVG/GIF, isi palsu, ukuran, dimensi, varian ekstensi), `tests/BrandingManagerTest.php` (urutan efek samping & kegagalan store), `tests/NginxControllerBrandingTest.php` (admin-only 404, PRG, unggahan), `tests/BrandingControllerTest.php` (`/branding/logo`, ETag/304, 404), `tests/BrandingRouteGuardTest.php` (publik eksak + wajib CSRF), `tests/BrandingHelperTest.php`, `tests/BrandingTabViewTest.php`; `tests/AgentModeTest.php` diperbarui (daftar route agent).
+
+### 7.17 Tema Tampilan (mode gelap)
+
+**Goal.** Dashboard dapat dipakai dalam tema **terang** atau **gelap**, mengikuti preferensi sistem operasi atau pilihan eksplisit pengguna, **tanpa flash tema** saat halaman dimuat.
+
+**Tiga mode & default**
+- Mode: **`light`**, **`dark`**, **`system`**; default **`system`**. Mode `system` mengikuti `prefers-color-scheme` dan **bereaksi terhadap perubahannya saat halaman terbuka** (bukan hanya saat load).
+- Nilai yang diterapkan ke UI **selalu nilai ter-resolve** (`light|dark`): atribut `<html data-bs-theme="light|dark">` (Bootstrap 5.3.3) + `style.colorScheme`. Atribut `<html data-theme-mode="light|dark|system">` hanya dipakai untuk memilih ikon tombol — **Bootstrap tidak mengenal `system`** dan nilai itu tidak boleh masuk ke `data-bs-theme`.
+
+**Penyimpanan (murni klien)**
+- Preferensi disimpan **hanya** di `localStorage` kunci **`rames.theme`** bernilai `light|dark|system` (default `system`).
+- **TIDAK disimpan di akun**: tidak ada field baru di `auth.json`/SQLite, tidak ada migrasi skema, tidak ada route/endpoint/controller baru, dan tidak ada POST. Konsekuensi: preferensi **per-browser/per-perangkat** — tidak sinkron antar perangkat dan hilang bila data situs dibersihkan.
+
+**Dua lokasi kontrol (sinkron)**
+- **Tombol siklus** di footer sidebar (`[data-theme-toggle]`, urutan **terang → gelap → sistem**) — tersedia di semua halaman ber-shell.
+- **Radio** di halaman **`/profile`** (kartu "Tema tampilan", `[data-theme-choice]`, **tanpa** `<form>`/CSRF karena tidak ada request).
+- Keduanya membaca/menulis kunci yang sama; perubahan di satu tab menyinkronkan tab lain lewat event **`storage`**.
+
+**Mekanisme & anti-flash**
+- Partial **`app/view/partials/theme-boot.php`** — satu sumber: `<meta name="color-scheme" content="light dark">` + IIFE `try/catch` yang membaca `localStorage['rames.theme']`, me-resolve `system` lewat `matchMedia`, lalu menyetel atribut `<html>`. Partial di-include di `<head>` **sebelum** `<link rel="stylesheet">` pada tiga halaman: `app/view/partials/header.php`, `app/view/auth/login.php`, `app/view/index/hello.php`.
+- **`public/js/theme.js`** (vanilla IIFE, dimuat `app/view/partials/footer.php` setelah `layout.js`): `getMode`/`resolve`/`apply`/`setMode`, siklus tombol, radio `[data-theme-choice]`, listener `matchMedia` (**hanya** saat mode `system`), listener `storage`, `try/catch` `localStorage` (mode privat), dan ekspos `window.ramesTheme = {get, set}`.
+- **Aksesibilitas**: tombol siklus memakai `aria-label`/`title` dinamis (mis. "Tema: gelap — klik untuk ikut sistem") dan **tanpa `aria-pressed`** (ini tombol siklus 3 mode, bukan toggle biner). Tiga ikon SVG (matahari/bulan/monitor) dipilih lewat CSS `:root[data-theme-mode=…]`; tanpa JS ikon "ikut sistem" tetap tampil (fallback).
+
+**Batas & pengecualian yang disengaja**
+- **Tanpa JS**: hanya skrip boot di `<head>` yang berjalan — tidak ada deteksi `prefers-color-scheme` *live* dan tidak ada tombol yang berfungsi. `meta color-scheme` tetap memberi tahu browser bahwa halaman mendukung kedua tema.
+- **Media logo galeri template** (`.template-tile-media`) **sengaja tetap bernuansa terang** di kedua tema (`#f8fafb` light, `#e7edf0` dark) karena logo SVG/PNG transparan berwarna gelap tidak terbaca di atas latar gelap. Ini pengecualian, bukan bug tema.
+- **Teks non-kode** (log/terminal, mis. `#0d1117`/`#101014`/`#0b1020`) tetap gelap di kedua tema; permukaan itu bukan bagian tema dashboard.
+- Cache-busting `app.css`/`theme.js` belum memakai query `?v=` (pre-existing, bukan regresi tema).
+- Dua kontras elemen lama **tema terang** (`a { color:#4CAF50 }` dan `.nav-pills .active` putih di `#23c8b5`) masih di bawah AA — **pre-existing** dan tidak diubah; tema terang hanya diperbaiki pada `--muted-fg` (`#4a6670` ⇒ 5.68:1 di `#f3f7f8`, 6.13:1 di `#fff`).
+
+**Verifikasi (status).** `php -l` seluruh file PHP yang berubah, `node --check public/js/theme.js`, smoke render view (28 pemeriksaan), uji runtime browser headless (dark/light/system, siklus, sinkron radio, rail sidebar 72px dengan tombol 30px, tanpa error konsol), `GET /login` & `/js/theme.js` HTTP 200; `composer test` tidak menambah kegagalan (6 error + 4 failure pre-existing lingkungan). Kontras terukur: body dark `#d7e3ea` pada `#0b1116` ≈ 14.7:1; badge dark 6–9:1.
 
 ## 8. Reverse Proxy / Subdomain Routing
 

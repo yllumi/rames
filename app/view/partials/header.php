@@ -9,6 +9,7 @@ $__brandLogo = brand_logo_url();
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<?php include app_path() . '/view/partials/theme-boot.php'; ?>
 <title><?= e($pageTitle ?? 'Dashboard') ?> · <?= e($__brandName) ?></title>
 <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/css/app.css">
@@ -112,6 +113,17 @@ $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke=
           <span class="badge text-bg-primary sidebar-user-badge" title="Admin: kelola user & lihat semua app">admin</span>
         <?php endif; ?>
         <a class="text-danger ms-auto btn-sm sidebar-logout" href="/logout">logout</a>
+      </div>
+      <?php // Tombol siklus tema: terang → gelap → ikut sistem. Saat sidebar rail, label disembunyikan.
+      // Tanpa `aria-pressed`: ini tombol siklus 3 mode, bukan toggle biner; label ARIA dinamis dari theme.js. ?>
+      <div class="d-flex align-items-center gap-2 mt-2 sidebar-user-actions">
+        <button type="button" class="sidebar-theme" data-theme-toggle
+                aria-label="Tema: ikut sistem — klik untuk terang" title="Tema: ikut sistem — klik untuk terang">
+          <span class="theme-ico theme-ico-light" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></span>
+          <span class="theme-ico theme-ico-dark" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></span>
+          <span class="theme-ico theme-ico-system" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>
+          <span class="sidebar-theme-label">Tema</span>
+        </button>
       </div>
     </div>
   </aside>

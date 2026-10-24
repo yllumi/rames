@@ -59,7 +59,7 @@ $updatedAt = trim((string) (is_string($branding['updated_at'] ?? null) ? $brandi
         <h2 class="h6 mb-0">Identitas dashboard</h2>
       </div>
       <div class="card-body">
-        <div class="border rounded p-3 bg-light text-center mb-3">
+        <div class="border rounded p-3 bg-body-tertiary text-center mb-3">
           <img src="<?= e($logoUrl) ?>" alt="<?= e($name) ?>" style="max-height:96px;max-width:100%">
           <div class="mt-2 small">
             <span class="badge <?= $logoCustom ? 'text-bg-info' : 'text-bg-secondary' ?>"><?= $logoCustom ? 'Kustom' : 'Bawaan' ?></span>

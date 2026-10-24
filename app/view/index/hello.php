@@ -8,6 +8,7 @@ $__brandLogo = brand_logo_url();
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<?php include app_path() . '/view/partials/theme-boot.php'; ?>
 <title>Hello World · <?= e($__brandName) ?></title>
 <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/css/app.css">

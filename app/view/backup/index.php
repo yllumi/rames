@@ -174,7 +174,7 @@ $breadcrumbs = [
       <div class="tab-pane fade" id="pane-archive" role="tabpanel"
            aria-labelledby="backup-tab-archive" tabindex="0">
         <div class="card">
-          <div class="card-header bg-white py-2">
+          <div class="card-header bg-body py-2">
             <span class="small text-muted">
               Riwayat volume yang pernah ter-backup namun volumenya sudah tidak ada di Docker.
             </span>
@@ -233,7 +233,7 @@ $breadcrumbs = [
       $dbHour = (int) ($db['hour'] ?? 0);
     ?>
     <div class="card mt-3" id="db-backup">
-      <div class="card-header bg-white py-2 d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <div class="card-header bg-body py-2 d-flex flex-wrap justify-content-between align-items-center gap-2">
         <div>
           <strong>Database dashboard (SQLite)</strong>
           <span class="text-muted small d-block">

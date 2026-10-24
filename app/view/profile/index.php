@@ -32,7 +32,7 @@ $breadcrumbs = [
 <div class="row g-3">
   <div class="col-lg-7">
     <div class="card h-100">
-      <div class="card-header bg-white py-2 fw-semibold">Edit profil</div>
+      <div class="card-header bg-body py-2 fw-semibold">Edit profil</div>
       <div class="card-body">
         <form method="post" action="/profile/email" class="row g-3">
           <?= csrf_field() ?>
@@ -53,7 +53,7 @@ $breadcrumbs = [
   </div>
   <div class="col-lg-5">
     <div class="card h-100">
-      <div class="card-header bg-white py-2 fw-semibold">Akun</div>
+      <div class="card-header bg-body py-2 fw-semibold">Akun</div>
       <div class="card-body">
         <dl class="row mb-0">
           <dt class="col-sm-4 text-muted fw-normal small">Username</dt>
@@ -83,7 +83,7 @@ $breadcrumbs = [
 <div class="row g-3 mt-1">
   <div class="col-lg-7">
     <div class="card">
-      <div class="card-header bg-white py-2 fw-semibold">Ubah password</div>
+      <div class="card-header bg-body py-2 fw-semibold">Ubah password</div>
       <div class="card-body">
         <?php // Password tidak pernah dirender balik: tidak ada atribut value di form ini. ?>
         <form method="post" action="/profile/password" class="row g-3">
@@ -108,6 +108,35 @@ $breadcrumbs = [
             <button type="submit" class="btn btn-primary btn-sm">Perbarui password</button>
           </div>
         </form>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-header bg-body py-2 fw-semibold">Tema tampilan</div>
+      <div class="card-body">
+        <?php // Murni klien: tanpa form action & tanpa CSRF — theme.js menyimpan ke localStorage. ?>
+        <fieldset>
+          <legend class="visually-hidden">Pilih tema tampilan</legend>
+          <div class="vstack gap-2">
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="theme-preference" id="theme-preference-light"
+                     value="light" data-theme-choice="light">
+              <label class="form-check-label" for="theme-preference-light">Terang</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="theme-preference" id="theme-preference-dark"
+                     value="dark" data-theme-choice="dark">
+              <label class="form-check-label" for="theme-preference-dark">Gelap</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="theme-preference" id="theme-preference-system"
+                     value="system" data-theme-choice="system" checked>
+              <label class="form-check-label" for="theme-preference-system">Ikut sistem</label>
+            </div>
+          </div>
+        </fieldset>
+        <div class="form-text mt-2">Preferensi disimpan di browser ini, bukan di akun.</div>
       </div>
     </div>
   </div>

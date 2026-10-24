@@ -398,6 +398,7 @@ View PHP native (mesin `Raw`, tanpa build step/bundler). **Shell halaman dikelol
 - **Menu dikelola di satu partial** (Apps, SSL, Volumes, Networks, Backup, Monitor, Database, Config[+ badge `update`], Users[bila admin], **Servers[bila admin]**). **WAJIB**: view lain **tidak boleh** menyentuh/menduplikasi nav — menambah/mengubah item cukup di `partials/header.php`; state aktif lewat variabel `$active` + `aria-current="page"`. Item **Servers** hanya dirender untuk admin (`is_admin()`), konsisten dengan penegakan server (non-admin → 404).
 - **Identitas brand (rebranding) — helper global satu sumber**: `app/functions.php` menyediakan `brand_name()`, `brand_logo_url()`, `brand_logo_is_custom()`; ketiganya **fail-safe** (`try/catch \Throwable` → `Rames`/`/logo-small.png`/`false`) dan **tanpa cache statik** (worker Webman persistent ⇒ nilai basi setelah brand diganti). Dipakai `app/view/partials/header.php` (judul `<title>` + brand sidebar + brand topbar mobile), `app/view/auth/login.php`, dan `app/view/index/hello.php` — semua keluaran `e()`. Form pengelolaan ada di tab **Branding** halaman Config (`app/view/nginx/partials/tab-branding.php`, presentasi murni); alur & kontraknya §5.40.
 - **Halaman Servers** — `app/view/server/index.php` (daftar + status/kapabilitas) & `app/view/server/form.php` (Add/Edit server, blok PEM onboarding), aset `public/js/server.js` (uji koneksi AJAX + pengisian fingerprint). Endpoint data tanpa rahasia: `GET /api/servers`.
+- **Tema tampilan (mode gelap) — boot anti-flash + token dua lapis**: partial `app/view/partials/theme-boot.php` (meta `color-scheme` + IIFE `try/catch`) di-include **di `<head>` sebelum** stylesheet pada `partials/header.php`, `auth/login.php`, `index/hello.php`; `public/js/theme.js` (vanilla, dimuat `partials/footer.php` setelah `layout.js`) mengelola `getMode/resolve/apply/setMode`, tombol siklus `[data-theme-toggle]` (footer sidebar), radio `[data-theme-choice]` (`/profile`), listener `matchMedia`/`storage`, serta `window.ramesTheme`; `public/css/app.css` dua lapis (variabel Bootstrap + token semantik `--surface*`/`--chip-*`/`--heading-fg`/`--label-fg`/`--muted-fg`/`--grid-line`/`--tint`/`--glow-1`/`--glow-2`/`--shadow-color`/`--link-soft`/`--template-media-bg`) dengan blok `[data-bs-theme="dark"]`. Detail alur §5.42, jebakan §8 T1–T5.
 - **Ikon menu = inline SVG, tanpa library ikon/CDN.** Tiap item `nav.sidebar-nav` merender `<span class="nav-ico">` (SVG line-art `viewBox="0 0 24 24"`, 18×18, `stroke="currentColor"`, `aria-hidden="true"`) lalu `<span class="nav-label">` (teks); `<a>` membawa **`data-label`** (label untuk popover rail, lihat di bawah) + `aria-label` — **bukan** `title`. Peta ikon `$__navIcons` dan `$__burger` dikumpulkan di `partials/header.php`. **DILARANG menambah library ikon/webfont/CDN** — ikon wajib inline SVG (tanpa dependensi runtime, ikut `currentColor` saat aktif/hover).
 - **Lipat sidebar (desktop ≥ 992px)**: tombol `.sidebar-toggle[data-sidebar-toggle]` paling kiri `.app-sidebar-head` (kelas `d-none d-lg-inline-flex`, `aria-controls="appSidebar"`) men-toggle class **`body.sidebar-collapsed`** lewat `public/js/layout.js` (vanilla, tanpa dependensi). Kondisi rail menyempitkan `.app-sidebar` → **72px**, `.app-main { margin-left: 72px }`, menyembunyikan `.nav-label`/badge/`.brand`/`sidebar-user-*`/`.sidebar-logout`, dan memusatkan ikon. Pilihan dipersist di `localStorage['rames.sidebar']` (`'collapsed'`/`'expanded'`); skrip inline di `partials/header.php` (sebelum `<aside>`) menerapkan class **sebelum paint** (anti-flash), lalu `layout.js` menyinkronkan `aria-expanded`/`aria-label` tombol. Kegagalan `localStorage` (mode privat/storage penuh) diabaikan, bukan error.
 - **Popover label menu saat rail terlipat (murni CSS, tanpa JS baru)**: di rail (≥ 992px, `body.sidebar-collapsed`) `.nav-label` disembunyikan, jadi tiap `a.nav-link` membawa **`data-label`** yang dirender ulang sebagai *popover* lewat `content: attr(data-label)` pada `.nav-link::after` (bubble ke kanan ikon; `left: calc(100% + 10px)`, `white-space: nowrap`) ditambah `.nav-link::before` (panah kecil penunjuk ikon). Popover tampil saat **`:hover`** dan **`:focus-visible`** (transisi `opacity .14s ease` + geser `translateX`), `pointer-events: none`, `z-index: 1080` (**relatif di dalam stacking context `.app-sidebar`** — bukan nilai efektif global; lihat sub-bullet berikut).
@@ -1741,6 +1742,49 @@ Urutan:
 
 ---
 
+### 5.42 Tema Tampilan (mode gelap)
+
+Fitur **murni klien** (SPECS §7.17): preferensi `light|dark|system` hidup di `localStorage`, tidak ada route/controller/POST maupun kolom store baru. Yang dijaga adalah **urutan render** (anti-flash), **satu sumber nilai ter-resolve**, dan **satu set token warna**.
+
+**Kontrak atribut**
+
+| Atribut `<html>` | Nilai | Pemakai |
+|---|---|---|
+| `data-bs-theme` | `light` **atau** `dark` (nilai **ter-resolve**, tidak pernah `system`) | Bootstrap 5.3.3 (komponen) + blok `[data-bs-theme="dark"]` di `public/css/app.css` |
+| `style.color-scheme` | `light` **atau** `dark` | Kontrol native browser (scrollbar, control, canvas) |
+| `data-theme-mode` | `light`/`dark`/`system` | **Hanya** pemilih ikon tombol (CSS `:root[data-theme-mode=…]`), bukan Bootstrap |
+
+**Boot anti-flash (urutan wajib).** Partial `app/view/partials/theme-boot.php` adalah **satu-satunya** pembaca tema pertama: `<meta name="color-scheme" content="light dark">` + IIFE `try/catch` yang membaca `localStorage['rames.theme']`, me-resolve `system` lewat `matchMedia('(prefers-color-scheme: dark)')`, lalu menyetel `data-bs-theme` + `data-theme-mode` + `style.colorScheme`. Partial di-include **di `<head>` sebelum stylesheet** pada `app/view/partials/header.php`, `app/view/auth/login.php`, dan `app/view/index/hello.php`:
+
+```php
+<head>
+  <?php include app_path() . '/view/partials/theme-boot.php'; ?>
+  <title>…</title>
+  <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+```
+
+`try/catch` menelan kegagalan `localStorage` (mode privat/storage penuh) ⇒ halaman tetap dirender dengan tema hasil `prefers-color-scheme`; kegagalan **tidak** boleh menjadi error JS yang menghentikan skrip lain.
+
+**`public/js/theme.js`** (vanilla IIFE, dimuat `app/view/partials/footer.php` **setelah** `layout.js`):
+
+- `getMode()` (baca kunci, normalisasi ke `light|dark|system`, fallback `system`), `resolve(mode)` (`system` → `matchMedia`), `apply(mode)` (set ketiga atribut di tabel), `setMode(mode)` (simpan + apply + sinkronkan UI).
+- **Dua kontrol sinkron**: tombol siklus `[data-theme-toggle]` di footer sidebar (`light → dark → system`) dan radio `[data-theme-choice]` di kartu **Tema tampilan** halaman `/profile` (tanpa `<form>`/CSRF — tidak ada request). `syncUi()` menyamakan `checked` radio, ikon (via `data-theme-mode`), serta `aria-label`/`title` dinamis.
+- **Ikut sistem live**: listener `matchMedia` **hanya** dipasang/dipertimbangkan saat mode `system`; mode eksplisit tidak boleh berubah karena OS berganti tema.
+- **Sinkron antar-tab**: listener `storage` (kunci `rames.theme`) memanggil `apply()` + `syncUi()` tanpa menulis ulang `localStorage`.
+- Mengekspos `window.ramesTheme = {get, set}` untuk kebutuhan lain; semua akses `localStorage` dibungkus `try/catch`.
+
+**CSS dua lapis (`public/css/app.css`).** Lapis 1 = variabel Bootstrap (`--bs-body-bg`, `--bs-body-color`, `--bs-card-bg`, `--bs-link-color*`, dll). Lapis 2 = token semantik milik dashboard: `--surface`, `--surface-solid`, `--surface-subtle`, `--surface-strong`, `--overlay`, `--chip-bg`, `--chip-fg`, `--heading-fg`, `--label-fg`, `--muted-fg`, `--grid-line`, `--tint`, `--glow-1`/`--glow-2`, `--shadow-color`, `--link-soft`, `--template-media-bg`. Blok `:root[data-bs-theme="dark"]` menimpa **keduanya** (`--bs-body-bg: #0b1116`, `--bs-body-color: #d7e3ea`, link `#2dd4bf`/`#5eead4`, `--bs-card-bg: var(--bs-secondary-bg)`), ditambah override khusus dark untuk `.badge-*`, `.text-bg-light`, dan `.nav-pills … .active`. Komponen baru **wajib** memakai token semantik, bukan warna literal, agar ikut kedua tema.
+
+**Penyesuaian view.** `bg-white` → `bg-body` pada header kartu di `app/view/profile/index.php`, `app/view/credits/index.php`, `app/view/backup/index.php`; `bg-light` → `bg-body-tertiary` di `app/view/nginx/partials/tab-branding.php`; kontrol tema `/profile` = tiga radio `[data-theme-choice]` (presentasi murni). **Pengecualian sengaja**: `.template-tile-media` (kotak logo galeri template) tetap terang di kedua tema (`#f8fafb` light, `#e7edf0` dark) karena logo transparan berwarna gelap; teks non-kode (log/terminal `#0d1117`/`#101014`/`#0b1020`) tetap gelap.
+
+**Batasan.** Tanpa JS hanya skrip boot yang berjalan (tidak ada deteksi `prefers-color-scheme` live/tombol); `app.css`/`theme.js` belum memakai query `?v=` (cache-busting pre-existing); dua kontras elemen lama tema terang (`a { color:#4CAF50 }`, `.nav-pills .active` putih di `#23c8b5`) masih di bawah AA — pre-existing dan tidak diubah.
+
+**Pengujian**: `php -l` seluruh file PHP yang berubah, `node --check public/js/theme.js`, smoke render view (28 pemeriksaan: partial boot hadir sebelum stylesheet, radio/aria), uji runtime browser headless (dark/light/system, siklus, sinkron radio, rail 72px + tombol 30px, tanpa error konsol). Jebakan tema: §8 **T1–T5**.
+
+---
+
 ## 6. Keputusan Teknis Penting
 
 - **Anti command injection**: `ProcessRunner` memakai bentuk **array + `bypass_shell`** (langsung `execve`, tanpa shell) — lebih ketat daripada string + `escapeshellarg`.
@@ -1762,6 +1806,7 @@ Urutan:
 - **Kegagalan config/reload pasca-issue = `failed`, bukan `active`** (SPECS §8j.6a): UI hanya menampilkan tombol Retry untuk status `failed`; menyimpan `active` + `error` akan menyembunyikan jalan pemulihan. `ssl_expires_at` cert yang baru **dipertahankan** agar Retry/reconcile berikutnya tidak perlu menerbitkan ulang (`certbot --keep-until-expiring`).
 - **Akrual menuntut bukti container hidup di server app (F4b)**: `UsageProbe` membaca bukti **per server** (server `local` ⇒ `DockerClient::listContainers()`; server agent ⇒ `AgentDeployer::containerStats()` → `GET /monitor/containers`), bukan `status` di control plane. Bila satu server tak terjangkau, akrual interval itu **dilewati** dan alasannya dicatat — bukan ditebak: menagih tanpa bukti (over-count) lebih berbahaya daripada under-count. Akrual inkremental ⇒ interval yang terlewat **tidak** ditagih kemudian (tanpa akrual ganda). Timer billing hanya di control plane (agent tanpa timer). §5.18 (ii), SPECS §7.12.
 - **Tanpa state lintas-request**: tidak ada property controller yang menyimpan data; semua state di session/file.
+- **Tema tampilan disimpan di `localStorage`, bukan skema user** (§5.42, SPECS §7.17): preferensi `light|dark|system` murni klien — tanpa migrasi/kolom baru di SQLite/`auth.json`, tanpa route/controller/POST, dan sudah berlaku **sebelum** PHP merender halaman (anti-flash). Konsekuensi yang diterima: preferensi **per-browser/per-perangkat**, tidak ikut akun (tidak sinkron antar perangkat) dan hilang saat data situs dibersihkan.
 - **Mount path sama dengan host (`${PWD}:${PWD}`)**: syarat agar relative bind mount milik app terselesaikan ke path host oleh daemon.
 - **Disposisi sinyal adalah state proses, bukan state request**: `SIGCHLD=SIG_IGN` yang dipasang untuk auto-reap anak detached bocor ke proses anak berikutnya (diwariskan melewati `exec`) — di worker persistent ini merusak `git`/`docker compose`. Setiap spawn yang membaca exit code wajib memakai `SigchldGuard` (§4.4).
 - **`container_name` bersifat global**: nama container custom tidak mendapat prefix project Docker (beda dari nama default compose), sehingga wajib divalidasi unik se-host **sebelum** menulis override — kalau tidak, `compose up` gagal di tengah deploy (`Conflict. The container name ... is already in use`, §5.12).
@@ -1983,3 +2028,17 @@ Dua puluh satu jebakan dari F0–F4 + enam dari F4 lanjutan (op tingkat server, 
 > **50. GOTCHA — `/ssl` hanya alias 302; jangan menambah logika domain di sana.** **Gejala**: perubahan pada `SslController::index()` atau `app/view/ssl/index.php` tidak berpengaruh ke halaman yang dilihat pengguna; `GET /ssl` selalu mendarat di `/domains`. **Sebab**: route `GET /ssl` diarahkan ke `DomainController::legacySsl()` (302 `/domains`); halaman nyata adalah `app/view/domain/index.php`. `SslController` hanya mempertahankan jalur app (`/ssl/{id}/enable`, `/api/ssl/*`) untuk kompatibilitas. **Penangkal**: tambahkan fitur domain/SSL baru di `DomainController`/`domain/*` (satu sumber baris `SslDomainRows`); jangan menghidupkan kembali view `/ssl` atau menggandakan logika baris.
 
 > **51. GOTCHA — non-admin hanya boleh melihat baris app yang boleh diakses; baris parkir tidak pernah dikirim.** **Gejala**: member melihat domain app milik user lain di `/domains`, atau baris parkir muncul tanpa hak. **Sebab**: `index()`/`apiStatus()` terbuka untuk semua user login — penyaringan **wajib** di server (`AppAccess::visible()` untuk app; `$parked = []` untuk non-admin) dan objek `app` dibuang sebelum payload. Menyembunyikan tab/tombol di view bukan pengaman. **Penangkal**: pertahankan filter di `DomainController::table()` + `decorateRows()` dan cek `guard()`/admin **sebelum** I/O pada seluruh aksi pengelolaan; jangan menambahkan endpoint baru yang mengembalikan `ParkedDomainStore::all()` tanpa cek admin.
+
+### GOTCHA tema tampilan (mode gelap, §5.42)
+
+Lima jebakan dari fitur murni-klien ini — bukan bagian daftar multi-server di atas; format tetap gejala → sebab → penangkal.
+
+> **T1. WAJIB — skrip boot tema berada di `<head>` SEBELUM stylesheet.** **Gejala**: halaman sempat tampil terang (atau gelap) satu frame lalu berubah — *flash of incorrect theme*, terutama pada dark mode. **Sebab**: atribut `data-bs-theme` disetel setelah CSS/komponen sudah dilukis. **Penangkal**: `app/view/partials/theme-boot.php` **wajib** di-include di `<head>` **sebelum** `<link rel="stylesheet">` pada ketiga halaman (`partials/header.php`, `auth/login.php`, `index/hello.php`); jangan memindahkannya ke footer atau menggabungkannya ke `theme.js` (skrip footer terlambat).
+
+> **T2. DILARANG — memakai nilai `system` pada `data-bs-theme`.** **Gejala**: tema tidak berubah di mode `system`, atau komponen Bootstrap kembali ke default terang walau OS gelap. **Sebab**: Bootstrap 5.3 hanya mengenal `light|dark`; nilai lain diabaikan. **Penangkal**: `data-bs-theme` **selalu** nilai ter-resolve (`resolve(mode)`); `system` hanya boleh ada di `data-theme-mode` (pemilih ikon) dan di `localStorage`.
+
+> **T3. GOTCHA — `bg-white`/`bg-light` Bootstrap mengunci warna terang di tema gelap.** **Gejala**: header kartu/panel tetap putih menyilaukan saat dark mode. **Sebab**: utilitas itu warna **literal**, bukan variabel tema. **Penangkal**: pakai `bg-body`/`bg-body-tertiary` (mengikuti `--bs-body-bg`/`--bs-tertiary-bg`); bila menemukan `bg-white`/`bg-light` baru di view, ganti — jangan menambal dengan override CSS per halaman.
+
+> **T4. GOTCHA — kartu Bootstrap di dark memakai `--bs-card-bg = --bs-body-bg` sehingga menyatu dengan latar.** **Gejala**: batas kartu hilang di tema gelap (kartu tampak menyatu dengan halaman). **Sebab**: default Bootstrap dark menyetel `--bs-card-bg` sama dengan body. **Penangkal**: blok `[data-bs-theme="dark"]` di `public/css/app.css` **wajib** menyetel `--bs-card-bg: var(--bs-secondary-bg)`; jangan menghapus override ini saat merapikan token.
+
+> **T5. CATATAN — media logo template sengaja tetap terang di kedua tema.** **Gejala**: `.template-tile-media` terlihat sebagai kotak terang di dark mode dan bisa dilaporkan sebagai "tema tidak konsisten". **Sebab**: logo SVG/PNG transparan umumnya berwarna gelap sehingga tak terbaca di atas latar gelap. **Penangkal**: pertahankan `--template-media-bg` (`#f8fafb` light, `#e7edf0` dark) dan **jangan** mengubahnya menjadi `--bs-body-bg`; ini pengecualian yang disengaja (SPECS §7.17), sama seperti teks non-kode log/terminal yang tetap gelap.

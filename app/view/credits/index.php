@@ -132,7 +132,7 @@ $breadcrumbs = [
   </div>
   <div class="col-lg-8">
     <div class="card h-100">
-      <div class="card-header bg-white py-2 d-flex align-items-center">
+      <div class="card-header bg-body py-2 d-flex align-items-center">
         <span class="fw-semibold">Pemakaian berjalan</span>
         <span class="text-muted small ms-2">per app milik Anda, sejak awal periode</span>
       </div>
@@ -180,7 +180,7 @@ $breadcrumbs = [
 
 <?php if ($pendingOrders !== []): ?>
   <div class="card mb-4">
-    <div class="card-header bg-white py-2 fw-semibold">Order top-up menunggu pembayaran</div>
+    <div class="card-header bg-body py-2 fw-semibold">Order top-up menunggu pembayaran</div>
     <div class="table-responsive">
       <table class="table table-sm align-middle mb-0">
         <thead>
@@ -209,7 +209,7 @@ $breadcrumbs = [
 <?php endif; ?>
 
 <div class="card mb-4">
-  <div class="card-header bg-white py-2 fw-semibold">Riwayat transaksi</div>
+  <div class="card-header bg-body py-2 fw-semibold">Riwayat transaksi</div>
   <div class="table-responsive">
     <table class="table table-sm align-middle mb-0">
       <thead>
@@ -324,7 +324,7 @@ $breadcrumbs = [
   <div class="row g-3 mb-4">
     <div class="col-lg-7">
       <div class="card h-100">
-        <div class="card-header bg-white py-2 fw-semibold">Deposit manual</div>
+        <div class="card-header bg-body py-2 fw-semibold">Deposit manual</div>
         <div class="card-body">
           <form method="post" action="/credits/deposit" class="row g-3">
             <?= csrf_field() ?>
@@ -361,7 +361,7 @@ $breadcrumbs = [
     </div>
     <div class="col-lg-5">
       <div class="card h-100">
-        <div class="card-header bg-white py-2 fw-semibold">Penagihan manual</div>
+        <div class="card-header bg-body py-2 fw-semibold">Penagihan manual</div>
         <div class="card-body">
           <form method="post" action="/credits/charge" class="row g-3">
             <?= csrf_field() ?>
@@ -381,7 +381,7 @@ $breadcrumbs = [
   </div>
 
   <div class="card mb-4">
-    <div class="card-header bg-white py-2 fw-semibold">Saldo semua user</div>
+    <div class="card-header bg-body py-2 fw-semibold">Saldo semua user</div>
     <div class="table-responsive">
       <table class="table table-sm align-middle mb-0">
         <thead>
@@ -403,7 +403,7 @@ $breadcrumbs = [
   </div>
 
   <div class="card mb-4">
-    <div class="card-header bg-white py-2 fw-semibold">Order top-up pending (semua user)</div>
+    <div class="card-header bg-body py-2 fw-semibold">Order top-up pending (semua user)</div>
     <div class="table-responsive">
       <table class="table table-sm align-middle mb-0">
         <thead>

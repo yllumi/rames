@@ -16,12 +16,86 @@
   --grad: linear-gradient(135deg, #2dd4bf 0%, #14b8a6 55%, #0d9488 100%);
   --border: rgba(13, 90, 80, .12);
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Token semantik tema. Semua warna khusus-terang di bawah memakai token ini
+     agar tema gelap cukup menimpa satu blok (`[data-bs-theme="dark"]`). */
+  --surface: rgba(255, 255, 255, .86);          /* topbar & sidebar (kaca) */
+  --surface-solid: #fff;                        /* latar tile saat hover */
+  --surface-subtle: rgba(13, 148, 136, .06);    /* tombol ikon netral */
+  --surface-strong: rgba(255, 255, 255, .92);   /* kartu auth */
+  --overlay: rgba(255, 255, 255, .98);          /* popover label rail */
+  --chip-bg: rgba(13, 148, 136, .10);           /* chip/kode/kategori */
+  --chip-fg: #0f766e;
+  --heading-fg: #0f3f46;                        /* judul panduan */
+  --label-fg: #2f5d67;                          /* label form */
+  --muted-fg: #4a6670;                          /* teks sekunder: ≥ 4.5:1 di atas #f3f7f8 & #fff */
+  --grid-line: rgba(13, 90, 80, .05);           /* grid latar body */
+  --tint: rgba(13, 148, 136, .06);              /* hover baris & thead */
+  --glow-1: rgba(45, 212, 191, .14);            /* radial body 1 */
+  --glow-2: rgba(16, 185, 129, .08);            /* radial body 2 */
+  --shadow-color: rgba(13, 90, 80, .4);
+  --link-soft: #139081;                         /* link tab non-aktif */
+  --link-soft-strong: #0f766e;                  /* menu aktif */
+  /* Media logo template sengaja TETAP terang di kedua tema (lihat blok dark). */
+  --template-media-bg: #f8fafb;
+}
+
+/* Tema gelap. Bootstrap 5.3 sudah menyediakan blok `[data-bs-theme="dark"]`;
+   di sini hanya variabel body/link & token semantik yang ditimpa agar sidebar,
+   kartu, tabel, form, dan panduan konsisten tanpa kelas tambahan di view. */
+[data-bs-theme="dark"] {
+  color-scheme: dark;
+  --bs-body-bg: #0b1116;
+  --bs-body-bg-rgb: 11, 17, 22;
+  --bs-body-color: #d7e3ea;
+  --bs-body-color-rgb: 215, 227, 234;
+  --bs-secondary-color: rgba(215, 227, 234, .65);
+  --bs-emphasis-color: #e6f4f1;
+  --bs-emphasis-color-rgb: 230, 244, 241;
+  --bs-border-color: rgba(148, 210, 205, .16);
+  --bs-border-color-translucent: rgba(148, 210, 205, .16);
+  --bs-secondary-bg: #151f27;
+  --bs-tertiary-bg: #121a22;
+  /* Bootstrap menurunkan `--bs-card-bg` dari `--bs-body-bg` (#0b1116), sehingga
+     kartu menyatu dengan latar halaman dan kehilangan elevasi. Pakai permukaan
+     yang lebih terang (#151f27) agar batas kartu terbaca. Modal tetap memakai
+     `--bs-body-bg` karena sudah dipisahkan backdrop; offcanvas sidebar memakai
+     `--surface`; dashboard tidak memakai dropdown. */
+  --bs-card-bg: var(--bs-secondary-bg);
+  --bs-link-color: #2dd4bf;
+  --bs-link-color-rgb: 45, 212, 191;
+  --bs-link-hover-color: #5eead4;
+  --bs-link-hover-color-rgb: 94, 234, 212;
+
+  --accent: #2dd4bf;
+  --accent2: #5eead4;
+  --border: rgba(148, 210, 205, .16);
+  --surface: rgba(17, 24, 31, .86);
+  --surface-solid: #121a22;
+  --surface-subtle: rgba(45, 212, 191, .10);
+  --surface-strong: rgba(17, 24, 31, .94);
+  --overlay: rgba(23, 32, 41, .98);
+  --chip-bg: rgba(45, 212, 191, .14);
+  --chip-fg: #5eead4;
+  --heading-fg: #e6f4f1;
+  --label-fg: #a9c6cc;
+  --muted-fg: rgba(215, 227, 234, .65);
+  --grid-line: rgba(148, 210, 205, .055);
+  --tint: rgba(45, 212, 191, .09);
+  --glow-1: rgba(45, 212, 191, .10);
+  --glow-2: rgba(16, 185, 129, .06);
+  --shadow-color: rgba(0, 0, 0, .6);
+  --link-soft: #5eead4;
+  --link-soft-strong: #5eead4;
+  /* Media logo template sengaja tetap terang: logo SVG/PNG transparan berwarna
+     gelap tidak terbaca bila latarnya ikut menggelap. */
+  --template-media-bg: #e7edf0;
 }
 
 body {
   background:
-    radial-gradient(900px 520px at 85% -10%, rgba(45, 212, 191, .14), transparent 60%),
-    radial-gradient(760px 460px at -8% 18%, rgba(16, 185, 129, .08), transparent 55%),
+    radial-gradient(900px 520px at 85% -10%, var(--glow-1), transparent 60%),
+    radial-gradient(760px 460px at -8% 18%, var(--glow-2), transparent 55%),
     var(--bs-body-bg);
   -webkit-font-smoothing: antialiased;
 }
@@ -29,8 +103,8 @@ body::before {
   content: "";
   position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background-image:
-  linear-gradient(rgba(13, 90, 80, .05) 1px, transparent 1px),
-  linear-gradient(90deg, rgba(13, 90, 80, .05) 1px, transparent 1px);
+  linear-gradient(var(--grid-line) 1px, transparent 1px),
+  linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
   background-size: 44px 44px;
   -webkit-mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
   mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
@@ -44,7 +118,7 @@ a {
 
 /* ---------- Typography helpers ---------- */
 .mono { font-family: var(--mono); }
-code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rgba(13, 148, 136, .10); padding: 1px 6px; border-radius: 6px; }
+code { font-family: var(--mono); font-size: .9em; color: var(--chip-fg); background: var(--chip-bg); padding: 1px 6px; border-radius: 6px; }
 
 /* ---------- Buttons: brand primary (solid, tanpa gradasi/glow) ---------- */
 .btn-primary {
@@ -62,7 +136,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 
 /* ---------- Topbar / Navbar ---------- */
 .topbar {
-  background: rgba(255, 255, 255, .82);
+  background: var(--surface);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
@@ -108,7 +182,8 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   align-items: center;
 }
 .breadcrumb .breadcrumb-item + .breadcrumb-item::before {
-  color: rgba(13, 90, 80, .32);
+  color: var(--muted-fg);
+  opacity: .6;
   font-weight: 600;
 }
 .breadcrumb .breadcrumb-item a {
@@ -127,11 +202,11 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 }
 
 /* ---------- Tables ---------- */
-.table { --bs-table-hover-bg: rgba(13, 148, 136, .05); }
+.table { --bs-table-hover-bg: var(--tint); }
 .table thead th {
   font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--bs-secondary-color, #5b7a84);
-  background: rgba(13, 148, 136, .06);
+  background: var(--tint);
   font-weight: 700; white-space: nowrap;
   border-bottom: 1px solid var(--border);
 }
@@ -144,8 +219,14 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 }
 .badge-running { color: #047857; background: rgba(5, 150, 105, .12); }
 .badge-deploying { color: #0369a1; background: rgba(2, 132, 199, .12); }
-.badge-stopped, .badge-unknown { color: #5b7a84; background: rgba(13, 90, 80, .08); }
+.badge-stopped, .badge-unknown { color: var(--muted-fg); background: var(--surface-subtle); }
 .badge-error { color: #be123c; background: rgba(225, 29, 72, .10); }
+/* Tema gelap: latar badge digelapkan & teks diterangkan agar kontras teks ≥ 4.5:1. */
+[data-bs-theme="dark"] .badge-running { color: #6ee7b7; background: rgba(5, 150, 105, .24); }
+[data-bs-theme="dark"] .badge-deploying { color: #7dd3fc; background: rgba(2, 132, 199, .26); }
+[data-bs-theme="dark"] .badge-stopped,
+[data-bs-theme="dark"] .badge-unknown { color: #a9c6cc; background: rgba(148, 210, 205, .14); }
+[data-bs-theme="dark"] .badge-error { color: #fda4af; background: rgba(225, 29, 72, .24); }
 
 /* ---------- App info (detail) ---------- */
 .app-info { display: flex; flex-wrap: wrap; margin: 0; }
@@ -172,8 +253,15 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   scrollbar-color: var(--bs-secondary-color, #94a3b8) transparent;
 }
 .nav-pills.tab-scroll .nav-item { flex: 0 0 auto; }
-.nav-pills.tab-scroll .nav-link { white-space: nowrap; color: #139081; }
+.nav-pills.tab-scroll .nav-link { white-space: nowrap; color: var(--link-soft); }
 .nav-pills.tab-scroll .nav-link.active { background: #23c8b5; color: white; box-shadow: 0 0 12px rgba(20, 184, 166, .45); }
+/* Tema gelap: pill aktif pakai tint + teks terang (putih di atas mint #23c8b5
+   hanya ≈2:1; tint ini memberi ≈12:1). */
+[data-bs-theme="dark"] .nav-pills.tab-scroll .nav-link.active {
+  background: rgba(45, 212, 191, .22);
+  color: #e6fffb;
+  box-shadow: inset 0 0 0 1px rgba(45, 212, 191, .40);
+}
 .nav-pills.tab-scroll::-webkit-scrollbar { height: 5px; }
 .nav-pills.tab-scroll::-webkit-scrollbar-thumb {
   background: var(--bs-secondary-color, #94a3b8);
@@ -181,7 +269,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 }
 
 /* ---------- Forms ---------- */
-.form-label { font-weight: 600; color: #2f5d67; }
+.form-label { font-weight: 600; color: var(--label-fg); }
 .form-control:focus { border-color: #14b8a6; box-shadow: 0 0 0 3px rgba(20, 184, 166, .20); }
 .port-input { max-width: 160px; font-family: var(--mono); }
 .form-card { max-width: 640px; }
@@ -195,24 +283,25 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 .template-tile {
   display: flex; width: 100%; min-width: 0; flex-direction: column; align-items: center; gap: 9px;
   padding: 12px; border: 1px solid var(--border); border-radius: 14px;
-  background: rgba(255, 255, 255, .86); color: var(--bs-body-color); text-align: center;
+  background: var(--surface); color: var(--bs-body-color); text-align: center;
   cursor: pointer; -webkit-appearance: none; appearance: none;
-  box-shadow: 0 1px 2px rgba(13, 90, 80, .05);
+  box-shadow: 0 1px 2px var(--shadow-color);
   transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease, transform .16s ease;
 }
 .template-tile:hover {
-  border-color: rgba(13, 148, 136, .45); background: #fff;
-  box-shadow: 0 14px 30px -18px rgba(13, 90, 80, .5);
+  border-color: rgba(13, 148, 136, .45); background: var(--surface-solid);
+  box-shadow: 0 14px 30px -18px var(--shadow-color);
   transform: translateY(-2px);
 }
 .template-tile:focus-visible { outline: 3px solid rgba(20, 184, 166, .35); outline-offset: 2px; }
 /* Kotak logo berukuran tetap; logo mengisi kotak (contain) supaya logo ber-viewBox
    lebar (mis. MySQL/MariaDB) tidak tampil mengecil di samping logo persegi.
-   Latar dibuat netral (bukan tint) agar logo pucat/ber-halo tetap terbaca bersih. */
+   Latar dibuat netral dan SENGAJA tetap terang di kedua tema (token
+   --template-media-bg) agar logo SVG/PNG transparan yang gelap tetap terbaca. */
 .template-tile-media {
   display: flex; width: 100%; height: 92px; align-items: center; justify-content: center;
-  padding: 10px; border: 1px solid rgba(13, 90, 80, .10); border-radius: 10px;
-  background: #f8fafb;
+  padding: 10px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--template-media-bg);
 }
 .template-tile-logo { display: block; width: 100%; height: 100%; object-fit: contain; }
 .template-tile-fallback { font-size: 2rem; line-height: 1; }
@@ -226,7 +315,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 }
 .template-tile-category {
   display: inline-block; max-width: 100%; margin-top: auto; padding: 3px 10px;
-  border-radius: 9px; background: rgba(13, 148, 136, .10); color: #0f766e;
+  border-radius: 9px; background: var(--chip-bg); color: var(--chip-fg);
   font-size: .72rem; font-weight: 600; line-height: 1.35; text-align: center; overflow-wrap: anywhere;
 }
 
@@ -234,13 +323,13 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 .empty { text-align: center; padding: 48px 20px; }
 .empty-icon {
   width: 56px; height: 56px; margin: 0 auto 14px; display: flex; align-items: center; justify-content: center;
-  font-size: 26px; border-radius: 16px; color: #0f766e;
-  background: rgba(45, 212, 191, .12); border: 1px solid rgba(13, 148, 136, .30);
-  box-shadow: 0 0 26px -6px rgba(13, 148, 136, .35);
+  font-size: 26px; border-radius: 16px; color: var(--chip-fg);
+  background: var(--chip-bg); border: 1px solid var(--border);
+  box-shadow: 0 0 26px -6px var(--shadow-color);
 }
 
 /* ---------- Footer ---------- */
-.footer { border-top: 1px solid var(--border); color: var(--bs-secondary-color, #5b7a84); }
+.footer { border-top: 1px solid var(--border); color: var(--muted-fg); }
 .footer a { color: inherit; }
 
 /* ---------- Auth ---------- */
@@ -256,9 +345,9 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 @keyframes float { 0%, 100% { transform: translate(-30%, -20%); } 50% { transform: translate(-10%, -30%); } }
 .auth-card {
   position: relative; width: 100%; max-width: 400px;
-  background: rgba(255, 255, 255, .92); border: 1px solid var(--border); border-radius: 18px;
+  background: var(--surface-strong); border: 1px solid var(--border); border-radius: 18px;
   backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
-  box-shadow: 0 24px 60px -30px rgba(13, 90, 80, .4), 0 0 0 1px rgba(13, 148, 136, .08);
+  box-shadow: 0 24px 60px -30px var(--shadow-color), 0 0 0 1px rgba(13, 148, 136, .08);
   overflow: hidden;
 }
 .auth-brand {
@@ -266,7 +355,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   gap: 10px; font-size: 24px; font-weight: 800;
   background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-.auth-card .sub { text-align: center; color: var(--bs-secondary-color, #5b7a84); margin: 8px 0 18px; font-size: 13px; }
+.auth-card .sub { text-align: center; color: var(--muted-fg); margin: 8px 0 18px; font-size: 13px; }
 
 /* ---------- Panduan template/app (HTML hasil Markdown::toHtml) ---------- */
 .guide-content {
@@ -284,7 +373,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   font-weight: 700;
   line-height: 1.3;
   margin: 1.4em 0 0.6em;
-  color: #0f3f46;
+  color: var(--heading-fg);
 }
 .guide-content h1 { font-size: 1.35rem; }
 .guide-content h2 {
@@ -309,8 +398,8 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 .guide-content code {
   font-family: var(--mono);
   font-size: 0.86em;
-  color: #0f766e;
-  background: rgba(13, 148, 136, 0.10);
+  color: var(--chip-fg);
+  background: var(--chip-bg);
   padding: 1px 6px;
   border-radius: 6px;
   overflow-wrap: anywhere;
@@ -338,9 +427,9 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   margin: 0 0 1em;
   padding: 0.5em 1em;
   border-left: 4px solid var(--accent);
-  background: rgba(13, 148, 136, 0.07);
+  background: var(--tint);
   border-radius: 0 8px 8px 0;
-  color: #3f6470;
+  color: var(--muted-fg);
 }
 .guide-content blockquote > :last-child { margin-bottom: 0; }
 .guide-content table {
@@ -357,7 +446,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   vertical-align: top;
 }
 .guide-content table th {
-  background: rgba(13, 148, 136, 0.08);
+  background: var(--tint);
   font-weight: 600;
 }
 .guide-content img { max-width: 100%; height: auto; }
@@ -372,7 +461,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   --bs-offcanvas-width: 200px;
   display: flex;
   flex-direction: column;
-  background: rgba(255, 255, 255, .86);
+  background: var(--surface);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-right: 1px solid var(--border);
@@ -428,15 +517,15 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   padding: 0;
   flex: none;
   color: var(--bs-secondary-color, #5b7a84);
-  background: rgba(13, 148, 136, .06);
+  background: var(--surface-subtle);
   border: 1px solid var(--border);
   border-radius: 9px;
 }
 .sidebar-toggle:hover,
-.sidebar-burger:hover { color: var(--bs-body-color); background: rgba(13, 148, 136, .12); }
-.sidebar-nav .nav-link:hover { color: var(--bs-body-color); background: rgba(13, 148, 136, .08); }
+.sidebar-burger:hover { color: var(--bs-body-color); background: var(--tint); }
+.sidebar-nav .nav-link:hover { color: var(--bs-body-color); background: var(--tint); }
 .sidebar-nav .nav-link.active {
-  color: #0f766e;
+  color: var(--link-soft-strong);
   background: linear-gradient(135deg, rgba(45, 212, 191, .18), rgba(13, 148, 136, .14));
   box-shadow: inset 0 0 0 1px rgba(13, 148, 136, .40);
 }
@@ -444,9 +533,37 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   flex: none;
   padding: .9rem 1rem;
   border-top: 1px solid var(--border);
-  color: var(--bs-secondary-color, #5b7a84);
+  color: var(--muted-fg);
   font-size: 13px;
 }
+/* Tombol siklus tema (terang → gelap → ikut sistem) di footer sidebar.
+   Tetap terlihat & bisa diklik saat rail 72px (lihat aturan `body.sidebar-collapsed`). */
+.sidebar-theme {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  min-height: 30px;
+  padding: .25rem .55rem;
+  flex: none;
+  color: var(--muted-fg);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1;
+  transition: color .15s ease, background-color .15s ease;
+}
+.sidebar-theme:hover,
+.sidebar-theme:focus-visible { color: var(--bs-body-color); background: var(--tint); }
+.sidebar-theme .theme-ico { align-items: center; justify-content: center; }
+/* Hanya satu ikon mode yang tampil; `data-theme-mode` diset skrip boot & theme.js.
+   Fallback (tanpa atribut / JS mati) menampilkan ikon "ikut sistem". */
+.theme-ico { display: none; }
+:root:not([data-theme-mode]) .theme-ico-system,
+:root[data-theme-mode="system"] .theme-ico-system,
+:root[data-theme-mode="light"] .theme-ico-light,
+:root[data-theme-mode="dark"] .theme-ico-dark { display: inline-flex; }
 .app-main {
   display: flex;
   flex-direction: column;
@@ -465,7 +582,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
        offcanvas (1045) & modal (1055) agar dialog tetap menutupi sidebar. */
     z-index: 1030;
     /* Bootstrap menyetel background offcanvas-lg transparan !important di ≥lg. */
-    background: rgba(255, 255, 255, .86) !important;
+    background: var(--surface) !important;
     transition: width .18s ease;
   }
   .app-main { margin-left: 200px; transition: margin-left .18s ease; }
@@ -482,6 +599,9 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
   body.sidebar-collapsed .sidebar-user-name,
   body.sidebar-collapsed .sidebar-user-badge,
   body.sidebar-collapsed .sidebar-logout { display: none; }
+  /* Tombol tema TIDAK ikut disembunyikan: menyusut jadi ikon 30px di tengah rail. */
+  body.sidebar-collapsed .sidebar-theme { width: 30px; padding: 0; }
+  body.sidebar-collapsed .sidebar-theme-label { display: none; }
   body.sidebar-collapsed .sidebar-user > .d-flex { justify-content: center; margin-bottom: 0 !important; }
 
   /* Popover label menu saat rail terlipat — hanya di mode ini (label tersembunyi).
@@ -504,7 +624,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
     left: calc(100% + 10px);
     transform: translateY(-50%) translateX(-4px);
     white-space: nowrap;
-    background: rgba(255, 255, 255, .98);
+    background: var(--overlay);
     color: var(--bs-body-color);
     border: 1px solid var(--border);
     border-radius: 9px;
@@ -512,7 +632,7 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
     font-size: 12.5px;
     font-weight: 600;
     line-height: 1.2;
-    box-shadow: 0 12px 26px -14px rgba(13, 90, 80, .55);
+    box-shadow: 0 12px 26px -14px var(--shadow-color);
   }
   /* Panah kecil menunjuk ke ikon. */
   body.sidebar-collapsed .sidebar-nav .nav-link::before {
@@ -532,6 +652,26 @@ code { font-family: var(--mono); font-size: .9em; color: #0f766e; background: rg
 }
 @media (prefers-reduced-motion: reduce) {
   .app-sidebar, .app-main { transition: none; }
+  .sidebar-theme { transition: none; }
   body.sidebar-collapsed .sidebar-nav .nav-link::before,
   body.sidebar-collapsed .sidebar-nav .nav-link::after { transition: none; }
+}
+
+/* ==================================================================
+   Tema gelap — penyesuaian komponen Bootstrap.
+   ================================================================== */
+/* Badge `text-bg-light` dipakai beberapa view; jangan menjadi blok putih
+   menyilaukan di tema gelap. */
+[data-bs-theme="dark"] .text-bg-light {
+  background-color: #1b2530 !important;
+  color: #cbd9e0 !important;
+  border-color: var(--border) !important;
+}
+/* Tombol primary: latar tetap #0f766e karena teks putih ≈5.5:1 (AA) — #0d9488
+   hanya ≈3.7:1 sehingga tidak dipakai. Di tema gelap ditambah garis tepi teal
+   terang agar tombol tidak menyatu dengan latar #0b1116. */
+[data-bs-theme="dark"] .btn-primary {
+  --bs-btn-border-color: rgba(45, 212, 191, .55);
+  --bs-btn-hover-border-color: #2dd4bf;
+  --bs-btn-active-border-color: #2dd4bf;
 }

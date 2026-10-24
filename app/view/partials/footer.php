@@ -8,5 +8,6 @@
 </div>
 <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
 <script src="/js/layout.js"></script>
+<script src="/js/theme.js"></script>
 </body>
 </html>
