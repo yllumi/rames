@@ -31,7 +31,12 @@ menjalankan paket ini di host yang sama dengan dashboard **aman** — jangan per
    Cloudflare, mis. `python3-certbot-dns-cloudflare` di Debian/Ubuntu). Lihat
    [Prasyarat SSL](#prasyarat-ssl-sertifikat-app-di-server-ini).
 4. Wildcard DNS `*.<APP_DOMAIN>` mengarah ke IP server ini (keputusan 4).
-5. Repo ini di-checkout di server ini (mis. `/srv/rames-agent`).
+5. **Port web publik 80 & 443 terbuka untuk umum** di firewall server ini.
+   Ini prasyarat yang **berbeda** dari port agent (lihat
+   [Firewall](#firewall-wajib)):
+   HTTP-01 divalidasi Let's Encrypt dari IP acak, jadi allowlist IP di port 80
+   **selalu** menggagalkan penerbitan sertifikat; port 443 dipakai app ber-SSL.
+6. Repo ini di-checkout di server ini (mis. `/srv/rames-agent`).
 
 Installer **tidak memasang paket apa pun** dan **tidak mengedit `nginx.conf`**
 (hanya memperingatkan bila `sites-enabled/*` belum di-`include`).
@@ -43,6 +48,10 @@ dashboard: tombol SSL → `AgentDeployer::issueSsl()` (`app/library/Deploy/Agent
 → job `ssl_issue` → `cli/deploy.php` mode `ssl_issue` → `SslIssuer` dengan
 **konfigurasi server ini**.
 
+- **Port web publik `80` & `443` terbuka di firewall server ini** — HTTP-01
+  `--webroot` divalidasi Let's Encrypt **dari internet**, jadi allowlist IP di
+  port 80 selalu berakhir `Timeout during connect (likely firewall problem)`
+  (rincian & perintah: [Firewall](#firewall-wajib)). Port 443 dipakai app ber-SSL.
 - **`ADMIN_EMAIL` WAJIB ada di setiap server yang menerbitkan sertifikat**,
   termasuk server agent. `SslIssuer::buildCommand()`
   (`app/library/SSL/SslIssuer.php:514-518`) menolak (`ADMIN_EMAIL belum diatur —
@@ -195,6 +204,16 @@ sertifikat), `--cloudflare-creds` wajib **path absolut**. Pesan galat menyebut
 
 ## Firewall (wajib)
 
+Ada **dua kelompok port** dengan kebijakan berlawanan — keduanya wajib diatur,
+dan blok onboarding yang dicetak `agent/install.sh` mengingatkan keduanya:
+
+| Port | Siapa yang boleh | Kalau salah |
+|---|---|---|
+| agent (default `8443`) | **hanya IP control plane** | pintu eksekusi Docker terbuka ke publik |
+| web `80` + `443` | **semua** (jangan allowlist IP) | SSL gagal `Timeout during connect` / app tak bisa diakses |
+
+### 1. Port agent — batasi ke IP control plane
+
 Port agent (default `8443`) adalah pintu eksekusi Docker di server ini — **batasi
 hanya untuk IP control plane**, jangan pernah dibuka ke publik:
 
@@ -204,6 +223,36 @@ sudo ufw allow from <ip-control-plane> to any port 8443 proto tcp
 sudo iptables -A INPUT -p tcp --dport 8443 -s <ip-control-plane> -j ACCEPT
 sudo iptables -A INPUT -p tcp --dport 8443 -j DROP
 ```
+
+### 2. Port web publik — buka ke semua
+
+Nginx host melayani app di port `80`/`443`, dan certbot memvalidasi tantangan
+**HTTP-01 dari IP acak milik Let's Encrypt** (bukan dari dashboard). Allowlist IP
+di port 80 karena itu **pasti** membuat penerbitan sertifikat gagal
+(`Timeout during connect (likely firewall problem)`, [GOTCHA multi-server
+no. 52](../ARCHITECTURE.md#gotcha-multi-server-f0f4))
+walaupun `SSL_WEBROOT`/nginx/DNS sudah benar:
+
+```bash
+sudo ufw allow 80,443/tcp
+# atau
+sudo iptables -A INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT
+```
+
+Cloud Firewall (mis. DigitalOcean): tambahkan inbound **HTTP (80)** dan
+**HTTPS (443)** dari `All IPv4` + `All IPv6`.
+
+Verifikasi **dari mesin luar** server ini (harus keluar kode HTTP — `200`/`301`/
+`404` sama-sama berarti port tembus; yang salah adalah *timeout*):
+
+```bash
+curl -sS -m 8 -o /dev/null -w '%{http_code}\n' http://<app>.<APP_DOMAIN>/
+```
+
+Bila port 80 memang tidak boleh publik, gunakan DNS-01
+(`SSL_CHALLENGE=dns-cloudflare` + `CLOUDFLARE_CREDS`, lihat
+[Prasyarat SSL](#prasyarat-ssl-sertifikat-app-di-server-ini)) — port 443 tetap
+wajib terbuka agar app ber-SSL bisa diakses.
 
 TLS diterminasi **di proses agent** (bukan Nginx host): sertifikat yang di-pin di
 dashboard adalah sertifikat agent, bukan sertifikat Nginx (keputusan 6).

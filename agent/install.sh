@@ -966,11 +966,29 @@ EOF
     cat <<EOF
 -----END ONBOARDING PEM-----
 
-PENTING — FIREWALL: port ${port} WAJIB dibatasi hanya untuk IP control plane.
-Port ini pintu eksekusi Docker server ini — JANGAN dibuka ke publik.
+PENTING — FIREWALL ada DUA kelompok port dengan aturan BERBEDA. Membuka salah
+satu saja membuat server ini setengah jalan (SSL/app tidak bisa diakses publik).
+
+(1) Port agent ${port} — HANYA untuk IP control plane. Ini pintu eksekusi Docker
+    server ini — JANGAN dibuka ke publik.
   ufw    : sudo ufw allow from <ip-control-plane> to any port ${port} proto tcp
   iptables: sudo iptables -A INPUT -p tcp --dport ${port} -s <ip-control-plane> -j ACCEPT
             sudo iptables -A INPUT -p tcp --dport ${port} -j DROP
+
+(2) Port web publik 80 & 443 — WAJIB TERBUKA UNTUK SEMUA (JANGAN allowlist IP).
+    Nginx host melayani app di sini, dan certbot memvalidasi HTTP-01 dari IP acak
+    milik Let's Encrypt. Port 80 tertutup ⇒ penerbitan SSL GAGAL dengan
+    "Timeout during connect (likely firewall problem)" walau semua konfigurasi
+    Rames benar; port 443 tertutup ⇒ app ber-SSL tidak bisa diakses.
+  ufw    : sudo ufw allow 80,443/tcp
+  iptables: sudo iptables -A INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT
+  cloud  : Cloud Firewall (mis. DigitalOcean) → inbound HTTP (80) + HTTPS (443)
+           dari All IPv4 dan All IPv6.
+  Verifikasi dari mesin LUAR server ini — harus keluar kode HTTP, bukan timeout:
+    curl -sS -m 8 -o /dev/null -w '%{http_code}\n' http://<app>.${EFFECTIVE_DOMAIN}/
+
+Bila port 80 memang tidak boleh publik: pakai DNS-01 (SSL_CHALLENGE=dns-cloudflare
++ CLOUDFLARE_CREDS di ${SECRETS_ENV}, lihat agent/README.md) — port 443 tetap wajib.
 
 Rotasi rahasia: ./agent/install.sh --force (token + sertifikat baru) lalu
 perbarui server di dashboard (fingerprint baru ⇒ Add Server/rotasi).

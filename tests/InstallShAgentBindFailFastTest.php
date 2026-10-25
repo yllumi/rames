@@ -35,6 +35,11 @@ use PHPUnit\Framework\TestCase;
  *  4. Wilayah operator (setelah `# rames-installer:end`) tidak boleh diisi
  *     komentar header installer versi LAMA saat upgrade dari berkas
  *     pra-sentinel, sedangkan kunci operator tetap dipertahankan.
+ *  5. Blok onboarding wajib menyebut **dua** kelompok port: port agent
+ *     (allowlist IP control plane) **dan** port web publik `80`/`443`
+ *     (terbuka untuk semua). Instruksi lama hanya menyebut `8443`, sehingga
+ *     operator yang mengikutinya persis meninggalkan `80`/`443` tertutup dan
+ *     penerbitan SSL gagal `Timeout during connect` (ARCHITECTURE §8 GOTCHA 52).
  */
 class InstallShAgentBindFailFastTest extends TestCase
 {
@@ -102,6 +107,35 @@ class InstallShAgentBindFailFastTest extends TestCase
         $this->assertStringContainsString('<ip|host>:<port>', $result['stdout'], 'bentuk wajib dijelaskan di --help');
         $this->assertStringContainsString('tanpa \':\' ditolak', $result['stdout'], 'penolakan nilai tanpa titik dua didokumentasikan');
         $this->assertStringContainsString('AGENT_PORT_PUBLISH', $result['stdout']);
+    }
+
+    /**
+     * Onboarding wajib memuat DUA kelompok port firewall. Mengikuti instruksi
+     * yang hanya menyebut port agent (`8443`) membuat `80`/`443` tetap tertutup
+     * — certbot lalu gagal `Timeout during connect` walau Rames & DNS benar.
+     */
+    public function testOnboardingMewajibkanPortWebPublikTerbuka(): void
+    {
+        $dir = $this->sandbox();
+        $result = $this->runInstaller($dir, ['--domain', self::DOMAIN, '--ip', '10.0.0.12']);
+        $out = $result['stdout'];
+
+        $this->assertSame(0, $result['code'], $out);
+        $this->assertStringContainsString('sudo ufw allow 80,443/tcp', $out, 'port web publik 80/443 wajib dicetak');
+        $this->assertStringContainsString(
+            'sudo ufw allow from <ip-control-plane> to any port 8443 proto tcp',
+            $out,
+            'port agent tetap allowlist IP control plane'
+        );
+        $this->assertStringContainsString('JANGAN allowlist IP', $out, 'aturan port web berbeda dari port agent');
+        $this->assertStringContainsString('Timeout during connect', $out, 'operator diberi tahu gejala bila 80 tertutup');
+        $this->assertStringContainsString(
+            'http://<app>.' . self::DOMAIN . '/',
+            $out,
+            'perintah verifikasi memakai domain efektif server ini'
+        );
+        // Heredoc `print_onboarding` TANPA kutip → backtick akan dieksekusi shell.
+        $this->assertStringNotContainsString('`', $out, 'onboarding tidak boleh memuat backtick (command substitution)');
     }
 
     /** @return array<string,array{0:string}> */

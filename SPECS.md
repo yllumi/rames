@@ -1495,7 +1495,7 @@ Sertifikat diterbitkan dengan `--keep-until-expiring` sehingga `certbot renew` (
 
 ### Prasyarat
 - DNS wildcard/record subdomain mengarah ke server (untuk HTTP-01 juga butuh port 80 publik terbuka di firewall host)
-- Port 80 dan 443 terbuka di firewall host
+- Port 80 dan 443 terbuka di firewall host **untuk semua sumber** — validasi HTTP-01 datang dari IP acak milik Let's Encrypt, jadi allowlist IP di port 80 selalu gagal. Ini **berbeda** dari port agent (`8443`) yang justru wajib di-allowlist ke IP control plane; instruksi onboarding `agent/install.sh` wajib mencantumkan **kedua** kelompok port (ARCHITECTURE §8 GOTCHA no. 52)
 - Nginx reload watcher host (SPECS §8.3) aktif — dashboard hanya menulis `.conf`, watcher yang `nginx -t && reload`
 - `ADMIN_EMAIL` diisi **di setiap server yang menerbitkan sertifikat** — dashboard *dan* tiap **server agent**, karena job `ssl_issue` dijalankan `cli/deploy.php` **di server itu** memakai konfigurasi server itu (pemetaan: env `ADMIN_EMAIL` → `config/deploy.php:136` `deploy.admin_email` → `SslIssuer::buildCommand()` (`app/library/SSL/SslIssuer.php:514-518`) yang **menolak** dengan "ADMIN_EMAIL belum diatur …" bila kosong; di server agent nilainya tinggal di `secrets/agent.env` server itu, **bukan** `.env` dashboard — lihat `agent/README.md` "Prasyarat SSL"). Untuk DNS-01 Cloudflare: `CLOUDFLARE_CREDS` menunjuk file berisi `dns_cloudflare_api_token = <token>` yang terbaca container tempat certbot berjalan (dashboard atau agent)
 - `LETSENCRYPT_PATH` (default `/etc/letsencrypt`) di-mount ke container dari host
