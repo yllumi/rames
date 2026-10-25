@@ -23,7 +23,9 @@ use Throwable;
  *  - **logika yang menyentuh store = instance** (`local()`, `resolve()`,
  *    `resolveForApp()`/`serverForApp()`, `domainForApp()`, dan `validate()`
  *    karena aturan "tidak boleh tumpang tindih rentang port server lokal" perlu
- *    membaca rentang efektif server lokal). Store disuntikkan lewat konstruktor,
+ *    membaca rentang efektif server lokal). `findForApp()` adalah varian `null`
+ *    khusus jalur pembersihan record app (§7.14) — **bukan** untuk operasi.
+ *    Store disuntikkan lewat konstruktor,
  *    sehingga tes cukup memakai `new ServerResolver(new ServerStore($pathTemp))`
  *    — pola yang sama dengan `AppStore`/`UserStore` (path `.sqlite` di
  *    konstruktor), jadi kelas ini tidak perlu tahu-menahu soal path;
@@ -220,6 +222,36 @@ final class ServerResolver
     public function resolveForApp(array $app): array
     {
         return $this->resolve(self::text($app['server_id'] ?? ''));
+    }
+
+    /**
+     * Server pemilik app **bila barisnya masih ada** di registry; `null` bila
+     * `server_id` app menunjuk server yang sudah dihapus dari halaman Servers
+     * (app yatim).
+     *
+     * Bedanya dengan {@see self::resolveForApp()}: hanya baris yang benar-benar
+     * tidak ada yang menghasilkan `null` — registry yang **tidak terbaca** tetap
+     * melempar, supaya kegagalan I/O tidak pernah disimpulkan sebagai "server
+     * sudah dihapus". Dipakai jalur yang harus tetap bisa menuntaskan pekerjaan
+     * lokal tanpa server (menghapus record app, §7.14) — operasi lain **wajib**
+     * tetap memakai `resolveForApp()` yang fail-fast.
+     *
+     * @param array<string,mixed> $app
+     * @return array<string,mixed>|null
+     * @throws RuntimeException bila registry server tidak terbaca
+     */
+    public function findForApp(array $app): ?array
+    {
+        $id = trim(self::text($app['server_id'] ?? ''));
+        if ($id === '') {
+            $id = ServerStore::LOCAL_ID;
+        }
+
+        if ($id === ServerStore::LOCAL_ID) {
+            return $this->findInSnapshot($id) ?? $this->local();
+        }
+
+        return $this->findInSnapshot($id);
     }
 
     /**

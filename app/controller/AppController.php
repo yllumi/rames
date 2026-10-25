@@ -293,16 +293,27 @@ class AppController
         $store = new AppStore();
         $app = $this->findApp($id, 'view');
 
-        $deployer = DeployerFactory::createForApp($app);
+        // Server app bisa SUDAH dihapus dari registry (app yatim). Halaman detail
+        // tetap WAJIB terbuka: tab Hapus App adalah satu-satunya aksi yang masih
+        // bisa menuntaskan pekerjaan lokal (lihat `delete()`); tanpa ini halaman
+        // 500 dan record app tak bisa dibuang sama sekali.
+        $deployer = null;
+        try {
+            $deployer = DeployerFactory::createForApp($app);
+        } catch (\Throwable $e) {
+            // tidak ada server tujuan: daftar container/volume dibiarkan kosong
+        }
 
         // status container live (best effort — engine/agent mungkin tidak tersedia)
         $live = [];
         try {
-            // Server agent: container dibaca dari agent (`GET /apps/{id}`) — jangan
-            // pernah membaca Docker Engine host control plane untuk app remote.
-            $live = $deployer instanceof AgentDeployer
-                ? $deployer->getContainersForApp($app)
-                : $deployer->getContainers((string) $app['name']);
+            if ($deployer !== null) {
+                // Server agent: container dibaca dari agent (`GET /apps/{id}`) — jangan
+                // pernah membaca Docker Engine host control plane untuk app remote.
+                $live = $deployer instanceof AgentDeployer
+                    ? $deployer->getContainersForApp($app)
+                    : $deployer->getContainers((string) $app['name']);
+            }
         } catch (\Throwable $e) {
             // pakai data tersimpan
         }
@@ -310,7 +321,9 @@ class AppController
         // named volume project (untuk modal konfirmasi delete)
         $volumes = [];
         try {
-            $volumes = $deployer->getProjectVolumes($app['name']);
+            if ($deployer !== null) {
+                $volumes = $deployer->getProjectVolumes($app['name']);
+            }
         } catch (\Throwable $e) {
             // engine tidak tersedia — modal tampil tanpa daftar volume
         }
@@ -384,7 +397,7 @@ class AppController
         // server lokal supaya view tetap menampilkan "lokal" seperti sebelumnya).
         $serverName = $this->serverNameForApp($appServer);
 
-        return view('app/detail', [
+        return $this->renderView('app/detail', [
             'app' => $viewApp,
             'serverName' => $serverName,
             'live' => $live,
@@ -2180,18 +2193,25 @@ class AppController
             static fn (string $v): bool => $v !== ''
         ));
 
-        try {
-            // Satu deployer untuk server pemilik app: app di server agent
-            // di-teardown LEWAT AGENT (job `teardown`), tidak pernah di host ini.
-            $deployer = DeployerFactory::createForApp($app);
+        $orphanServerId = null;
 
-            if ($mode === 'purge') {
-                // Hapus total: down -v (semua volume termasuk anonymous terhapus).
-                $deployer->teardown($app, null);
+        try {
+            // Server pemilik app bisa SUDAH dihapus dari halaman Servers
+            // (registry tidak lagi memuat barisnya). App seperti itu yatim:
+            // tidak ada jalur jaringan untuk teardown, jadi teardown remote
+            // DILEWATI — DILARANG jatuh ke server lokal — dan record app tetap
+            // bisa dibersihkan. Registry yang tidak terbaca tetap melempar
+            // (`findForApp()` hanya `null` untuk baris yang benar-benar hilang).
+            $server = (new ServerResolver())->findForApp($app);
+
+            if ($server === null) {
+                $orphanServerId = trim((string) ($app['server_id'] ?? ''));
             } else {
-                // Default aman: pertahankan volume tercentang (data DB dll. tetap
-                // ada, dipakai ulang bila app dibuat ulang dengan nama sama).
-                $deployer->teardown($app, $preserve);
+                // Satu deployer untuk server pemilik app: app di server agent
+                // di-teardown LEWAT AGENT (job `teardown`), tidak pernah di host ini.
+                // `purge` ⇒ null (down -v: semua volume termasuk anonymous ikut
+                // terhapus); default aman ⇒ pertahankan volume tercentang.
+                DeployerFactory::createFor($server)->teardown($app, $mode === 'purge' ? null : $preserve);
             }
 
             $dir = (string) config('deploy.apps_path') . '/' . $app['name'];
@@ -2209,7 +2229,16 @@ class AppController
             (new EnvManager())->remove($app['name']);
 
             $store->delete($id);
-            flash_set('success', 'App "' . $app['name'] . '" dihapus.');
+
+            if ($orphanServerId !== null) {
+                flash_set('info', 'App "' . $app['name'] . '" dihapus dari dashboard. Server "'
+                    . ($orphanServerId !== '' ? $orphanServerId : '(kosong)')
+                    . '" sudah tidak ada di registry, jadi teardown container/volume di server itu '
+                    . 'TIDAK dijalankan — bersihkan manual di mesin tersebut (mis. '
+                    . 'docker compose -p <project> down -v) bila mesinnya masih hidup.');
+            } else {
+                flash_set('success', 'App "' . $app['name'] . '" dihapus.');
+            }
         } catch (\Throwable $e) {
             flash_set('error', 'Gagal menghapus: ' . $this->appErrorText($app, $e));
         }

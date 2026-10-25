@@ -287,7 +287,7 @@ $breadcrumbs = [
             <a class="btn btn-outline-secondary btn-sm" href="/servers/<?= e(rawurlencode($__id)) ?>">Ubah</a>
             <?php if (!$__isLocal): ?>
               <form method="post" action="/servers/<?= e(rawurlencode($__id)) ?>/delete" class="d-inline"
-                    onsubmit="return confirm('Hapus server <?= e($__name) ?>? App yang dideploy di server itu tidak ikut dihapus, tetapi berhenti dikelola dashboard.');">
+                    onsubmit="return confirm('Hapus server <?= e($__name) ?>? App yang dideploy di server itu tidak ikut dihapus, tetapi berhenti dikelola dashboard (masih bisa dihapus dari daftar app; kontainer/volume di server itu harus dibersihkan manual).');">
                 <?= csrf_field() ?>
                 <button class="btn btn-outline-danger btn-sm" title="Hapus server">✕</button>
               </form>

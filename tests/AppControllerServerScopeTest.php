@@ -611,6 +611,83 @@ class AppControllerServerScopeTest extends TestCase
         $this->assertStringNotContainsString('Direktori app tidak ada', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '');
     }
 
+    /**
+     * App yatim — `server_id` menunjuk server yang **sudah dihapus** dari halaman
+     * Servers — wajib tetap bisa dihapus. Teardown remote dilewati (tidak ada
+     * jalur jaringan lagi; DILARANG jatuh ke server lokal), record + artefak
+     * lokal dibersihkan, dan admin diberi tahu bahwa container/volume di server
+     * itu harus dibersihkan manual (ARCHITECTURE §8 GOTCHA no. 53).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testDeleteOfAppOnRemovedServerSkipsTeardownAndKeepsTheRecordRemovable(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = (new AppStore())->create([
+            'name' => 'app-yatim',
+            'server_id' => 'server-yang-dihapus',
+            'status' => 'running',
+            'auth_method' => 'none',
+        ]);
+        mkdir($this->tmp . '/apps/app-yatim', 0777, true);
+        file_put_contents($this->tmp . '/apps/app-yatim/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n");
+        $GLOBALS['RAMES_FLASH'] = [];
+
+        $request = new Request("POST /apps/{$app['id']}/delete HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        $response = (new AppController())->delete($request, $app['id']);
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps', $response->getHeader('Location'));
+        $this->assertNull((new AppStore())->find($app['id']), 'record app wajib terhapus');
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/app-yatim', 'artefak lokal ikut dibersihkan');
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash, 'satu pesan (bukan "Gagal menghapus")');
+        $this->assertSame('info', $flash[0]['type']);
+        $this->assertStringContainsString('server-yang-dihapus', $flash[0]['message']);
+        $this->assertStringContainsString('sudah tidak ada di registry', $flash[0]['message']);
+        $this->assertStringContainsString('TIDAK dijalankan', $flash[0]['message']);
+        $this->assertStringContainsString('down -v', $flash[0]['message'], 'arah pembersihan manual disebut');
+    }
+
+    /**
+     * Halaman detail app yatim wajib tetap **terbuka**: tab "Hapus App" adalah
+     * satu-satunya aksi yang masih bisa menuntaskan pekerjaan lokal. Sebelum
+     * perbaikan, `DeployerFactory::createForApp()` melempar dan halaman 500 —
+     * tombol hapus tak pernah bisa dijangkau.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testDetailOfAppOnRemovedServerStillRendersSoItCanBeDeleted(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = (new AppStore())->create([
+            'name' => 'app-yatim-view',
+            'server_id' => 'server-yang-dihapus',
+            'status' => 'running',
+        ]);
+
+        $controller = new class extends AppController {
+            /** @var array<string,mixed> */
+            public array $rendered = [];
+
+            protected function renderView(string $template, array $vars): \Webman\Http\Response
+            {
+                $this->rendered = ['template' => $template, 'vars' => $vars];
+
+                return new \Webman\Http\Response(200, ['Content-Type' => 'text/html'], 'ok');
+            }
+        };
+
+        $request = new Request("GET /apps/{$app['id']} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        $response = $controller->detail($request, $app['id']);
+
+        $this->assertSame(200, $response->getStatusCode(), 'halaman detail tidak boleh 500');
+        $this->assertSame('app/detail', $controller->rendered['template']);
+        $this->assertSame([], $controller->rendered['vars']['live'], 'tanpa server: tidak ada container');
+        $this->assertSame([], $controller->rendered['vars']['volumes'], 'tanpa server: tidak ada volume');
+    }
+
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
     public function testLocalAppScopedGuardKeepsLegacyBehaviour(): void

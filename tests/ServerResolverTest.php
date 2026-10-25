@@ -112,6 +112,44 @@ class ServerResolverTest extends TestCase
         $this->resolver()->resolveForApp(['name' => 'remote', 'server_id' => 'sudah-dihapus']);
     }
 
+    /**
+     * `findForApp()` adalah varian `null` khusus jalur pembersihan record app:
+     * baris yang benar-benar hilang ⇒ `null` (app yatim tetap bisa dihapus),
+     * tetapi registry yang **tidak terbaca** tetap MELEMPAR — kegagalan I/O
+     * tidak boleh disimpulkan sebagai "server sudah dihapus".
+     */
+    public function testFindForAppReturnsNullOnlyWhenTheServerRowIsGone(): void
+    {
+        $resolver = $this->resolver();
+        $store = new ServerStore($this->file);
+        $created = $store->create(['name' => 'vps-3', 'kind' => 'agent']);
+
+        $this->assertSame(ServerStore::LOCAL_ID, $resolver->findForApp(['name' => 'lama'])['id']);
+        $this->assertSame($created['id'], $resolver->findForApp(['server_id' => $created['id']])['id']);
+
+        $store->delete($created['id']);
+        ServerResolver::forgetMemo();
+
+        $this->assertNull($resolver->findForApp(['server_id' => $created['id']]), 'server terhapus ⇒ null');
+        $this->assertNotNull($resolver->findForApp(['server_id' => '']), 'app tanpa server_id tetap lokal');
+    }
+
+    public function testFindForAppStillThrowsWhenTheRegistryIsUnreadable(): void
+    {
+        $resolver = $this->resolver();
+        $this->assertNotNull($resolver->findForApp(['name' => 'lama']));
+
+        // Registry rusak (berkas bukan basis data SQLite) ⇒ MELEMPAR, bukan
+        // disimpulkan "server sudah dihapus".
+        StoreDbFiles::remove($this->file);
+        file_put_contents($this->file, 'bukan basis data sqlite');
+        SqliteDatabase::reset();
+        ServerResolver::forgetMemo();
+
+        $this->expectException(\Throwable::class);
+        $resolver->findForApp(['server_id' => 'apa-saja']);
+    }
+
     // ------------------------------------------------------------------
     // Predikat & fallback config
     // ------------------------------------------------------------------

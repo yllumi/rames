@@ -1287,6 +1287,12 @@ vendor/bin/phpunit --filter 'InstallAgentShBootstrap|InstallShHostEnvWizard|Inst
 
 Container `rames-webman` berbasis Alpine tanpa `bash` ⇒ test installer **skip** di sana (bukan lulus).
 
+**Hapus server & app yatim.** Menghapus baris server di halaman Servers **tidak** menghapus app-nya (sesuai teks konfirmasi UI: app "berhenti dikelola dashboard"), sehingga `server_id` app menunjuk baris yang tidak ada lagi. Aturannya:
+
+- Seluruh **operasi** app yatim tetap ditolak **fail-fast** ("Server tidak dikenal", **bukan** fallback ke server lokal) — `ServerResolver::resolveForApp()`. **Halaman detail tetap terbuka** (deployer `null` ⇒ daftar container/volume kosong) supaya tab Hapus App bisa dijangkau; sebelum perbaikan halaman itu 500.
+- **Satu pengecualian operasi: `POST /apps/{id}/delete`.** Jalur ini wajib tetap bisa menuntaskan pekerjaan lokalnya, jadi memakai `ServerResolver::findForApp()` — `null` **hanya** bila baris server benar-benar hilang; registry yang tidak terbaca tetap melempar. Saat `null`: teardown remote **dilewati** (tidak pernah dijalankan di server lokal), record app + artefak lokal (direktori, deploy key, managed env) tetap dibersihkan, dan flash `info` menyatakan container/volume di server itu **tidak** di-teardown sehingga harus dibersihkan manual (`docker compose -p <project> down -v`).
+- Tanpa pengecualian itu app yatim menjadi "setengah mati": record-nya tidak bisa dihapus selamanya (ARCHITECTURE §5.26 & §8 GOTCHA no. 53).
+
 ### 7.15 Halaman `/volumes` & `/apps` Sadar-Server (F4 lanjutan)
 
 **Goal.** Dua halaman daftar yang tadinya "hanya host ini" harus menampilkan resource dari **server yang benar** tanpa membocorkan server di luar jangkauan user.
