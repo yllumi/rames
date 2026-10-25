@@ -176,7 +176,7 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
         <td class="small">
           <?php if ($__serverKind === 'agent'): ?>
             <span class="badge badge-deploying" title="App berjalan di server agent, bukan di host dashboard">agent</span>
-            <span class="mono d-block"><?= e($__serverName) ?></span>
+            <span class="mono d-block text-nowrap"><?= e($__serverName) ?></span>
           <?php else: ?>
             <span class="text-muted" title="App berjalan di host dashboard (server lokal)">lokal</span>
           <?php endif; ?>
