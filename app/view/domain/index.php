@@ -9,6 +9,7 @@
  *   $rows         — baris terdekorasi: kind(app|parked), id, domain, app_id,
  *                   app_name, source, role(serve|redirect|parkir), is_custom,
  *                   mode, ssl_status, ssl_message, ssl_expires_at, ssl_error,
+ *                   ssl_error_summary (ringkasan pendek untuk kolom Aksi),
  *                   can_ssl, form_url, ajax_url (tanpa objek app);
  *   $domains      — entri parkir untuk tab CRUD (`[]` untuk non-admin);
  *   $isAdmin      — bool;
@@ -257,6 +258,13 @@ $breadcrumbs = [
                 }
                 $__message = trim($__text($__row['ssl_message'] ?? ''));
                 $__error = trim($__text($__row['ssl_error'] ?? ''));
+                // Kolom Aksi hanya memuat ringkasan; teks utuh dibuka lewat modal Log.
+                // Bila controller tidak mengirim ringkasan (baris tak terdekorasi),
+                // JANGAN menumpahkan teks utuh ke tabel — arahkan ke Log.
+                $__errorSummary = trim($__text($__row['ssl_error_summary'] ?? ''));
+                if ($__errorSummary === '') {
+                    $__errorSummary = $__error !== '' ? 'SSL gagal — lihat Log' : '';
+                }
                 $__expires = trim($__text($__row['ssl_expires_at'] ?? ''));
                 $__canSsl = !empty($__row['can_ssl']);
                 $__formUrl = $__text($__row['form_url'] ?? '');
@@ -313,7 +321,13 @@ $breadcrumbs = [
                     </form>
                   <?php endif; ?>
                   <?php if ($__canSsl && $sslSupported): ?>
-                    <div class="text-danger small mt-1<?= $__errorVisible ? '' : ' d-none' ?>" data-ssl-error><?= e($__error) ?></div>
+                    <?php /* Ringkasan pendek (satu baris) + tombol Log ⇒ modal berisi teks
+                             utuh certbot. Teks utuh disimpan tersembunyi agar JS tidak
+                             perlu menebak dari mana membacanya. */ ?>
+                    <div class="text-danger small mt-1<?= $__errorVisible ? '' : ' d-none' ?>" data-ssl-error><?= e($__errorSummary) ?></div>
+                    <button type="button" class="btn btn-link btn-sm p-0 mt-1<?= $__errorVisible ? '' : ' d-none' ?>"
+                            data-ssl-error-log title="Tampilkan detail galat SSL">Log</button>
+                    <div class="d-none" data-ssl-error-full><?= e($__error) ?></div>
                   <?php endif; ?>
                 </td>
               </tr>
@@ -326,7 +340,28 @@ $breadcrumbs = [
 
   <?php /* Status baris disegarkan lewat polling JSON `/api/domains/status`. */ ?>
   <?php if ($rows !== []): ?>
-    <script src="/js/ssl.js?v=2"></script>
+    <!-- Modal detail galat SSL (dibuka tombol "Log" di kolom Aksi). Isi diisi
+         via textContent oleh ssl.js — jangan pernah innerHTML untuk pesan. -->
+    <div class="modal fade" id="ssl-error-modal" tabindex="-1" aria-labelledby="ssl-error-modal-label" aria-hidden="true"
+         data-ssl-error-modal>
+      <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 class="modal-title fs-6" id="ssl-error-modal-label">
+              Detail galat SSL — <span class="mono" data-ssl-error-modal-domain>—</span>
+            </h2>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+          </div>
+          <div class="modal-body">
+            <pre class="mb-0 small" data-ssl-error-modal-text style="white-space:pre-wrap; word-break:break-word;"></pre>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Tutup</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="/js/ssl.js?v=3"></script>
   <?php endif; ?>
 </section>
 <?php else: ?>

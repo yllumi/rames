@@ -9,6 +9,7 @@ use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ServerResolver;
 use app\library\Docker\AppPorts;
 use app\library\SSL\SslDomainRows;
+use app\library\SSL\SslErrorSummary;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use support\Request;
@@ -180,6 +181,9 @@ class SslController
                 'message' => $row['ssl_message'],
                 'expires_at' => $row['ssl_expires_at'],
                 'error' => $row['ssl_error'],
+                'error_summary' => SslErrorSummary::short(
+                    is_string($row['ssl_error'] ?? null) ? $row['ssl_error'] : null
+                ),
                 'can_ssl' => AppAccess::can('ssl', $app, current_user()),
                 // Kunci baru (halaman `/domains` menyatukan app + parkir):
                 // `kind` = app|parked, `role` = serve|redirect|parkir.

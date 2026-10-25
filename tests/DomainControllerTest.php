@@ -10,6 +10,7 @@ use app\library\Domain\ParkedDomainManager;
 use app\library\Domain\ParkedDomainValidator;
 use app\library\Nginx\NginxConfigGenerator;
 use app\library\Nginx\NginxReloader;
+use app\library\SSL\SslErrorSummary;
 use app\library\Storage\AppStore;
 use app\library\Storage\ParkedDomainStore;
 use app\library\Storage\SqliteDatabase;
@@ -307,6 +308,49 @@ class DomainControllerTest extends TestCase
         foreach ($body['rows'] as $row) {
             $this->assertArrayNotHasKey('app', $row, 'payload JSON tidak boleh memuat objek app');
         }
+    }
+
+    /**
+     * Kolom Aksi tabel `/domains` hanya memuat **ringkasan** galat SSL
+     * (`ssl_error_summary`, dihitung `SslErrorSummary`), sedangkan teks utuh
+     * certbot tetap dikirim (`ssl_error`) untuk modal **Log**. Ringkasan dipakai
+     * jalur render awal **dan** polling — satu sumber, tanpa pemotongan di JS.
+     */
+    public function testFailedSslRowCarriesShortSummaryAndFullError(): void
+    {
+        $full = 'Gagal menerbitkan sertifikat SSL untuk ringkas.example.org: Requesting a certificate for '
+            . 'ringkas.example.org Certbot failed to authenticate some domains (authenticator: webroot). '
+            . 'Identifier: ringkas.example.org Type: dns Detail: no valid A records found for '
+            . 'ringkas.example.org; no valid AAAA records found for ringkas.example.org';
+
+        $app = $this->apps->create([
+            'name' => 'ringkas',
+            'status' => 'running',
+            'owner_id' => self::ADMIN['id'],
+            'containers' => [['host_port' => 30006, 'internal_port' => 80]],
+            'ssl_status' => 'failed',
+            'ssl_error' => $full,
+        ]);
+
+        $controller = $this->controller(self::ADMIN);
+
+        // Polling JSON.
+        $body = json_decode((string) $controller->apiStatus($this->get('/api/domains/status'))->rawBody(), true);
+        $row = $body['rows'][0];
+        $this->assertSame($app['id'], $row['app_id']);
+        $this->assertSame($full, $row['ssl_error'], 'teks utuh tetap dikirim untuk modal Log');
+        $this->assertSame('DNS domain belum mengarah ke server ini', $row['ssl_error_summary']);
+        $this->assertLessThanOrEqual(
+            SslErrorSummary::MAX_LENGTH,
+            mb_strlen((string) $row['ssl_error_summary']),
+            'ringkasan wajib pendek'
+        );
+
+        // Render awal view memakai ringkasan yang sama.
+        $this->assertSame(200, $controller->index($this->get('/domains'))->getStatusCode());
+        $vars = $controller->rendered['vars'];
+        $this->assertSame($full, $vars['rows'][0]['ssl_error']);
+        $this->assertSame($row['ssl_error_summary'], $vars['rows'][0]['ssl_error_summary']);
     }
 
     // ------------------------------------------------------------------

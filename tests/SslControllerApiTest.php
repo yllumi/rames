@@ -399,6 +399,8 @@ class SslControllerApiTest extends TestCase
             'message' => 'Menunggu worker SSL ...',
             'expires_at' => null,
             'error' => null,
+            // Ringkasan pendek untuk kolom Aksi (`/domains`); `error` tetap utuh.
+            'error_summary' => '',
             'can_ssl' => true,
             'kind' => 'app',
             'role' => 'serve',
@@ -413,6 +415,7 @@ class SslControllerApiTest extends TestCase
             'message' => 'Aktif',
             'expires_at' => '2026-03-01T00:00:00+00:00',
             'error' => null,
+            'error_summary' => '',
             'can_ssl' => true,
             'kind' => 'app',
             'role' => 'serve',

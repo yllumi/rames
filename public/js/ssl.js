@@ -13,10 +13,13 @@
  *   POST /api/domains/parked/{id}/enable — envelope sama (domain parkir).
  *   GET {data-ssl-status-url pada <table>} (default `/api/ssl/status`) →
  *     {code:0, ssl_supported:bool, pending:bool,
- *      rows:[{app_id,app_name,domain,is_custom,status,message,expires_at,error,can_ssl,
- *             kind,role}]}
+ *      rows:[{app_id,app_name,domain,is_custom,status,message,expires_at,error,
+ *             error_summary,can_ssl,kind,role}]}
  *     `/api/domains/status` mengirim baris terdekorasi (`ssl_status`,
- *     `ssl_message`, `ssl_error`, `ssl_expires_at`); keduanya diterima.
+ *     `ssl_message`, `ssl_error`, `ssl_error_summary`, `ssl_expires_at`);
+ *     keduanya diterima. `error_summary` = ringkasan pendek yang dihitung
+ *     server (`SslErrorSummary`); bila tidak ada, teks galat dipakai apa adanya
+ *     (galat jalur POST memang sudah pendek).
  *     `status` ∈ disabled|pending|active|failed|expired; hanya baris yang boleh
  *     dilihat user yang dikembalikan (penolakan tetap 404).
  *
@@ -53,6 +56,9 @@
  *  - Aturan tampil galat: `can_ssl` **dan** `ssl_supported` **dan** status `failed`
  *    **dan** teks galat tidak kosong — sama dengan kondisi render awal di view,
  *    jadi tidak ada kedip saat polling pertama.
+ *  - Kolom Aksi hanya memuat **ringkasan** galat; teks utuh certbot disimpan di
+ *    `[data-ssl-error-full]` baris dan dibuka lewat tombol `[data-ssl-error-log]`
+ *    ke modal `[data-ssl-error-modal]` (isi via `textContent`).
  */
 (function () {
   'use strict';
@@ -157,12 +163,47 @@
     btn.classList.toggle('btn-primary', !retry);
   }
 
-  /** Tampilkan galat baris (teks lewat textContent — tanpa HTML dari server). */
-  function setRowError(row, message) {
+  /**
+   * Tampilkan galat baris: kolom Aksi memakai **ringkasan** pendek, teks utuh
+   * disimpan untuk modal Log. `summary` kosong/tidak dikirim ⇒ teks galat
+   * dipakai apa adanya (jalur POST hanya menghasilkan pesan pendek).
+   */
+  function setRowError(row, message, summary) {
     var box = row.querySelector('[data-ssl-error]');
-    if (!box) return;
-    box.textContent = message;
-    show(box, message !== '' && canSslOf(row));
+    var full = row.querySelector('[data-ssl-error-full]');
+    var logBtn = row.querySelector('[data-ssl-error-log]');
+    var short = typeof summary === 'string' && summary !== '' ? summary : message;
+
+    if (full) full.textContent = message;
+    if (box) {
+      box.textContent = short;
+      show(box, short !== '' && canSslOf(row));
+    }
+    show(logBtn, message !== '' && canSslOf(row));
+  }
+
+  var errorModal = document.querySelector('[data-ssl-error-modal]');
+
+  /**
+   * Buka modal detail galat satu baris. Teks utuh dibaca dari
+   * `[data-ssl-error-full]` dan ditulis via `textContent` (tanpa HTML).
+   * Tanpa Bootstrap (aset gagal termuat) modal tidak dibuka — tombol Log hanya
+   * pelengkap; status & aksi SSL tetap berfungsi.
+   */
+  function openErrorLog(row) {
+    if (!row || !errorModal) return;
+    var full = row.querySelector('[data-ssl-error-full]');
+    var text = full ? full.textContent : '';
+    if (text === '') return;
+
+    var domainEl = errorModal.querySelector('[data-ssl-error-modal-domain]');
+    var textEl = errorModal.querySelector('[data-ssl-error-modal-text]');
+    if (domainEl) domainEl.textContent = row.getAttribute('data-domain') || '\u2014';
+    if (textEl) textEl.textContent = text;
+
+    if (window.bootstrap && window.bootstrap.Modal) {
+      window.bootstrap.Modal.getOrCreateInstance(errorModal).show();
+    }
   }
 
   function isBusy(row) {
@@ -212,7 +253,11 @@
 
     var errBox = row.querySelector('[data-ssl-error]');
     if (errBox && typeof opts.error === 'string') {
-      errBox.textContent = opts.error;
+      setRowError(
+        row,
+        opts.error,
+        typeof opts.errorSummary === 'string' ? opts.errorSummary : ''
+      );
     }
 
     // Catatan status non-form (teks tetap dari view). Catatan menang atas
@@ -235,6 +280,11 @@
 
     if (errBox) {
       show(errBox, canSsl && supported && status === 'failed' && errBox.textContent !== '');
+      var fullEl = row.querySelector('[data-ssl-error-full]');
+      show(
+        row.querySelector('[data-ssl-error-log]'),
+        canSsl && supported && status === 'failed' && fullEl !== null && fullEl.textContent !== ''
+      );
     }
   }
 
@@ -377,6 +427,9 @@
       var error = typeof data.error === 'string'
         ? data.error
         : (typeof data.ssl_error === 'string' ? data.ssl_error : '');
+      var errorSummary = typeof data.error_summary === 'string'
+        ? data.error_summary
+        : (typeof data.ssl_error_summary === 'string' ? data.ssl_error_summary : '');
       var expires = typeof data.expires_at === 'string'
         ? data.expires_at
         : (typeof data.ssl_expires_at === 'string' ? data.ssl_expires_at : '');
@@ -384,6 +437,7 @@
       setRow(row, status !== '' ? status : 'disabled', {
         message: message,
         error: error,
+        errorSummary: errorSummary,
         expires: expires,
         canSsl: data.can_ssl === true,
         sslSupported: supported
@@ -477,6 +531,17 @@
       submitForm(form);
     });
   });
+
+  // Tombol "Log" (kolom Aksi) ⇒ modal detail galat. Delegasi di tabel supaya
+  // tetap bekerja untuk baris yang statusnya berubah oleh polling.
+  if (table) {
+    table.addEventListener('click', function (ev) {
+      var btn = ev.target && ev.target.closest ? ev.target.closest('[data-ssl-error-log]') : null;
+      if (!btn) return;
+      ev.preventDefault();
+      openErrorLog(rowOf(btn));
+    });
+  }
 
   // ------------------------------------------------------------------
   // Siklus hidup polling

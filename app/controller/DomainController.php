@@ -12,6 +12,7 @@ use app\library\Nginx\NginxConfigGenerator;
 use app\library\Nginx\NginxReloader;
 use app\library\SSL\ParkedSslEnabler;
 use app\library\SSL\SslDomainRows;
+use app\library\SSL\SslErrorSummary;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use app\library\Storage\ParkedDomainStore;
@@ -645,6 +646,11 @@ class DomainController
             $row['source'] = $kind === 'app'
                 ? 'App: ' . (string) ($row['app_name'] ?? '')
                 : 'Domain parkir';
+            // Ringkasan pendek untuk kolom Aksi (`ssl_error` utuh tetap disimpan
+            // dan dibuka lewat tombol Log ⇒ modal).
+            $row['ssl_error_summary'] = SslErrorSummary::short(
+                is_string($row['ssl_error'] ?? null) ? $row['ssl_error'] : null
+            );
 
             unset($row['app']);
             $decorated[] = $row;
