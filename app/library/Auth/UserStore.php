@@ -15,11 +15,14 @@ use RuntimeException;
  * saat tes).
  *
  * Struktur: id, username, password_hash, role (admin|member), created_at,
- * email (opsional — prasyarat top-up Duitku, lihat SPECS §7.12).
+ * email (opsional — prasyarat top-up Duitku, lihat SPECS §7.12), dan akses
+ * pemilihan server per user (`server_select` bool + `server_ids` allowlist,
+ * lihat {@see self::setServerAccess()}).
  * Password disimpan sebagai bcrypt hash, tidak pernah plaintext.
  *
  * Field `email` **tanpa migrasi**: entri lama yang belum punya `email` tetap
- * valid (`emailOf()` mengembalikan string kosong).
+ * valid (`emailOf()` mengembalikan string kosong). Field `server_select` /
+ * `server_ids` juga tanpa migrasi: dokumen lama dibaca sebagai `false` / `[]`.
  *
  * Kepemilikan app (owner/member) diatur di store `apps` pada basis data SQLite
  * yang sama — lihat app\library\Auth\AppAccess.
@@ -325,8 +328,102 @@ class UserStore
     }
 
     /**
+     * Apakah user diberi hak **memilih server** saat membuat app (grant per user).
+     *
+     * Normalisasi nilai dokumen (tanpa migrasi): `true`, `1`, `"1"`, `"true"`,
+     * dan `"on"` dianggap aktif; selain itu nonaktif.
+     *
+     * Statik murni: tidak menyentuh store, jadi aman dipanggil dari
+     * `ServerAccess` (satu sumber normalisasi, tanpa salinan aturan).
+     */
+    public static function serverSelectOf(array $user): bool
+    {
+        $value = $user['server_select'] ?? false;
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value) || is_float($value)) {
+            return $value == 1;
+        }
+        if (is_string($value)) {
+            return in_array(strtolower(trim($value)), ['1', 'true', 'on'], true);
+        }
+
+        return false;
+    }
+
+    /**
+     * Allowlist server milik user: array string unik, trim, tanpa nilai kosong.
+     *
+     * Allowlist **kosong** = semua server (hanya bila grant aktif); nilai
+     * non-skalar diabaikan. Statik murni (tanpa store).
+     *
+     * @return array<int,string>
+     */
+    public static function serverIdsOf(array $user): array
+    {
+        $raw = $user['server_ids'] ?? [];
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ($raw as $id) {
+            if (!is_scalar($id)) {
+                continue;
+            }
+            $id = trim((string) $id);
+            if ($id !== '') {
+                $ids[$id] = $id;
+            }
+        }
+
+        return array_values($ids);
+    }
+
+    /**
+     * Simpan hak pemilihan server user dalam **satu tulisan atomik**:
+     * `server_select` (bool) + `server_ids` (allowlist; kosong tetap `[]`).
+     *
+     * Validasi keberadaan user dilakukan di dalam transaksi (`update()`):
+     * id tak dikenal ⇒ `RuntimeException`, tanpa efek samping. Allowlist
+     * dinormalisasi seperti {@see self::serverIdsOf()} (unik, trim, buang kosong)
+     * — validasi id terhadap registry server adalah tanggung jawab controller.
+     *
+     * @param array<int,mixed> $serverIds
+     * @throws RuntimeException user tidak ditemukan
+     */
+    public function setServerAccess(string $id, bool $select, array $serverIds): void
+    {
+        $ids = [];
+        foreach ($serverIds as $serverId) {
+            if (!is_scalar($serverId)) {
+                continue;
+            }
+            $serverId = trim((string) $serverId);
+            if ($serverId !== '') {
+                $ids[$serverId] = $serverId;
+            }
+        }
+        $ids = array_values($ids);
+
+        $this->store->update(function (array &$data) use ($id, $select, $ids): void {
+            foreach ($data as &$user) {
+                if (($user['id'] ?? '') === $id) {
+                    $user['server_select'] = $select;
+                    $user['server_ids'] = $ids;
+                    unset($user);
+                    return;
+                }
+            }
+            unset($user);
+            throw new RuntimeException('User tidak ditemukan.');
+        });
+    }
+
+    /**
      * @param string|null $firstUserId id user pertama (untuk berkas legacy tanpa role)
-     * @return array{id:string, username:string, role:string, created_at:string, email:string}
+     * @return array{id:string, username:string, role:string, created_at:string, email:string, server_select:bool, server_ids:array<int,string>}
      */
     private function publicUser(array $user, ?string $firstUserId = null): array
     {
@@ -338,6 +435,10 @@ class UserStore
         // Selalu hadir sebagai string ('' bila belum diatur) agar session & view
         // dapat menampilkannya tanpa memeriksa keberadaan key.
         $user['email'] = $this->emailOf($user);
+        // Hak pemilihan server juga selalu hadir dengan tipe stabil (bool/array)
+        // agar session, view, dan `ServerAccess` tidak perlu menebak bentuknya.
+        $user['server_select'] = self::serverSelectOf($user);
+        $user['server_ids'] = self::serverIdsOf($user);
 
         return $user;
     }

@@ -102,22 +102,31 @@ final class BackupUsage
 
     /**
      * Estimasi kredit **1 bulan** untuk `$gb` (dibulatkan 2 desimal).
+     *
+     * `$monthlyRate` opsional aditif: tarif server baris ini (dari
+     * `ServerRates::backupMonthlyFor()`); `null` = tarif global (perilaku lama).
      */
-    public function monthlyCredits(float $gb): float
+    public function monthlyCredits(float $gb, ?float $monthlyRate = null): float
     {
-        return Pricing::backupMonthlyEstimate($gb);
+        return Pricing::backupMonthlyEstimate($gb, $monthlyRate);
     }
 
     /**
      * Deposit minimum sebelum boleh menyalakan backup untuk `$gb`:
      * `gb × tarif × (BILLING_MIN_DEPOSIT_DAYS / 30)`, dibulatkan 2 desimal
      * (0 hari ⇒ 0,00 — sama dengan gerbang kredit CPU/RAM).
+     *
+     * `$monthlyRate` opsional aditif: tarif server baris ini; `null` = tarif
+     * global.
      */
-    public function requiredDeposit(float $gb): float
+    public function requiredDeposit(float $gb, ?float $monthlyRate = null): float
     {
         $days = max(0, (int) config('deploy.billing_min_deposit_days', 30));
+        $rate = Pricing::backupMonthlyRate(
+            $monthlyRate === null ? null : ['rates' => ['backup' => $monthlyRate]]
+        );
 
-        return round(max(0.0, $gb) * Pricing::backupMonthlyRate() * ($days / 30), 2);
+        return round(max(0.0, $gb) * $rate * ($days / 30), 2);
     }
 
     /**

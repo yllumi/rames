@@ -547,6 +547,105 @@ class ServerControllerTest extends TestCase
         self::assertSame(1, $this->json($json)['code'] ?? null);
     }
 
+
+    // ------------------------------------------------------------------
+    // (iv-b) tarif per server (`rates`) — persistensi create/update
+    // ------------------------------------------------------------------
+
+    public function testCreateStoresPositiveRatesOnly(): void
+    {
+        $controller = $this->admin();
+        $response = $controller->store($this->post('/servers', $this->payload([
+            'rate_cpu' => '250',
+            'rate_ram' => '12.5',
+            'rate_backup' => '0', // 0 dibuang (bukan override)
+        ])));
+
+        self::assertSame(302, $response->getStatusCode());
+        $server = $this->store()->findByName('vps-jakarta-2');
+        self::assertNotNull($server);
+        self::assertSame(['cpu' => 250.0, 'ram' => 12.5], $server['rates']);
+    }
+
+    public function testUpdateWithBlankZeroOrNegativeRatesClearsOverride(): void
+    {
+        $controller = $this->admin();
+        $controller->store($this->post('/servers', $this->payload([
+            'rate_cpu' => '250',
+            'rate_ram' => '12.5',
+            'rate_backup' => '900',
+        ])));
+        $server = $this->store()->findByName('vps-jakarta-2');
+        self::assertNotNull($server);
+        $id = (string) $server['id'];
+        self::assertSame(['cpu' => 250.0, 'ram' => 12.5, 'backup' => 900.0], $server['rates']);
+
+        $response = $controller->update($this->post('/servers/' . $id, $this->payload([
+            'rate_cpu' => '',
+            'rate_ram' => '0',
+            'rate_backup' => '-5',
+        ])), $id);
+
+        self::assertSame(302, $response->getStatusCode());
+        self::assertSame([], $this->store()->find($id)['rates'], 'kosong/0/negatif = hapus override');
+    }
+
+    public function testOldFormWithoutRateFieldsKeepsStoredRates(): void
+    {
+        $controller = $this->admin();
+        $controller->store($this->post('/servers', $this->payload([
+            'rate_cpu' => '100',
+            'rate_backup' => '400',
+        ])));
+        $server = $this->store()->findByName('vps-jakarta-2');
+        self::assertNotNull($server);
+        $id = (string) $server['id'];
+
+        // Form lama tidak mengirim rate_* sama sekali ⇒ nilai tersimpan utuh.
+        $response = $controller->update($this->post('/servers/' . $id, $this->payload([
+            'domain' => 'domain-baru.example',
+        ])), $id);
+
+        self::assertSame(302, $response->getStatusCode());
+        $updated = $this->store()->find($id);
+        self::assertSame('domain-baru.example', $updated['domain']);
+        self::assertSame(['cpu' => 100.0, 'backup' => 400.0], $updated['rates']);
+    }
+
+    public function testLocalRowCanChangeRatesWithoutTouchingLockedIdentity(): void
+    {
+        $localBefore = $this->store()->local();
+
+        $response = $this->admin()->update($this->post('/servers/local', [
+            'domain' => 'local.example.test',
+            'notes' => 'catatan lokal',
+            'rate_cpu' => '11',
+            'rate_ram' => '2.5',
+        ]), 'local');
+
+        self::assertSame(302, $response->getStatusCode());
+        $local = $this->store()->local();
+
+        self::assertSame(['cpu' => 11.0, 'ram' => 2.5], $local['rates']);
+        self::assertSame('local.example.test', $local['domain']);
+        self::assertSame('catatan lokal', $local['notes']);
+        // Identitas terkunci tidak berubah.
+        self::assertSame(ServerStore::LOCAL_ID, $local['id']);
+        self::assertSame('local', $local['kind']);
+        self::assertSame($localBefore['name'], $local['name']);
+        self::assertSame($localBefore['enabled'], $local['enabled']);
+
+        // Menghapus tarif lokal juga boleh (field dikirim kosong).
+        $this->admin()->update($this->post('/servers/local', [
+            'domain' => 'local.example.test',
+            'notes' => 'catatan lokal',
+            'rate_cpu' => '',
+            'rate_ram' => '',
+            'rate_backup' => '',
+        ]), 'local');
+        self::assertSame([], $this->store()->local()['rates']);
+    }
+
     // ------------------------------------------------------------------
     // (v) delete
     // ------------------------------------------------------------------

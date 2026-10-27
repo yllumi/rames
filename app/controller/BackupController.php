@@ -26,6 +26,7 @@ use app\library\Billing\BackupUsage;
 use app\library\Billing\BillingGate;
 use app\library\Billing\InsufficientCredits;
 use app\library\Billing\Pricing;
+use app\library\Billing\ServerRates;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ServerResolver;
 use app\library\Docker\DockerClient;
@@ -292,10 +293,12 @@ class BackupController
 
         $usage = new BackupUsage();
         $gb = $usage->chargedGigabytes($appId);
+        $targetServerId = self::serverIdOf($target);
+        $serverRates = new ServerRates();
 
         if ($scheduled) {
             try {
-                $this->assertCanScheduleBackup($gb, $app, $actor);
+                $this->assertCanScheduleBackup($gb, $app, $actor, null, null, $targetServerId);
             } catch (InsufficientCredits $e) {
                 // Endpoint JSON/AJAX: 402 (bukan redirect) + pesan dari gerbang.
                 return json(['code' => 402, 'error' => $e->getMessage()])->withStatus(402);
@@ -304,7 +307,6 @@ class BackupController
 
         $selection = new BackupSelection();
         $actorId = (string) ($actor['id'] ?? '');
-        $targetServerId = self::serverIdOf($target);
         try {
             $selection->setScheduled($volume, $scheduled, $actorId, $targetServerId);
         } catch (\Throwable $e) {
@@ -317,7 +319,7 @@ class BackupController
             'scheduled' => $scheduled,
             'explicit' => $selection->explicit($targetServerId),
             'backup_gb' => $gb,
-            'required' => $usage->requiredDeposit($gb),
+            'required' => $usage->requiredDeposit($gb, $serverRates->backupMonthlyFor($targetServerId)),
         ]]);
     }
 
@@ -337,8 +339,14 @@ class BackupController
      *
      * @throws InsufficientCredits
      */
-    private function assertCanScheduleBackup(float $gb, ?array $app, ?array $user, ?BillingGate $gate = null, ?UserStore $users = null): void
-    {
+    private function assertCanScheduleBackup(
+        float $gb,
+        ?array $app,
+        ?array $user,
+        ?BillingGate $gate = null,
+        ?UserStore $users = null,
+        ?string $serverId = null,
+    ): void {
         $gate ??= new BillingGate(null, null, $users);
 
         if (!$gate->isEnabled() || $user === null) {
@@ -360,8 +368,8 @@ class BackupController
             return;
         }
 
-        // (4) Aktor wajib punya saldo.
-        $gate->assertCanBackup($gb, $user);
+        // (4) Aktor wajib punya saldo — tarif backup **server target**.
+        $gate->assertCanBackup($gb, $user, $serverId);
 
         // (5) Owner yang berbeda dari aktor menanggung biaya akrual ⇒ saldonya
         //     dinilai juga, dengan pesan yang menyebut pemilik app.
@@ -370,7 +378,7 @@ class BackupController
         }
 
         try {
-            $gate->assertCanBackup($gb, $payer);
+            $gate->assertCanBackup($gb, $payer, $serverId);
         } catch (InsufficientCredits $e) {
             throw new InsufficientCredits($e->balance, $e->required, sprintf(
                 'Saldo kredit pemilik app tidak mencukupi (saldo %s, minimum %s). '
@@ -1307,12 +1315,16 @@ class BackupController
      *   - `can_schedule` — `BackupAccess::can('backup', $row, $app, $user)` per
      *     baris (owner & operator boleh; viewer/stranger tidak; volume yatim
      *     hanya admin). `$user === null` ⇒ false (UI hanya lapisan kedua).
-     *   - `backup_gb` / `backup_credits_month` — biaya snapshot app baris ini
-     *     (`BackupUsage` + `Pricing`), `0.0` bila app tak ada/tak bersnapshot.
+     *   - `backup_gb` / `backup_rate` / `backup_credits_month` — biaya snapshot
+     *     app baris ini (`BackupUsage` + `Pricing`), `0.0` bila app tak ada/tak
+     *     bersnapshot. `backup_rate` = tarif efektif server baris (fallback
+     *     global) supaya tooltip JS tidak memakai tarif global yang salah.
      *     Peta GB dibaca **sekali** per pemanggilan (`chargedGigabytesByApp()`),
      *     bukan per baris — `chargedGigabytes($appId)` per baris akan membaca
      *     ulang seluruh `BackupRegistry` tiap baris (N+1; endpoint ini dipolling
-     *     tiap ~20 s oleh dashboard).
+     *     tiap ~20 s oleh dashboard). Tarif backup mengikuti **server baris itu**
+     *     (`ServerRates`, argumen opsional terakhir); server tanpa tarif jatuh
+     *     ke tarif global.
      *
      * Satu instans per request (variabel lokal — bukan properti controller).
      *
@@ -1326,9 +1338,11 @@ class BackupController
         array $apps = [],
         ?array $user = null,
         ?BackupUsage $usage = null,
+        ?ServerRates $serverRates = null,
     ): array {
         $selection ??= new BackupSelection();
         $usage ??= new BackupUsage();
+        $serverRates ??= new ServerRates();
 
         $appsById = [];
         foreach ($apps as $app) {
@@ -1355,7 +1369,11 @@ class BackupController
             );
             $row['can_schedule'] = BackupAccess::can('backup', $row, $app, $user);
             $row['backup_gb'] = $gb;
-            $row['backup_credits_month'] = Pricing::backupMonthlyEstimate($gb);
+            // Tarif efektif baris (server itu, fallback global) dikirim terpisah
+            // supaya JS tooltip tidak memakai tarif global untuk volume server
+            // bertarif khusus.
+            $row['backup_rate'] = $serverRates->backupMonthlyFor((string) ($row['server_id'] ?? ''));
+            $row['backup_credits_month'] = $usage->monthlyCredits($gb, $row['backup_rate']);
             $rows[$index] = $row;
         }
 

@@ -1,4 +1,36 @@
 <?php $pageTitle = 'Manage Users'; $active = 'users'; ?>
+<?php
+/**
+ * Grant **pemilihan server** per user (`server_select` + allowlist `server_ids`).
+ *
+ * Kontrak payload dari `UserController::index()`:
+ *   $users   — `UserStore::listWithRoles()` (tiap entri memuat `server_select`
+ *              bool + `server_ids` string[]; dokumen lama = false/[]);
+ *   $servers — opsi server **aman** `[{id, name}]` lewat
+ *              `ServerResolver::option()` (tanpa token/PEM/base_url/notes).
+ *
+ * View hanya merender: nama server dipetakan dari `$servers` untuk label/tooltip
+ * (id yang tidak dikenal tetap ditampilkan apa adanya). Grant disimpan lewat form
+ * terpisah `POST /users/{id}/servers` (checkbox `server_select=1` + `server_ids[]`);
+ * server tetap sumber kebenaran — view tidak pernah mengirim rahasia apa pun.
+ */
+$__serversGrant = [];
+$__serverNames = [];
+foreach (is_array($servers ?? null) ? $servers : [] as $__srv) {
+    if (!is_array($__srv)) {
+        continue;
+    }
+    $__srvId = (string) ($__srv['id'] ?? '');
+    if ($__srvId === '') {
+        continue;
+    }
+    $__srvName = trim((string) ($__srv['name'] ?? ''));
+    $__serverNames[$__srvId] = $__srvName !== '' ? $__srvName : $__srvId;
+    // Dedup berdasarkan id: id ganda akan menghasilkan `id` DOM duplikat.
+    $__serversGrant[$__srvId] = ['id' => $__srvId, 'name' => $__serverNames[$__srvId]];
+}
+$__serversGrant = array_values($__serversGrant);
+?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
 <div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
@@ -32,6 +64,31 @@
           $__role = ($user['role'] ?? '') === 'admin' ? 'admin' : 'member';
           $__email = trim((string) ($user['email'] ?? ''));
           $__balance = (float) (($balances ?? [])[$user['id'] ?? ''] ?? 0.0);
+
+          // Grant pemilihan server: `server_ids` kosong = boleh memilih semua
+          // server (semantik `ServerAccess`). Nilai non-scalar dibuang supaya
+          // dokumen rusak tidak menghasilkan warning di view.
+          $__serverSelect = !empty($user['server_select']);
+          $__serverIds = [];
+          foreach (is_array($user['server_ids'] ?? null) ? $user['server_ids'] : [] as $__serverId) {
+              if (!is_scalar($__serverId)) {
+                  continue;
+              }
+              $__serverId = trim((string) $__serverId);
+              if ($__serverId !== '') {
+                  $__serverIds[$__serverId] = $__serverId;
+              }
+          }
+          $__serverIds = array_values($__serverIds);
+          $__serverLabels = [];
+          foreach ($__serverIds as $__serverId) {
+              $__serverLabels[] = $__serverNames[$__serverId] ?? $__serverId;
+          }
+          $__serverTitle = $__serverSelect
+              ? ($__serverIds === []
+                  ? 'Boleh memilih semua server'
+                  : 'Dibatasi ke server: ' . implode(', ', $__serverLabels))
+              : 'Tidak punya grant pemilihan server (hanya server lokal / server app yang boleh diakses)';
         ?>
         <tr>
           <td>
@@ -52,6 +109,11 @@
             <span class="badge <?= $__role === 'admin' ? 'text-bg-primary' : 'text-bg-secondary' ?>">
               <?= $__role === 'admin' ? 'Admin' : 'Member' ?>
             </span>
+            <?php if ($__serverSelect): ?>
+              <span class="badge text-bg-light border ms-1" title="<?= e($__serverTitle) ?>">
+                Server: <?= $__serverIds === [] ? 'semua' : (int) count($__serverIds) ?>
+              </span>
+            <?php endif; ?>
           </td>
           <td class="small mono"><?= e(\app\library\Billing\Pricing::format($__balance)) ?></td>
           <td class="small text-muted">
@@ -65,7 +127,9 @@
                     data-username="<?= e($user['username']) ?>"
                     data-role="<?= e($user['role'] ?? '') ?>"
                     data-email="<?= e($__email) ?>"
-                    data-self="<?= $__self ? '1' : '0' ?>">Edit</button>
+                    data-self="<?= $__self ? '1' : '0' ?>"
+                    data-server-select="<?= $__serverSelect ? '1' : '0' ?>"
+                    data-server-ids="<?= e((string) json_encode($__serverIds, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>">Edit</button>
           </td>
         </tr>
         <?php endforeach; ?>
@@ -159,6 +223,51 @@
 
         <hr>
 
+        <?php /* Grant pemilihan server — form terpisah (`POST /users/{id}/servers`)
+              supaya tidak mencampur aksi role/email. Halaman ini admin-only;
+              tombol simpan tidak perlu gating tambahan di view. */ ?>
+        <form method="post" action="/users/0/servers" id="editServerForm" class="mb-3">
+          <?= csrf_field() ?>
+          <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" id="editServerSelect" name="server_select" value="1">
+            <label class="form-check-label" for="editServerSelect">Boleh memilih server</label>
+            <div class="form-text">
+              Tanpa grant ini user tidak mendapat pemilih server saat membuat app — ia hanya memakai server
+              lokal atau server yang menaungi app yang boleh ia akses.
+            </div>
+          </div>
+          <div class="mb-2">
+            <span class="form-label d-block" id="editServerListLabel">Batasi ke server tertentu
+              <span class="text-muted small">(opsional)</span></span>
+            <div class="border rounded p-2 small" id="editServerList" role="group"
+                 aria-labelledby="editServerListLabel" style="max-height: 12rem; overflow-y: auto;">
+              <?php if ($__serversGrant === []): ?>
+                <span class="text-muted">Belum ada server terdaftar.</span>
+              <?php else: ?>
+                <?php foreach ($__serversGrant as $__srv): ?>
+                  <?php $__srvId = (string) ($__srv['id'] ?? ''); ?>
+                  <?php if ($__srvId === '') { continue; } ?>
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="server_ids[]"
+                           id="editServer-<?= e($__srvId) ?>" value="<?= e($__srvId) ?>">
+                    <label class="form-check-label" for="editServer-<?= e($__srvId) ?>">
+                      <?= e($__serverNames[$__srvId] ?? $__srvId) ?>
+                      <span class="text-muted mono"><?= e($__srvId) ?></span>
+                    </label>
+                  </div>
+                <?php endforeach; ?>
+              <?php endif; ?>
+            </div>
+            <div class="form-text">
+              <strong>Kosongkan pilihan server = boleh memilih semua server.</strong>
+              Daftar hanya berlaku bila grant di atas dicentang; server di luar daftar ditolak dashboard.
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm">Simpan Akses Server</button>
+        </form>
+
+        <hr>
+
         <form method="post" action="" id="editDeleteForm">
           <?= csrf_field() ?>
           <button type="submit" class="btn btn-outline-danger btn-sm">Hapus User</button>
@@ -187,6 +296,28 @@
   var emailInput = document.getElementById('editEmail');
   var deleteForm = document.getElementById('editDeleteForm');
 
+  // Grant pemilihan server: daftar `server_ids[]` hanya aktif saat checkbox
+  // "Boleh memilih server" dicentang. Input yang `disabled` tidak ikut terkirim
+  // (server tetap menolak allowlist tanpa grant). State direset tiap modal dibuka
+  // supaya tidak mewarisi pilihan user sebelumnya.
+  var serverForm = document.getElementById('editServerForm');
+  var serverSelectToggle = document.getElementById('editServerSelect');
+  var serverList = document.getElementById('editServerList');
+  var serverInputs = serverList ? serverList.querySelectorAll('input[name="server_ids[]"]') : [];
+
+  function syncServerList() {
+    if (!serverSelectToggle || !serverList) return;
+    var enabled = !!serverSelectToggle.checked;
+    for (var i = 0; i < serverInputs.length; i++) {
+      serverInputs[i].disabled = !enabled;
+    }
+    serverList.classList.toggle('opacity-50', !enabled);
+  }
+
+  if (serverSelectToggle) {
+    serverSelectToggle.addEventListener('change', syncServerList);
+  }
+
   modal.addEventListener('show.bs.modal', function (event) {
     var btn = event.relatedTarget;
     if (!btn || !btn.dataset) return;
@@ -210,6 +341,26 @@
     if (emailForm && emailInput) {
       emailForm.setAttribute('action', '/users/' + encodeURIComponent(id) + '/email');
       emailInput.value = btn.dataset.email || '';
+    }
+
+    if (serverForm && serverSelectToggle && serverList) {
+      serverForm.setAttribute('action', '/users/' + encodeURIComponent(id) + '/servers');
+      var serverIds = [];
+      try {
+        serverIds = JSON.parse(btn.dataset.serverIds || '[]');
+      } catch (err) {
+        serverIds = [];
+      }
+      if (!Array.isArray(serverIds)) serverIds = [];
+      var picked = {};
+      for (var s = 0; s < serverIds.length; s++) {
+        picked[String(serverIds[s])] = true;
+      }
+      serverSelectToggle.checked = btn.dataset.serverSelect === '1';
+      for (var k = 0; k < serverInputs.length; k++) {
+        serverInputs[k].checked = !!picked[serverInputs[k].value];
+      }
+      syncServerList();
     }
 
     deleteForm.setAttribute('action', '/users/' + encodeURIComponent(id) + '/delete');

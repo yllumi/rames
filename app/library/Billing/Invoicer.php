@@ -6,6 +6,7 @@ namespace app\library\Billing;
 use app\library\Auth\UserStore;
 use app\library\Deploy\ResourceLimits;
 use app\library\Storage\AppStore;
+use app\library\Storage\ServerStore;
 
 /**
  * Penagihan periode: begitu bulan berganti, akumulasi meteran bulan lalu
@@ -18,6 +19,11 @@ use app\library\Storage\AppStore;
  * Baris `usage` milik app yang sudah tidak ada di `AppStore` tetap ditagih,
  * lalu barisnya dihapus setelah berhasil ditagih. Baris milik owner yang sudah
  * tidak ada di `auth.json` dilewati (tidak bisa ditagih) dan dibiarkan utuh.
+ *
+ * Tarif rincian (`hourly`, `monthly`) mengikuti **server tempat app diakru**
+ * (`usage.server_id`, snapshot meteran; fallback server app saat ini) lewat
+ * `ServerRates` — tarif server yang tidak diisi jatuh ke tarif global. `amount`
+ * tetap berasal dari akrual tersimpan (tidak dihitung ulang dengan tarif baru).
  *
  * Rincian `items` memakai `kind`: `compute` (CPU/RAM) dan `backup` (biaya
  * penyimpanan snapshot, `backup_gb`/`monthly`/`amount`). Ledger tetap **satu**
@@ -33,20 +39,29 @@ class Invoicer
     private AppStore $apps;
     private BillingStore $store;
     private UserStore $users;
+    private ?ServerRates $serverRates;
 
     /** @var callable|null fn(string $userId, array $apps): void */
     private $stopApps;
 
+    /**
+     * `$serverRates` opsional aditif (parameter terakhir, BC-safe): rincian
+     * `hourly`/`monthly` pada item penagihan memakai tarif server tempat app
+     * diakru (snapshot `usage.server_id`, fallback server app saat ini).
+     * `null` ⇒ dibuat lazy dengan store server di path `AppStore` yang sama.
+     */
     public function __construct(
         ?AppStore $apps = null,
         ?BillingStore $store = null,
         ?UserStore $users = null,
         ?callable $stopApps = null,
+        ?ServerRates $serverRates = null,
     ) {
         $this->apps = $apps ?? new AppStore();
         $this->store = $store ?? new BillingStore();
         $this->users = $users ?? new UserStore();
         $this->stopApps = $stopApps;
+        $this->serverRates = $serverRates;
     }
 
     /**
@@ -85,7 +100,7 @@ class Invoicer
      */
     private function close(string $current, callable $select): array
     {
-        $rates = Pricing::rates();
+        $rates = $this->serverRates();
         $groups = [];
 
         foreach ($this->store->usage() as $appId => $row) {
@@ -106,15 +121,22 @@ class Invoicer
             $limits = $app !== null ? ResourceLimits::of($app) : [];
             $seconds = (int) ($row['seconds_pending'] ?? 0);
             $appName = (string) ($row['name'] ?? ($app['name'] ?? ''));
+            // Tarif server **saat app diakru** (snapshot baris usage), fallback
+            // server app saat ini, lalu global — tanpa pembekuan historis tarif.
+            $serverId = trim((string) ($row['server_id'] ?? ''));
+            if ($serverId === '' && $app !== null) {
+                $serverId = AppStore::serverIdOf($app);
+            }
 
             $item = [
                 'app_id' => $appId,
                 'app_name' => $appName,
                 'kind' => 'compute',
+                'server_id' => $serverId,
                 'hours' => round($seconds / 3600, 4),
                 'cpus' => self::effectiveCpus($limits),
                 'memory_mb' => self::effectiveMemoryMb($limits),
-                'hourly' => round(Pricing::hourlyCredits($limits, $rates), 4),
+                'hourly' => round(Pricing::hourlyCredits($limits, $rates->ratesFor($serverId)), 4),
                 'amount' => round((float) ($row['credits_pending'] ?? 0.0), 2),
             ];
 
@@ -130,8 +152,12 @@ class Invoicer
                     'app_id' => $appId,
                     'app_name' => $appName,
                     'kind' => 'backup',
+                    'server_id' => $serverId,
                     'backup_gb' => $backupGb,
-                    'monthly' => Pricing::backupMonthlyEstimate($backupGb),
+                    'monthly' => Pricing::backupMonthlyEstimate(
+                        $backupGb,
+                        $rates->backupMonthlyFor($serverId)
+                    ),
                     'amount' => $backupAmount,
                 ];
             }
@@ -235,6 +261,15 @@ class Invoicer
             $row['apps_stopped'] = count($apps);
         }
         unset($row);
+    }
+
+    /**
+     * Resolver tarif per server (lazy, satu instance per invoicer). Store
+     * server memakai path `AppStore` yang sama (uji temp aman).
+     */
+    private function serverRates(): ServerRates
+    {
+        return $this->serverRates ??= new ServerRates(new ServerStore($this->apps->path()));
     }
 
     /**

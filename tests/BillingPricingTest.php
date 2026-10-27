@@ -134,6 +134,67 @@ class BillingPricingTest extends TestCase
         $this->assertEqualsWithDelta(0.0, Pricing::estimate([], $this->rates, -5), 0.0001);
     }
 
+    // ------------------------------------------------------------------
+    // Tarif per server (overlay opsional; tanpa argumen = perilaku lama)
+    // ------------------------------------------------------------------
+
+    public function testServerRatesOverlayFullAndPartial(): void
+    {
+        $this->assertSame(
+            ['cpu' => 250.0, 'ram' => 50.0],
+            Pricing::rates(['id' => 's1', 'rates' => ['cpu' => 250, 'ram' => 50]])
+        );
+
+        // Hanya cpu diisi ⇒ ram tetap tarif global.
+        $this->assertSame(
+            ['cpu' => 250.0, 'ram' => 20.0],
+            Pricing::rates(['rates' => ['cpu' => '250']])
+        );
+
+        // Key asing diabaikan.
+        $this->assertSame(
+            ['cpu' => 100.0, 'ram' => 20.0],
+            Pricing::rates(['rates' => ['disk' => 999]])
+        );
+    }
+
+    public function testServerRatesInvalidValuesFallBackToGlobal(): void
+    {
+        foreach ([0, -5, '0', '-1', 'abc', null, [] ] as $bad) {
+            $this->assertSame(
+                ['cpu' => 100.0, 'ram' => 20.0],
+                Pricing::rates(['rates' => ['cpu' => $bad, 'ram' => $bad]]),
+                'nilai ' . var_export($bad, true) . ' tidak boleh membuat app gratis'
+            );
+        }
+    }
+
+    public function testServerBackupRateOverlayAndFallback(): void
+    {
+        $this->assertSame(400.0, Pricing::backupMonthlyRate(['rates' => ['backup' => 400]]));
+        $this->assertSame(1000.0, Pricing::backupMonthlyRate(['rates' => ['backup' => 0]]));
+        $this->assertSame(1000.0, Pricing::backupMonthlyRate(['rates' => ['backup' => -2]]));
+        $this->assertSame(1000.0, Pricing::backupMonthlyRate(['rates' => []]));
+        $this->assertSame(1000.0, Pricing::backupMonthlyRate());
+    }
+
+    public function testServerRatesRespectGlobalConfigAsBase(): void
+    {
+        $this->useConfig([
+            'billing_rate_cpu_per_core_hour' => 70.0,
+            'billing_rate_ram_per_gb_hour' => 7.0,
+            'billing_rate_backup_per_gb_month' => 300.0,
+        ]);
+
+        $this->assertSame(['cpu' => 70.0, 'ram' => 7.0], Pricing::rates());
+        $this->assertSame(300.0, Pricing::backupMonthlyRate());
+        $this->assertSame(
+            ['cpu' => 140.0, 'ram' => 7.0],
+            Pricing::rates(['rates' => ['cpu' => 140]])
+        );
+        $this->assertSame(600.0, Pricing::backupMonthlyRate(['rates' => ['backup' => 600]]));
+    }
+
     public function testFormatUsesTwoDecimals(): void
     {
         $this->assertSame('1234.50', Pricing::format(1234.5));

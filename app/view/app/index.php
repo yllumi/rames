@@ -5,6 +5,9 @@
 $__scope = $scope ?? 'all';
 $__counts = $counts ?? ['mine' => 0, 'shared' => 0, 'all' => 0];
 $__serverFilter = (string) ($serverFilter ?? '');
+// Opsi filter server (`id`/`name`) dari controller — hanya terisi bila user
+// boleh memilih server (`ServerAccess::canSelectServer()`: admin atau member
+// bergrant `server_select`). View tidak menambah gate sendiri.
 $__serverOptions = $serverOptions ?? [];
 $__isAdmin = (bool) ($isAdmin ?? false);
 
@@ -71,9 +74,10 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
 <form class="card mb-3" method="get" action="/apps" aria-label="Filter daftar app">
   <div class="card-body py-3">
     <input type="hidden" name="scope" value="<?= e($__scope) ?>">
-    <?php // Non-admin tidak mendapat pemilih server (`$serverOptions` kosong), tetapi
-          // `?server=` bisa datang dari tautan yang dibagikan admin. Bawa nilainya
-          // lewat input tersembunyi supaya "Terapkan" tidak membuang filter server —
+    <?php // User tanpa grant pemilihan server tidak mendapat pemilih server
+          // (`$serverOptions` kosong dari controller), tetapi `?server=` bisa
+          // datang dari tautan yang dibagikan user lain. Bawa nilainya lewat
+          // input tersembunyi supaya "Terapkan" tidak membuang filter server —
           // kondisional, agar tidak menduplikasi param saat select dirender. ?>
     <?php if ($__serverFilter !== '' && $__serverOptions === []): ?>
       <input type="hidden" name="server" value="<?= e($__serverFilter) ?>">

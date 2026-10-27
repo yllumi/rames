@@ -1,10 +1,11 @@
 <?php $pageTitle = 'Networks'; $active = 'networks'; ?>
 <?php
-// Cakupan server (multi-server F3c). Pemilihan server = **admin-only** (keputusan
-// plan §9.3): non-admin tidak melihat pemilih DAN tidak pernah melihat nama
-// server (daftar `$servers` dari controller tidak dirender sama sekali), supaya
-// keberadaan server lain tidak bocor lewat halaman ini.
-$__isAdmin = is_admin();
+// Cakupan server (multi-server F3c). Pemilih server mengikuti daftar `$servers`
+// dari controller (`ServerAccess::visibleServers()`): admin melihat semua server,
+// member bergrant `server_select` melihat server yang boleh ia pilih, dan member
+// lain hanya server yang menaungi app yang boleh ia lihat. View **tidak** menambah
+// gate `is_admin()` sendiri — penyaringan server adalah milik controller, dan
+// server tetap memvalidasi ulang `?server=` (di luar jangkauan ⇒ 404).
 $__servers = is_array($servers ?? null) ? array_values(array_filter($servers, 'is_array')) : [];
 $__serverId = (string) ($serverId ?? '');
 $__serverName = trim((string) ($serverName ?? ''));
@@ -38,9 +39,10 @@ foreach ($rows as $r) {
       <?php endif; ?>
     </p>
   </div>
-  <?php // Pemilih hanya untuk admin, dan hanya bermakna bila ada server lain
-        // (instalasi satu server tidak perlu dropdown berisi satu opsi). ?>
-  <?php if ($__isAdmin && count($__servers) > 1): ?>
+  <?php // Pemilih server dirender bila controller mengirim >1 pilihan (admin atau
+        // member yang boleh memilih server); instalasi satu server tidak perlu
+        // dropdown berisi satu opsi. Server tetap memvalidasi ulang `?server=`. ?>
+  <?php if (count($__servers) > 1): ?>
   <form method="get" action="/networks" class="d-flex align-items-end gap-2">
     <div>
       <label class="form-label small fw-semibold mb-1" for="network-server">Server</label>
@@ -57,7 +59,7 @@ foreach ($rows as $r) {
   <?php endif; ?>
 </div>
 
-<?php if ($__isAdmin && $__serverName !== ''): ?>
+<?php if ($__serverName !== ''): ?>
   <div class="alert alert-info py-2 small" role="alert">
     Menampilkan network di server <strong><?= e($__serverName) ?></strong>. Network Docker bersifat
     <strong>per server</strong> — container di server lain tidak dapat bergabung ke network di sini.
@@ -143,7 +145,7 @@ foreach ($rows as $r) {
     <div class="card">
       <div class="card-header"><h2 class="h6 mb-0">Buat Network</h2></div>
       <div class="card-body">
-        <?php if ($__isAdmin && $__serverName !== ''): ?>
+        <?php if ($__serverName !== ''): ?>
           <p class="text-muted small mb-2">Network baru dibuat di server <strong><?= e($__serverName) ?></strong>.</p>
         <?php endif; ?>
         <form method="post" action="/networks/create" class="vstack gap-3">

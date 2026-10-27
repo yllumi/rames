@@ -32,9 +32,10 @@ use support\Request;
  *
  * Controller hanya mediator — tanpa state di properti (Webman persistent).
  *
- * **Hak akses server (keputusan §9.3)**: memilih server = admin-only. Non-admin
- * hanya boleh memakai server yang menaungi app yang boleh ia lihat
- * (`ServerAccess::visibleServers()`); server lain **ditolak 404** lewat
+ * **Hak akses server (keputusan §9.3)**: admin boleh semua server; member
+ * bergrant `server_select` boleh server lokal + allowlist (`selectableServers()`);
+ * non-admin lainnya hanya server yang menaungi app yang boleh ia lihat
+ * (`ServerAccess::visibleServers()`). Server di luar jangkauan **ditolak 404** lewat
  * `AppAccessDenied` (bukan 403, bukan fallback diam-diam ke server lokal) supaya
  * keberadaan server itu tidak bocor — lihat `requestedServer()`/`assertServerVisible()`.
  * Id server **tak dikenal** diperlakukan sama (404, tanpa pesan pembeda, untuk

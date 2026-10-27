@@ -108,11 +108,14 @@ class AgentModeTest extends TestCase
      * `GET /branding/logo` (publik **path eksak** — halaman login butuh logo
      * sebelum sesi ada). Agent tidak punya halaman Config/login, jadi ketiganya
      * dashboard-only.
+     *
+     * +1 (grant pemilihan server per user): `POST /users/{id}/servers` —
+     * admin-only (404 untuk non-admin), dashboard-only.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 134;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 135;
 
-    /** Definisi di atas menghasilkan 140 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 140;
+    /** Definisi di atas menghasilkan 141 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 141;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [

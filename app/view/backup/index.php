@@ -553,5 +553,5 @@ $breadcrumbs = [
   </div>
 </div>
 
-<script src="/js/backup.js?v=14"></script>
+<script src="/js/backup.js?v=15"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

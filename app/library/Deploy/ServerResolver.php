@@ -91,8 +91,14 @@ final class ServerResolver
      */
     private const LOCAL_LOCKED = ['name', 'kind', 'base_url', 'token', 'tls_cert_pem', 'enabled', 'port_range'];
 
-    /** Satu-satunya field yang boleh disesuaikan pada baris server lokal. */
-    private const LOCAL_EDITABLE = ['domain', 'notes'];
+    /**
+     * Field yang boleh disesuaikan pada baris server lokal. `rates` bukan
+     * identitas server (tarif per server untuk billing), jadi aman diubah.
+     */
+    private const LOCAL_EDITABLE = ['domain', 'notes', 'rates'];
+
+    /** Key tarif per server yang dikenal (`rates.{cpu,ram,backup}`). */
+    private const RATE_KEYS = ['cpu', 'ram', 'backup'];
 
     /** Domain dasar: huruf/angka/titik/strip, diawali & diakhiri alfanumerik. */
     private const DOMAIN_PATTERN = '/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/';
@@ -637,7 +643,11 @@ final class ServerResolver
      *  - `port_range` opsional: array `{start,end}` atau teks `"31000-31999"`;
      *    wajib 1–65535, `start < end`, dan **tidak** tumpang tindih rentang
      *    efektif server lokal (bila diberikan);
-     *  - `notes`/`enabled` opsional.
+     *  - `notes`/`enabled` opsional;
+     *  - `rates` opsional: array `{cpu, ram, backup}`; hanya nilai **numerik > 0**
+     *    yang disimpan (0/negatif/string sampah dibuang). Key hasil validasi
+     *    **selalu ada** (array, boleh kosong) sehingga penghapusan tarif bisa
+     *    disimpan; key yang tidak diisi memakai tarif global (`Pricing`).
      *
      * Mengembalikan payload **ternormalisasi** yang hanya berisi field yang
      * dikenal (field asing — termasuk `id`/`created_at` — dibuang, jadi payload
@@ -702,6 +712,9 @@ final class ServerResolver
             // Fingerprint dihitung dashboard (bukan diketik user) — sekaligus
             // memvalidasi PEM; nilai itu dipakai UI untuk verifikasi manual.
             'tls_fingerprint' => self::fingerprintFromPem($pem),
+            // Tarif per server (opsional; kosong = tarif global). Selalu hadir
+            // agar update bisa menghapus tarif lama dengan array kosong.
+            'rates' => self::normalizeRates($payload['rates'] ?? null),
         ];
 
         $range = self::normalizePortRange($payload['port_range'] ?? null);
@@ -719,8 +732,9 @@ final class ServerResolver
      * Server lokal bukan server agent: ia tidak punya `base_url`/token/PEM, dan
      * sebagian nilainya berasal dari `.env`/`config('deploy.*')`:
      *
-     *  - **boleh diubah**: `domain` (opsional; dikosongkan ⇒ ikut `APP_DOMAIN`)
-     *    dan `notes` (teks, ≤ {@see self::MAX_NOTES_LENGTH});
+     *  - **boleh diubah**: `domain` (opsional; dikosongkan ⇒ ikut `APP_DOMAIN`),
+     *    `notes` (teks, ≤ {@see self::MAX_NOTES_LENGTH}), dan `rates` (tarif
+     *    billing per server — bukan identitas);
      *  - **dikunci**: `name`, `kind`, `base_url`, `token`, `tls_cert_pem`,
      *    `enabled`, `port_range`. Field yang dikirim dengan nilai **setara**
      *    (`"1"`/`on`/`true` untuk boolean, `"31000-31999"` ≡ `{start,end}` untuk
@@ -776,8 +790,40 @@ final class ServerResolver
         if (array_key_exists('notes', $payload)) {
             $out['notes'] = self::normalizeNotes($payload['notes']);
         }
+        if (array_key_exists('rates', $payload)) {
+            $out['rates'] = self::normalizeRates($payload['rates']);
+        }
 
         return $out;
+    }
+
+    /**
+     * Normalisasi tarif per server: hanya key `cpu`/`ram`/`backup` dengan nilai
+     * **numerik > 0** yang dipertahankan. Key lain (termasuk yang bisa
+     * menyesatkan) dibuang; nilai 0/negatif/string sampah juga dibuang sehingga
+     * `Pricing::rates($server)` jatuh ke tarif global untuk key itu.
+     *
+     * @return array<string,float>
+     */
+    private static function normalizeRates(mixed $raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $rates = [];
+        foreach (self::RATE_KEYS as $key) {
+            $value = $raw[$key] ?? null;
+            if (!is_numeric($value)) {
+                continue;
+            }
+            $rate = (float) $value;
+            if ($rate > 0) {
+                $rates[$key] = $rate;
+            }
+        }
+
+        return $rates;
     }
 
     // ==================================================================

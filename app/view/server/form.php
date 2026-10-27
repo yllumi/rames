@@ -14,7 +14,9 @@
  *   $isEdit — bool.
  *
  * Field form yang dibaca controller: name, kind, base_url, token, tls_cert_pem,
- * domain, notes, enabled, dan `port_range_start`/`port_range_end`.
+ * domain, notes, enabled, `port_range_start`/`port_range_end`, dan tarif per
+ * server `rate_cpu`/`rate_ram`/`rate_backup` (string; ketiganya **selalu**
+ * dirender supaya mengosongkan semuanya menghapus override `rates`).
  *
  * Blok bantu (bukan field) untuk server agent: perintah siap-salin pembaca
  * `AGENT_TOKEN` + `AGENT_TLS_CERT` dari container agent di server tujuan
@@ -68,6 +70,25 @@ $defaultDomain = trim((string) config('deploy.app_domain', ''));
 
 // Token wajib hanya bila belum ada token tersimpan (mode edit: kosong = tidak diubah).
 $tokenRequired = !$hasToken;
+
+// Tarif khusus server (`rates.{cpu,ram,backup}` — kredit per jam / per GB per
+// jam / per GB per bulan). Ketiga field **selalu** dirender (create, edit, dan
+// baris lokal) dan controller memperlakukan kehadiran field (termasuk string
+// kosong) sebagai "tarif dikirim" ⇒ mengosongkan ketiganya menghapus override.
+// Karena itu view TIDAK boleh menonaktifkan/menyembunyikan field ini.
+$rates = is_array($server['rates'] ?? null) ? $server['rates'] : [];
+$rateText = static function (string $key) use ($rates): string {
+    $value = $rates[$key] ?? '';
+    return is_scalar($value) ? trim((string) $value) : '';
+};
+$rateCpu = $rateText('cpu');
+$rateRam = $rateText('ram');
+$rateBackup = $rateText('backup');
+// Placeholder = tarif global efektif (fallback sama dengan `config/deploy.php`)
+// supaya admin melihat angka acuan tanpa view menghitung ulang tarif.
+$globalRateCpu = trim((string) config('deploy.billing_rate_cpu_per_core_hour', 100));
+$globalRateRam = trim((string) config('deploy.billing_rate_ram_per_gb_hour', 20));
+$globalRateBackup = trim((string) config('deploy.billing_rate_backup_per_gb_month', 1000));
 
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
@@ -289,6 +310,46 @@ $breadcrumbs = [
         <label class="form-label" for="server-notes">Catatan <span class="text-muted small">(opsional)</span></label>
         <textarea class="form-control" id="server-notes" name="notes" rows="3"
                   placeholder="mis. penyedia, lokasi, siapa yang punya akses"><?= e($notes) ?></textarea>
+      </div>
+
+      <?php // Tarif per server — SELALU dirender (create, edit, dan baris lokal) dan
+            // tidak pernah disabled: controller menandai "tarif dikirim" dari
+            // kehadiran field, jadi menghilangkan field akan membuat override lama
+            // tak bisa dihapus. Placeholder hanya menampilkan tarif global. ?>
+      <div class="border rounded p-3 mb-4">
+        <div class="fw-semibold mb-1">Tarif khusus server <span class="text-muted small fw-normal">(opsional)</span></div>
+        <p class="text-muted small mb-3">
+          Biarkan kosong untuk mengikuti tarif global dashboard (angka abu-abu di tiap kolom).
+          Plafon CPU/RAM (<span class="mono">BILLING_MAX_CPUS</span> /
+          <span class="mono">BILLING_MAX_MEMORY_MB</span>) tetap global — tarif hanya mengubah harga.
+        </p>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label" for="server-rate-cpu">CPU
+              <span class="text-muted small">(kredit/core/jam)</span></label>
+            <input type="number" class="form-control mono" id="server-rate-cpu" name="rate_cpu"
+                   value="<?= e($rateCpu) ?>" step="0.01" min="0" inputmode="decimal"
+                   placeholder="<?= e($globalRateCpu) ?>">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="server-rate-ram">RAM
+              <span class="text-muted small">(kredit/GB/jam)</span></label>
+            <input type="number" class="form-control mono" id="server-rate-ram" name="rate_ram"
+                   value="<?= e($rateRam) ?>" step="0.01" min="0" inputmode="decimal"
+                   placeholder="<?= e($globalRateRam) ?>">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="server-rate-backup">Backup
+              <span class="text-muted small">(kredit/GB/bulan)</span></label>
+            <input type="number" class="form-control mono" id="server-rate-backup" name="rate_backup"
+                   value="<?= e($rateBackup) ?>" step="0.01" min="0" inputmode="decimal"
+                   placeholder="<?= e($globalRateBackup) ?>">
+          </div>
+        </div>
+        <div class="form-text">
+          Kosong = ikut tarif global untuk field itu. Mengosongkan ketiga field lalu menyimpan menghapus semua
+          tarif khusus server ini.
+        </div>
       </div>
 
       <div class="form-check mb-4">

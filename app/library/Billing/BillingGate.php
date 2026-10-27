@@ -5,6 +5,7 @@ namespace app\library\Billing;
 
 use app\library\Auth\UserStore;
 use app\library\Deploy\ResourceLimits;
+use app\library\Storage\AppStore;
 
 /**
  * Gerbang kredit — satu-satunya pintu penegakan sebelum aksi yang menyalakan
@@ -33,6 +34,15 @@ class BillingGate
     /** Kalkulator GB backup — DI opsional agar dapat diuji dengan store temp. */
     private ?BackupUsage $backup;
 
+    /** Resolver tarif per server (lazy; tidak pernah menyimpan secret). */
+    private ?ServerRates $serverRates;
+
+    /**
+     * `true` bila `$rates` diberikan eksplisit (seam uji/BC): tarif itu yang
+     * dipakai untuk semua server, persis perilaku lama.
+     */
+    private bool $ratesExplicit;
+
     /**
      * `$users` bersifat **opsional aditif** (BC-safe) supaya resolusi role
      * (termasuk admin legacy tanpa field `role`) dapat diuji dengan
@@ -43,6 +53,11 @@ class BillingGate
      * `$backup` juga opsional aditif: hanya dipakai `assertCanBackup()`; saat
      * `null`, `BackupUsage` default (registry nyata) baru dibuat lazy.
      *
+     * `$serverRates` opsional aditif (parameter terakhir): tarif per server app
+     * untuk deposit/gate. `$rates` eksplisit (biasanya hanya dari tes) tetap
+     * menang — BC-safe; bila `null`, tarif per server dipakai (jatuh ke global
+     * untuk server tanpa tarif).
+     *
      * @param array{cpu:float,ram:float}|array<string,float>|null $rates
      */
     public function __construct(
@@ -50,12 +65,15 @@ class BillingGate
         ?array $rates = null,
         ?UserStore $users = null,
         ?BackupUsage $backup = null,
+        ?ServerRates $serverRates = null,
     ) {
         $this->accounts = $accounts ?? new CreditAccount();
+        $this->ratesExplicit = $rates !== null;
         $this->rates = $rates ?? Pricing::rates();
         $this->days = (int) config('deploy.billing_min_deposit_days', 30);
         $this->users = $users;
         $this->backup = $backup;
+        $this->serverRates = $serverRates;
     }
 
     /**
@@ -110,19 +128,46 @@ class BillingGate
     /**
      * Deposit minimum untuk `$limits` (estimasi `BILLING_MIN_DEPOSIT_DAYS` hari).
      *
+     * `$serverId` opsional: tarif server target dipakai bila `$rates` tidak
+     * diberikan eksplisit; tanpa id / id tak dikenal ⇒ tarif global.
+     *
      * @param array<int|string,mixed> $limits
      */
-    public function requiredFor(array $limits): float
+    public function requiredFor(array $limits, ?string $serverId = null): float
     {
-        return Pricing::requiredDeposit($limits, $this->rates, $this->days);
+        return Pricing::requiredDeposit($limits, $this->ratesFor($serverId), $this->days);
     }
 
     /**
-     * Gerbang untuk app yang sudah ada (limit dibaca dari field `limits`).
+     * Tarif CPU/RAM efektif: eksplisit (tes/BC) → tarif server → tarif global.
+     *
+     * @return array{cpu:float,ram:float}
+     */
+    private function ratesFor(?string $serverId): array
+    {
+        if ($this->ratesExplicit || $serverId === null || trim($serverId) === '') {
+            return $this->rates;
+        }
+
+        return $this->serverRates()->ratesFor($serverId);
+    }
+
+    /**
+     * Resolver tarif per server (lazy). `null` ⇒ default store dari config
+     * (pemanggil produksi); tes yang butuh path temp menyuntiknya.
+     */
+    private function serverRates(): ServerRates
+    {
+        return $this->serverRates ??= new ServerRates();
+    }
+
+    /**
+     * Gerbang untuk app yang sudah ada (limit dibaca dari field `limits` dan
+     * tarif dari server app tersebut).
      */
     public function assertCanStart(array $app, ?array $user): void
     {
-        $this->assertCanCreate(ResourceLimits::of($app), $user);
+        $this->assertCanCreate(ResourceLimits::of($app), $user, AppStore::serverIdOf($app));
     }
 
     /**
@@ -135,7 +180,7 @@ class BillingGate
      * `required` = `BackupUsage::requiredDeposit($gb)` (estimasi satu bulan,
      * `BILLING_MIN_DEPOSIT_DAYS`).
      */
-    public function assertCanBackup(float $gb, ?array $user): void
+    public function assertCanBackup(float $gb, ?array $user, ?string $serverId = null): void
     {
         if (!$this->isEnabled()) {
             return;
@@ -148,7 +193,11 @@ class BillingGate
         }
 
         $userId = (string) ($user['id'] ?? '');
-        $required = $this->backupUsage()->requiredDeposit($gb);
+        // Tarif backup **server target** (id kosong/tak dikenal ⇒ global).
+        $required = $this->backupUsage()->requiredDeposit(
+            $gb,
+            $this->serverRates()->backupMonthlyFor((string) $serverId)
+        );
         $balance = $userId === '' ? 0.0 : $this->accounts->balance($userId);
 
         if ($balance < $required) {
@@ -168,9 +217,12 @@ class BillingGate
     /**
      * Gerbang untuk app yang akan dibuat (limit dari pilihan form create).
      *
+     * `$serverId` = server target pembuatan app; tarif server itu dipakai bila
+     * `$rates` tidak diberikan eksplisit (tanpa id ⇒ tarif global).
+     *
      * @param array<int|string,mixed> $limits
      */
-    public function assertCanCreate(array $limits, ?array $user): void
+    public function assertCanCreate(array $limits, ?array $user, ?string $serverId = null): void
     {
         if (!$this->isEnabled()) {
             return;
@@ -188,7 +240,7 @@ class BillingGate
         }
 
         $userId = (string) ($user['id'] ?? '');
-        $required = $this->requiredFor($limits);
+        $required = $this->requiredFor($limits, $serverId);
         $balance = $userId === '' ? 0.0 : $this->accounts->balance($userId);
 
         if ($balance < $required) {

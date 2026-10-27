@@ -23,18 +23,19 @@ if ($wizardSelectedServerId === '') {
     $wizardSelectedServerId = \app\library\Storage\ServerStore::LOCAL_ID;
 }
 $wizardCanSelectServer = (bool) ($canSelectServer ?? false);
-// Selektor hanya untuk admin dengan >1 pilihan: controller memang hanya
-// mengirim server lokal ke non-admin, jadi nama server lain tidak pernah
-// dirender (bukan sekadar tombol yang disembunyikan). View tetap menjaga diri
-// sendiri: bila `$wizardCanSelectServer` false, catatan read-only memakai
-// proyeksi server lokal (lihat `$wizardLocalServerProjection` di bawah).
+// Selektor dirender untuk user yang **boleh memilih server** (admin maupun member
+// bergrant `server_select`) bila ada >1 pilihan. Controller hanya mengirim server
+// lokal saat `canSelectServer` false, jadi nama server lain tidak pernah dirender
+// (bukan sekadar tombol yang disembunyikan). View tetap menjaga diri sendiri: bila
+// `$wizardCanSelectServer` false, catatan read-only memakai proyeksi server lokal
+// (lihat `$wizardLocalServerProjection` di bawah).
 $wizardShowServerSelect = $wizardCanSelectServer && count($wizardServers) > 1;
 
 // Navigasi wizard mempertahankan pilihan server (SPECS.md §2a). Parameter
 // `server_id` hanya ditambahkan bila server terpilih BUKAN server lokal **dan**
 // user memang boleh memilih server (`$wizardCanSelectServer`) — supaya URL
-// default/non-admin tetap bersih (absen = server lokal) dan payload di luar
-// kontrak tidak membocorkan id server agent lewat `href`.
+// default user tanpa grant tetap bersih (absen = server lokal) dan payload di
+// luar kontrak tidak membocorkan id server agent lewat `href`.
 $wizardNavServerParam = ($wizardCanSelectServer
     && $wizardSelectedServerId !== ''
     && strtolower($wizardSelectedServerId) !== \app\library\Storage\ServerStore::LOCAL_ID)

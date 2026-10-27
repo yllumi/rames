@@ -9,11 +9,13 @@ use app\library\Auth\ServerAccess;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Otorisasi registry server (plan §4.2, keputusan user §9.3: kelola & pilih
- * server = admin-only, penolakan **404** bukan 403).
+ * Otorisasi registry server (plan §4.2 & keputusan user §9.3).
  *
- * Kelas ini statik murni (tanpa store/HTTP), jadi uji cukup matriks role —
- * tidak menyentuh data runtime apa pun.
+ * Kelola registry tetap **admin-only** (penolakan 404, bukan 403), sedangkan
+ * **memilih** server boleh diberikan admin per user lewat flag
+ * `server_select` (+ allowlist `server_ids`). Kelas ini statik murni (tanpa
+ * store/HTTP), jadi uji cukup matriks role & flag — tidak menyentuh data
+ * runtime apa pun.
  */
 class ServerAccessTest extends TestCase
 {
@@ -180,6 +182,130 @@ class ServerAccessTest extends TestCase
 
         $this->assertNotSame([], $first);
         $this->assertSame([], $second, 'panggilan sebelumnya tidak boleh meninggalkan state');
+    }
+
+    // ------------------------------------------------------------------
+    // Grant pemilihan server per user (server_select + server_ids)
+    // ------------------------------------------------------------------
+
+    /** @return array<string,mixed> */
+    private function grantUser(array $allowlist = [], mixed $flag = true): array
+    {
+        return [
+            'id' => 'u6',
+            'username' => 'budi',
+            'role' => 'member',
+            'server_select' => $flag,
+            'server_ids' => $allowlist,
+        ];
+    }
+
+    public function testGrantFlagEnablesSelectionWithoutOpeningManagement(): void
+    {
+        $user = $this->grantUser();
+
+        $this->assertTrue(ServerAccess::hasServerSelectGrant($user));
+        $this->assertTrue(ServerAccess::canSelectServer($user));
+        $this->assertFalse(ServerAccess::canManageServers($user), 'grant bukan hak kelola registry');
+
+        // Flag dinormalisasi `UserStore` (string "on"/"1"/"true").
+        foreach (['on', '1', 'true', 1, true] as $flag) {
+            $this->assertTrue(
+                ServerAccess::canSelectServer($this->grantUser([], $flag)),
+                'flag ' . var_export($flag, true) . ' harus dianggap aktif'
+            );
+        }
+        foreach (['0', 'off', '', 0, false, 'sampah'] as $flag) {
+            $this->assertFalse(
+                ServerAccess::canSelectServer($this->grantUser([], $flag)),
+                'flag ' . var_export($flag, true) . ' harus nonaktif'
+            );
+        }
+    }
+
+    public function testGrantHolderStillGets404ForServerManagement(): void
+    {
+        $this->expectException(AppAccessDenied::class);
+
+        ServerAccess::requireManageServers($this->grantUser(['s2']));
+    }
+
+    public function testAllowlistRestrictsMaySelectWhileLocalIsAlwaysAllowed(): void
+    {
+        $user = $this->grantUser(['s2']);
+
+        $this->assertSame(['s2'], ServerAccess::serverAllowlist($user));
+        $this->assertTrue(ServerAccess::maySelect($user, 's2'));
+        $this->assertFalse(ServerAccess::maySelect($user, 's3'), 'server di luar allowlist ditolak');
+        $this->assertTrue(ServerAccess::maySelect($user, 'local'), 'server lokal selalu boleh');
+        $this->assertTrue(ServerAccess::maySelect($user, ''), 'id kosong = server lokal');
+    }
+
+    public function testEmptyAllowlistMeansAllServersForGrantHolder(): void
+    {
+        $user = $this->grantUser();
+
+        $this->assertTrue(ServerAccess::maySelect($user, 's1'));
+        $this->assertTrue(ServerAccess::maySelect($user, 's-sembarang'));
+    }
+
+    public function testSelectableServersForGrantHolderAlwaysIncludesLocal(): void
+    {
+        $servers = [
+            ['id' => 'local', 'name' => 'local', 'kind' => 'local'],
+            ['id' => 's2', 'name' => 'agent-a', 'kind' => 'agent'],
+            ['id' => 's3', 'name' => 'agent-b', 'kind' => 'agent'],
+        ];
+
+        $this->assertSame(
+            ['local', 's2'],
+            array_column(ServerAccess::selectableServers($servers, $this->grantUser(['s2'])), 'id')
+        );
+        $this->assertSame(
+            ['local', 's2', 's3'],
+            array_column(ServerAccess::selectableServers($servers, $this->grantUser()), 'id'),
+            'allowlist kosong ⇒ semua server'
+        );
+        $this->assertSame([], ServerAccess::selectableServers($servers, self::MEMBER), 'tanpa grant ⇒ kosong');
+        $this->assertSame(['local', 's2', 's3'], array_column(ServerAccess::selectableServers($servers, self::ADMIN), 'id'));
+    }
+
+    public function testVisibleServersIsUnionOfVisibleAppServersAndGrantAllowlist(): void
+    {
+        // OWNER punya app di s2. Grant allowlist hanya s3 ⇒ union s2 + s3.
+        $user = array_merge(self::OWNER, ['server_select' => true, 'server_ids' => ['s3']]);
+
+        $this->assertSame(
+            ['s2', 's3'],
+            array_column(ServerAccess::visibleServers($this->servers(), $user, $this->apps()), 'id')
+        );
+    }
+
+    public function testGrantDoesNotExposeForeignAppServers(): void
+    {
+        // Allowlist s3 saja. App asing di s1 TIDAK boleh ikut terlihat hanya
+        // karena user punya grant server.
+        $user = $this->grantUser(['s3']);
+        $apps = [
+            ['id' => 'foreign', 'owner_id' => 'u8', 'server_id' => 's1'],
+            ['id' => 'own', 'owner_id' => 'u6', 'server_id' => 's2'],
+        ];
+
+        $this->assertSame(
+            ['s2', 's3'],
+            array_column(ServerAccess::visibleServers($this->servers(), $user, $apps), 'id'),
+            'app asing tetap tersaring AppAccess; grant hanya menambah server'
+        );
+    }
+
+    public function testNonGrantMemberBehaviourIsUnchanged(): void
+    {
+        $this->assertSame([], ServerAccess::selectableServers($this->servers(), self::MEMBER));
+        $this->assertFalse(ServerAccess::maySelect(self::MEMBER, 's2'));
+        $this->assertSame(
+            ['s2', 's3'],
+            array_column(ServerAccess::visibleServers($this->servers(), self::OWNER, $this->apps()), 'id')
+        );
     }
 
     // ------------------------------------------------------------------

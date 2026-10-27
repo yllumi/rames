@@ -343,10 +343,16 @@ class MonitorController
     }
 
     /**
-     * Server agent yang boleh **dilihat** user saat ini — satu pintu
-     * {@see ServerAccess::visibleServers()} (jangan menyalin aturannya):
-     * admin menerima semua server, non-admin hanya server yang menaungi app yang
-     * boleh ia lihat; tanpa app terlihat ⇒ daftar kosong (fail-closed).
+     * Server agent yang boleh **dilihat** user saat ini.
+     *
+     * Admin menerima semua server. Non-admin memakai satu pintu
+     * {@see ServerAccess::visibleServers()} (server app terlihat + server grant),
+     * lalu **dipersempit lagi** ke server yang menaungi minimal satu app yang
+     * boleh ia lihat. Alasannya: grant pemilihan server boleh membuka server di
+     * `/networks`, `/volumes`, `/backups`, tetapi `/api/monitor/overview`
+     * mengirim **metrik host agregat** (CPU/RAM/disk) milik server — informasi
+     * yang tidak pernah dimiliki user untuk server yang belum punya app-nya.
+     * Tanpa app terlihat ⇒ daftar kosong (fail-closed).
      *
      * Inilah pengaman sebenarnya untuk `servers[]` (plan §4.3): penyaringan di
      * `public/js/monitor.js` hanya lapisan kedua. Server yang tidak boleh
@@ -358,7 +364,30 @@ class MonitorController
      */
     private function visibleAgentServers(array $visibleApps): array
     {
-        return ServerAccess::visibleServers($this->agentServers(), $this->currentUser(), $visibleApps);
+        $user = $this->currentUser();
+        $visible = ServerAccess::visibleServers($this->agentServers(), $user, $visibleApps);
+
+        if ($user !== null && (string) ($user['role'] ?? '') === AppAccess::ROLE_ADMIN) {
+            return $visible;
+        }
+
+        // Server yang menaungi app terlihat (satu-satunya alasan non-admin
+        // berhak melihat metrik host server itu).
+        $appServerIds = [];
+        foreach ($visibleApps as $app) {
+            if (!is_array($app)) {
+                continue;
+            }
+            $serverId = (string) ($app['server_id'] ?? '');
+            if ($serverId !== '') {
+                $appServerIds[$serverId] = true;
+            }
+        }
+
+        return array_values(array_filter(
+            $visible,
+            static fn (array $server): bool => isset($appServerIds[(string) ($server['id'] ?? '')])
+        ));
     }
 
     /**

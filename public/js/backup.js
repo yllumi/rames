@@ -406,12 +406,18 @@
   // selain itu badge read-only. Default OFF bila field absen (volume yang belum
   // pernah dibackup). Server tetap sumber kebenaran dan selalu mengirim
   // `scheduled` + `can_schedule` per baris.
-  function scheduleCostTitle() {
+  function scheduleCostTitle(row) {
     if (!BILLING_ENABLED) {
       return 'Ikut backup harian (berkala).';
     }
 
-    return 'Ikut backup harian (berkala). Biaya ' + fmtNumber(BACKUP_RATE) + ' kredit/GB/bulan, minimum '
+    // Tarif per server (bila ada & valid) menang atas tarif global `data-backup-rate`.
+    var rate = Number(row && row.backup_rate);
+    if (!isFinite(rate) || rate <= 0) {
+      rate = BACKUP_RATE;
+    }
+
+    return 'Ikut backup harian (berkala). Biaya ' + fmtNumber(rate) + ' kredit/GB/bulan, minimum '
       + fmtNumber(BACKUP_MIN_GB) + ' GB per app.';
   }
 
@@ -425,7 +431,7 @@
         '<input type="checkbox" class="form-check-input backup-schedule-toggle" data-volume="' + name + '"' +
         (scheduled ? ' checked' : '') +
         ' aria-label="Backup berkala untuk ' + name + '"' +
-        ' title="' + esc(scheduleCostTitle()) + '">' +
+        ' title="' + esc(scheduleCostTitle(row)) + '">' +
         '</div>';
     }
     var title = esc('Anda tidak berhak mengubah backup berkala volume ini');

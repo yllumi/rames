@@ -8,7 +8,8 @@ use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Smoke render view multi-server (F3) — admin-only untuk pemilihan server.
+ * Smoke render view multi-server (F3) — pemilihan server: admin **atau** member
+ * bergrant `server_select`; member tanpa grant terkunci ke server lokal.
  *
  * View repo ini TIDAK bisa dirender di test biasa: template memanggil helper
  * global yang butuh session/request Webman (`csrf_token()`, `current_user()`,
@@ -27,10 +28,12 @@ use PHPUnit\Framework\TestCase;
  *        online/offline/unknown (server offline = offline, bukan error);
  *        `data-is-admin` benar; `monitor.js` menaikkan cache-bust & memuat
  *        pemetaan offline serta filter non-admin;
- *  (ii)  `/networks`: pemilih server HANYA untuk admin, form POST membawa field
- *        `server`, tautan detail mempertahankan `?server=`;
- *  (iii) `/networks` non-admin: `$servers` dari controller **tidak** dirender —
- *        tidak ada nama server lain, tidak ada elemen pemilih;
+ *  (ii)  `/networks`: pemilih server dirender bila controller mengirim daftar
+ *        server (admin **atau** member bergrant `server_select`), form POST
+ *        membawa field `server`, tautan detail mempertahankan `?server=`;
+ *  (iii) `/networks` member tanpa grant: controller mengirim `$servers` kosong
+ *        (`ServerAccess::visibleServers()` tanpa app/grant) sehingga view tidak
+ *        merender pemilih maupun nama server lain;
  *  (iv)  `/database`: kolom Server + penanda baris lokal vs agent;
  *  (v)   detail app: badge Server di header + baris Info + catatan tab Network
  *        untuk app server agent; app lokal tanpa badge mencolok;
@@ -332,26 +335,54 @@ class MultiServerViewTest extends TestCase
 
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
-    public function testNetworksMemberNeverSeesOtherServerNames(): void
+    public function testNetworksMemberWithoutGrantGetsNoServerPayload(): void
     {
         $GLOBALS['RAMES_VIEW_ADMIN'] = false;
 
-        // Controller tetap mengirim seluruh daftar server; view-lah yang tidak merendernya.
+        // Member tanpa grant: `ServerAccess::visibleServers()` mengembalikan `[]`
+        // (tidak punya app di server agent) — view tidak menambah gate `is_admin()`
+        // sendiri, jadi payload kosong itulah yang menyembunyikan pemilih.
         $html = $this->renderView('network/index.php', [
             'rows' => [$this->networkRow('shared-app', false)],
             'engineError' => null,
             'canManage' => false,
             'serverId' => '',
             'serverName' => '',
-            'servers' => $this->serverOptions(),
+            'servers' => [],
         ]);
 
-        self::assertStringNotContainsString('name="server"', $html, 'Tanpa pemilih/hidden server untuk non-admin');
+        self::assertStringNotContainsString('name="server"', $html, 'Tanpa pemilih/hidden server saat daftar kosong');
         self::assertStringNotContainsString('<select', $html);
         self::assertStringNotContainsString('vps-jakarta', $html);
         self::assertStringNotContainsString('vps-surabaya', $html);
         self::assertStringNotContainsString('?server=', $html);
         self::assertStringContainsString('hanya untuk admin', $html);
+
+        $this->assertNoSecretLeak($html);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testNetworksMemberWithGrantSeesServerPicker(): void
+    {
+        $GLOBALS['RAMES_VIEW_ADMIN'] = false;
+
+        // Member bergrant `server_select`: controller mengirim server yang boleh
+        // dipilih (`ServerAccess::selectableServers()`); view merendernya tanpa
+        // gate admin tambahan.
+        $html = $this->renderView('network/index.php', [
+            'rows' => [$this->networkRow('shared-app', true)],
+            'engineError' => null,
+            'canManage' => false,
+            'serverId' => 'vps-jakarta',
+            'serverName' => 'vps-jakarta',
+            'servers' => $this->serverOptions(),
+        ]);
+
+        self::assertStringContainsString('id="network-server"', $html);
+        self::assertStringContainsString('name="server"', $html);
+        self::assertMatchesRegularExpression('/value="vps-jakarta"\s+selected/', $html);
+        self::assertStringContainsString('Menampilkan network di server', $html);
 
         $this->assertNoSecretLeak($html);
     }

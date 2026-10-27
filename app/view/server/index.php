@@ -6,7 +6,7 @@
  * Kontrak payload dari `ServerController::index()` (jangan diubah dari sisi view):
  *   $servers — array dokumen server **tanpa** `token`/`tls_cert_pem`, ditambah
  *              penanda `has_token` (field: id, name, kind, base_url, domain,
- *              notes, enabled, port_range?, status, agent_version?,
+ *              notes, enabled, port_range?, rates?, status, agent_version?,
  *              min_control_plane_version?, capabilities?, last_seen_at?,
  *              tls_fingerprint?, agent_compat?);
  *              `agent_compat` = `AgentVersionGate::check()` (turunan murni
@@ -121,6 +121,7 @@ $breadcrumbs = [
           <th>Status</th>
           <th>Versi &amp; kompatibilitas</th>
           <th>Rentang port</th>
+          <th>Tarif</th>
           <th class="text-end">Aksi</th>
         </tr>
       </thead>
@@ -146,6 +147,24 @@ $breadcrumbs = [
           $__rangeText = $__range !== null
               ? trim((string) ($__range['start'] ?? '')) . '–' . trim((string) ($__range['end'] ?? ''))
               : '';
+
+          // Ringkasan tarif per server (murni tampilan): `Pricing` hanya memakai
+          // override numerik > 0, jadi nilai nol/kosong dianggap "ikut global".
+          // Tidak ada query/hitungan tarif di sini — `rates` sudah ada di payload.
+          $__rates = is_array($s['rates'] ?? null) ? $s['rates'] : [];
+          $__rateParts = [];
+          foreach (['cpu', 'ram', 'backup'] as $__rateKey) {
+              $__rateValue = $__rates[$__rateKey] ?? null;
+              if (!is_scalar($__rateValue) || !is_numeric(trim((string) $__rateValue))) {
+                  continue;
+              }
+              $__rateFloat = (float) $__rateValue;
+              if ($__rateFloat <= 0) {
+                  continue;
+              }
+              $__rateParts[] = $__rateKey . ' '
+                  . rtrim(rtrim(\app\library\Billing\Pricing::format($__rateFloat), '0'), '.');
+          }
 
           $__version = trim((string) ($s['agent_version'] ?? ''));
           $__capCount = is_array($s['capabilities'] ?? null) ? count($s['capabilities']) : 0;
@@ -267,6 +286,13 @@ $breadcrumbs = [
               <span class="mono"><?= e($__rangeText) ?></span>
             <?php else: ?>
               <span class="text-muted">ikut config</span>
+            <?php endif; ?>
+          </td>
+          <td class="small">
+            <?php if ($__rateParts === []): ?>
+              <span class="text-muted" title="Tarif global BILLING_RATE_* dipakai untuk server ini">global</span>
+            <?php else: ?>
+              <span class="mono" title="Override tarif server ini (cpu/ram per jam, backup per GB/bulan)"><?= e(implode(' · ', $__rateParts)) ?></span>
             <?php endif; ?>
           </td>
           <td class="text-end">

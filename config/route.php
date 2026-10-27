@@ -492,6 +492,8 @@ Route::post('/users/{id}/password', [UserController::class, 'changePassword']);
 Route::post('/users/{id}/role', [UserController::class, 'changeRole']);
 // Email member (dipakai untuk top-up Duitku) — admin set/hapus dari halaman Users.
 Route::post('/users/{id}/email', [UserController::class, 'setEmail']);
+// Grant pemilihan server per user (flag `server_select` + allowlist `server_ids`).
+Route::post('/users/{id}/servers', [UserController::class, 'setServerAccess']);
 
 /*
 |--------------------------------------------------------------------------

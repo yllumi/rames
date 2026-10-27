@@ -14,6 +14,7 @@ use app\library\Billing\BillingGate;
 use app\library\Billing\CreditAccount;
 use app\library\Billing\InsufficientCredits;
 use app\library\Billing\Pricing;
+use app\library\Billing\ServerRates;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\AppNginxReloader;
 use app\library\Deploy\AppSslRevoker;
@@ -85,10 +86,12 @@ class AppController
         // Multi-server: peta `id server → nama` untuk kolom **Server** dan
         // pilihan filter server. Peta dibaca **sekali** (bukan per baris) dari
         // registry server. Non-admin hanya mengenal server yang menaungi app yang
-        // boleh ia lihat — daftar server lain tidak pernah dikirim ke UI
-        // (keputusan §9.3), jadi menyembunyikan pemilih bukan satu-satunya pengaman.
+        // boleh ia lihat, ditambah server yang boleh ia pilih bila admin memberi
+        // grant `server_select` (`ServerAccess::visibleServers()` — satu pintu).
+        // Daftar server lain tidak pernah dikirim ke UI, jadi menyembunyikan
+        // pemilih bukan satu-satunya pengaman.
         $serverNames = $this->serverNameMapFor($visible);
-        $serverOptions = $isAdmin ? $this->serverFilterOptions($user, $store->all()) : [];
+        $serverOptions = $this->serverFilterOptions($user, $store->all());
 
         // Filter `?server=<id>` (query string aman — id server, bukan rahasia).
         // Hanya berlaku untuk server yang boleh dilihat user; id asing diabaikan
@@ -241,15 +244,24 @@ class AppController
     }
 
     /**
-     * Pilihan **filter server** untuk admin — satu pintu
-     * `ServerAccess::visibleServers()` (admin ⇒ semua server). Hanya `id`/`name`
-     * yang keluar (tanpa token/PEM/base_url).
+     * Pilihan **filter server** untuk halaman `/apps` — satu pintu
+     * `ServerAccess::visibleServers()`:
+     *  - admin ⇒ semua server;
+     *  - pemegang grant `server_select` ⇒ union server app yang terlihat +
+     *    server yang boleh dipilih (allowlist);
+     *  - member biasa ⇒ `[]` (perilaku lama: filter server tidak muncul).
+     *
+     * Hanya `id`/`name` yang keluar (tanpa token/PEM/base_url/rates).
      *
      * @param array<int,array> $apps semua app (sumber keputusan visibilitas)
      * @return array<int,array{id:string,name:string}>
      */
     private function serverFilterOptions(?array $user, array $apps): array
     {
+        if (!ServerAccess::canSelectServer($user)) {
+            return [];
+        }
+
         try {
             $servers = ServerAccess::visibleServers($this->serverResolver()->all(), $user, $apps);
         } catch (\Throwable $e) {
@@ -418,7 +430,8 @@ class AppController
             ),
             'billingEstimate' => $this->billingEstimateFor(
                 $savedLimits,
-                $this->billingPayerFor($app, current_user())
+                $this->billingPayerFor($app, current_user()),
+                AppStore::serverIdOf($app)
             ),
         ]);
     }
@@ -516,12 +529,15 @@ class AppController
      * Server target pembuatan app — **satu pintu** untuk seluruh wizard create
      * (git/compose/template/konfirmasi).
      *
-     * Kontrak (plan §4/§4.2 + keputusan user §9.3, misi `ms-f1-create-server`):
+     * Kontrak (plan §4/§4.2 + keputusan user §9.3, misi `ms-f1-create-server`
+     * dan misi grant pemilihan server per user):
      *  1. `server_id` kosong/`local` ⇒ server lokal — perilaku lama persis;
-     *  2. hanya **admin** boleh memilih server selain server lokal. Permintaan
-     *     non-admin dengan id non-lokal ditolak **sebelum** id-nya dicari,
-     *     sehingga keberadaan server lain tidak bocor (bukan pesan "server
-     *     tidak dikenal", dan **tidak** diam-diam memakai server lokal);
+     *  2. pemilihan server selain server lokal divalidasi **satu pintu**
+     *     `ServerAccess::maySelect()`: admin boleh semua; pemegang grant
+     *     `server_select` boleh server di allowlist (allowlist kosong = semua);
+     *     non-grant ditolak **sebelum** id-nya dicari, sehingga keberadaan
+     *     server lain tidak bocor (pesan generik — bukan "server tidak
+     *     dikenal", dan **tidak** diam-diam memakai server lokal);
      *  3. id tidak dikenal ⇒ `ServerResolver::resolve()` melempar (`fail-fast` —
      *     tidak pernah jatuh ke server lokal);
      *  4. server dinonaktifkan / offline / agent tanpa capability dasar ⇒
@@ -529,8 +545,8 @@ class AppController
      *     (untuk capability: jalankan Test connection dulu).
      *
      * Tanpa efek samping: tidak menyentuh store app & tidak menulis berkas.
-     * Seluruh keputusan ada di library (`ServerResolver`); controller hanya
-     * mediator.
+     * Seluruh keputusan hak ada di `ServerAccess`, kesiapan server di
+     * `ServerResolver`; controller hanya mediator.
      *
      * @param string             $requestedId `server_id` mentah dari request (''/absen = lokal)
      * @param array|null         $user        user login (`current_user()`)
@@ -542,12 +558,9 @@ class AppController
     {
         $requested = trim($requestedId);
 
-        if (
-            $requested !== '' && $requested !== ServerStore::LOCAL_ID
-            && !ServerAccess::canSelectServer($user)
-        ) {
+        if (!ServerAccess::maySelect($user, $requested)) {
             throw new RuntimeException(
-                'Anda tidak berhak memilih server untuk app baru — app dibuat di server lokal.'
+                'Anda tidak berhak memilih server untuk app baru.'
             );
         }
 
@@ -562,11 +575,14 @@ class AppController
      * Frontend UI; jangan mengganti nama field tanpa memberi tahu):
      *
      *  - `servers`          : daftar pilihan server yang boleh dipakai user ini.
-     *                         Admin ⇒ seluruh registry; non-admin ⇒ **hanya
-     *                         server lokal** (nama/host server lain tidak
-     *                         pernah dikirim ke browser). Setiap entri =
-     *                         `ServerResolver::option()` (`id`, `name`, `kind`,
-     *                         `domain`, `enabled`, `status`, `capabilities`).
+     *                         Admin ⇒ seluruh registry; pemegang grant
+     *                         `server_select` ⇒ server lokal + allowlist
+     *                         (`ServerAccess::selectableServers()`); user tanpa
+     *                         grant ⇒ **hanya server lokal** (nama/host server
+     *                         lain tidak pernah dikirim ke browser). Setiap
+     *                         entri = `ServerResolver::option()` (`id`, `name`,
+     *                         `kind`, `domain`, `enabled`, `status`,
+     *                         `capabilities` — tanpa token/PEM/base_url/rates).
      *  - `selectedServerId` : id server terpilih (default server lokal;
      *                         diabaikan bila tidak ada di daftar pilihan).
      *  - `canSelectServer`  : `ServerAccess::canSelectServer(current_user())` —
@@ -584,7 +600,10 @@ class AppController
         $canSelect = ServerAccess::canSelectServer($user);
 
         $servers = $canSelect
-            ? array_map(static fn (array $server): array => ServerResolver::option($server), $resolver->all())
+            ? array_map(
+                static fn (array $server): array => ServerResolver::option($server),
+                ServerAccess::selectableServers($resolver->all(), $user)
+            )
             : [ServerResolver::option($resolver->local())];
 
         // Baris server lokal wajib ada di daftar (ia pilihan default) — registry
@@ -781,9 +800,10 @@ class AppController
     {
         $mode = (string) $request->get('mode', 'git');
 
-        // Pilihan server untuk form: admin boleh memilih server mana pun, user
-        // lain hanya server lokal (registry server tidak pernah bocor ke
-        // non-admin — kontrak `serverFormContext()`).
+        // Pilihan server untuk form: admin boleh memilih server mana pun;
+        // pemegang grant `server_select` hanya server lokal + allowlist; user
+        // lain hanya server lokal (registry server tidak pernah bocor —
+        // kontrak `serverFormContext()`).
         $rawServerId = $request->get('server_id');
         $serverContext = $this->serverFormContext(
             current_user(),
@@ -841,7 +861,7 @@ class AppController
         try {
             $this->validateCreateInput($name, $repoUrl, $branch, $authMethod);
 
-            // Server target (admin-only untuk selain server lokal) — fail-fast
+            // Server target (admin, atau member bergrant `server_select`) — fail-fast
             // SEBELUM clone/kunci/berkas apa pun.
             $server = $this->resolveCreateServer($this->requestedServerId($request), current_user());
             $serverId = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
@@ -988,7 +1008,7 @@ class AppController
         try {
             $this->validateCreateName($name);
 
-            // Server target (admin-only untuk selain server lokal) — fail-fast
+            // Server target (admin, atau member bergrant `server_select`) — fail-fast
             // SEBELUM menulis berkas apa pun.
             $server = $this->resolveCreateServer($this->requestedServerId($request), current_user());
             $serverId = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
@@ -1093,9 +1113,18 @@ class AppController
             return redirect('/apps/create?mode=template');
         }
 
+        // Server target untuk estimasi biaya: id yang diminta, tetapi hanya bila
+        // user memang berhak memilihnya (id di luar jangkauan ⇒ estimasi lokal,
+        // bukan membocorkan tarif/keberadaan server lain).
+        $user = current_user();
+        $requestedServer = is_scalar($request->get('server_id')) ? (string) $request->get('server_id') : '';
+        $previewServerId = ServerAccess::maySelect($user, AppStore::normalizeServerId($requestedServer))
+            ? AppStore::normalizeServerId($requestedServer)
+            : ServerStore::LOCAL_ID;
+
         return view('app/template', $this->serverFormContext(
-            current_user(),
-            is_scalar($request->get('server_id')) ? (string) $request->get('server_id') : ''
+            $user,
+            $requestedServer
         ) + [
             'template' => $template,
             'guide_html' => Markdown::toHtml((string) ($template['guide'] ?? '')),
@@ -1111,7 +1140,10 @@ class AppController
             ),
             'billing' => $this->billingContext(
                 $this->defaultLimitsFor(array_map('strval', array_keys((array) ($template['services'] ?? [])))),
-                current_user()
+                $user,
+                null,
+                null,
+                $previewServerId
             ),
             'limitsScaleMax' => $this->limitsScaleMax(),
         ]);
@@ -1147,7 +1179,7 @@ class AppController
             }
             $this->validateCreateName($name);
 
-            // Server target (admin-only untuk selain server lokal), lalu keunikan
+            // Server target (admin, atau member bergrant `server_select`), lalu keunikan
             // nama & subdomain **per server** (plan §4.2).
             $server = $this->resolveCreateServer($this->requestedServerId($request), current_user());
             $serverId = (string) ($server['id'] ?? ServerStore::LOCAL_ID);
@@ -1176,8 +1208,9 @@ class AppController
                 }
             }
 
-            // Gerbang kredit — fail-fast SEBELUM materialisasi/efek samping.
-            $this->billingAssertCanCreate($limits, $user);
+            // Gerbang kredit — fail-fast SEBELUM materialisasi/efek samping;
+            // tarif mengikuti server target yang sudah di-resolve.
+            $this->billingAssertCanCreate($limits, $user, null, $serverId);
         } catch (InsufficientCredits $e) {
             return $this->billingBlocked($request, $e);
         } catch (\Throwable $e) {
@@ -1204,6 +1237,11 @@ class AppController
                 $limitsContext['repo'][$service] = $limit;
             }
 
+            // Server untuk estimasi biaya: server yang diminta bila user berhak
+            // memilihnya, selain itu server lokal hasil resolusi (default).
+            $asked = AppStore::normalizeServerId($this->requestedServerId($request));
+            $previewServerId = ServerAccess::maySelect(current_user(), $asked) ? $asked : $serverId;
+
             return view('app/template', $this->serverFormContext(
                 current_user(),
                 $this->requestedServerId($request)
@@ -1217,7 +1255,10 @@ class AppController
                     $postedLimits === []
                         ? $this->defaultLimitsFor(array_map('strval', array_keys((array) ($template['services'] ?? []))))
                         : $postedLimits,
-                    current_user()
+                    current_user(),
+                    null,
+                    null,
+                    $previewServerId
                 ),
                 'limitsScaleMax' => $this->limitsScaleMax(),
             ]);
@@ -1479,7 +1520,10 @@ class AppController
             ),
             'billing' => $this->billingContext(
                 $this->defaultLimitsFor(array_map('strval', array_keys((array) ($pending['services'] ?? [])))),
-                current_user()
+                current_user(),
+                null,
+                null,
+                $serverId
             ),
             'limitsScaleMax' => $this->limitsScaleMax(),
         ]);
@@ -1576,8 +1620,9 @@ class AppController
                 }
             }
 
-            // Gerbang kredit — fail-fast SEBELUM efek samping apa pun.
-            $this->billingAssertCanCreate($limits, $user);
+            // Gerbang kredit — fail-fast SEBELUM efek samping apa pun; tarif
+            // mengikuti server target yang sudah di-resolve.
+            $this->billingAssertCanCreate($limits, $user, null, $serverId);
 
             $result = $this->createAndDeploy(
                 $pending,
@@ -4040,12 +4085,18 @@ class AppController
      * lewat `billingBlocked()`.
      *
      * `$gate` hanya untuk pengujian (inject); produksi memakai default.
+     * `$serverId` = server target create — gate memakai **tarif server itu**
+     * (fallback tarif global bila server tak punya tarif).
      *
      * @param array<int|string,mixed> $limits
      * @throws InsufficientCredits
      */
-    private function billingAssertCanCreate(array $limits, ?array $user, ?BillingGate $gate = null): void
-    {
+    private function billingAssertCanCreate(
+        array $limits,
+        ?array $user,
+        ?BillingGate $gate = null,
+        ?string $serverId = null
+    ): void {
         $gate ??= new BillingGate();
 
         // Aktor bebas tagihan (admin) tidak pernah diblokir kredit — eksplisit,
@@ -4054,7 +4105,7 @@ class AppController
             return;
         }
 
-        $gate->assertCanCreate($limits, $user);
+        $gate->assertCanCreate($limits, $user, $serverId);
     }
 
     /**
@@ -4227,6 +4278,9 @@ class AppController
      *
      * `$user` diberikan pemanggil (tidak membaca `current_user()` di sini) agar
      * mudah diuji tanpa session. `$accounts`/`$gate` hanya untuk pengujian.
+     * `$serverId` = server target yang sudah di-resolve (opsional; `null` =
+     * tarif global, perilaku lama) — estimasi & deposit memakai tarif server
+     * itu, bukan tarif global.
      *
      * @param array<int|string,mixed> $limits limit efektif yang dipakai menghitung `required`
      * @return array{enabled:bool,canManage:bool,member:bool,caps:array{cpus:float,memory_mb:int},rates:array<string,float>,defaults:array{cpus:float,memory_mb:int},balance:float,balance_text:string,required:float,required_text:string,estimate_hourly:float,estimate_hourly_text:string,estimate_month:float,estimate_month_text:string,sufficient:bool,days:int,topup_enabled:bool}
@@ -4235,12 +4289,13 @@ class AppController
         array $limits,
         ?array $user,
         ?CreditAccount $accounts = null,
-        ?BillingGate $gate = null
+        ?BillingGate $gate = null,
+        ?string $serverId = null
     ): array {
         $enabled = (bool) config('deploy.billing_enabled', true);
         $member = $this->isBillingMember($user);
         $days = (int) config('deploy.billing_min_deposit_days', 30);
-        $rates = Pricing::rates();
+        $rates = $this->pricingRatesFor($serverId);
 
         $caps = [
             'cpus' => (float) config('deploy.billing_max_cpus', 4.0),
@@ -4255,7 +4310,7 @@ class AppController
         $required = 0.0;
         if ($enabled && $member) {
             $gate ??= new BillingGate($accounts, null);
-            $required = $gate->requiredFor($limits);
+            $required = $gate->requiredFor($limits, $serverId);
             $userId = (string) ($user['id'] ?? '');
             if ($userId !== '') {
                 $balance = ($accounts ?? new CreditAccount())->balance($userId);
@@ -4296,14 +4351,17 @@ class AppController
      * member ⇒ `applies === true`. Pemanggil menyerahkan hasil
      * `billingPayerFor($app, current_user())` (satu pembacaan per render).
      *
+     * `$serverId` = server tempat app berjalan (opsional; `null` = tarif
+     * global) — estimasi memakai tarif server itu.
+     *
      * @param array<int|string,mixed> $limits
      * @return array{enabled:bool,applies:bool,estimate_hourly:float,estimate_month:float,days:int,hourly_text:string,month_text:string,format:array{hourly:string,month:string}}
      */
-    private function billingEstimateFor(array $limits, ?array $payer = null): array
+    private function billingEstimateFor(array $limits, ?array $payer = null, ?string $serverId = null): array
     {
         $enabled = (bool) config('deploy.billing_enabled', true);
         $days = (int) config('deploy.billing_min_deposit_days', 30);
-        $rates = Pricing::rates();
+        $rates = $this->pricingRatesFor($serverId);
         $hourly = Pricing::hourlyCredits($limits, $rates);
         $month = Pricing::estimate($limits, $rates, $days);
 
@@ -4321,6 +4379,25 @@ class AppController
                 'month' => Pricing::format($month),
             ],
         ];
+    }
+
+    /**
+     * Tarif CPU/RAM untuk `$serverId` (server target/penyimpanan app).
+     *
+     * `null`/kosong ⇒ tarif global tanpa membaca registry (perilaku lama &
+     * hemat I/O untuk pemanggil yang belum punya konteks server). Server tak
+     * dikenal/tanpa tarif ⇒ fallback global (`Pricing`/`ServerRates`).
+     *
+     * @return array{cpu:float,ram:float}
+     */
+    private function pricingRatesFor(?string $serverId = null): array
+    {
+        $id = $serverId === null ? '' : trim($serverId);
+        if ($id === '') {
+            return Pricing::rates();
+        }
+
+        return (new ServerRates())->ratesFor($id);
     }
 
     /**

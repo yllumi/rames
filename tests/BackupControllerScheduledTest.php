@@ -8,11 +8,13 @@ use app\library\Backup\BackupRegistry;
 use app\library\Backup\BackupSelection;
 use app\library\Billing\BackupUsage;
 use app\library\Billing\Pricing;
+use app\library\Billing\ServerRates;
 use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
 use Tests\Support\SqliteFixture;
 use PDO;
 use PDOStatement;
+use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteDatabase;
 use Webman\Config;
 
@@ -154,6 +156,53 @@ class BackupControllerScheduledTest extends TestCase
     private function usage(): BackupUsage
     {
         return new BackupUsage(new BackupRegistry($this->path));
+    }
+
+
+    public function testBackupRateFollowsEachRowsServerAndFallsBackToGlobal(): void
+    {
+        $servers = new ServerStore($this->path);
+        $servers->create([
+            'id' => 'srv-a',
+            'name' => 'srv-a',
+            'kind' => 'agent',
+            'enabled' => true,
+            'base_url' => 'https://srv-a.internal.test:8443',
+            'token' => 'tok-a',
+            'rates' => ['backup' => 500],
+        ]);
+        $servers->create([
+            'id' => 'srv-b',
+            'name' => 'srv-b',
+            'kind' => 'agent',
+            'enabled' => true,
+            'base_url' => 'https://srv-b.internal.test:8443',
+            'token' => 'tok-b',
+            // tanpa rates ⇒ tarif global (config 1000)
+        ]);
+
+        $rows = [
+            ['name' => 'tonidata_data', 'project' => 'tonidata', 'app_id' => 'app1', 'server_id' => 'srv-a'],
+            ['name' => 'waha_data', 'project' => 'waha', 'app_id' => 'app2', 'server_id' => 'srv-b'],
+            ['name' => 'ghost_data', 'project' => 'ghost', 'app_id' => null, 'orphaned' => true, 'server_id' => ''],
+        ];
+
+        $out = BackupController::withScheduled(
+            $rows,
+            new BackupSelection($this->path),
+            $this->apps(),
+            self::ADMIN,
+            $this->usage(),
+            new ServerRates($servers)
+        );
+
+        $this->assertSame(500.0, $out[0]['backup_rate'], 'tarif server baris');
+        $this->assertSame(1000.0, $out[1]['backup_rate'], 'server tanpa tarif ⇒ global');
+        $this->assertSame(1000.0, $out[2]['backup_rate'], 'baris tanpa server (lokal) ⇒ global');
+
+        $this->assertSame(1250.0, $out[0]['backup_credits_month'], '2,5 GB × 500');
+        $this->assertSame(1000.0, $out[1]['backup_credits_month'], '1 GB (floor) × 1000');
+        $this->assertSame(0.0, $out[2]['backup_credits_month']);
     }
 
     public function testDefaultsOffWhenNoExplicitEntry(): void

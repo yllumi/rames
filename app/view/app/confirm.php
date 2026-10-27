@@ -14,16 +14,17 @@ $wizardSelectedServerId = $wizardText($selectedServerId ?? '');
 if ($wizardSelectedServerId === '') {
     $wizardSelectedServerId = \app\library\Storage\ServerStore::LOCAL_ID;
 }
-// Halaman konfirmasi tidak merender selektor server, tetapi flag ini dipakai
-// sebagai penjaga ringkasan read-only: bila `false`, identitas server non-lokal
-// dari payload tidak boleh tampil (defense-in-depth, misi Frontend UI).
+// Halaman konfirmasi tidak merender selektor server; flag `canSelectServer`
+// (admin **atau** member bergrant `server_select`) dipakai sebagai penjaga
+// ringkasan read-only: bila `false`, identitas server non-lokal dari payload
+// tidak boleh tampil (defense-in-depth, misi Frontend UI).
 $wizardCanSelectServer = (bool) ($canSelectServer ?? false);
 
 // Navigasi wizard mempertahankan pilihan server (SPECS.md §2a). Parameter
 // `server_id` hanya ditambahkan bila server terpilih BUKAN server lokal **dan**
 // user memang boleh memilih server (`$wizardCanSelectServer`) — supaya URL
-// default/non-admin tetap bersih (absen = server lokal) dan payload di luar
-// kontrak tidak membocorkan id server agent lewat `href`.
+// default user tanpa grant tetap bersih (absen = server lokal) dan payload di
+// luar kontrak tidak membocorkan id server agent lewat `href`.
 $wizardNavServerParam = ($wizardCanSelectServer
     && $wizardSelectedServerId !== ''
     && strtolower($wizardSelectedServerId) !== \app\library\Storage\ServerStore::LOCAL_ID)

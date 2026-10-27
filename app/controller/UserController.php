@@ -6,6 +6,7 @@ namespace app\controller;
 use app\library\Auth\UserStore;
 use app\library\Billing\AppStopper;
 use app\library\Billing\CreditAccount;
+use app\library\Deploy\ServerResolver;
 use app\library\Storage\AppStore;
 use support\Request;
 
@@ -27,7 +28,7 @@ class UserController
             return redirect('/apps');
         }
 
-        $store = new UserStore();
+        $store = $this->users();
         $apps = (new AppStore())->all();
 
         $ownerCounts = [];
@@ -46,7 +47,42 @@ class UserController
             // Saldo kredit semua user (read-only) — diisi `CreditAccount` (baca
             // `database/billing.json`); user tanpa entri = 0.
             'balances' => (new CreditAccount())->allBalances(),
+            // Pilihan server untuk modal "Akses server": **hanya** `id`/`name`
+            // (lewat `ServerResolver::option()` yang sudah membuang
+            // token/PEM/base_url/notes). Daftar ini dipakai admin untuk
+            // mengatur grant `server_select` + allowlist per user.
+            'servers' => $this->serverOptions(),
         ]);
+    }
+
+    /**
+     * Pilihan server aman untuk modal `/users` — **hanya `id`/`name`**, diambil
+     * lewat `ServerResolver::option()` (satu-satunya bentuk opsi server yang
+     * diizinkan keluar). Token/PEM/base_url/notes/domain tidak pernah dikirim.
+     *
+     * Registry tak terbaca ⇒ daftar kosong (halaman Users tetap terbuka;
+     * grant server hanya bisa diatur saat registry terbaca).
+     *
+     * @return array<int,array{id:string,name:string}>
+     */
+    private function serverOptions(): array
+    {
+        try {
+            $servers = $this->servers()->all();
+        } catch (\Throwable) {
+            return [];
+        }
+
+        $options = [];
+        foreach ($servers as $server) {
+            if (!is_array($server)) {
+                continue;
+            }
+            $option = ServerResolver::option($server);
+            $options[] = ['id' => $option['id'], 'name' => $option['name']];
+        }
+
+        return $options;
     }
 
     public function create(Request $request)
@@ -60,7 +96,7 @@ class UserController
         $role = (string) $request->post('role', UserStore::ROLE_MEMBER);
 
         try {
-            $store = new UserStore();
+            $store = $this->users();
             $user = $store->create($username, $password);
             if (in_array($role, [UserStore::ROLE_ADMIN, UserStore::ROLE_MEMBER], true) && $role !== $user['role']) {
                 $store->changeRole((string) $user['id'], $role);
@@ -79,7 +115,7 @@ class UserController
             return redirect('/apps');
         }
 
-        $store = new UserStore();
+        $store = $this->users();
         $user = $store->findById($id);
 
         if ($user === null) {
@@ -132,7 +168,7 @@ class UserController
         }
 
         $password = (string) $request->post('password', '');
-        $store = new UserStore();
+        $store = $this->users();
         $user = $store->findById($id);
 
         if ($user === null) {
@@ -160,7 +196,7 @@ class UserController
         }
 
         $role = (string) $request->post('role', '');
-        $store = new UserStore();
+        $store = $this->users();
         $user = $store->findById($id);
 
         if ($user === null) {
@@ -200,7 +236,7 @@ class UserController
         }
 
         $email = (string) $request->post('email', '');
-        $store = new UserStore();
+        $store = $this->users();
         $user = $store->findById($id);
 
         if ($user === null) {
@@ -218,6 +254,122 @@ class UserController
         }
 
         return redirect('/users');
+    }
+
+    /**
+     * Atur hak **memilih server** user (POST /users/{id}/servers) — admin-only.
+     *
+     * `server_select` = checkbox (`'1'` = aktif). `server_ids[]` = allowlist
+     * opsional; id yang tidak ada di registry **dibuang** (validasi terhadap
+     * `ServerResolver::all()`), duplikat/kosong dinormalkan `UserStore`.
+     * Checkbox tidak dicentang + allowlist kosong ⇒ grant dimatikan. Semua
+     * perubahan disimpan dalam satu tulisan atomik `UserStore::setServerAccess()`.
+     *
+     * Tidak ada token/PEM/secret yang dikirim ke view/response — konteks hanya
+     * flash + redirect (pola aksi admin lain di halaman ini).
+     */
+    public function setServerAccess(Request $request, string $id)
+    {
+        if (!$this->guardAdmin()) {
+            return redirect('/apps');
+        }
+
+        $store = $this->users();
+        $user = $store->findById($id);
+        if ($user === null) {
+            flash_set('error', 'User tidak ditemukan.');
+            return redirect('/users');
+        }
+
+        $select = (string) $request->post('server_select', '') === '1';
+
+        $rawIds = $request->post('server_ids', []);
+        $rawIds = is_array($rawIds) ? $rawIds : [];
+
+        $known = [];
+        try {
+            foreach ($this->servers()->all() as $server) {
+                $serverId = is_array($server) ? (string) ($server['id'] ?? '') : '';
+                if ($serverId !== '') {
+                    $known[$serverId] = true;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Registry tak terbaca: tolak perubahan (fail-closed). Menyimpan
+            // allowlist kosong akan justru membuka **semua** server.
+            flash_set('error', 'Registry server tidak terbaca: ' . $e->getMessage());
+            return redirect('/users');
+        }
+
+        $ids = [];
+        $dropped = 0;
+        $submittedIds = 0;
+        foreach ($rawIds as $rawId) {
+            if (!is_scalar($rawId)) {
+                $dropped++;
+                continue;
+            }
+            $serverId = trim((string) $rawId);
+            if ($serverId === '') {
+                continue;
+            }
+            $submittedIds++;
+            if (!isset($known[$serverId])) {
+                $dropped++;
+                continue;
+            }
+            $ids[$serverId] = $serverId;
+        }
+
+        // Fail-closed: grant aktif + request MENGIRIM id (non-kosong) tetapi
+        // semuanya tidak valid ⇒ tolak. Menyimpan `[]` berarti "semua server",
+        // kebalikan dari maksud admin yang membatasi allowlist.
+        if ($select && $submittedIds > 0 && $ids === []) {
+            flash_set(
+                'error',
+                sprintf(
+                    'Tidak ada id server yang valid (%d id tidak dikenal) — akses server user "%s" tidak diubah.',
+                    $dropped,
+                    (string) ($user['username'] ?? $id)
+                )
+            );
+            return redirect('/users');
+        }
+
+        try {
+            $store->setServerAccess($id, $select, array_values($ids));
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+            return redirect('/users');
+        }
+
+        flash_set('success', sprintf(
+            'Akses server user "%s" disimpan (%s%s).',
+            (string) ($user['username'] ?? $id),
+            $select
+                ? ($ids === [] ? 'boleh memilih semua server' : count($ids) . ' server diizinkan')
+                : 'pemilihan server dimatikan',
+            $dropped > 0 ? ", {$dropped} id tidak dikenal diabaikan" : ''
+        ));
+
+        return redirect('/users');
+    }
+
+    /**
+     * Store user (seam uji: `UserStore($path)` temp). Tanpa cache properti —
+     * aman untuk worker Webman persistent.
+     */
+    protected function users(): UserStore
+    {
+        return new UserStore();
+    }
+
+    /**
+     * Registry server (seam uji: `ServerResolver(new ServerStore($path))`).
+     */
+    protected function servers(): ServerResolver
+    {
+        return new ServerResolver();
     }
 
     /**

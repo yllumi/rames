@@ -2,8 +2,8 @@
 <?php
 // Cakupan server (multi-server F3c): semua aksi Engine di halaman ini dijalankan
 // di server terpilih, jadi setiap form POST **wajib** ikut mengirim `server`
-// (controller membacanya dari body). Pemilih/nama server hanya dirender untuk
-// admin — non-admin tidak boleh dibocorkan keberadaan server lain.
+// (controller membacanya dari body). Nama server dirender bila controller
+// mengirimkannya — controller sudah menyaring lewat `ServerAccess::visibleServers()`.
 $__serverId = (string) ($serverId ?? '');
 $__serverName = trim((string) ($serverName ?? ''));
 $__serverQuery = $__serverId !== '' ? '?server=' . rawurlencode($__serverId) : '';
@@ -37,7 +37,7 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
   <div class="alert alert-warning" role="alert"><?= e($engineError) ?></div>
 <?php endif; ?>
 
-<?php if (is_admin() && $__serverName !== ''): ?>
+<?php if ($__serverName !== ''): ?>
   <div class="alert alert-info py-2 small" role="alert">
     Network ini berada di server <strong><?= e($__serverName) ?></strong> — daftar container, koneksi,
     dan penghapusan di halaman ini dijalankan di server tersebut. Network Docker <strong>tidak</strong>

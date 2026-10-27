@@ -47,7 +47,7 @@ use Webman\Http\Response;
  * Catatan desain: aturan baris **server lokal** (field mana yang boleh berubah vs
  * dikunci, termasuk mengapa `port_range` lokal sengaja dikunci) seluruhnya ada di
  * `ServerResolver::validateLocal()` — controller hanya memanggilnya, tanpa salinan
- * aturan. Baris lokal hanya bisa mengubah `domain` & `notes`; `kind` mustahil
+ * aturan. Baris lokal hanya bisa mengubah `domain`, `notes`, & `rates`; `kind` mustahil
  * berubah dari `local`.
  */
 class ServerController
@@ -192,7 +192,7 @@ class ServerController
      * (`status`, `agent_version`, `capabilities`, `last_seen_at`) direset ke
      * `unknown` karena tidak lagi menggambarkan endpoint yang baru.
      *
-     * Server lokal: hanya `domain` & `notes` yang boleh berubah; perubahan field
+     * Server lokal: hanya `domain`, `notes`, & `rates` yang boleh berubah; perubahan field
      * lain ⇒ flash error + redirect (tidak ada yang ditulis).
      */
     public function update(Request $request, string $id): Response
@@ -239,7 +239,9 @@ class ServerController
                 || $doc['token'] !== $storedToken
                 || $doc['tls_cert_pem'] !== trim($storedPem);
 
-            $this->servers()->update($id, static function (array &$row) use ($doc, $identityChanged): void {
+            $ratesSubmitted = array_key_exists('rates', $input);
+
+            $this->servers()->update($id, static function (array &$row) use ($doc, $identityChanged, $ratesSubmitted): void {
                 // Hanya field yang dikelola form ini yang disentuh; `id`, `kind`,
                 // `created_at`, `status`, `agent_version`, `capabilities`, dan
                 // `last_seen_at` dipertahankan apa adanya (kecuali reset di bawah).
@@ -257,6 +259,13 @@ class ServerController
                     $row['port_range'] = $doc['port_range'];
                 } else {
                     unset($row['port_range']);
+                }
+
+                // Tarif per server hanya ditulis bila form mengirim field tarif
+                // (form lama tanpa field tarif tidak menghapus tarif tersimpan).
+                // Nilai kosong hasil normalisasi = hapus tarif (array kosong).
+                if ($ratesSubmitted) {
+                    $row['rates'] = $doc['rates'];
                 }
 
                 if ($identityChanged) {
@@ -500,7 +509,7 @@ class ServerController
     }
 
     // ==================================================================
-    // Server lokal (baris `local`) — hanya domain & notes
+    // Server lokal (baris `local`) — hanya domain, notes & rates
     // ==================================================================
 
     /**
@@ -519,7 +528,7 @@ class ServerController
             return $this->rejected($request, $e->getMessage());
         }
 
-        // Hanya field yang dikembalikan validator (domain/notes yang dikirim) yang
+        // Hanya field yang dikembalikan validator (domain/notes/rates yang dikirim) yang
         // ditulis; sisanya dipertahankan apa adanya.
         $this->servers()->update(ServerStore::LOCAL_ID, static function (array &$row) use ($doc): void {
             foreach ($doc as $field => $value) {
@@ -572,6 +581,27 @@ class ServerController
             if (is_string($value) || is_int($value) || is_float($value)) {
                 $input[$field] = (string) $value;
             }
+        }
+
+        // Tarif per server: field form `rate_cpu`/`rate_ram`/`rate_backup`
+        // (string) → `rates` array. Kehadiran **salah satu** field (termasuk
+        // string kosong) menandai "tarif dikirim", sehingga mengosongkan semua
+        // field menghapus tarif. Normalisasi angka > 0 milik `ServerResolver`.
+        $rateFields = ['rate_cpu' => 'cpu', 'rate_ram' => 'ram', 'rate_backup' => 'backup'];
+        $rates = [];
+        $ratesSubmitted = false;
+        foreach ($rateFields as $field => $key) {
+            $value = $request->post($field);
+            if ($value === null) {
+                continue;
+            }
+            $ratesSubmitted = true;
+            if (is_string($value) || is_int($value) || is_float($value)) {
+                $rates[$key] = (string) $value;
+            }
+        }
+        if ($ratesSubmitted) {
+            $input['rates'] = $rates;
         }
 
         $range = $request->post('port_range');

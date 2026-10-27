@@ -211,7 +211,7 @@ class BackupAgentUiViewTest extends TestCase
 
         self::assertStringContainsString('Unduh .sql', $admin, 'catatan aksi unduh .sql server agent');
         self::assertStringContainsString('server agent', $admin);
-        self::assertStringContainsString('/js/backup.js?v=14', $admin, 'cache-bust backup.js naik');
+        self::assertStringContainsString('/js/backup.js?v=15', $admin, 'cache-bust backup.js naik');
         self::assertStringContainsString('backup-tab-archive', $admin, 'tab arsip tetap ada untuk admin');
         $this->assertNoSecretLeak($admin);
 

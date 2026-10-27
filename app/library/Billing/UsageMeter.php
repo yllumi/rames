@@ -7,6 +7,7 @@ use app\library\Agent\AgentError;
 use app\library\Auth\UserStore;
 use app\library\Deploy\ResourceLimits;
 use app\library\Storage\AppStore;
+use app\library\Storage\ServerStore;
 use DateTimeImmutable;
 use Throwable;
 
@@ -43,8 +44,13 @@ use Throwable;
  * lengkap dengan floor minimum per app. Aturan `status`/admin sengaja **tidak**
  * diubah: app berhenti/ber-owner admin juga tidak diakru backup.
  *
- * Harga memakai `Pricing`; parsing `limits` memakai `ResourceLimits` (satu
- * sumber kebenaran validasi & penulisan limit CPU/RAM).
+ * Harga memakai `Pricing` dengan **tarif per server** app (`ServerRates`):
+ * server tempat app berjalan boleh punya tarif `rates` sendiri; key yang tidak
+ * diisi memakai tarif global. Nilai tarif dihitung **saat tick** (tanpa
+ * pembekuan historis): perubahan tarif server langsung berlaku pada akrual
+ * berikutnya, sedangkan akrual yang sudah tersimpan tidak dihitung ulang.
+ * Parsing `limits` memakai `ResourceLimits` (satu sumber kebenaran validasi &
+ * penulisan limit CPU/RAM).
  *
  * **Kebijakan server tidak terjangkau (dipilih sadar).** Bila metrik satu server
  * gagal dibaca (offline/timeout/config cacat), seluruh app di server itu
@@ -69,10 +75,17 @@ class UsageMeter
     private UserStore $users;
     private BackupUsage $backup;
     private UsageProbe $probe;
+    private ?ServerRates $serverRates;
 
     /** @var callable|null fn(string $message): void */
     private $logger;
 
+    /**
+     * `$serverRates` opsional aditif (parameter terakhir, BC-safe): tarif per
+     * server app. `null` ⇒ dibuat lazy memakai store server dari path
+     * `AppStore` yang disuntik (satu basis data SQLite dengan registry server),
+     * sehingga tes ber-store temp tidak pernah membaca registry runtime nyata.
+     */
     public function __construct(
         ?AppStore $apps = null,
         ?BillingStore $store = null,
@@ -80,6 +93,7 @@ class UsageMeter
         ?BackupUsage $backup = null,
         ?UsageProbe $probe = null,
         ?callable $logger = null,
+        ?ServerRates $serverRates = null,
     ) {
         $this->apps = $apps ?? new AppStore();
         $this->store = $store ?? new BillingStore();
@@ -87,6 +101,7 @@ class UsageMeter
         $this->backup = $backup ?? new BackupUsage();
         $this->probe = $probe ?? new UsageProbe();
         $this->logger = $logger;
+        $this->serverRates = $serverRates;
     }
 
     /**
@@ -131,7 +146,7 @@ class UsageMeter
         }
 
         $current = BillingPeriod::current($now);
-        $rates = Pricing::rates();
+        $rates = $this->serverRates();
         // Dihitung sekali per tick: jumlah hari periode & GB ditagih per app.
         $daysInPeriod = BillingPeriod::daysIn($current);
         $chargedGb = $this->backup->chargedGigabytesByApp();
@@ -153,13 +168,22 @@ class UsageMeter
             }
 
             $gb = (float) ($chargedGb[$appId] ?? 0.0);
+            $serverId = AppStore::serverIdOf($app);
             $candidates[$appId] = [
                 'name' => (string) ($app['name'] ?? ''),
                 'owner_id' => $ownerId,
-                'server_id' => AppStore::serverIdOf($app),
-                'credits' => ($seconds / 3600) * Pricing::hourlyCredits(ResourceLimits::of($app), $rates),
+                'server_id' => $serverId,
+                'credits' => ($seconds / 3600) * Pricing::hourlyCredits(
+                    ResourceLimits::of($app),
+                    $rates->ratesFor($serverId)
+                ),
                 'backup_gb' => $gb,
-                'backup_credits' => Pricing::backupCredits($gb, (float) $seconds, $daysInPeriod),
+                'backup_credits' => Pricing::backupCredits(
+                    $gb,
+                    (float) $seconds,
+                    $daysInPeriod,
+                    $rates->backupMonthlyFor($serverId)
+                ),
             ];
         }
 
@@ -243,7 +267,7 @@ class UsageMeter
      */
     public function summary(): array
     {
-        $rates = Pricing::rates();
+        $rates = $this->serverRates();
         $summary = [];
 
         foreach ($this->store->usage() as $appId => $row) {
@@ -253,7 +277,8 @@ class UsageMeter
             }
             $app = $this->apps->find($appId);
             $limits = $app !== null ? ResourceLimits::of($app) : [];
-            $hourly = Pricing::hourlyCredits($limits, $rates);
+            $serverId = $this->serverIdOf($row, $app);
+            $hourly = Pricing::hourlyCredits($limits, $rates->ratesFor($serverId));
 
             $period = (string) ($row['period'] ?? '');
             if ($period === '') {
@@ -261,12 +286,15 @@ class UsageMeter
             }
 
             $backupGb = (float) ($row['backup_gb'] ?? 0.0);
-            $backupMonthly = Pricing::backupMonthlyEstimate($backupGb);
+            $backupMonthly = Pricing::backupMonthlyEstimate(
+                $backupGb,
+                $rates->backupMonthlyFor($serverId)
+            );
 
             $summary[$appId] = [
                 'owner_id' => (string) ($row['owner_id'] ?? ''),
                 'name' => (string) ($row['name'] ?? ''),
-                'server_id' => $this->serverIdOf($row, $app),
+                'server_id' => $serverId,
                 'seconds_pending' => (int) ($row['seconds_pending'] ?? 0),
                 'credits_pending' => round((float) ($row['credits_pending'] ?? 0.0), 2),
                 'hourly' => $hourly,
@@ -278,6 +306,16 @@ class UsageMeter
         }
 
         return $summary;
+    }
+
+    /**
+     * Resolver tarif per server (lazy, satu instance per meteran). Store server
+     * memakai path `AppStore` yang sama supaya uji temp tidak membaca registry
+     * runtime nyata.
+     */
+    private function serverRates(): ServerRates
+    {
+        return $this->serverRates ??= new ServerRates(new ServerStore($this->apps->path()));
     }
 
     /**

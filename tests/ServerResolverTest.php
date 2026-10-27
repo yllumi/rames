@@ -432,6 +432,60 @@ class ServerResolverTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // rates per server (opsional, bukan identitas)
+    // ------------------------------------------------------------------
+
+    public function testValidateKeepsOnlyPositiveNumericRates(): void
+    {
+        $normalized = $this->validate($this->payload([
+            'rates' => [
+                'cpu' => 250,
+                'ram' => '12.5',
+                'backup' => 0,
+                'disk' => 999,
+            ],
+        ]));
+
+        $this->assertSame(['cpu' => 250.0, 'ram' => 12.5], $normalized['rates']);
+    }
+
+    public function testValidateDropsInvalidRatesAndAlwaysReturnsArray(): void
+    {
+        $cases = [
+            'tanpa rates' => [null, []],
+            'bukan array' => ['cpu=100', []],
+            'nilai sampah' => [['cpu' => 'abc', 'ram' => -2, 'backup' => null], []],
+            'sebagian valid' => [['cpu' => 0, 'backup' => 300], ['backup' => 300.0]],
+        ];
+
+        foreach ($cases as $label => [$rates, $expected]) {
+            $payload = $this->payload();
+            if ($rates !== null) {
+                $payload['rates'] = $rates;
+            }
+            $normalized = $this->validate($payload);
+            $this->assertArrayHasKey('rates', $normalized, $label);
+            $this->assertSame($expected, $normalized['rates'], $label);
+        }
+    }
+
+    public function testValidateLocalAllowsRatesAndCanClearThem(): void
+    {
+        $local = $this->resolver()->local();
+
+        $out = ServerResolver::validateLocal(['rates' => ['cpu' => 10, 'backup' => 'bad']], $local);
+        $this->assertSame(['rates' => ['cpu' => 10.0]], $out);
+
+        // Field rates tidak dikirim ⇒ tidak menulis ulang (nilai tersimpan utuh).
+        $out = ServerResolver::validateLocal(['notes' => 'catatan'], $local);
+        $this->assertSame(['notes' => 'catatan'], $out);
+        $this->assertArrayNotHasKey('rates', $out);
+
+        // Field rates dikirim kosong ⇒ hapus tarif (array kosong).
+        $this->assertSame(['rates' => []], ServerResolver::validateLocal(['rates' => []], $local));
+    }
+
+    // ------------------------------------------------------------------
     // fingerprint
     // ------------------------------------------------------------------
 

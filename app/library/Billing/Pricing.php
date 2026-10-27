@@ -17,6 +17,13 @@ use RuntimeException;
  * sehingga app tanpa `limits` tetap dihitung (bukan gratis). `$limits` kosong
  * ⇒ dihitung SATU unit default.
  *
+ * **Tarif per server**: baris registry server boleh membawa `rates`
+ * `{cpu, ram, backup}`. `rates($server)` / `backupMonthlyRate($server)` meng-
+ * overlay tarif global hanya dengan nilai numerik > 0; key yang tidak diisi
+ * memakai tarif global `BILLING_RATE_*`. Plafon `BILLING_MAX_*` tetap global
+ * (`assertWithinCaps()` tidak mengenal server). Resolusi baris server → tarif
+ * dilakukan `ServerRates`, bukan kelas ini (kelas ini tetap tanpa I/O).
+ *
  * Parsing/normalisasi `limits` TIDAK diduplikasi di sini — pemanggil
  * (UsageMeter/Invoicer/BillingGate) memakai `ResourceLimits` untuk itu,
  * lalu menyerahkan map ternormalisasi ke kelas ini.
@@ -24,11 +31,42 @@ use RuntimeException;
 final class Pricing
 {
     /**
-     * Tarif aktif dari konfigurasi dashboard.
+     * Tarif CPU/RAM efektif — tarif global dashboard, dengan overlay tarif
+     * milik baris server bila diberikan.
+     *
+     * `$server['rates']['cpu']` / `['ram']` hanya dipakai bila **numerik > 0**;
+     * key yang kosong/0/negatif/bukan angka jatuh ke tarif global (tidak pernah
+     * membuat app gratis karena data tarif server cacat). Tanpa argumen =
+     * perilaku lama persis (seluruh pemanggil lama tidak berubah).
+     *
+     * @param array<string,mixed>|null $server dokumen registry server (opsional)
+     * @return array{cpu:float,ram:float}
+     */
+    public static function rates(?array $server = null): array
+    {
+        $rates = self::globalRates();
+
+        if ($server === null) {
+            return $rates;
+        }
+
+        $overrides = is_array($server['rates'] ?? null) ? $server['rates'] : [];
+        foreach (['cpu', 'ram'] as $key) {
+            $value = $overrides[$key] ?? null;
+            if (is_numeric($value) && (float) $value > 0) {
+                $rates[$key] = (float) $value;
+            }
+        }
+
+        return $rates;
+    }
+
+    /**
+     * Tarif global murni dari konfigurasi dashboard (tanpa overlay server).
      *
      * @return array{cpu:float,ram:float}
      */
-    public static function rates(): array
+    private static function globalRates(): array
     {
         return [
             'cpu' => self::positiveFloat(config('deploy.billing_rate_cpu_per_core_hour', 100), 100.0),
@@ -105,14 +143,25 @@ final class Pricing
     }
 
     /**
-     * Tarif biaya backup volume (kredit per GB **per bulan**) dari konfigurasi
-     * dashboard; fallback 1000.0 bila kosong/0/negatif/bukan angka.
+     * Tarif biaya backup volume (kredit per GB **per bulan**): tarif global
+     * dashboard, dengan overlay `$server['rates']['backup']` bila **numerik > 0**.
      *
-     * Kurs top-up default 1:1 (Rp1 = 1 kredit) sehingga nilai di sini = rupiah
-     * per GB per bulan.
+     * Fallback 1000.0 bila nilai global kosong/0/negatif/bukan angka. Tanpa
+     * argumen = perilaku lama persis. Kurs top-up default 1:1 (Rp1 = 1 kredit)
+     * sehingga nilai di sini = rupiah per GB per bulan.
+     *
+     * @param array<string,mixed>|null $server dokumen registry server (opsional)
      */
-    public static function backupMonthlyRate(): float
+    public static function backupMonthlyRate(?array $server = null): float
     {
+        if ($server !== null) {
+            $overrides = is_array($server['rates'] ?? null) ? $server['rates'] : [];
+            $value = $overrides['backup'] ?? null;
+            if (is_numeric($value) && (float) $value > 0) {
+                return (float) $value;
+            }
+        }
+
         return self::positiveFloat(config('deploy.billing_rate_backup_per_gb_month', 1000.0), 1000.0);
     }
 
