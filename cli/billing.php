@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Worker CLI billing (SPECS.md §7.12) — operasi manual & verifikasi penjadwal
+ * Worker CLI billing (docs/SPECS.md §7.12) — operasi manual & verifikasi penjadwal
  * billing. Dipilih `cli/` (bukan hanya timer) agar bisa diperiksa manual dan
  * dijalankan lewat `docker exec` bila dashboard sempat mati lama.
  *

@@ -6,7 +6,7 @@ namespace app\library\Template;
 use RuntimeException;
 
 /**
- * Status & log fitur "tarik image template" (SPECS.md §7.13, tab Template di `/nginx`).
+ * Status & log fitur "tarik image template" (docs/SPECS.md §7.13, tab Template di `/nginx`).
  *
  * Dua jenis berkas di dalam satu `run_dir` (dibaca UI, ditulis worker):
  *  1. `run.json` — status run terakhir/sedang berjalan (`TemplatePullService::start()`

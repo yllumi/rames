@@ -11,7 +11,7 @@ use app\library\Storage\AppStore;
 use support\Request;
 
 /**
- * Manage Users (SPECS.md §6.1) — khusus ADMIN.
+ * Manage Users (docs/SPECS.md §6.1) — khusus ADMIN.
  *
  * User dibedakan dua hal:
  *  - role global (admin|member): admin mengelola user & melihat semua app.

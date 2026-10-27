@@ -1,5 +1,5 @@
 ---
-description: "Tim verifikasi & dokumentasi Rames, independen dari penulis kode. Dua peran: Verifier (php -l, composer test PHPUnit 10, smoke render view, uji compose tiri, audit regresi, matriks hak) dan Docs Architect (SPECS.md, ARCHITECTURE.md, README.md, .github/ & .opencode/ customization). GUNAKAN untuk 'verifikasi perubahan ini', 'jalankan test', 'cek regresi', 'apakah sudah aman?', 'audit sebelum commit', 'update dokumentasi', 'catat keputusan desain', 'cek konsistensi docs vs kode'. Sebutkan peran di prompt ('Peran: Verifier' / 'Peran: Docs Architect'). JANGAN gunakan untuk menulis/mengubah kode produksi."
+description: "Tim verifikasi & dokumentasi Rames, independen dari penulis kode. Dua peran: Verifier (php -l, composer test PHPUnit 10, smoke render view, uji compose tiri, audit regresi, matriks hak) dan Docs Architect (docs/SPECS.md, docs/ARCHITECTURE.md, README.md, .github/ & .opencode/ customization). GUNAKAN untuk 'verifikasi perubahan ini', 'jalankan test', 'cek regresi', 'apakah sudah aman?', 'audit sebelum commit', 'update dokumentasi', 'catat keputusan desain', 'cek konsistensi docs vs kode'. Sebutkan peran di prompt ('Peran: Verifier' / 'Peran: Docs Architect'). JANGAN gunakan untuk menulis/mengubah kode produksi."
 argument-hint: "Peran: Verifier | Docs Architect — <objek + cakupan>"
 name: "Rames Assure (Tim Verifikasi & Dokumentasi)"
 tools: [read, search, edit, execute, todo]
@@ -81,8 +81,8 @@ Sumber kebenaran & tanggung jawab:
 
 | Dokumen | Isi | Aturan |
 |---|---|---|
-| `SPECS.md` | kebutuhan & keputusan produk | sudut pandang produk; jangan taruh detail internal kelas |
-| `ARCHITECTURE.md` | struktur kode & cara kerja | kelas/library baru wajib muncul di tabel modul §4.3; fitur baru butuh sub-bagian alur §5.x |
+| `docs/SPECS.md` | kebutuhan & keputusan produk | sudut pandang produk; jangan taruh detail internal kelas |
+| `docs/ARCHITECTURE.md` | struktur kode & cara kerja | kelas/library baru wajib muncul di tabel modul §4.3; fitur baru butuh sub-bagian alur §5.x |
 | `README.md` | cara memasang/menjalankan | cukup untuk pengguna baru; jangan menyalin ARCHITECTURE |
 | `.github/copilot-instructions.md` | aturan keras & gaya koding | hanya aturan lintas-fitur (Hard Prohibitions, peta lapisan, penamaan, definisi "selesai"); jangan menaruh detail fitur |
 | `.github/agents/*.agent.md` | kontrak peran agent Copilot | `description` kaya kata kunci; `name:` harus cocok dengan entri `agents:`/`handoffs.agent`; jangan ada dua agent dengan wilayah tumpang tindih |
@@ -95,7 +95,7 @@ Gaya dokumentasi Rames: **Bahasa Indonesia**, istilah teknis dibiarkan Inggris; 
 Prosedur:
 1. **Verifikasi dulu, tulis kemudian** — cocokkan nama kelas, signature, field `apps.json`, route, dan file override dengan kode.
 2. **Cari dokumentasi basi** (kelas/halaman/route yang sudah hilang, ability berubah, urutan `compose_files`, nama config/env, agent yang sudah tidak ada); basi = bug; perbaiki sekalian dan laporkan.
-3. **Fitur baru**: cek kelengkapan `SPECS.md` (goal/alur/keamanan/future work), `ARCHITECTURE.md` (tabel modul §4.3, alur §5.x, keputusan §6, jebakan), dan sebut test terkait.
+3. **Fitur baru**: cek kelengkapan `docs/SPECS.md` (goal/alur/keamanan/future work), `docs/ARCHITECTURE.md` (tabel modul §4.3, alur §5.x, keputusan §6, jebakan), dan sebut test terkait.
 4. **File agent (Copilot)**: pastikan YAML frontmatter valid (kutip nilai ber-`:`; spasi, bukan tab), `description` memuat frasa pemicu, hanya field Copilot yang didukung (`description`, `name`, `argument-hint`, `tools`, `agents`, `model`, `user-invocable`, `disable-model-invocation`, `handoffs`, `target`, `hooks`) — **jangan** memakai field OpenCode (`mode`, `color`, `permissions`, `steps`, `hidden`), dan jangan membuat siklus subagent.
 5. **Laporkan perubahan sebagai daftar beda nyata**, bukan "docs diupdate".
 
@@ -107,8 +107,8 @@ Output:
 - dokumen/agent yang diperbarui & alasan
 
 ## Perubahan
-- `SPECS.md §x` — apa yang ditambah/diperbaiki
-- `ARCHITECTURE.md §y` — ...
+- `docs/SPECS.md §x` — apa yang ditambah/diperbaiki
+- `docs/ARCHITECTURE.md §y` — ...
 - `.github/agents/z.agent.md` — ...
 
 ## Ketidaksesuaian yang Ditemukan

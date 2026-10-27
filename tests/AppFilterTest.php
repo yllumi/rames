@@ -20,7 +20,7 @@ if (!function_exists('app_subdomain_of')) {
 
 /**
  * Test {@see AppFilter} — statik murni: pencocokan `name`/`domain`/`owner`
- * untuk filter daftar app (SPECS.md §8e).
+ * untuk filter daftar app (docs/SPECS.md §8e).
  *
  * Kelas ini **tidak** mengurus otorisasi; seluruh uji di sini murni pencocokan.
  * `app_subdomain_of()` (sumber resolusi domain efektif) membaca registry server

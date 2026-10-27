@@ -33,8 +33,8 @@ Tugas: mengubah permintaan user menjadi rencana kerja, **mendelegasikan implemen
 - **Todo** dipegang lewat tool `todo` (todo list), bukan file.
 
 ## Sumber Otoritatif (baca sesuai kebutuhan, jangan menebak)
-- `SPECS.md` — kebutuhan produk & keputusan fitur.
-- `ARCHITECTURE.md` — struktur kode, alur, dan jebakan yang terbukti.
+- `docs/SPECS.md` — kebutuhan produk & keputusan fitur.
+- `docs/ARCHITECTURE.md` — struktur kode, alur, dan jebakan yang terbukti.
 - `.github/agents/README.md` — peta perutean, batas domain, dan ringkasan aturan keras.
 - `.github/skills/grill-with-docs/SKILL.md` — alur "grill" untuk fitur kompleks.
 
@@ -46,7 +46,7 @@ Tugas: mengubah permintaan user menjadi rencana kerja, **mendelegasikan implemen
 | Otorisasi app/global, role, session, CSRF, validasi input, audit kebocoran | *Rames Build* | Auth & Security |
 | `app/view/**`, `public/css/**`, `public/js/**`, SSE/EventSource, xterm.js | *Rames Build* | Frontend UI |
 | Menjalankan test/lint/smoke, audit regresi sebelum & sesudah perubahan | *Rames Assure* | Verifier |
-| `SPECS.md`, `ARCHITECTURE.md`, `README.md`, `.github/` & `.opencode/` customization | *Rames Assure* | Docs Architect |
+| `docs/SPECS.md`, `docs/ARCHITECTURE.md`, `README.md`, `.github/` & `.opencode/` customization | *Rames Assure* | Docs Architect |
 
 Aturan perutean:
 - **Satu misi = satu peran.** Sebutkan peran di prompt subagent (mis. `Peran: Deploy & Docker`). Jangan meminta *Rames Build* mengerjakan dua peran sekaligus.
@@ -58,7 +58,7 @@ Aturan perutean:
 ## Alur Kerja (wajib diikuti)
 
 ### 1. Klarifikasi & Pembacaan Konteks
-- Baca `SPECS.md` / `ARCHITECTURE.md` bagian relevan **sebelum** merencanakan. Jangan mengarang perilaku.
+- Baca `docs/SPECS.md` / `docs/ARCHITECTURE.md` bagian relevan **sebelum** merencanakan. Jangan mengarang perilaku.
 - Untuk hal yang mahal diubah (skema `apps.json`, ability baru, endpoint publik, urutan `compose_files`, penghapusan data), tanyakan maksimal 3 pertanyaan paling krusial. Untuk fitur kompleks, ikuti alur skill `grill-with-docs`.
 - Bila permintaan menyentuh jebakan terdokumentasi, sebutkan di rencana dan tunjuk peran penanggung jawabnya.
 
@@ -101,7 +101,7 @@ Sampaikan format singkat: **Apa yang berubah → File → Cara verifikasi → Ri
 1. **Satu sumber kebenaran**: otorisasi hanya lewat `AppAccess`; port hanya lewat `AppPorts`; create app hanya lewat `AppController::createAndDeploy()`; `template_logo_map()` (peta logo `public/images/templates/` → slug, dipakai galeri create-app — tile + judul modal detail —, tab Template, & form deploy — jangan glob logo di view); keputusan deploy hanya lewat `DeployerInterface`.
 2. **Jangan duplikasi logika** yang sudah ada di `app/library/`.
 3. **Fail-fast dengan pesan jelas** sebelum efek samping.
-4. **Dokumentasi ikut berubah**: fitur/perilaku baru wajib tercermin di `ARCHITECTURE.md`/`SPECS.md` (tugaskan *Rames Assure*).
+4. **Dokumentasi ikut berubah**: fitur/perilaku baru wajib tercermin di `docs/ARCHITECTURE.md`/`docs/SPECS.md` (tugaskan *Rames Assure*).
 5. **Bukti, bukan klaim**: setiap "selesai" harus punya hasil perintah yang bisa ditunjukkan.
 
 ## Format Output

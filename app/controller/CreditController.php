@@ -23,7 +23,7 @@ use Throwable;
 use Webman\Http\Response;
 
 /**
- * Halaman & aksi kredit (SPECS.md §7.12, plan §5.4/§5.7).
+ * Halaman & aksi kredit (docs/SPECS.md §7.12, plan §5.4/§5.7).
  *
  * Controller ini **mediator murni**: seluruh logika bisnis (saldo, ledger,
  * meteran, penagihan, top-up Duitku) berada di `app\library\Billing\*`. Di sini

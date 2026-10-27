@@ -82,7 +82,7 @@ Dokumen di `.opencode/` tidak bisa dipakai apa adanya oleh Copilot; inilah terje
 - **Eksekusi proses = satu jalur** (`ProcessRunner` + `SigchldGuard`).
 - **Kontrak endpoint** ditentukan Backend PHP; Frontend UI tidak mengubah bentuk respons.
 - **Verifikasi bukan oleh penulis perubahan** — gunakan *Rames Assure*.
-- **Dokumentasi** (`SPECS.md`, `ARCHITECTURE.md`, customization agent) dikelola *Rames Assure* · Peran: Docs Architect.
+- **Dokumentasi** (`docs/SPECS.md`, `docs/ARCHITECTURE.md`, customization agent) dikelola *Rames Assure* · Peran: Docs Architect.
 - **Sinkron dua sisi**: setiap perubahan peran/wilayah harus tercermin di `.github/agents/` **dan** `.opencode/agents/`.
 
 ## Aturan Keras yang Berlaku untuk Semua Agent

@@ -9,7 +9,7 @@ use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Katalog template app siap-pakai (SPECS.md §7.2b / ARCHITECTURE.md §5.1c).
+ * Katalog template app siap-pakai (docs/SPECS.md §7.2b / docs/ARCHITECTURE.md §5.1c).
  *
  * Satu template = satu direktori di `templates_path`:
  *   templates/<slug>/
@@ -560,7 +560,7 @@ final class TemplateCatalog
     /**
      * Referensi image tiap service template, berurutan sesuai urutan service dan
      * tanpa duplikat — dipakai tombol `docker pull` di halaman Config
-     * (`/nginx` tab Template, SPECS.md §7.13) untuk menarik ulang SEMUA image
+     * (`/nginx` tab Template, docs/SPECS.md §7.13) untuk menarik ulang SEMUA image
      * template sekaligus (mis. `yllumi/fpm8.4-nginx` + `mysql:8.4`).
      *
      * Sumber datanya `$template['services']` (hasil parse YAML), **bukan** regex

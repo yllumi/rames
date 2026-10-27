@@ -6,10 +6,10 @@ namespace app\library\Nginx;
 use RuntimeException;
 
 /**
- * Generate & tulis config Nginx per app (SPECS.md §8.2).
+ * Generate & tulis config Nginx per app (docs/SPECS.md §8.2).
  *
  * Dashboard hanya menulis file ke direktori yang di-mount; reload (nginx -t &&
- * nginx -s reload) dijalankan oleh watcher di host (SPECS.md §8.3).
+ * nginx -s reload) dijalankan oleh watcher di host (docs/SPECS.md §8.3).
  */
 class NginxConfigGenerator
 {

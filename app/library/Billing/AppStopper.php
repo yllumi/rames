@@ -8,7 +8,7 @@ use app\library\Storage\AppStore;
 use Throwable;
 
 /**
- * Penghenti app otomatis untuk kebijakan saldo kredit negatif (SPECS.md §7.12).
+ * Penghenti app otomatis untuk kebijakan saldo kredit negatif (docs/SPECS.md §7.12).
  *
  * Satu-satunya jalur stop = `DeployerInterface::stop()` lewat `DeployerFactory`
  * (satu sumber kebenaran) — kelas ini **tidak** memanggil docker/`docker compose`

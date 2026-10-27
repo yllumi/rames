@@ -21,7 +21,7 @@ use Webman\Http\Response;
 use Webman\Http\UploadFile;
 
 /**
- * Halaman **domain parking** (`/domains`) — SPECS.md §8j, ARCHITECTURE.md §5.38.
+ * Halaman **domain parking** (`/domains`) — docs/SPECS.md §8j, docs/ARCHITECTURE.md §5.38.
  *
  * Domain parking adalah entitas **global, tidak terikat app**: daftar FQDN yang
  * dilayani halaman statis (`mode='html'`) atau dialihkan (`mode='redirect'`).

@@ -1,7 +1,7 @@
 <?php
 /**
  * Tab "Template" — katalog template app siap-pakai (`templates/<slug>/`,
- * SPECS.md §7.2b) + tombol **Tarik image** (`docker pull` di host, bukan deploy)
+ * docs/SPECS.md §7.2b) + tombol **Tarik image** (`docker pull` di host, bukan deploy)
  * dengan progres & log live.
  *
  * Presentasi murni: seluruh nilai di-escape dengan `e()`. Aksi dijalankan AJAX

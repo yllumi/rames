@@ -7,7 +7,7 @@ use app\library\Support\ProcessRunner;
 use RuntimeException;
 
 /**
- * Operasi Git untuk clone & update repo app (SPECS.md §7.2 langkah 3).
+ * Operasi Git untuk clone & update repo app (docs/SPECS.md §7.2 langkah 3).
  * Clone **selalu shallow** (`--depth=1 --single-branch`, SPECS §7.2); rollback
  * mengambil SHA lama lewat `fetch`.
  * Menggunakan bentuk array + bypass_shell => bebas command injection.
@@ -130,7 +130,7 @@ class GitService
     /**
      * Bangun GIT_SSH_COMMAND. Variabel ini dieksekusi lewat shell oleh git;
      * path-nya berasal dari nilai tervalidasi (slug app), namun tetap di-escape
-     * sebagai pertahanan berlapis (SPECS.md §11).
+     * sebagai pertahanan berlapis (docs/SPECS.md §11).
      *
      * - IdentitiesOnly=yes            : hanya pakai key ini (abaikan ~/.ssh lain)
      * - StrictHostKeyChecking=accept-new: terima host key baru (mis. github.com)

@@ -7,7 +7,7 @@ use app\library\Support\Markdown;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Unit test Markdown — render panduan template (SPECS.md §7.2b).
+ * Unit test Markdown — render panduan template (docs/SPECS.md §7.2b).
  *
  * Kontrak keamanan yang diuji: HTML mentah di-escape, tautan berbahaya
  * (`javascript:`) dinonaktifkan, dan tautan eksternal membuka tab baru dengan

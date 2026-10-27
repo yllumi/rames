@@ -7,7 +7,7 @@ use app\library\Update\UpdateState;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Unit test UpdateState (SPECS.md §7.8): dua berkas dengan SATU penulis
+ * Unit test UpdateState (docs/SPECS.md §7.8): dua berkas dengan SATU penulis
  * masing-masing — `check.json` (dashboard) dan `run.json` (helper) — plus
  * penyajian log untuk panel /nginx.
  *

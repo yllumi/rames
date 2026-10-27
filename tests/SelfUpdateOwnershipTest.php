@@ -12,7 +12,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
 /**
- * Regresi **kepemilikan repo** pada self-update (SPECS.md §7.8 / ARCHITECTURE.md §5.14).
+ * Regresi **kepemilikan repo** pada self-update (docs/SPECS.md §7.8 / docs/ARCHITECTURE.md §5.14).
  *
  * Bug yang direproduksi: helper update dijalankan `--user <uid>:<gid>` = pemilik
  * direktori repo, tetapi tidak ada satu pun pemeriksaan yang menjawab "bolehkah

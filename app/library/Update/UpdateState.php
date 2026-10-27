@@ -7,7 +7,7 @@ use app\library\Storage\JsonStore;
 use RuntimeException;
 
 /**
- * Status fitur self-update dashboard (SPECS.md §7.8 / ARCHITECTURE.md §5.14).
+ * Status fitur self-update dashboard (docs/SPECS.md §7.8 / docs/ARCHITECTURE.md §5.14).
  *
  * Dua berkas, **satu penulis masing-masing** — disengaja agar tidak ada perebutan
  * kepemilikan file antara dashboard (root di dalam container) dan helper container

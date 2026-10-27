@@ -16,7 +16,7 @@ use support\Request;
 use Webman\Http\Response;
 
 /**
- * Halaman SSL otomatis (Let's Encrypt) — SPECS.md §8a & §8b.
+ * Halaman SSL otomatis (Let's Encrypt) — docs/SPECS.md §8a & §8b.
  *
  * Menampilkan daftar domain (subdomain bawaan app, atau custom domain bila
  * di-set — subdomain hanya redirect saat custom domain aktif) beserta status

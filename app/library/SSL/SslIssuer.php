@@ -7,7 +7,7 @@ use app\library\Support\ProcessRunner;
 use RuntimeException;
 
 /**
- * Penerbitan sertifikat SSL via Let's Encrypt (certbot) — SPECS.md §8a.
+ * Penerbitan sertifikat SSL via Let's Encrypt (certbot) — docs/SPECS.md §8a.
  *
  * Certbot dijalankan DI DALAM container dashboard (root) lewat ProcessRunner
  * (array + bypass_shell, tanpa shell). Nginx reverse proxy tetap native di host:

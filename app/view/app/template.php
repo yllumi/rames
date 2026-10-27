@@ -1,6 +1,6 @@
 <?php $pageTitle = 'Deploy dari Template'; $active = 'apps'; ?>
 <?php
-// Form deploy satu langkah dari template (SPECS.md §7.2b).
+// Form deploy satu langkah dari template (docs/SPECS.md §7.2b).
 // Port/primary/prefix container TIDAK ditanyakan: host port dicari yang bebas,
 // primary diambil dari template, prefix nama container = nama app.
 $formEnv = $form_env ?? [];
@@ -9,7 +9,7 @@ $formError = $form_error ?? null;
 // di bawah; nilai dari server (bila ada) tidak pernah ditimpa.
 $formSubdomain = $form_subdomain ?? '';
 
-// Pemilih server tujuan (multi-server: SPECS.md §2a, ARCHITECTURE.md §5.22).
+// Pemilih server tujuan (multi-server: docs/SPECS.md §2a, docs/ARCHITECTURE.md §5.22).
 // Payload dari `AppController::serverFormContext()`: `servers`,
 // `selectedServerId`, `canSelectServer`. View hanya merender — server tetap
 // sumber kebenaran (`resolveCreateServer()` memvalidasi ulang `server_id`).
@@ -31,7 +31,7 @@ $wizardCanSelectServer = (bool) ($canSelectServer ?? false);
 // (lihat `$wizardLocalServerProjection` di bawah).
 $wizardShowServerSelect = $wizardCanSelectServer && count($wizardServers) > 1;
 
-// Navigasi wizard mempertahankan pilihan server (SPECS.md §2a). Parameter
+// Navigasi wizard mempertahankan pilihan server (docs/SPECS.md §2a). Parameter
 // `server_id` hanya ditambahkan bila server terpilih BUKAN server lokal **dan**
 // user memang boleh memilih server (`$wizardCanSelectServer`) — supaya URL
 // default user tanpa grant tetap bersih (absen = server lokal) dan payload di

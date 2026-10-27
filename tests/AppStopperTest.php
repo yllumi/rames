@@ -14,7 +14,7 @@ use RuntimeException;
 use Webman\Config;
 
 /**
- * Test AppStopper — auto-stop app saldo negatif (SPECS.md §7.12).
+ * Test AppStopper — auto-stop app saldo negatif (docs/SPECS.md §7.12).
  *
  * Tanpa Docker (`DeployerFactory`) & tanpa data runtime nyata: penghenti
  * di-inject palsu, seluruh store memakai path temp, dan direktori log

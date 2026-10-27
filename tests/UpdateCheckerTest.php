@@ -9,7 +9,7 @@ use app\library\Update\UpdateState;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Unit test UpdateChecker (SPECS.md §7.8): membandingkan SHA lokal (dibaca dari
+ * Unit test UpdateChecker (docs/SPECS.md §7.8): membandingkan SHA lokal (dibaca dari
  * `.git`) dengan SHA remote hasil `git ls-remote`, menyimpan hasil ke check.json,
  * dan menangani jalur gagal (remote tidak terbaca, HEAD detached) dengan pesan
  * yang bisa ditindaklanjuti.

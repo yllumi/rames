@@ -11,7 +11,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
- * Provisioning awal: buat user admin pertama (SPECS.md §6.3).
+ * Provisioning awal: buat user admin pertama (docs/SPECS.md §6.3).
  *
  *   php webman make:admin [username] [password]
  *
@@ -45,7 +45,7 @@ class MakeAdmin extends Command
         $username = $input->getArgument('username') ?: 'admin';
         $password = (string) ($input->getArgument('password') ?: '');
         if ($password === '') {
-            // Password default di-generate dan dicetak satu kali (SPECS.md §6.3)
+            // Password default di-generate dan dicetak satu kali (docs/SPECS.md §6.3)
             $password = bin2hex(random_bytes(6));
         }
 

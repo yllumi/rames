@@ -11,7 +11,7 @@ $__serverFilter = (string) ($serverFilter ?? '');
 $__serverOptions = $serverOptions ?? [];
 $__isAdmin = (bool) ($isAdmin ?? false);
 
-// Filter daftar app (SPECS.md §8e / §7.7). Nilai sudah **efektif** dari
+// Filter daftar app (docs/SPECS.md §8e / §7.7). Nilai sudah **efektif** dari
 // controller (trim; `name`/`domain` lowercase) — kosong = filter tidak aktif.
 // View hanya merender, tidak menormalkan ulang.
 $__filters = is_array($filters ?? null) ? $filters : [];

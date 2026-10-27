@@ -12,7 +12,7 @@ use Workerman\Timer;
 use Workerman\Worker;
 
 /**
- * Penjadwal billing (SPECS.md §7.12) — satu tick = kedaluwarsa order top-up,
+ * Penjadwal billing (docs/SPECS.md §7.12) — satu tick = kedaluwarsa order top-up,
  * akrual meteran pemakaian, penagihan periode (tanggal `BILLING_INVOICE_DAY`),
  * dan konsiliasi order pending ke gateway.
  *

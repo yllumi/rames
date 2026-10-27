@@ -6,7 +6,7 @@
 
 **Rames** adalah dashboard deployment berbasis Docker untuk mengelola app dari repo Git, file `docker-compose.yml`, atau template siap-pakai — lengkap dengan reverse proxy Nginx, SSL Let's Encrypt, monitoring, backup volume, dan multi-server (control plane + agent). Dibangun dengan **Webman (PHP 8.1+)** dan berjalan di dalam container Docker.
 
-> Detail lengkap (instalasi manual, konfigurasi, multi-server, backup, keamanan): [`DETAILS.md`](./DETAILS.md) · Spesifikasi: [`SPECS.md`](./SPECS.md) · Arsitektur: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+> Detail lengkap (instalasi manual, konfigurasi, multi-server, backup, keamanan): [`DETAILS.md`](./DETAILS.md) · Spesifikasi: [`SPECS.md`](./docs/SPECS.md) · Arsitektur: [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
 
 ## Fitur Singkat
 
@@ -63,8 +63,8 @@ Default instalasi di `/opt/rames-agent`; agent **menolak** menimpa direktori das
 ## Dokumentasi Lain
 
 - Konfigurasi `.env`, backup, keamanan, alur create app, dan struktur direktori: [`DETAILS.md`](./DETAILS.md)
-- Spesifikasi kebutuhan: [`SPECS.md`](./SPECS.md)
-- Arsitektur dan keputusan desain: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- Spesifikasi kebutuhan: [`SPECS.md`](./docs/SPECS.md)
+- Arsitektur dan keputusan desain: [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
 - Panduan server agent: [`agent/README.md`](./agent/README.md)
 
 ## Troubleshooting

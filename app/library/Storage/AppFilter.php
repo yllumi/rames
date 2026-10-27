@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace app\library\Storage;
 
 /**
- * Filter daftar app berbasis **query string** (SPECS.md §8e / §7.7): `name`,
+ * Filter daftar app berbasis **query string** (docs/SPECS.md §8e / §7.7): `name`,
  * `domain`, `owner`.
  *
  * Statik murni — tanpa I/O, tanpa state, **tanpa otorisasi**. Kelas ini tidak

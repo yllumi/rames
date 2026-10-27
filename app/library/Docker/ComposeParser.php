@@ -9,7 +9,7 @@ use Symfony\Component\Yaml\Yaml;
 
 /**
  * Parse docker-compose.yml untuk mengekstrak service + port mapping
- * (SPECS.md §7.2 langkah 5).
+ * (docs/SPECS.md §7.2 langkah 5).
  */
 class ComposeParser
 {

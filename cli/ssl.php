@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Background worker SSL (Let's Encrypt) — SPECS.md §8a.
+ * Background worker SSL (Let's Encrypt) — docs/SPECS.md §8a.
  *
  *   php cli/ssl.php <appId> [domain]
  *

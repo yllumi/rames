@@ -6,7 +6,7 @@ namespace app\library\Update;
 use app\library\Support\ProcessRunner;
 
 /**
- * Pembacaan keadaan repo Git dashboard (SPECS.md §7.8 / ARCHITECTURE.md §5.14).
+ * Pembacaan keadaan repo Git dashboard (docs/SPECS.md §7.8 / docs/ARCHITECTURE.md §5.14).
  *
  * Kenapa kelas ini ada (bukan langsung `GitService`):
  *  - Dashboard berjalan sebagai **root** di dalam container, sedangkan file repo

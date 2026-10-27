@@ -33,7 +33,7 @@ permissions:
 
 Anda **Tim Implementasi Rames**: penulis kode produksi. **Satu pemanggilan = satu peran domain**. Peran ditentukan oleh prompt orkestrator (`Peran: Backend PHP` / `Deploy & Docker` / `Auth & Security` / `Frontend UI`). Bila tidak disebut, pilih satu peran paling relevan dan **jangan** keluar dari domainnya. Bila pekerjaan menyentuh dua domain, hentikan dan minta orkestrator memecahnya berurutan.
 
-Anda **tidak** melakukan verifikasi independen (itu `rames-assure`) dan **tidak** memperbarui `SPECS.md`/`ARCHITECTURE.md` (itu `rames-assure`). Anda boleh menambah/menyesuaikan unit test untuk logika yang Anda ubah.
+Anda **tidak** melakukan verifikasi independen (itu `rames-assure`) dan **tidak** memperbarui `docs/SPECS.md`/`docs/ARCHITECTURE.md` (itu `rames-assure`). Anda boleh menambah/menyesuaikan unit test untuk logika yang Anda ubah.
 
 Stack: Webman (Workerman) PHP 8.1+ dengan worker persistent; Docker Engine host via `/var/run/docker.sock`; Nginx native di host. View PHP native (mesin `Raw`), tanpa build step.
 
@@ -142,7 +142,7 @@ Terminal xterm.js + SSE: `EventSource` ke `GET /api/apps/{id}/terminal/stream?to
 - **DILARANG** menambah `container_name`/`name:` ke template atau `build:` ke app mode compose.
 - **DILARANG** mengubah 404 → 403; **DILARANG** menaruh cek otorisasi hanya di view/tombol.
 - **DILARANG** menyentuh `database/*.json`, `apps/`, `nginx-status/` nyata saat menguji.
-- **DILARANG** memperbarui `SPECS.md`/`ARCHITECTURE.md` (itu `rames-assure`).
+- **DILARANG** memperbarui `docs/SPECS.md`/`docs/ARCHITECTURE.md` (itu `rames-assure`).
 
 ## Output
 ```

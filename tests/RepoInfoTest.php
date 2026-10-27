@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * Unit test RepoInfo — pembacaan keadaan repo git untuk fitur self-update
- * (SPECS.md §7.8). Semua parser diuji tanpa repo nyata; pembacaan SHA/branch
+ * (docs/SPECS.md §7.8). Semua parser diuji tanpa repo nyata; pembacaan SHA/branch
  * diuji dengan fixture `.git` di direktori temporer.
  *
  * Yang dijaga di sini: dashboard berjalan sebagai ROOT di dalam container

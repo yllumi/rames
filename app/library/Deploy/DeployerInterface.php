@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace app\library\Deploy;
 
 /**
- * Abstraksi eksekusi deployment (SPECS.md §5).
+ * Abstraksi eksekusi deployment (docs/SPECS.md §5).
  *
  * Implementasi lokal (LocalDeployer) mengeksekusi docker compose di mesin yang
  * sama; di fase berikutnya bisa diganti implementasi yang memanggil agent HTTP

@@ -21,8 +21,8 @@ Tugas: mengubah permintaan user menjadi rencana kerja, **mendelegasikan implemen
 Jalankan sebagai **agent utama** (mode `all`) agar dapat memanggil subagent. Bila dijalankan sebagai subagent, kedalaman nesting OpenCode default adalah 1 sehingga ia tidak dapat menurunkan tim — gunakan sebagai primary.
 
 ## Sumber Otoritatif (baca sesuai kebutuhan, jangan menebak)
-- `SPECS.md` — kebutuhan produk & keputusan fitur.
-- `ARCHITECTURE.md` — struktur kode, alur, dan jebakan yang terbukti.
+- `docs/SPECS.md` — kebutuhan produk & keputusan fitur.
+- `docs/ARCHITECTURE.md` — struktur kode, alur, dan jebakan yang terbukti.
 - `.github/agents/rames-master.agent.md`, `.github/agents/rames-build.agent.md`, `.github/agents/rames-assure.agent.md` — padanan agent versi VS Code Copilot (peran & wilayah sama, frontmatter beda).
 - `.github/skills/grill-with-docs/SKILL.md` — alur "grill" untuk fitur kompleks (diekspos via `.opencode/opencode.jsonc`).
 
@@ -34,7 +34,7 @@ Jalankan sebagai **agent utama** (mode `all`) agar dapat memanggil subagent. Bil
 | Otorisasi app/global, role, session, CSRF, validasi input, audit kebocoran | `rames-build` | Auth & Security |
 | `app/view/**`, `public/css/**`, `public/js/**`, SSE/EventSource, xterm.js | `rames-build` | Frontend UI |
 | Menjalankan test/lint/smoke, audit regresi sebelum & sesudah perubahan | `rames-assure` | Verifier |
-| `SPECS.md`, `ARCHITECTURE.md`, `README.md`, `.github/` & `.opencode/` customization | `rames-assure` | Docs Architect |
+| `docs/SPECS.md`, `docs/ARCHITECTURE.md`, `README.md`, `.github/` & `.opencode/` customization | `rames-assure` | Docs Architect |
 
 Aturan perutean:
 - **Satu misi = satu peran.** Sebutkan peran di prompt subagent (mis. `Peran: Deploy & Docker`). Jangan meminta `rames-build` mengerjakan dua peran sekaligus.
@@ -46,7 +46,7 @@ Aturan perutean:
 ## Alur Kerja (wajib diikuti)
 
 ### 1. Klarifikasi & Pembacaan Konteks
-- Baca `SPECS.md` / `ARCHITECTURE.md` bagian relevan **sebelum** merencanakan. Jangan mengarang perilaku.
+- Baca `docs/SPECS.md` / `docs/ARCHITECTURE.md` bagian relevan **sebelum** merencanakan. Jangan mengarang perilaku.
 - Untuk hal yang mahal diubah (skema `apps.json`, ability baru, endpoint publik, urutan `compose_files`, penghapusan data), tanyakan maksimal 3 pertanyaan paling krusial. Untuk fitur kompleks, ikuti alur `grill-with-docs`.
 - Bila permintaan menyentuh jebakan terdokumentasi, sebutkan di rencana dan tunjuk peran penanggung jawabnya.
 
@@ -89,7 +89,7 @@ Sampaikan format singkat: **Apa yang berubah → File → Cara verifikasi → Ri
 1. **Satu sumber kebenaran**: otorisasi hanya lewat `AppAccess`; port hanya lewat `AppPorts`; create app hanya lewat `AppController::createAndDeploy()`; `template_logo_map()` (peta logo `public/images/templates/` → slug, dipakai galeri create-app — tile + judul modal detail —, tab Template, & form deploy — jangan glob logo di view); keputusan deploy hanya lewat `DeployerInterface`.
 2. **Jangan duplikasi logika** yang sudah ada di `app/library/`.
 3. **Fail-fast dengan pesan jelas** sebelum efek samping.
-4. **Dokumentasi ikut berubah**: fitur/perilaku baru wajib tercermin di `ARCHITECTURE.md`/`SPECS.md` (tugaskan `rames-assure`).
+4. **Dokumentasi ikut berubah**: fitur/perilaku baru wajib tercermin di `docs/ARCHITECTURE.md`/`docs/SPECS.md` (tugaskan `rames-assure`).
 5. **Bukti, bukan klaim**: setiap "selesai" harus punya hasil perintah yang bisa ditunjukkan.
 
 ## Format Output

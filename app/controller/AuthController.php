@@ -8,7 +8,7 @@ use app\library\Auth\UserStore;
 use support\Request;
 
 /**
- * Autentikasi dashboard (SPECS.md §6).
+ * Autentikasi dashboard (docs/SPECS.md §6).
  *
  * Catatan: dilarang memanggil session()/request() di konstruktor (lihat
  * copilot-instructions) — semua state diakses di method action.

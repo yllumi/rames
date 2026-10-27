@@ -12,7 +12,7 @@ declare(strict_types=1);
 // jadi pembacaan dilakukan eksplisit di sini.
 $adminerNetworkTtlEnv = getenv('ADMINER_NETWORK_TTL');
 
-// Pembaca env untuk blok billing (SPECS.md §7.12). Sama seperti di atas, `?:`
+// Pembaca env untuk blok billing (docs/SPECS.md §7.12). Sama seperti di atas, `?:`
 // menelan nilai "0" (falsy di PHP) sehingga flag/angka sah seperti 0 akan
 // salah dianggap "tidak diset" — pembacaan dilakukan eksplisit di sini.
 $billingBool = static function (string $name, bool $default): bool {
@@ -138,7 +138,7 @@ return [
     // Email admin untuk penerimaan syarat & notifikasi Let's Encrypt
     'admin_email' => getenv('ADMIN_EMAIL') ?: '',
 
-    // SSL otomatis Let's Encrypt (SPECS.md §8a)
+    // SSL otomatis Let's Encrypt (docs/SPECS.md §8a)
     'ssl_challenge' => getenv('SSL_CHALLENGE') ?: 'http',        // http | dns-cloudflare
     'ssl_ca_server' => getenv('SSL_CA_SERVER') ?: 'production',  // production | staging
     'ssl_webroot' => getenv('SSL_WEBROOT') ?: (base_path() . '/webroot'),
@@ -210,14 +210,14 @@ return [
     // file env hanya berisi pasangan KEY=VALUE, bukan berkas besar).
     'env_upload_max_bytes' => (int) (getenv('ENV_UPLOAD_MAX_BYTES') ?: 262144),
 
-    // Galeri template app siap-pakai (SPECS.md §7.2b). Satu template = satu
+    // Galeri template app siap-pakai (docs/SPECS.md §7.2b). Satu template = satu
     // direktori di bawah path ini: `template.yml` (metadata + deklarasi env),
     // `docker-compose.yml` (image prebuilt, tanpa `build:`), `files/` (file
     // pendukung opsional yang di-bind mount). Dikelola lewat repo (bukan UI).
     'templates_path' => getenv('TEMPLATES_PATH') ?: (base_path() . '/templates'),
 
     // ---------------------------------------------------------------------
-    // Backup volume ke S3 via restic (PLAN_VOLUME_BACKUP.md / SPECS.md §8h)
+    // Backup volume ke S3 via restic (PLAN_VOLUME_BACKUP.md / docs/SPECS.md §8h)
     // ---------------------------------------------------------------------
     // Namespace env: VOLUME_BACKUP_*/RESTIC_*/AWS_* — JANGAN pakai BACKUP_*
     // (§8g: backup database/*.json + config Nginx, terpisah — jangan digabung).
@@ -253,7 +253,7 @@ return [
     'aws_default_region' => getenv('AWS_DEFAULT_REGION') ?: '',
 
     // ---------------------------------------------------------------------
-    // Self-update dashboard (SPECS.md §7.8 / ARCHITECTURE.md §5.14)
+    // Self-update dashboard (docs/SPECS.md §7.8 / docs/ARCHITECTURE.md §5.14)
     // ---------------------------------------------------------------------
     // Update dijalankan oleh HELPER CONTAINER detached di luar lifecycle
     // container dashboard — proses yang menjalankan update akan mematikan
@@ -269,7 +269,7 @@ return [
     'update_run_dir' => getenv('UPDATE_RUN_DIR') ?: (base_path() . '/runtime/logs/update'),
 
     // ---------------------------------------------------------------------
-    // Tarik image template (SPECS.md §7.13 / halaman /nginx tab Template)
+    // Tarik image template (docs/SPECS.md §7.13 / halaman /nginx tab Template)
     // ---------------------------------------------------------------------
     // Template memakai image prebuilt (yllumi/fpm8.4-nginx, mysql:8.4, …);
     // `docker compose up -d` default `--pull missing` TIDAK menarik ulang tag
@@ -314,7 +314,7 @@ return [
     'adminer_prefix_base' => getenv('ADMINER_PREFIX_BASE') ?: '/database',
 
     // ---------------------------------------------------------------------
-    // Kredit, deposit & penagihan resource (SPECS.md §7.12)
+    // Kredit, deposit & penagihan resource (docs/SPECS.md §7.12)
     // ---------------------------------------------------------------------
     // false = fitur mati total (tanpa meteran & tanpa gerbang kredit).
     'billing_enabled' => $billingBool('BILLING_ENABLED', true),
@@ -353,7 +353,7 @@ return [
     // Batas nominal satu deposit/adjust manual admin (kredit).
     'billing_admin_deposit_max' => $billingFloat('BILLING_ADMIN_DEPOSIT_MAX', 10000000.0),
 
-    // ---- Top-up mandiri member via Duitku (SPECS.md §5.7) ----
+    // ---- Top-up mandiri member via Duitku (docs/SPECS.md §5.7) ----
     'billing_topup_enabled' => $billingBool('BILLING_TOPUP_ENABLED', false),
     // Kurs 1:1 (Rp1 = 1 kredit) — sejalan dengan tarif pemakaian di atas.
     'billing_topup_idr_per_credit' => $billingFloat('BILLING_TOPUP_IDR_PER_CREDIT', 1.0),

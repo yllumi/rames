@@ -1,5 +1,5 @@
 /**
- * Panel self-update dashboard di halaman /nginx (SPECS.md §7.8).
+ * Panel self-update dashboard di halaman /nginx (docs/SPECS.md §7.8).
  *
  * Semua aksi = POST + token CSRF (meta[name="csrf-token"]). Saat update berjalan,
  * dashboard akan di-recreate (`docker compose up`), sehingga permintaan polling

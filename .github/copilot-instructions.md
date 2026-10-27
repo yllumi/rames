@@ -16,7 +16,7 @@ Kamu adalah AI senior engineer pada **Rames** — **deploy dashboard** berbasis 
 - **Docker:** CLI `docker compose` untuk orkestrasi (`DockerComposeRunner`) + Engine API via unix socket untuk operasi baca (`DockerClient`, Guzzle).
 - **Test:** PHPUnit 10 (`composer test`).
 
-Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputusan §6, jebakan §4.4/§5.x) sebelum mengubah perilaku — **jangan mengarang perilaku**.
+Baca `docs/SPECS.md` (kebutuhan produk) dan `docs/ARCHITECTURE.md` (struktur kode, keputusan §6, jebakan §4.4/§5.x) sebelum mengubah perilaku — **jangan mengarang perilaku**.
 
 ---
 
@@ -114,8 +114,8 @@ Baca `SPECS.md` (kebutuhan produk) dan `ARCHITECTURE.md` (struktur kode, keputus
 
 ## Alur Kerja & Rujukan
 
-1. **Baca dulu** `SPECS.md`/`ARCHITECTURE.md` bagian terkait (dan kode di sekitar perubahan) sebelum menulis kode.
+1. **Baca dulu** `docs/SPECS.md`/`docs/ARCHITECTURE.md` bagian terkait (dan kode di sekitar perubahan) sebelum menulis kode.
 2. Untuk hal mahal diubah (skema `apps.json`, ability baru, endpoint publik, urutan `compose_files`, penghapusan data), **tanya user** maksimal 3 pertanyaan paling krusial. Fitur kompleks → ikuti skill `grill-with-docs` (`.github/skills/grill-with-docs/SKILL.md`).
-3. **Dokumentasi ikut berubah**: kelas/library baru wajib muncul di tabel modul `ARCHITECTURE.md` §4.3; fitur/perilaku baru butuh sub-bagian alur §5.x dan kebutuhan di `SPECS.md`; jebakan baru ditandai **GOTCHA/WAJIB/DILARANG** beserta gejala + sebab + penangkal.
+3. **Dokumentasi ikut berubah**: kelas/library baru wajib muncul di tabel modul `docs/ARCHITECTURE/04-03-layer-bisnis-library.md` §4.3; fitur/perilaku baru butuh sub-bagian alur §5.x dan kebutuhan di `docs/SPECS.md`; jebakan baru ditandai **GOTCHA/WAJIB/DILARANG** beserta gejala + sebab + penangkal.
 4. **Verifikasi bukan oleh penulis perubahan**: untuk pekerjaan multi-lapisan, gunakan tim agent di `.github/agents/` — *Rames Master (Orkestrator)* memecah & mengoordinasikan, *Rames Build (Tim Implementasi)* menulis kode, *Rames Assure (Tim Verifikasi & Dokumentasi)* memverifikasi & merawat dokumen.
 5. Prioritas bila terjadi konflik aturan: **keamanan & integritas data > konsistensi arsitektur > kenyamanan kode**.

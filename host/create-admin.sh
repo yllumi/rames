@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Rames — Provisioning user admin dashboard (host) — SPECS.md §2 (fitur 1), §6.3
+# Rames — Provisioning user admin dashboard (host) — docs/SPECS.md §2, §6.3
 #
 # Membuat user admin pertama lewat `php webman make:admin` DI DALAM container
 # dashboard `rames-webman`. Dipakai `host/install.sh` (langkah "membuat user

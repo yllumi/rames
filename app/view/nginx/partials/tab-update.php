@@ -1,6 +1,6 @@
 <?php
 // ---------------------------------------------------------------------------
-// Tab "Update Rames" — panel self-update dashboard (SPECS.md §7.8). Isinya
+// Tab "Update Rames" — panel self-update dashboard (docs/SPECS.md §7.8). Isinya
 // dipindah apa adanya dari index.php ke partial tab.
 //
 // CATATAN SCOPE: partial di-include dengan scope yang sama (pola

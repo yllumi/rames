@@ -53,7 +53,7 @@ use Symfony\Component\Yaml\Tag\TaggedValue;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * App Management (SPECS.md §7).
+ * App Management (docs/SPECS.md §7).
  *
  * Controller hanya mediator — seluruh logika bisnis di app/library.
  * Tidak ada state di properti controller (Webman persistent, lihat
@@ -110,7 +110,7 @@ class AppController
             ));
         }
 
-        // Filter `?name=` / `?domain=` / `?owner=` (query string, SPECS.md §8e).
+        // Filter `?name=` / `?domain=` / `?owner=` (query string, docs/SPECS.md §8e).
         // Nilai mentah dinormalisasi lebih dulu lewat satu pintu `AppFilter`
         // (trim + lowercase, non-skalar ⇒ kosong) supaya nilai efektif yang
         // dikirim ke view identik dengan yang dipakai penyaringan.
@@ -811,7 +811,7 @@ class AppController
         );
 
         // Mode template: galeri template app siap-pakai (compose prebuilt,
-        // SPECS.md §7.2b). Definisi template dibaca dari folder repo
+        // docs/SPECS.md §7.2b). Definisi template dibaca dari folder repo
         // `templates/<slug>/` (dikelola admin lewat git, bukan lewat UI).
         if ($mode === 'template') {
             $templates = (new TemplateCatalog())->all();
@@ -1098,7 +1098,7 @@ class AppController
      * dideklarasikan template. Port/primary/prefix container tidak ditanyakan —
      * port diresolusi otomatis (konflik digeser ke port bebas), primary
      * diambil dari deklarasi template, prefix nama container = nama app
-     * (SPECS.md §7.2b).
+     * (docs/SPECS.md §7.2b).
      */
     public function templateForm(Request $request, string $slug)
     {
@@ -4675,7 +4675,7 @@ class AppController
 
     /**
      * Tulis docker-compose override berisi ports hasil edit user —
-     * file compose asli dari repo tetap bersih (SPECS.md §7.2 langkah 8).
+     * file compose asli dari repo tetap bersih (docs/SPECS.md §7.2 langkah 8).
      *
      * Penting: docker compose MENGGABUNGKAN daftar "ports" (base + override,
      * bukan mengganti). Supaya port bawaan repo benar-benar diganti, dipakai

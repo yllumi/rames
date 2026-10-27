@@ -6,7 +6,7 @@ namespace Tests;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Test pemetaan logo template (`template_logo_map()`) — SPECS.md §7.2b.
+ * Test pemetaan logo template (`template_logo_map()`) — docs/SPECS.md §7.2b.
  *
  * Logo galeri/tab Template/form deploy diresolusi dari berkas nyata
  * `public/images/templates/<slug>.<svg|png|webp>`, jadi invarian berikut dijaga:

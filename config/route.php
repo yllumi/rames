@@ -230,7 +230,7 @@ Route::get('/healthz', [HealthController::class, 'index']);
 // dari request), responsnya hanya byte gambar brand + ETag untuk revalidasi.
 Route::get('/branding/logo', [BrandingController::class, 'logo']);
 
-// Callback pembayaran Duitku (publik & path eksak, SPECS.md §7.12 / plan §5.7):
+// Callback pembayaran Duitku (publik & path eksak, docs/SPECS.md §7.12 / plan §5.7):
 // tanpa sesi — keamanannya dari signature HMAC + kecocokan amount + idempotensi
 // di PaymentController; CSRF dikecualikan hanya untuk POST path ini
 // (CsrfMiddleware::isPaymentCallbackPath). Selalu balas 200 agar Duitku tak retry.
@@ -510,7 +510,7 @@ Route::post('/profile/password', [ProfileController::class, 'changePassword']);
 
 /*
 |--------------------------------------------------------------------------
-| Kredit, deposit & penagihan (SPECS.md §7.12, plan §5.4/§5.7)
+| Kredit, deposit & penagihan (docs/SPECS.md §7.12, plan §5.4/§5.7)
 |--------------------------------------------------------------------------
 | `deposit`/`charge` admin-only → 404 non-admin. `setEmail` hanya email user
 | login sendiri. `topup*` 404 bila fitur/kredensial gateway tidak lengkap.

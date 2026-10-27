@@ -7,7 +7,7 @@ use app\library\Update\RepoInfo;
 use support\Request;
 
 /**
- * `GET /healthz` — kesehatan dashboard (SPECS.md §7.8).
+ * `GET /healthz` — kesehatan dashboard (docs/SPECS.md §7.8).
  *
  * Publik (tanpa session) karena dipakai dua hal:
  *  1. helper self-update memverifikasi versi baru benar-benar melayani request

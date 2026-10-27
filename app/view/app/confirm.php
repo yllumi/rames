@@ -1,7 +1,7 @@
 <?php $pageTitle = 'Confirm App'; $active = 'apps'; ?>
 <?php $pendingSource = ($pending['source'] ?? 'git') === 'compose' ? 'compose' : 'git'; ?>
 <?php
-// Pemilih server tujuan (multi-server: SPECS.md §2a, ARCHITECTURE.md §5.22).
+// Pemilih server tujuan (multi-server: docs/SPECS.md §2a, docs/ARCHITECTURE.md §5.22).
 // Payload dari `AppController::serverFormContext()`: `servers`,
 // `selectedServerId`, `canSelectServer`. View hanya merender — server tetap
 // sumber kebenaran (`confirmCreate()` memvalidasi ulang `server_id`).
@@ -20,7 +20,7 @@ if ($wizardSelectedServerId === '') {
 // tidak boleh tampil (defense-in-depth, misi Frontend UI).
 $wizardCanSelectServer = (bool) ($canSelectServer ?? false);
 
-// Navigasi wizard mempertahankan pilihan server (SPECS.md §2a). Parameter
+// Navigasi wizard mempertahankan pilihan server (docs/SPECS.md §2a). Parameter
 // `server_id` hanya ditambahkan bila server terpilih BUKAN server lokal **dan**
 // user memang boleh memilih server (`$wizardCanSelectServer`) — supaya URL
 // default user tanpa grant tetap bersih (absen = server lokal) dan payload di

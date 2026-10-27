@@ -10,7 +10,7 @@ use League\CommonMark\Extension\Table\TableExtension;
 use League\CommonMark\MarkdownConverter;
 
 /**
- * Render Markdown → HTML yang aman (panduan template, SPECS.md §7.2b).
+ * Render Markdown → HTML yang aman (panduan template, docs/SPECS.md §7.2b).
  *
  * Dipakai untuk menampilkan `templates/<slug>/guide.md` di UI. Markdown adalah
  * konten yang ikut repo (bukan input user), tetapi tetap dirender dengan

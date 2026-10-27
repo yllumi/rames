@@ -8,7 +8,7 @@ use app\library\Support\ProcessRunner;
 use RuntimeException;
 
 /**
- * Orkestrasi self-update dashboard (SPECS.md §7.8 / ARCHITECTURE.md §5.14).
+ * Orkestrasi self-update dashboard (docs/SPECS.md §7.8 / docs/ARCHITECTURE.md §5.14).
  *
  * Masalah inti: proses yang menjalankan update adalah proses DI DALAM container
  * yang akan di-recreate oleh `docker compose up -d --build` — ia akan mematikan

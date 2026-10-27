@@ -16,7 +16,7 @@ use PHPUnit\Framework\TestCase;
  * `tests/MultiServerViewTest.php`: tiap test berjalan di **proses terpisah**
  * dengan helper global di-stub lewat berkas temp, sehingga stub tidak bocor.
  *
- * Kontrak yang dijaga (SPECS.md §2a — "Harus ada pemilihan di server mana app
+ * Kontrak yang dijaga (docs/SPECS.md §2a — "Harus ada pemilihan di server mana app
  * diinstal saat create app"):
  *  (i)   admin dengan >1 server ⇒ `<select name="server_id">` **di dalam** form
  *        POST yang ada: `/apps/create` (git), `/apps/create/compose`,

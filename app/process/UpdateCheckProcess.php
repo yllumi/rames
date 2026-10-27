@@ -10,7 +10,7 @@ use Workerman\Timer;
 use Workerman\Worker;
 
 /**
- * Cek pembaruan dashboard secara berkala (SPECS.md §7.8).
+ * Cek pembaruan dashboard secara berkala (docs/SPECS.md §7.8).
  *
  * Tugasnya hanya menyegarkan `runtime/update/check.json` supaya badge di nav
  * topbar bisa menampilkan "ada pembaruan" tanpa memanggil jaringan dari setiap

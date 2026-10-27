@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Rames — Installer otomatis (host) — SPECS.md §2 (fitur 1)
+# Rames — Installer otomatis (host) — docs/SPECS.md §2
 #
 # Menyiapkan host & dashboard dalam satu perintah:
 #   1. Prasyarat: nginx, inotify-tools, certbot (+ plugin cloudflare),

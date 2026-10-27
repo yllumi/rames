@@ -34,7 +34,7 @@ final class AppListFilterController extends AppController
 
 /**
  * Filter daftar app `?name=` / `?domain=` / `?owner=` pada `/apps`
- * (SPECS.md §8e / §7.7): menyempitkan baris **dan** `counts` tab, bergabung
+ * (docs/SPECS.md §8e / §7.7): menyempitkan baris **dan** `counts` tab, bergabung
  * (AND) dengan `?scope=` & `?server=` yang sudah ada, dan **tidak** membocorkan
  * app user lain lewat parameter `owner` bagi non-admin.
  *

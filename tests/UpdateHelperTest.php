@@ -12,7 +12,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
 /**
- * Test mesin self-update (SPECS.md §7.8):
+ * Test mesin self-update (docs/SPECS.md §7.8):
  *
  *  1. `UpdateService::buildHelperCommand()` — perintah `docker run` helper
  *     disusun sebagai ARRAY (tanpa shell) dan seluruh nilai tervalidasi masuk

@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * `TemplateCatalog::images()` — sumber daftar image untuk tombol `docker pull`
- * di halaman Config (`/nginx` tab Template, SPECS.md §7.13).
+ * di halaman Config (`/nginx` tab Template, docs/SPECS.md §7.13).
  *
  * Yang dikunci di sini:
  *  - image dibaca dari service hasil parse (bukan regex atas compose) sehingga

@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Rames self-update helper (SPECS.md §7.8 / ARCHITECTURE.md §5.14).
+# Rames self-update helper (docs/SPECS.md §7.8 / docs/ARCHITECTURE.md §5.14).
 #
 # Dijalankan di dalam HELPER CONTAINER yang terpisah dari container dashboard —
 # bukan bagian compose project, sehingga ia tetap hidup saat `docker compose up`

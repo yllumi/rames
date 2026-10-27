@@ -10,7 +10,7 @@ use RuntimeException;
 /**
  * Penyimpanan app — store logis `apps` di basis data SQLite
  * (`config('deploy.sqlite_file')`, dahulu `database/apps.json`). Struktur app
- * mengikuti SPECS.md §7.1, ditambah kepemilikan: `owner_id` + `members`
+ * mengikuti docs/SPECS.md §7.1, ditambah kepemilikan: `owner_id` + `members`
  * (map userId → {role, ...}).
  *
  * API publik (read/write/update + seluruh method domain) tidak berubah — hanya

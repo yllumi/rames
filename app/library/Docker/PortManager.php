@@ -6,7 +6,7 @@ namespace app\library\Docker;
 use RuntimeException;
 
 /**
- * Deteksi & resolusi konflik host port (SPECS.md §7.2 langkah 6).
+ * Deteksi & resolusi konflik host port (docs/SPECS.md §7.2 langkah 6).
  */
 class PortManager
 {

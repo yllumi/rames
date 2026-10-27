@@ -62,7 +62,7 @@ Pemisahan **Build vs Assurance** sengaja dipilih agar aturan lama **"verifikasi 
 - **Eksekusi proses = satu jalur** (`ProcessRunner` + `SigchldGuard`).
 - **Kontrak endpoint** ditentukan Backend PHP; Frontend UI tidak mengubah bentuk respons.
 - **Verifikasi bukan oleh penulis perubahan** — gunakan `rames-assure`.
-- **Dokumentasi** (`SPECS.md`, `ARCHITECTURE.md`, customization agent) dikelola `rames-assure` · Peran: Docs Architect.
+- **Dokumentasi** (`docs/SPECS.md`, `docs/ARCHITECTURE.md`, customization agent) dikelola `rames-assure` · Peran: Docs Architect.
 
 ## Merawat Agent
 

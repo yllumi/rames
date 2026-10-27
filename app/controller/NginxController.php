@@ -33,9 +33,9 @@ use Webman\Http\UploadFile;
  * dipindah ke halaman tersendiri /nginx, bukan di detail app.
  *
  * Halaman Config ini menampung empat tab:
- *  - **Update** — panel **self-update dashboard** (SPECS.md §7.8),
+ *  - **Update** — panel **self-update dashboard** (docs/SPECS.md §7.8),
  *  - **Nginx** — status reload Nginx host,
- *  - **Template** — daftar template + tombol `docker pull` (SPECS.md §7.13),
+ *  - **Template** — daftar template + tombol `docker pull` (docs/SPECS.md §7.13),
  *  - **Branding** — nama brand + logo dashboard (rebranding).
  *
  * Multi-server (F4 lanjutan): tab Template bisa diarahkan ke **server agent**
@@ -160,7 +160,7 @@ class NginxController
     }
 
     /**
-     * Daftar template + image-nya untuk tab Template (SPECS.md §7.13).
+     * Daftar template + image-nya untuk tab Template (docs/SPECS.md §7.13).
      *
      * `images` = hasil `TemplateCatalog::images()` (murni — dari service hasil
      * parse, bukan regex atas compose), `apps` = aplikasi yang dibuat dari

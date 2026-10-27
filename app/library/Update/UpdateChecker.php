@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace app\library\Update;
 
 /**
- * Pengecekan ketersediaan pembaruan dashboard (SPECS.md §7.8).
+ * Pengecekan ketersediaan pembaruan dashboard (docs/SPECS.md §7.8).
  *
  * Cara kerja: bandingkan SHA HEAD repo lokal (dibaca dari `.git`, tanpa proses)
  * dengan SHA ref branch di remote (`git ls-remote`). `git ls-remote` sengaja

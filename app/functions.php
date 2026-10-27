@@ -274,7 +274,7 @@ if (!function_exists('format_credits')) {
 
 if (!function_exists('current_credit_balance')) {
     /**
-     * Saldo kredit user login untuk badge nav sidebar (SPECS.md §7.12).
+     * Saldo kredit user login untuk badge nav sidebar (docs/SPECS.md §7.12).
      *
      * **Fail-safe**: mengembalikan `null` bila user tidak login, admin, fitur
      * billing nonaktif, atau pembacaan gagal — header tidak boleh gagal hanya
@@ -301,7 +301,7 @@ if (!function_exists('current_credit_balance')) {
 
 if (!function_exists('update_badge')) {
     /**
-     * Ringkasan status pembaruan dashboard untuk badge nav sidebar (SPECS.md §7.8).
+     * Ringkasan status pembaruan dashboard untuk badge nav sidebar (docs/SPECS.md §7.8).
      *
      * Membaca HANYA berkas cache yang ditulis proses `update-check` / tombol
      * "Cek pembaruan" — tanpa jaringan sama sekali, supaya setiap render halaman

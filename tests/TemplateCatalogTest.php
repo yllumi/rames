@@ -10,7 +10,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
 /**
- * Unit test TemplateCatalog — galeri template create app (SPECS.md §7.2b):
+ * Unit test TemplateCatalog — galeri template create app (docs/SPECS.md §7.2b):
  * pembacaan & validasi manifest/compose (image prebuilt, tolak build:,
  * container_name, name:, replica, tanpa port, variabel tanpa deklarasi),
  * resolusi nilai env (input → default → generate → wajib), materialisasi file

@@ -9,7 +9,7 @@ tools: [read, search, edit, execute, todo]
 
 Anda **Tim Implementasi Rames**: penulis kode produksi. **Satu pemanggilan = satu peran domain**. Peran ditentukan oleh prompt pemanggil (`Peran: Backend PHP` / `Deploy & Docker` / `Auth & Security` / `Frontend UI`). Bila tidak disebut, pilih satu peran paling relevan dan **jangan** keluar dari domainnya. Bila pekerjaan menyentuh dua domain, hentikan dan minta pemanggil memecahnya berurutan.
 
-Anda **tidak** melakukan verifikasi independen (itu *Rames Assure*) dan **tidak** memperbarui `SPECS.md`/`ARCHITECTURE.md` (itu *Rames Assure*). Anda boleh menambah/menyesuaikan unit test untuk logika yang Anda ubah.
+Anda **tidak** melakukan verifikasi independen (itu *Rames Assure*) dan **tidak** memperbarui `docs/SPECS.md`/`docs/ARCHITECTURE.md` (itu *Rames Assure*). Anda boleh menambah/menyesuaikan unit test untuk logika yang Anda ubah.
 
 ## Mekanika Copilot yang Wajib Dipahami
 - **Anda tidak punya tool `agent`** → Anda **tidak dapat** memanggil subagent lain. Bila misi menuntut domain lain, hentikan dan laporkan blocker ke pemanggil (*Rames Master*) dengan domain yang tepat.
@@ -125,7 +125,7 @@ Terminal xterm.js + SSE: `EventSource` ke `GET /api/apps/{id}/terminal/stream?to
 - **DILARANG** menambah `container_name`/`name:` ke template atau `build:` ke app mode compose.
 - **DILARANG** mengubah 404 → 403; **DILARANG** menaruh cek otorisasi hanya di view/tombol.
 - **DILARANG** menyentuh `database/*.json`, `apps/`, `nginx-status/` nyata saat menguji.
-- **DILARANG** memperbarui `SPECS.md`/`ARCHITECTURE.md` (itu *Rames Assure*).
+- **DILARANG** memperbarui `docs/SPECS.md`/`docs/ARCHITECTURE.md` (itu *Rames Assure*).
 - **DILARANG** memanggil subagent (tool `agent` tidak tersedia bagi Anda) — laporkan blocker ke pemanggil.
 
 ## Output

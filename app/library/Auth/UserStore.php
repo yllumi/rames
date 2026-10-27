@@ -206,7 +206,7 @@ class UserStore
                     throw new RuntimeException("Username \"{$username}\" sudah dipakai.");
                 }
             }
-            // User pertama = admin (provisioning awal, SPECS.md §6.3).
+            // User pertama = admin (provisioning awal, docs/SPECS.md §6.3).
             $isFirst = $data === [];
             $created = [
                 'id' => bin2hex(random_bytes(8)),

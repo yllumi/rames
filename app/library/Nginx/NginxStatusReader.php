@@ -5,7 +5,7 @@ namespace app\library\Nginx;
 
 /**
  * Membaca status reload Nginx terakhir yang ditulis watcher di host
- * (SPECS.md §8.3 butir 3) — untuk feedback di UI.
+ * (docs/SPECS.md §8.3 butir 3) — untuk feedback di UI.
  */
 class NginxStatusReader
 {

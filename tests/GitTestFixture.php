@@ -10,7 +10,7 @@ namespace Tests;
  *   - clone shallow dari path lokal (seperti sistem saat create app)
  *   - fetch arbitrary SHA — origin dikonfigurasi
  *     `uploadpack.allowReachableSHA1InWant` / `allowAnySHA1InWant`, prasyarat
- *     rollback pada clone shallow (SPECS.md §7.5).
+ *     rollback pada clone shallow (docs/SPECS.md §7.5).
  */
 final class GitTestFixture
 {

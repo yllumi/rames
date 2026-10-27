@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * Background worker: tarik ulang image template (halaman Config `/nginx`,
- * tab Template — SPECS.md §7.13).
+ * tab Template — docs/SPECS.md §7.13).
  *
  *   php cli/pull.php <slug> [actor]
  *

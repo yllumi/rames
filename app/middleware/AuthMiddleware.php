@@ -10,7 +10,7 @@ use Webman\Http\Request;
 
 /**
  * Melindungi semua route dashboard kecuali /login dan aset statis.
- * (SPECS.md §11: akses dashboard harus selalu di balik autentikasi.)
+ * (docs/SPECS.md §11: akses dashboard harus selalu di balik autentikasi.)
  *
  * Selain memeriksa login, middleware menyinkronkan data user di session dengan
  * `auth.json` pada setiap request yang dilindungi — sehingga penghapusan user
@@ -25,7 +25,7 @@ class AuthMiddleware implements MiddlewareInterface
      * otomatis diputuskan, dan (b) monitoring eksternal (mis. Uptime Kuma).
      * Responsnya hanya berisi status + SHA commit — tanpa data sensitif.
      *
-     * `/payments/duitku/callback` publik & **path eksak** (SPECS.md §7.12, plan
+     * `/payments/duitku/callback` publik & **path eksak** (docs/SPECS.md §7.12, plan
      * §5.7): Duitku adalah pengirim mesin yang tidak punya sesi/cookie kita.
      * Karena itu keamanannya tidak bertumpu pada autentikasi, melainkan pada
      * verifikasi di `PaymentController::callback()`: signature HMAC-SHA256 API

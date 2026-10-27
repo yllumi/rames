@@ -10,7 +10,7 @@ use Throwable;
 use Webman\Http\Response;
 
 /**
- * Callback pembayaran Duitku (SPECS.md §7.12, plan §5.7).
+ * Callback pembayaran Duitku (docs/SPECS.md §7.12, plan §5.7).
  *
  * Endpoint publik (tanpa sesi — Duitku tidak punya cookie kita) yang
  * **hanya** menerima POST callback `x-www-form-urlencoded`. Kebenaran pembayaran

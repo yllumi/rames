@@ -157,7 +157,7 @@ if ($ramesIsAgent) {
 | dashboard; sudah mati sendiri saat jalan dengan `-d`).
 */
 if (!$ramesIsAgent) {
-    // Cek pembaruan dashboard berkala untuk badge di nav sidebar (SPECS.md §7.8).
+    // Cek pembaruan dashboard berkala untuk badge di nav sidebar (docs/SPECS.md §7.8).
     // Sengaja TIDAK memakai `git fetch` (itu menulis .git sebagai root di dalam
     // container → file milik root di repo milik user host) melainkan
     // `git ls-remote` yang tidak menyentuh repo lokal. Interval 0 = proses tidak
@@ -167,7 +167,7 @@ if (!$ramesIsAgent) {
         'reloadable' => true,
         'count' => 1,
     ];
-    // Penjadwal billing (SPECS.md §7.12): akrual meteran + penagihan periode +
+    // Penjadwal billing (docs/SPECS.md §7.12): akrual meteran + penagihan periode +
     // auto-stop saldo negatif + konsiliasi order top-up. Billing mati
     // (`BILLING_ENABLED=false`) atau meteran dimatikan (`BILLING_SAMPLE_SECONDS=0`)
     // → timer tidak dipasang sama sekali. Semua error ditangkap proses (tidak

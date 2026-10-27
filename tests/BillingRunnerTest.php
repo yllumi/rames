@@ -21,7 +21,7 @@ use Tests\Support\SqliteFixture;
 use Webman\Config;
 
 /**
- * Test BillingRunner — orkestrator satu tick penjadwal billing (SPECS.md §7.12):
+ * Test BillingRunner — orkestrator satu tick penjadwal billing (docs/SPECS.md §7.12):
  * urutan langkah, bentuk ringkasan (kontrak tetap), penghormatan
  * `BILLING_ENABLED`/`BILLING_TOPUP_ENABLED`, serta penagihan + auto-stop.
  *

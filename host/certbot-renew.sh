@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Rames — Renewal sertifikat Let's Encrypt (host) — SPECS.md §8a
+# Rames — Renewal sertifikat Let's Encrypt (host) — docs/SPECS.md §8a
 #
 # Menjalankan `certbot renew` secara terjadwal (systemd timer, 2×/hari).
 # Sertifikat diterbitkan dengan `--keep-until-expiring`, sehingga perintah ini

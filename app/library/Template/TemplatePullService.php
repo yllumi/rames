@@ -8,7 +8,7 @@ use RuntimeException;
 
 /**
  * Orkestrasi "tarik image template" — tombol `docker pull` di halaman Config
- * (`/nginx`, tab Template; SPECS.md §7.13).
+ * (`/nginx`, tab Template; docs/SPECS.md §7.13).
  *
  * Masalah nyata: template memakai image prebuilt (`yllumi/fpm8.4-nginx`,
  * `mysql:8.4`, …). Ketika tag di registry diperbarui, `docker compose up -d`

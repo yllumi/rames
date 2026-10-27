@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Rames — Nginx reload watcher (host) — SPECS.md §8.3
+# Rames — Nginx reload watcher (host) — docs/SPECS.md §8.3
 #
 # Memantau direktori config Nginx app (sites-available/ yang di-mount ke
 # dashboard container). Begitu ada file .conf baru/berubah/dihapus:

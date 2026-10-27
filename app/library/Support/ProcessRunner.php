@@ -10,7 +10,7 @@ use RuntimeException;
  *
  * Keamanan: memakai bentuk array + bypass_shell (langsung execve, tanpa shell)
  * sehingga input apapun tidak bisa menjadi command injection — lebih ketat
- * daripada concat string + escapeshellarg (SPECS.md §11).
+ * daripada concat string + escapeshellarg (docs/SPECS.md §11).
  *
  * @return array{code:int, stdout:string, stderr:string, timedOut:bool}
  */

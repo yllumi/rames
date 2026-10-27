@@ -5,7 +5,7 @@
 //   compose  — paste/upload docker-compose.yml + file pendukung (tanpa repo Git),
 //              untuk app dengan image prebuilt (tanpa build context).
 //   template — galeri template app siap-pakai (compose prebuilt yang sudah
-//              disiapkan di folder `templates/<slug>/`, SPECS.md §7.2b).
+//              disiapkan di folder `templates/<slug>/`, docs/SPECS.md §7.2b).
 $mode = in_array(($mode ?? 'git'), ['compose', 'template'], true) ? (string) $mode : 'git';
 $templates = $templates ?? [];
 
@@ -25,7 +25,7 @@ $formBranch = $form_branch ?? 'main';
 $formCompose = $form_compose ?? '';
 $composeError = $compose_error ?? null;
 
-// Pemilih server tujuan (multi-server: SPECS.md §2a, ARCHITECTURE.md §5.22).
+// Pemilih server tujuan (multi-server: docs/SPECS.md §2a, docs/ARCHITECTURE.md §5.22).
 // Payload dari `AppController::serverFormContext()`: `servers`,
 // `selectedServerId`, `canSelectServer`. View hanya merender — server tetap
 // sumber kebenaran (`resolveCreateServer()` memvalidasi ulang `server_id`).
@@ -47,7 +47,7 @@ $wizardCanSelectServer = (bool) ($canSelectServer ?? false);
 // (lihat `$wizardLocalServerProjection` di bawah).
 $wizardShowServerSelect = $wizardCanSelectServer && count($wizardServers) > 1;
 
-// Navigasi wizard mempertahankan pilihan server (SPECS.md §2a). Parameter
+// Navigasi wizard mempertahankan pilihan server (docs/SPECS.md §2a). Parameter
 // `server_id` hanya ditambahkan bila server terpilih BUKAN server lokal **dan**
 // user memang boleh memilih server (`$wizardCanSelectServer`) — supaya URL
 // default user tanpa grant tetap bersih (absen = server lokal) dan payload di

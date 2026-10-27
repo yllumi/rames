@@ -1,7 +1,7 @@
 /**
  * Tabel domain/SSL — aksi "Aktifkan SSL" / "↻ Retry SSL" sebagai **AJAX** +
  * polling status, menggantikan `window.location.reload()` tiap 5 detik
- * (SPECS.md §8a/§8j). Dipakai halaman `/domains` (tab Semua Domain) dan
+ * (docs/SPECS.md §8a/§8j). Dipakai halaman `/domains` (tab Semua Domain) dan
  * halaman lama `/ssl`.
  *
  * Kontrak yang dikonsumsi (JANGAN diubah dari sisi UI):

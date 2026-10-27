@@ -7,7 +7,7 @@ use app\library\Auth\UserStore;
 use app\library\Storage\AppStore;
 
 /**
- * Orkestrator satu tick penjadwal billing (SPECS.md §7.12).
+ * Orkestrator satu tick penjadwal billing (docs/SPECS.md §7.12).
  *
  * Urutan satu tick (kunci hasil = kontrak tetap, dipakai proses timer & CLI):
  *   1. `expired`   — tandai order top-up kedaluwarsa (bila top-up aktif);

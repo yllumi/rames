@@ -74,7 +74,7 @@ dashboard: tombol SSL → `AgentDeployer::issueSsl()` (`app/library/Deploy/Agent
   luar). Webroot di balik direktori `0700` (mis. instalasi di bawah `/root/...`)
   selalu berakhir `403`. `SslIssuer` kini menolaknya lebih dulu lewat preflight
   berbasis bit mode — jadi setup grup yang sah (`0750 root:www-data`) tetap lolos.
-  Diagnosa lengkap & jalan keluar: `ARCHITECTURE.md` §8 GOTCHA no. 28.
+  Diagnosa lengkap & jalan keluar: [`docs/ARCHITECTURE/09-gotcha-multiserver.md`](../docs/ARCHITECTURE/09-gotcha-multiserver.md) GOTCHA no. 28.
 - **Opsional — persist log debug certbot.** Set `CERTBOT_LOGS_DIR` (dan/atau
   `CERTBOT_WORK_DIR`) **di wilayah operator** `secrets/agent.env` ke path yang
   di-bind, mis. `CERTBOT_LOGS_DIR=<repo>/runtime/logs/letsencrypt`, supaya log
@@ -104,7 +104,7 @@ sampai diisi …`) — bukan menggagalkan pemasangan; jalankan ulang dengan `--e
 luar** blok kelolaan (di bawah `# rames-installer:preserved`): rerun
 `./agent/install.sh` **tidak menghapusnya** (lihat [Rahasia & sumber
 konfigurasi](#rahasia--sumber-konfigurasi)). Ini jalur perbaikan HTTP-01 `403`
-**tanpa** mengubah compose — diagnosa lengkapnya di `ARCHITECTURE.md` §8 GOTCHA
+**tanpa** mengubah compose — diagnosa lengkapnya di [`docs/ARCHITECTURE/09-gotcha-multiserver.md`](../docs/ARCHITECTURE/09-gotcha-multiserver.md) GOTCHA
 no. 28.
 
 **Cara 2 — manual** (mis. server sudah terpasang lebih dulu):
@@ -230,7 +230,7 @@ Nginx host melayani app di port `80`/`443`, dan certbot memvalidasi tantangan
 **HTTP-01 dari IP acak milik Let's Encrypt** (bukan dari dashboard). Allowlist IP
 di port 80 karena itu **pasti** membuat penerbitan sertifikat gagal
 (`Timeout during connect (likely firewall problem)`, [GOTCHA multi-server
-no. 52](../ARCHITECTURE.md#gotcha-multi-server-f0f4))
+no. 52](../docs/ARCHITECTURE/09-gotcha-multiserver.md))
 walaupun `SSL_WEBROOT`/nginx/DNS sudah benar:
 
 ```bash

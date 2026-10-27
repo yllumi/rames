@@ -31,7 +31,7 @@ if (!function_exists('app_subdomain_of')) {
 }
 
 /**
- * Test mediator `DomainController` (halaman domain parking, SPECS.md §7.11/§8b).
+ * Test mediator `DomainController` (halaman domain parking, docs/SPECS.md §7.11/§8b).
  *
  * Tanpa HTTP nyata, tanpa session, tanpa Nginx/Docker. Store SQLite, direktori
  * config Nginx, dan akar konten diarahkan ke direktori temp unik. `manager()`

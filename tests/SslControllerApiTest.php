@@ -23,7 +23,7 @@ if (!defined('BASE_PATH')) {
 }
 
 /**
- * Mode AJAX halaman SSL (SPECS.md §8a): `POST /api/ssl/{id}/enable`
+ * Mode AJAX halaman SSL (docs/SPECS.md §8a): `POST /api/ssl/{id}/enable`
  * (`apiEnable`) & `GET /api/ssl/status` (`apiStatus`).
  *
  * Kontrak yang dikunci:

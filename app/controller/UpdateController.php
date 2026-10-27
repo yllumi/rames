@@ -11,7 +11,7 @@ use RuntimeException;
 use support\Request;
 
 /**
- * Self-update dashboard (SPECS.md §7.8 / ARCHITECTURE.md §5.14).
+ * Self-update dashboard (docs/SPECS.md §7.8 / docs/ARCHITECTURE.md §5.14).
  *
  * Panel UI-nya ada di halaman `/nginx` (halaman operasional host). Endpoint:
  *  - `GET  /api/update/status`   — status run + cek terakhir + ekor log (semua user login)

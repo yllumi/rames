@@ -7,7 +7,7 @@ use RuntimeException;
 
 /**
  * Penyimpanan JSON sederhana dengan file locking (flock) dan backup sebelum
- * overwrite — sesuai Security Considerations SPECS.md §11.
+ * overwrite — sesuai Security Considerations docs/SPECS.md §11.
  *
  * Semua mutasi dilakukan lewat update() agar baca-tulis atomik (anti race
  * condition saat dua request bersamaan).

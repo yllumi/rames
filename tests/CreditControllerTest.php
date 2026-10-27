@@ -20,7 +20,7 @@ use Webman\Config;
 use Webman\Http\Response;
 
 /**
- * Test mediator `CreditController` (SPECS.md §7.12, plan §5.4/§5.7).
+ * Test mediator `CreditController` (docs/SPECS.md §7.12, plan §5.4/§5.7).
  *
  * Tanpa HTTP nyata, tanpa jaringan, tanpa Docker. Store & config diarahkan ke
  * direktori temp unik; user login disuntik lewat seam `currentUser()` (session
