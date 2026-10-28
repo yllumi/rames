@@ -37,6 +37,7 @@ Tugas: mengubah permintaan user menjadi rencana kerja, **mendelegasikan implemen
 - `docs/ARCHITECTURE.md` — struktur kode, alur, dan jebakan yang terbukti.
 - `.github/agents/README.md` — peta perutean, batas domain, dan ringkasan aturan keras.
 - `.github/skills/grill-with-docs/SKILL.md` — alur "grill" untuk fitur kompleks.
+- `.github/skills/rames-deployable-docker/SKILL.md` — panduan image-first membuat `docker-compose.yml`/`Dockerfile` yang kompatibel dengan Rames.
 
 ## Tim & Perutean
 | Permintaan menyentuh | Agent | Peran yang diaktifkan |

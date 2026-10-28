@@ -25,6 +25,7 @@ Jalankan sebagai **agent utama** (mode `all`) agar dapat memanggil subagent. Bil
 - `docs/ARCHITECTURE.md` — struktur kode, alur, dan jebakan yang terbukti.
 - `.github/agents/rames-master.agent.md`, `.github/agents/rames-build.agent.md`, `.github/agents/rames-assure.agent.md` — padanan agent versi VS Code Copilot (peran & wilayah sama, frontmatter beda).
 - `.github/skills/grill-with-docs/SKILL.md` — alur "grill" untuk fitur kompleks (diekspos via `.opencode/opencode.jsonc`).
+- `.github/skills/rames-deployable-docker/SKILL.md` — panduan image-first membuat `docker-compose.yml`/`Dockerfile` yang kompatibel dengan Rames (diekspos via `.opencode/opencode.jsonc`).
 
 ## Tim & Perutean
 | Permintaan menyentuh | Subagent | Peran yang diaktifkan |
