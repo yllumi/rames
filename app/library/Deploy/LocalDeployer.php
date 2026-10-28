@@ -41,12 +41,10 @@ class LocalDeployer implements DeployerInterface
         // untuk app yang port-nya akan di-proxy ke domain (lihat method).
         $this->ensureNginxPrecondition($app, $dir, $files);
 
-        // Sinkronkan managed env file + override env + external networks
-        // (idempoten, aman bila kosong)
-        $this->env->sync($app, $dir, $files);
-        $this->network->sync($app, $dir, $files);
-        ContainerNames::sync($app, $dir, $files);
-        ResourceLimits::sync($app, $dir, $files);
+        // Sinkronkan managed env file + override env + external networks lalu
+        // HITUNG ULANG daftar file (override generated yang baru ditulis wajib
+        // ikut terkirim ke `docker compose -f …`).
+        $files = $this->syncManagedOverrides($app, $dir, $files);
 
         $logger('build', 'Menjalankan docker compose up -d --build ...');
         $this->upCompose($project, $app, $dir, $files, true, $logger);
@@ -85,12 +83,8 @@ class LocalDeployer implements DeployerInterface
         $git->ensureBranch($dir, $branch);
         $git->pull($dir, $branch, $this->appSshKeyPath($app));
 
-        // Sinkronkan managed env file + override env + external networks
-        // (idempoten, aman bila kosong)
-        $this->env->sync($app, $dir, $files);
-        $this->network->sync($app, $dir, $files);
-        ContainerNames::sync($app, $dir, $files);
-        ResourceLimits::sync($app, $dir, $files);
+        // Sinkronkan override terkelola lalu hitung ulang daftar file.
+        $files = $this->syncManagedOverrides($app, $dir, $files);
 
         $logger('build', 'docker compose up -d --build ...');
         $this->upCompose($project, $app, $dir, $files, true, $logger);
@@ -128,12 +122,9 @@ class LocalDeployer implements DeployerInterface
             $git->fetchSha($dir, $ref, $this->appSshKeyPath($app));
             $git->checkout($dir, $ref);
 
-            // Sinkronkan managed env file + override env + external networks
-            // (idempoten, aman bila kosong)
-            $this->env->sync($app, $dir, $files);
-            $this->network->sync($app, $dir, $files);
-            ContainerNames::sync($app, $dir, $files);
-            ResourceLimits::sync($app, $dir, $files);
+            // Sinkronkan override terkelola lalu hitung ulang daftar file —
+            // `$files` hasilnya juga dipakai jalur fallback restore di bawah.
+            $files = $this->syncManagedOverrides($app, $dir, $files);
 
             $logger('build', 'docker compose up -d --build ...');
             $this->upCompose($project, $app, $dir, $files, true, $logger);
@@ -205,10 +196,9 @@ class LocalDeployer implements DeployerInterface
         // dengan pesan docker yang tidak informatif untuk user).
         ComposeSource::requireMainFile($dir, $app);
 
-        $this->env->sync($app, $dir, $files);
-        $this->network->sync($app, $dir, $files);
-        ContainerNames::sync($app, $dir, $files);
-        ResourceLimits::sync($app, $dir, $files);
+        // Sinkronkan override terkelola lalu hitung ulang daftar file
+        // (override env yang baru ditulis wajib ikut ke `up`).
+        $files = $this->syncManagedOverrides($app, $dir, $files);
 
         $logger('build', 'Menciptakan ulang container dari image yang ada (tanpa build) ...');
         $this->upCompose($project, $app, $dir, $files, false, $logger);
@@ -234,10 +224,11 @@ class LocalDeployer implements DeployerInterface
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
 
-        $this->env->sync($app, $dir, $files);
-        $this->network->sync($app, $dir, $files);
-        ContainerNames::sync($app, $dir, $files);
-        ResourceLimits::sync($app, $dir, $files);
+        // Sinkronkan override terkelola lalu hitung ulang daftar file: di server
+        // agent entri `docker-compose.override.env.yml` sudah ada di metadata
+        // app, padahal berkasnya baru ditulis di sini — tanpa hitung ulang,
+        // `filterMissingGenerated()` membuangnya dan `up` berjalan TANPA env.
+        $files = $this->syncManagedOverrides($app, $dir, $files);
 
         $logger('build', 'Menciptakan ulang container dengan environment baru ...');
         $this->upCompose($project, $app, $dir, $files, false, $logger);
@@ -328,6 +319,42 @@ class LocalDeployer implements DeployerInterface
             $this->repairStaleOverrides($dir, $files);
         }
         return ComposeSource::filterMissingGenerated($dir, $files);
+    }
+
+    /**
+     * Sinkronkan seluruh override terkelola (env, jaringan, nama container,
+     * batas resource) ke disk, lalu **hitung ulang** daftar compose files.
+     *
+     * Gejala yang ditangkal: di server agent, `apply_env` pertama berjalan
+     * TANPA env (nilai env tidak sampai ke container sampai apply berikutnya),
+     * dan saat env dikosongkan `up` justru menerima entri file yang sudah
+     * dihapus.
+     *
+     * Sebab: `resolveComposeFiles()` membuang entri override generated yang
+     * berkasnya **belum ada** (`ComposeSource::filterMissingGenerated()`),
+     * sedangkan berkas `docker-compose.override.env.yml` baru ditulis oleh
+     * `EnvManager::sync()` di langkah sinkronisasi — jadi daftar yang dihitung
+     * sebelum sync tidak pernah memuatnya. Sebaliknya, saat env dikosongkan
+     * `EnvManager::sync()` menghapus berkasnya tetapi entri di daftar lama
+     * masih ada.
+     *
+     * Penangkal: hitung ulang daftar file SESUDAH semua sync (idempoten —
+     * `resolveComposeFiles()` hanya menyaring isi/entri yang tidak valid).
+     *
+     * @param array<string,mixed> $app
+     * @param array<int,string>   $files daftar file hasil `resolveComposeFiles()` sebelum sync
+     * @return array<int,string> daftar file yang benar-benar ada setelah sync
+     */
+    private function syncManagedOverrides(array $app, string $dir, array $files): array
+    {
+        // Sinkronkan managed env file + override env + external networks
+        // (idempoten, aman bila kosong)
+        $this->env->sync($app, $dir, $files);
+        $this->network->sync($app, $dir, $files);
+        ContainerNames::sync($app, $dir, $files);
+        ResourceLimits::sync($app, $dir, $files);
+
+        return $this->resolveComposeFiles($app, $dir);
     }
 
     /**

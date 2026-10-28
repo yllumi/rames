@@ -83,8 +83,11 @@ class AgentModeTest extends TestCase
      * +1 (batalkan build): `POST /apps/{id}/deploy/cancel` — ability `deploy`
      * (Operator+), dashboard-only (menghentikan worker + grup proses build).
      * +1 (upload file .env): `POST /apps/{id}/env/upload` — ability `env`
-     * (Operator+), dashboard-only (menulis artefak env app di host ini; app
-     * server agent ditolak guard `appArtifactDirOrFail()` sebelum file dibaca).
+     * (Operator+), dashboard-only. Server lokal menulis artefak env app dan
+     * melewati guard `appArtifactDirOrFail()`; app server agent **tidak**
+     * menulis artefak lokal — hanya metadata via `persistEnvForReview()` dengan
+     * `$dir = null` — jadi guard tidak dipanggil di cabang itu (guard tetap
+     * dipakai cabang lokal/import).
      * +6 (halaman domain parking): `GET /domains`, `GET /domains/create`,
      * `POST /domains`, `GET /domains/{id}/edit`, `POST /domains/{id}`,
      * `POST /domains/{id}/delete` — pengelolaan admin-only (non-admin ⇒ 404),

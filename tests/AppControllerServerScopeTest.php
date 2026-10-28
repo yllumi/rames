@@ -163,10 +163,14 @@ final class AppControllerServerSessionRequest extends Request
  *     `offline` / agent tanpa capability `deploy` ditolak dengan pesan jelas
  *     ("Test connection" untuk capability);
  *  2. validasi nama app, subdomain, dan port **per server** dipakai jalur create;
- *  3. jalur app-scoped yang masih menulis artefak lokal (env, import env, limits,
- *     jaringan eksternal, nama container) menolak app di server agent dengan
- *     alasan sesungguhnya ("belum aktif untuk server agent (fase F2/F3)") —
- *     bukan "Direktori app tidak ada"; server lokal tidak berubah;
+ *  3. jalur app-scoped yang masih menulis artefak lokal (limits, jaringan
+ *     eksternal, nama container) menolak app di server agent dengan alasan
+ *     sesungguhnya ("belum aktif untuk server agent (fase F2/F3)") — bukan
+ *     "Direktori app tidak ada"; server lokal tidak berubah;
+ *  3b. jalur **env** sudah server-aware: `saveEnv` di agent menyimpan metadata
+ *     (`env` + `compose_files`) dan memicu worker `apply_env` tanpa menulis
+ *     artefak lokal, `uploadEnv` review-only hanya metadata, dan `importEnv`
+ *     menolak agent dengan pesan akurat (butuh checkout `.env.example` lokal);
  *  4. create-form mengirim kontrak view `servers`/`selectedServerId`/`canSelectServer`.
  *
  * Data & konfigurasi 100% temp (`sys_get_temp_dir()`): `database/rames.sqlite`,
@@ -537,13 +541,15 @@ class AppControllerServerScopeTest extends TestCase
     }
 
     /**
-     * Jalur app-scoped yang masih menulis artefak lokal wajib lewat satu guard
-     * (`appArtifactDirOrFail()`) — kalau tidak, pesan menyesatkan "Direktori app
-     * tidak ada" bisa kembali untuk app di server agent.
+     * Jalur app-scoped yang **masih** menulis artefak lokal wajib lewat satu
+     * guard (`appArtifactDirOrFail()`). Jalur env sudah **server-aware**: server
+     * lokal tetap memakai guard (perilaku lama), server agent berhenti menulis
+     * artefak lokal dan memicu worker `apply_env`; `importEnv` menolak agent
+     * dengan pesan akurat (tanpa istilah fase).
      */
     public function testAppScopedPathsUseTheSingleGuard(): void
     {
-        foreach (['saveEnv', 'importEnv', 'uploadEnv', 'saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
+        foreach (['saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
             $body = $this->methodBody($method);
 
             $this->assertStringContainsString('appArtifactDirOrFail(', $body, $method);
@@ -553,6 +559,42 @@ class AppControllerServerScopeTest extends TestCase
                 "{$method}() tidak boleh lagi memakai pesan is_dir lokal langsung"
             );
         }
+
+        // Jalur env wajib bercabang menurut server pemilik app.
+        foreach (['saveEnv', 'uploadEnv'] as $method) {
+            $body = $this->methodBody($method);
+
+            $this->assertStringContainsString('ServerResolver::isLocal(', $body, $method);
+            $this->assertStringNotContainsString(
+                'Direktori app tidak ada',
+                $body,
+                "{$method}() tidak boleh memakai pesan is_dir lokal langsung"
+            );
+        }
+
+        // Server lokal `saveEnv` tetap jalur lama: guard + applyEnv sinkron.
+        $saveEnv = $this->methodBody('saveEnv');
+        $this->assertStringContainsString('appArtifactDirOrFail(', $saveEnv);
+        $this->assertStringContainsString('->applyEnv(', $saveEnv);
+
+        // Server agent: metadata saja + worker `apply_env`; tanpa artefak lokal.
+        $agent = $this->methodBody('saveEnvOnAgent');
+        $this->assertStringContainsString("spawnWorker(\$id, 'apply_env'", $agent);
+        $this->assertStringContainsString('composeFilesWithEnv(', $agent);
+        $this->assertStringNotContainsString('appArtifactDirOrFail(', $agent);
+        $this->assertStringNotContainsString('EnvManager', $agent, 'jalur agent tidak boleh menyentuh env manager lokal');
+        $this->assertStringNotContainsString('apps_path', $agent, 'jalur agent tidak boleh menyentuh direktori artefak');
+
+        // Review-only (`uploadEnv` agent / import lokal): filesystem hanya bila ada $dir.
+        $review = $this->methodBody('persistEnvForReview');
+        $this->assertStringContainsString('$dir !== null', $review);
+        $this->assertStringContainsString('composeFilesWithEnv(', $review);
+
+        // Import `.env.example` butuh checkout lokal ⇒ agent ditolak akurat.
+        $import = $this->methodBody('importEnv');
+        $this->assertStringContainsString('Import .env.example belum tersedia untuk app di server agent', $import);
+        $this->assertStringContainsString('ServerResolver::isLocal(', $import);
+        $this->assertStringNotContainsString('F2/F3', $import);
     }
 
     // ==================================================================
@@ -571,7 +613,8 @@ class AppControllerServerScopeTest extends TestCase
             'status' => 'running',
         ]);
 
-        foreach (['saveEnv', 'importEnv', 'uploadEnv', 'saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
+        // Jalur yang MASIH menulis artefak lokal (jaringan/limits/nama container).
+        foreach (['saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
             $GLOBALS['RAMES_FLASH'] = [];
             $request = new Request("POST /apps/{$app['id']}/x HTTP/1.1\r\nHost: localhost\r\n\r\n");
 
@@ -595,20 +638,264 @@ class AppControllerServerScopeTest extends TestCase
         // Tidak ada artefak lokal yang tertulis / direktori app yang dibuat.
         $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-1');
         $this->assertSame([], $this->appFiles('agen-1'));
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN']);
+    }
 
-        // `server_id` yang hilang dari registry juga ditolak jelas (bukan 500).
+    /**
+     * `importEnv` butuh `.env.example` dari checkout app **di host ini**; app di
+     * server agent tidak punya checkout lokal ⇒ ditolak dengan pesan akurat
+     * (bukan istilah fase, bukan "Direktori app tidak ada") & tanpa efek samping.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testImportEnvOnAgentIsRejectedWithAccurateMessage(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-import',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+        ]);
+
+        $request = new Request("POST /apps/{$app['id']}/env/import HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        $response = (new AppController())->importEnv($request, $app['id']);
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertSame(
+            'Import .env.example belum tersedia untuk app di server agent — unggah file .env atau isi variabel manual, lalu klik "Simpan & Terapkan".',
+            $flash[0]['message']
+        );
+        $this->assertStringNotContainsString('F2/F3', $flash[0]['message']);
+        $this->assertStringNotContainsString('Direktori app tidak ada', $flash[0]['message']);
+
+        // Tanpa efek samping: env/metadata app tidak berubah, tidak ada spawn/artefak.
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame('running', $stored['status'] ?? null);
+        $this->assertArrayNotHasKey('compose_files', $stored);
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN']);
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-import');
+    }
+
+    /**
+     * `saveEnv` untuk app di server **agent**: metadata (`env` + `compose_files`)
+     * disimpan di control plane, worker `apply_env` dipicu, dan **tidak ada**
+     * artefak app yang dibuat di host ini (`apps/<name>`, `database/env/*`).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSaveEnvOnAgentPersistsMetadataAndSpawnsApplyEnvWorker(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-env',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+            'compose_files' => ['docker-compose.yml', 'docker-compose.override.networks.yml'],
+        ]);
+
+        $request = $this->postForm('/apps/' . $app['id'] . '/env', [
+            'env' => [
+                ['key' => 'APP_KEY', 'value' => 'rahasia'],
+                ['key' => 'MAIL_HOST', 'value' => 'smtp.test'],
+            ],
+        ]);
+        $response = (new AppController())->saveEnv($request, $app['id'], $this->fakeLauncher());
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(['APP_KEY' => 'rahasia', 'MAIL_HOST' => 'smtp.test'], $stored['env'] ?? null);
+
+        // Override env tepat satu & paling akhir; override lain tetap pada urutannya.
+        $files = (array) ($stored['compose_files'] ?? []);
+        $this->assertSame(EnvManager::OVERRIDE_FILE, end($files), 'override env wajib paling akhir');
+        $this->assertSame(1, count(array_keys($files, EnvManager::OVERRIDE_FILE, true)));
+        $this->assertContains('docker-compose.override.networks.yml', $files);
+        $this->assertLessThan(
+            array_search(EnvManager::OVERRIDE_FILE, $files, true),
+            array_search('docker-compose.override.networks.yml', $files, true)
+        );
+
+        // Status aplikasi diserahkan ke worker agent.
+        $this->assertSame('deploying', $stored['status'] ?? null);
+        $this->assertSame('queued', $stored['stage'] ?? null);
+        $this->assertStringContainsString('server agent', (string) ($stored['message'] ?? ''));
+        $this->assertNull($stored['error'] ?? null);
+
+        // Worker `apply_env` (bukan deploy/apply) dipicu sekali.
+        $this->assertCount(1, $GLOBALS['RAMES_SPAWN']);
+        $this->assertSame($app['id'], $GLOBALS['RAMES_SPAWN'][0][2]);
+        $this->assertSame('apply_env', $GLOBALS['RAMES_SPAWN'][0][3]);
+
+        // Tidak ada artefak lokal (direktori app / env) yang dibuat.
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-env');
+        $this->assertSame([], $this->appFiles('agen-env'));
+        $this->assertDirectoryDoesNotExist($this->tmp . '/database/env');
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('success', $flash[0]['type']);
+        $this->assertStringContainsString('server agent', $flash[0]['message']);
+    }
+
+    /**
+     * Env dikosongkan di app agent ⇒ entri override env dibuang dari
+     * `compose_files` (tidak ada entri yatim yang dikirim ke agent).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSaveEnvOnAgentWithEmptyEnvDropsOverrideEntry(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-kosong',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+            'env' => ['APP_KEY' => 'lama'],
+            'compose_files' => ['docker-compose.yml', EnvManager::OVERRIDE_FILE],
+        ]);
+
+        $request = $this->postForm('/apps/' . $app['id'] . '/env', [
+            'env_delete' => ['APP_KEY'],
+        ]);
+        (new AppController())->saveEnv($request, $app['id'], $this->fakeLauncher());
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame([], $stored['env'] ?? null);
+        $this->assertNotContains(EnvManager::OVERRIDE_FILE, (array) ($stored['compose_files'] ?? []));
+        $this->assertSame('deploying', $stored['status'] ?? null);
+        $this->assertSame('apply_env', $GLOBALS['RAMES_SPAWN'][0][3] ?? null);
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-kosong');
+    }
+
+    /**
+     * Spawn worker gagal di jalur agent: env **tetap tersimpan** (metadata),
+     * status app ditandai `error`, dan user diberi flash yang jelas.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSaveEnvOnAgentSpawnFailureMarksErrorAndKeepsEnv(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-gagal',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+        ]);
+
+        $request = $this->postForm('/apps/' . $app['id'] . '/env', [
+            'env' => [['key' => 'APP_KEY', 'value' => 'rahasia']],
+        ]);
+        $response = (new AppController())->saveEnv($request, $app['id'], $this->failingLauncher());
+
+        $this->assertSame(302, $response->getStatusCode());
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(['APP_KEY' => 'rahasia'], $stored['env'] ?? null, 'env tidak boleh hilang saat spawn gagal');
+        $this->assertSame('error', $stored['status'] ?? null);
+        $this->assertNull($stored['stage'] ?? null);
+        $this->assertNotSame('', (string) ($stored['message'] ?? ''));
+        $this->assertNotSame('', (string) ($stored['error'] ?? ''));
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertSame(
+            'Environment variable tersimpan, tetapi gagal menjalankan worker penerapan di server agent. Coba Rebuild untuk menerapkan.',
+            $flash[0]['message']
+        );
+
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-gagal');
+        $this->assertDirectoryDoesNotExist($this->tmp . '/database/env');
+    }
+
+    /**
+     * `uploadEnv` untuk app agent = review-only: metadata (`env` + `compose_files`)
+     * diperbarui, **tanpa** berkas lokal dan tanpa spawn worker (apply tetap
+     * menunggu "Simpan & Terapkan").
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testUploadEnvOnAgentStoresMetadataWithoutLocalArtifacts(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-upload',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+        ]);
+
+        $request = $this->multipartEnvUpload(
+            '/apps/' . $app['id'] . '/env/upload',
+            "APP_KEY=baru\nMAIL_HOST=smtp.test\n",
+            ['mode' => 'merge']
+        );
+        $response = (new AppController())->uploadEnv($request, $app['id']);
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(['APP_KEY' => 'baru', 'MAIL_HOST' => 'smtp.test'], $stored['env'] ?? null);
+        $files = (array) ($stored['compose_files'] ?? []);
+        $this->assertSame(EnvManager::OVERRIDE_FILE, end($files), 'override env wajib paling akhir');
+
+        // Review-only: status tidak berubah & tidak ada worker yang dipicu.
+        $this->assertSame('running', $stored['status'] ?? null);
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN']);
+
+        // Tanpa artefak lokal apa pun.
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-upload');
+        $this->assertSame([], $this->appFiles('agen-upload'));
+        $this->assertDirectoryDoesNotExist($this->tmp . '/database/env');
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('success', $flash[0]['type']);
+        $this->assertStringContainsString('Di-upload 2 variabel', $flash[0]['message']);
+    }
+
+    /**
+     * `server_id` app menunjuk server yang sudah dihapus ⇒ jalur env menolak
+     * eksplisit (bukan 500) dan **tidak** jatuh ke server lokal.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testEnvPathRejectsAppOnRemovedServerWithoutTouchingLocalArtifacts(): void
+    {
+        $this->installStubs(self::ADMIN);
         $orphan = (new AppStore())->create([
             'name' => 'agen-hilang',
             'server_id' => 'server-yang-dihapus',
             'status' => 'running',
         ]);
-        $GLOBALS['RAMES_FLASH'] = [];
-        $request = new Request("POST /apps/{$orphan['id']}/env HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        $response = (new AppController())->saveEnv($request, $orphan['id']);
 
-        $this->assertSame(302, $response->getStatusCode());
-        $this->assertStringContainsString('Server tidak dikenal', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '');
-        $this->assertStringNotContainsString('Direktori app tidak ada', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '');
+        foreach (['saveEnv', 'uploadEnv', 'importEnv'] as $method) {
+            $GLOBALS['RAMES_FLASH'] = [];
+            $GLOBALS['RAMES_SPAWN'] = [];
+            $request = new Request("POST /apps/{$orphan['id']}/env HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            $response = $method === 'saveEnv'
+                ? (new AppController())->saveEnv($request, $orphan['id'], $this->fakeLauncher())
+                : (new AppController())->{$method}($request, $orphan['id']);
+
+            $this->assertSame(302, $response->getStatusCode(), $method);
+            $this->assertStringContainsString('Server tidak dikenal', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '', $method);
+            $this->assertStringNotContainsString('Direktori app tidak ada', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '', $method);
+            $this->assertSame([], $GLOBALS['RAMES_SPAWN'], $method);
+        }
+
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-hilang');
     }
 
     /**
@@ -1977,6 +2264,35 @@ class AppControllerServerScopeTest extends TestCase
     }
 
     /**
+     * Request multipart berisi unggahan `.env` (jalur `uploadEnv()`), dibentuk
+     * sebagai HTTP mentah supaya `Request::file()` workerman benar-benar mem-parse
+     * berkasnya (tanpa jaringan/server).
+     *
+     * @param array<string,string> $fields field form biasa (mis. `mode`)
+     */
+    private function multipartEnvUpload(string $uri, string $content, array $fields = []): Request
+    {
+        $boundary = '----rames-uji-' . bin2hex(random_bytes(6));
+        $body = '';
+        foreach ($fields as $name => $value) {
+            $body .= "--{$boundary}\r\n"
+                . 'Content-Disposition: form-data; name="' . $name . "\"\r\n\r\n"
+                . $value . "\r\n";
+        }
+        $body .= "--{$boundary}\r\n"
+            . "Content-Disposition: form-data; name=\"env_file\"; filename=\".env\"\r\n"
+            . "Content-Type: text/plain\r\n\r\n"
+            . $content . "\r\n"
+            . "--{$boundary}--\r\n";
+
+        return new Request(
+            "POST {$uri} HTTP/1.1\r\nHost: localhost\r\n"
+            . "Content-Type: multipart/form-data; boundary={$boundary}\r\n"
+            . 'Content-Length: ' . strlen($body) . "\r\n\r\n" . $body
+        );
+    }
+
+    /**
      * Sisa direktori clone **analisis sementara** milik app ini (nama sama dengan
      * konstanta `AppController::REPO_ANALYSIS_DIR`; dikutip literal karena
      * konstanta itu privat).
@@ -2002,6 +2318,24 @@ class AppControllerServerScopeTest extends TestCase
                 $pid = 4242;
 
                 return true;
+            },
+            $this->tmp . '/cli/deploy.php',
+            $this->tmp . '/logs/deploy'
+        );
+    }
+
+    /**
+     * Peluncur worker yang selalu **gagal** spawn (mis. `pcntl_fork` ditolak) —
+     * untuk membuktikan jalur gagal tetap menyimpan metadata & menandai error.
+     */
+    private function failingLauncher(): DeployWorkerLauncher
+    {
+        return new DeployWorkerLauncher(
+            static function (array $argv, ?int &$pid = null, array $env = []): bool {
+                $GLOBALS['RAMES_SPAWN'][] = $argv;
+                $pid = 0;
+
+                return false;
             },
             $this->tmp . '/cli/deploy.php',
             $this->tmp . '/logs/deploy'
@@ -2109,6 +2443,9 @@ class AppControllerServerScopeTest extends TestCase
             'sqlite_file' => $this->tmp . '/rames.sqlite',
             'sqlite_dir' => $this->tmp,
             'apps_path' => $this->tmp . '/apps',
+            // Managed env (`EnvManager`) juga di temp: jalur agent DILARANG
+            // menulis apa pun ke sini, jadi ketiadaannya bisa diperiksa.
+            'database_path' => $this->tmp . '/database',
             'nginx_conf_path' => $this->tmp . '/nginx/conf',
             'nginx_enabled_path' => '',
             'app_domain' => 'example.test',

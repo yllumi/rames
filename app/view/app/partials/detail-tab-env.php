@@ -2,7 +2,7 @@
   <div class="tab-pane fade" id="tab-env" role="tabpanel" aria-labelledby="tab-env-btn">
     <?php
     $envVars = is_array($app['env'] ?? null) ? $app['env'] : [];
-    $envExampleExists = is_file((string) config('deploy.apps_path') . '/' . $app['name'] . '/.env.example');
+    $envExampleExists = empty($isRemoteServer) && is_file((string) config('deploy.apps_path') . '/' . $app['name'] . '/.env.example');
     ?>
 
     <section class="card mb-4">
@@ -76,6 +76,9 @@
           Upload <span class="mono">.env</span> menambahkan/menimpa variabel dari file
           (mode <strong>Ganti semua</strong> menghapus variabel lama yang tidak ada di file)
           dan belum diterapkan sampai Anda menekan <strong>Simpan &amp; Terapkan</strong>.
+          <?php if (!empty($isRemoteServer)): ?>
+          <span class="d-block mt-2">App ini berjalan di server agent: <strong>Simpan &amp; Terapkan</strong> dikirim sebagai job ke server tersebut; progresnya terlihat pada status app.</span>
+          <?php endif; ?>
         </p>
         <div class="d-flex flex-wrap gap-2 align-items-center">
           <button type="button" class="btn btn-outline-secondary btn-sm" id="env-add-row">＋ Tambah variabel</button>

@@ -717,7 +717,8 @@ class AppController
 
     /**
      * Direktori artefak app **di host ini** untuk jalur yang masih menulis file
-     * lokal (env/limits/network/nama container) — atau `null` + flash error.
+     * lokal (limits/network/nama container, dan cabang **lokal** env) — atau
+     * `null` + flash error.
      *
      * Multi-server F1/F2: jalur-jalur itu menulis berkas di server lokal, jadi
      * untuk app di server **agent** operasinya ditolak **eksplisit** dengan
@@ -725,6 +726,11 @@ class AppController
      * bukan pesan menyesatkan "Direktori app tidak ada" yang membuat user
      * mengira app/direktori sudah terhapus. Perilaku server lokal **tidak
      * berubah** (pesan & alur lama).
+     *
+     * Jalur env kini **server-aware**: pemanggilnya (`saveEnv`, `uploadEnv`,
+     * `importEnv`) memutuskan lebih dulu berdasarkan `ServerResolver::isLocal()`
+     * sehingga app agent tidak lagi sampai ke guard ini (yang berarti menulis
+     * artefak lokal untuk server yang salah).
      *
      * @param array<string,mixed> $app
      * @param string              $feature nama fitur untuk pesan galat
@@ -2847,17 +2853,41 @@ class AppController
     /**
      * Simpan environment variable app (POST /apps/{id}/env).
      *
-     * Validasi ketat format kunci, lalu: tulis managed env file + override env
-     * (EnvManager), persist ke apps.json, dan auto-recreate container via
-     * `docker compose up -d` (tanpa build) agar perubahan langsung diterapkan.
+     * Validasi ketat format kunci, lalu — bergantung **server pemilik app**:
+     *  - server **lokal** (perilaku lama, tidak berubah): tulis managed env file
+     *    + override env (EnvManager), persist ke apps.json, dan auto-recreate
+     *    container via `docker compose up -d` (tanpa build) secara sinkron;
+     *  - server **agent**: host ini **tidak** menulis artefak app apa pun
+     *    (tidak ada `apps/<name>` / `database/env/*` di control plane). `env` +
+     *    `compose_files` disimpan sebagai metadata app, lalu worker
+     *    `apply_env` mengirim job ke agent — agent menulis managed env +
+     *    override env dari metadata itu lalu `up -d` tanpa build.
+     *
+     * @param DeployWorkerLauncher|null $launcher seam uji: peluncur worker palsu
+     *                                            (null = bawaan); jalur produksi
+     *                                            tidak pernah mengisinya
      */
-    public function saveEnv(Request $request, string $id)
+    public function saveEnv(Request $request, string $id, ?DeployWorkerLauncher $launcher = null)
     {
         $store = new AppStore();
         $app = $this->findApp($id, 'env');
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
             return redirect('/apps/' . $id);
+        }
+
+        // Server pemilik app (fail-fast bila `server_id` menunjuk server hilang):
+        // jangan pernah menulis artefak app agent di host control plane.
+        try {
+            $local = ServerResolver::isLocal($this->serverForApp($app));
+        } catch (\Throwable $e) {
+            flash_set('error', 'Environment variable tidak bisa dijalankan: ' . $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
+
+        if (!$local) {
+            return $this->saveEnvOnAgent($request, $app, $store, $launcher);
         }
 
         $dir = $this->appArtifactDirOrFail($app, 'Environment variable');
@@ -2873,12 +2903,7 @@ class AppController
         }
 
         try {
-            $posted = (array) $request->post('env', []);
-            $deleteKeys = array_values(array_filter(
-                array_map('strval', (array) $request->post('env_delete', [])),
-                static fn (string $k): bool => $k !== ''
-            ));
-            $env = $this->normalizeEnv($posted, $deleteKeys, is_array($app['env'] ?? null) ? $app['env'] : []);
+            $env = $this->normalizedEnvFromRequest($request, $app);
 
             // 1) Tulis file dulu (managed + override). Gagal => tidak ada state
             //    yang berubah (apps.json belum disentuh, tetap konsisten).
@@ -2889,12 +2914,10 @@ class AppController
             // 2) Persist ke apps.json (env + compose_files).
             $store->update($id, function (array &$s) use ($env): void {
                 $s['env'] = $env;
-                $files = $s['compose_files'] ?? ['docker-compose.yml'];
-                $files = array_values(array_filter($files, static fn (string $f): bool => $f !== EnvManager::OVERRIDE_FILE));
-                if ($env !== []) {
-                    $files[] = EnvManager::OVERRIDE_FILE; // selalu terakhir → menang atas repo
-                }
-                $s['compose_files'] = $files;
+                $s['compose_files'] = self::composeFilesWithEnv(
+                    array_map('strval', (array) ($s['compose_files'] ?? ['docker-compose.yml'])),
+                    $env
+                );
             });
 
             // 3) Auto-recreate container (up -d tanpa build). Sinkron & cepat;
@@ -2920,9 +2943,81 @@ class AppController
     }
 
     /**
+     * Simpan environment variable app yang berjalan di server **agent**
+     * (POST /apps/{id}/env — cabang non-lokal `saveEnv()`).
+     *
+     * Host control plane **tidak** memiliki artefak app agent, jadi tidak ada
+     * direktori/berkas yang dibuat di sini: `env` + `compose_files` (override env
+     * selalu paling akhir) disimpan sebagai **metadata** app, lalu worker
+     * `apply_env` mengirim job ke agent. `AgentAppProjection::METADATA` sudah
+     * memuat `env`/`compose_files` — jadi payload job membawa nilai barunya, dan
+     * `LocalDeployer::applyEnv()` di agent yang menulis managed env + override
+     * env lalu `up -d` (tanpa build).
+     *
+     * Urutan: gerbang kredit **sebelum** normalisasi/persist; normalisasi
+     * `normalizeEnv()` (validasi kunci) **sebelum** apps.json disentuh sehingga
+     * input tidak sah tidak meninggalkan state setengah jadi.
+     *
+     * @param array<string,mixed>       $app      dokumen app (server agent)
+     * @param DeployWorkerLauncher|null $launcher seam uji (null = bawaan)
+     */
+    private function saveEnvOnAgent(Request $request, array $app, AppStore $store, ?DeployWorkerLauncher $launcher = null): \Webman\Http\Response
+    {
+        $id = (string) $app['id'];
+
+        // Gerbang kredit — sebelum metadata ditulis & worker `apply_env` di-spawn
+        // (op itu menciptakan ulang container di agent).
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        }
+
+        try {
+            $env = $this->normalizedEnvFromRequest($request, $app);
+
+            // Persist metadata SAJA (tanpa artefak lokal): worker agent yang
+            // menulis managed env + override env dari dokumen app ini.
+            $store->update($id, function (array &$s) use ($env): void {
+                $s['env'] = $env;
+                $s['compose_files'] = self::composeFilesWithEnv(
+                    array_map('strval', (array) ($s['compose_files'] ?? ['docker-compose.yml'])),
+                    $env
+                );
+                $s['status'] = 'deploying';
+                $s['stage'] = 'queued';
+                $s['message'] = 'Menerapkan environment variable di server agent ...';
+                $s['error'] = null;
+            });
+
+            if (!$this->spawnWorker($id, 'apply_env', null, $this->currentActorId(), $launcher)) {
+                $store->update($id, static function (array &$s): void {
+                    $s['status'] = 'error';
+                    $s['stage'] = null;
+                    $s['message'] = 'Gagal menjalankan worker penerapan environment variable di server agent.';
+                    $s['error'] = 'Gagal spawn worker apply_env.';
+                });
+                flash_set('error', 'Environment variable tersimpan, tetapi gagal menjalankan worker penerapan di server agent. Coba Rebuild untuk menerapkan.');
+
+                return redirect('/apps/' . $id);
+            }
+
+            flash_set('success', 'Environment variable disimpan — container diciptakan ulang di server agent (tanpa build).');
+        } catch (\Throwable $e) {
+            flash_set('error', $this->appErrorText($app, $e));
+        }
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
      * Import variabel yang belum ada dari .env.example di direktori app
      * (POST /apps/{id}/env/import). Hanya mengisi nilai default; TIDAK
      * auto-recreate — user meninjau nilainya dulu, lalu klik "Simpan & Terapkan".
+     *
+     * `.env.example` hanya bisa dibaca bila checkout app ada di host ini, jadi
+     * app di server **agent** ditolak dengan pesan akurat (redirect + flash,
+     * tanpa efek samping) — bukan pesan menyesatkan "Direktori app tidak ada".
      */
     public function importEnv(Request $request, string $id)
     {
@@ -2930,6 +3025,23 @@ class AppController
         $app = $this->findApp($id, 'env');
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
+        }
+
+        try {
+            $local = ServerResolver::isLocal($this->serverForApp($app));
+        } catch (\Throwable $e) {
+            flash_set('error', 'Environment variable tidak bisa dijalankan: ' . $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
+
+        if (!$local) {
+            flash_set(
+                'error',
+                'Import .env.example belum tersedia untuk app di server agent — unggah file .env atau isi variabel manual, lalu klik "Simpan & Terapkan".'
+            );
+
             return redirect('/apps/' . $id);
         }
 
@@ -2983,9 +3095,10 @@ class AppController
      * lalu user menekan "Simpan & Terapkan". Karena tidak menyalakan/menciptakan
      * container, tidak ada gerbang kredit di sini.
      *
-     * Multi-server F1/F2: jalur ini menulis artefak app di host lokal, jadi
-     * app milik server **agent** ditolak lebih dulu oleh
-     * `appArtifactDirOrFail()` — sebelum file request dibaca.
+     * Multi-server: untuk app di server **agent** tidak ada artefak lokal yang
+     * ditulis (parameter `$dir` = null) — hanya metadata `env` + `compose_files`
+     * yang diperbarui; file managed env + override ditulis worker agent saat
+     * "Simpan & Terapkan".
      */
     public function uploadEnv(Request $request, string $id)
     {
@@ -2996,9 +3109,21 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
-        $dir = $this->appArtifactDirOrFail($app, 'Environment variable');
-        if ($dir === null) {
+        try {
+            $local = ServerResolver::isLocal($this->serverForApp($app));
+        } catch (\Throwable $e) {
+            flash_set('error', 'Environment variable tidak bisa dijalankan: ' . $e->getMessage());
+
             return redirect('/apps/' . $id);
+        }
+
+        // Server agent: review-only, tanpa menyentuh filesystem host ini.
+        $dir = null;
+        if ($local) {
+            $dir = $this->appArtifactDirOrFail($app, 'Environment variable');
+            if ($dir === null) {
+                return redirect('/apps/' . $id);
+            }
         }
 
         try {
@@ -3090,10 +3215,14 @@ class AppController
     }
 
     /**
-     * Persist env app untuk ditinjau (TANPA recreate container): tulis managed
-     * env file + override YAML lewat {@see EnvManager::sync()}, lalu simpan
-     * `env` & `compose_files` ke apps.json. Override env selalu ditaruh paling
-     * akhir (menang atas compose repo); bila env kosong, entri override dihapus.
+     * Persist env app untuk ditinjau (TANPA recreate container).
+     *
+     * `$dir !== null` (server lokal): tulis managed env file + override YAML
+     * lewat {@see EnvManager::sync()}, lalu simpan `env` & `compose_files` ke
+     * apps.json. `$dir === null` (server agent): **tidak menyentuh filesystem**
+     * sama sekali — hanya metadata yang diperbarui; berkasnya ditulis worker
+     * agent saat "Simpan & Terapkan". Override env selalu ditaruh paling akhir
+     * (menang atas compose repo); bila env kosong, entri override dihapus.
      *
      * Dipakai bersama oleh `importEnv()` (import .env.example) dan
      * `uploadEnv()` (upload .env) agar tidak ada dua versi logika persist.
@@ -3101,21 +3230,64 @@ class AppController
      * @param array<string,mixed>  $app
      * @param array<string,string> $env
      */
-    private function persistEnvForReview(AppStore $store, string $id, array $app, string $dir, array $env): void
+    private function persistEnvForReview(AppStore $store, string $id, array $app, ?string $dir, array $env): void
     {
-        $envManager = new EnvManager();
-        $composeFiles = $app['compose_files'] ?? ['docker-compose.yml'];
-        $envManager->sync(['name' => $app['name'] ?? '', 'env' => $env], $dir, $composeFiles);
+        if ($dir !== null) {
+            $envManager = new EnvManager();
+            $composeFiles = $app['compose_files'] ?? ['docker-compose.yml'];
+            $envManager->sync(['name' => $app['name'] ?? '', 'env' => $env], $dir, $composeFiles);
+        }
 
         $store->update($id, function (array &$s) use ($env): void {
             $s['env'] = $env;
-            $files = $s['compose_files'] ?? ['docker-compose.yml'];
-            $files = array_values(array_filter($files, static fn (string $f): bool => $f !== EnvManager::OVERRIDE_FILE));
-            if ($env !== []) {
-                $files[] = EnvManager::OVERRIDE_FILE; // selalu terakhir → menang atas repo
-            }
-            $s['compose_files'] = $files;
+            $s['compose_files'] = self::composeFilesWithEnv(
+                array_map('strval', (array) ($s['compose_files'] ?? ['docker-compose.yml'])),
+                $env
+            );
         });
+    }
+
+    /**
+     * Daftar `compose_files` dengan override env sebagai **satu-satunya** entri
+     * env — selalu di akhir (menang atas compose repo), dibuang bila env kosong.
+     *
+     * Satu sumber kebenaran untuk `saveEnv()` (lokal & agent), `saveEnvOnAgent()`,
+     * dan `persistEnvForReview()`: urutan relatif file lain tidak diubah, entri
+     * duplikat/stale `docker-compose.override.env.yml` tidak bisa tertinggal.
+     *
+     * @param array<int,string>    $files
+     * @param array<string,string> $env
+     * @return array<int,string>
+     */
+    private static function composeFilesWithEnv(array $files, array $env): array
+    {
+        $files = array_values(array_filter(
+            $files,
+            static fn (string $f): bool => $f !== EnvManager::OVERRIDE_FILE
+        ));
+        if ($env !== []) {
+            $files[] = EnvManager::OVERRIDE_FILE;
+        }
+
+        return $files;
+    }
+
+    /**
+     * Normalisasi env var dari form (validasi ketat) — satu salinan untuk jalur
+     * lokal & agent `saveEnv()`, supaya aturan kunci/nilai tidak menyimpang.
+     *
+     * @param array<string,mixed> $app
+     * @return array<string,string>
+     */
+    private function normalizedEnvFromRequest(Request $request, array $app): array
+    {
+        $posted = (array) $request->post('env', []);
+        $deleteKeys = array_values(array_filter(
+            array_map('strval', (array) $request->post('env_delete', [])),
+            static fn (string $k): bool => $k !== ''
+        ));
+
+        return $this->normalizeEnv($posted, $deleteKeys, is_array($app['env'] ?? null) ? $app['env'] : []);
     }
 
     /**

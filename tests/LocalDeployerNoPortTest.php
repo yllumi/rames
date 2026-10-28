@@ -208,6 +208,72 @@ class LocalDeployerNoPortTest extends TestCase
     }
 
     /**
+     * `applyEnv()` di server agent: entri `docker-compose.override.env.yml` sudah
+     * tercatat di metadata app **sebelum** berkasnya ada di disk. Daftar file
+     * yang diteruskan ke `up` wajib memuatnya (override env paling akhir) —
+     * tanpa hitung ulang setelah `EnvManager::sync()`, entri itu disaring
+     * `filterMissingGenerated()` dan env tidak pernah sampai ke container pada
+     * apply pertama.
+     */
+    public function testApplyEnvSendsEnvOverrideToComposeAfterSync(): void
+    {
+        $dir = $this->appsPath . '/dbsaya';
+        file_put_contents(
+            $dir . '/docker-compose.yml',
+            "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"8123:80\"\n"
+        );
+        $this->docker->containers = [$this->container('web', [['host' => 8123, 'container' => 80]])];
+
+        // Berkas override env BELUM ada (metadata agent) — sync yang menulisnya.
+        $this->assertFileDoesNotExist($dir . '/' . EnvManager::OVERRIDE_FILE);
+
+        $app = $this->app([
+            'env' => ['APP_KEY' => 'rahasia'],
+            'compose_files' => ['docker-compose.yml', EnvManager::OVERRIDE_FILE],
+        ]);
+
+        $result = $this->deployer->applyEnv($app, $this->logger());
+
+        $this->assertSame('running', $result['status']);
+        $this->assertFileExists($dir . '/' . EnvManager::OVERRIDE_FILE);
+
+        $files = $this->compose->upCalls[0]['files'];
+        $this->assertContains(EnvManager::OVERRIDE_FILE, $files, 'override env harus ikut ke `up` pada apply pertama');
+        $this->assertSame(EnvManager::OVERRIDE_FILE, end($files), 'override env wajib paling akhir');
+        $this->assertFalse($this->compose->upCalls[0]['build'], 'applyEnv tidak boleh build');
+    }
+
+    /**
+     * Kebalikannya: env dikosongkan ⇒ `EnvManager::sync()` menghapus berkasnya,
+     * sehingga entri lamanya **tidak boleh** tertinggal di daftar file `up`
+     * (compose akan gagal "no such file or directory").
+     */
+    public function testApplyEnvDropsEnvOverrideEntryWhenEnvEmptied(): void
+    {
+        $dir = $this->appsPath . '/dbsaya';
+        file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n");
+        // Sisa override env lama (env sekarang kosong di apps.json).
+        file_put_contents(
+            $dir . '/' . EnvManager::OVERRIDE_FILE,
+            "services:\n  web:\n    environment:\n      APP_KEY: lama\n"
+        );
+
+        $app = $this->app([
+            'env' => [],
+            'compose_files' => ['docker-compose.yml', EnvManager::OVERRIDE_FILE],
+        ]);
+
+        $result = $this->deployer->applyEnv($app, $this->logger());
+
+        $this->assertSame('running', $result['status']);
+        $this->assertFileDoesNotExist($dir . '/' . EnvManager::OVERRIDE_FILE);
+
+        $files = $this->compose->upCalls[0]['files'];
+        $this->assertNotContains(EnvManager::OVERRIDE_FILE, $files, 'entri yatim tidak boleh dikirim ke `up`');
+        $this->assertSame(['docker-compose.yml'], array_values($files));
+    }
+
+    /**
      * @param array<int,array{host:int,container:int}> $ports
      * @return array<string,mixed>
      */
