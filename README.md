@@ -15,7 +15,7 @@
 - **Domain & SSL** — subdomain otomatis, custom domain, SSL Let's Encrypt per domain, serta domain parking.
 - **Operasional container** — rebuild/stop/start/delete, log, terminal, file manager, dan batas CPU/RAM per service.
 - **Database & backup** — Adminer tanpa port publik; backup volume harian ke S3 via restic (dump logis untuk database).
-- **Monitoring** — resource container dan total VM, sadar-server.
+- **Monitoring** — resource container dan total VM, sadar-server, plus metrik per-app (CPU/memori 5 menit + storage) di tab Info detail app.
 - **Multi-server** — satu dashboard sebagai control plane mengelola banyak server agent; pilihan server untuk admin (dan member yang diberi izin).
 - **Kredit & penagihan** — pemakaian CPU/RAM serta penyimpanan snapshot backup untuk role member, dengan top-up manual/Duitku.
 - **Branding, tema, dan self-update** — ganti nama/logo, mode gelap, serta update dashboard dari UI.

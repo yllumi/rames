@@ -8,6 +8,7 @@ use app\library\Agent\AgentArtifactPackager;
 use app\library\Agent\AgentClient;
 use app\library\Agent\AgentError;
 use app\library\Docker\AppContainers;
+use app\library\Docker\VolumeUsage;
 use app\library\Update\AgentVersionGate;
 use RuntimeException;
 
@@ -1064,6 +1065,94 @@ final class AgentDeployer implements DeployerInterface
             'totals' => is_array($payload['totals'] ?? null) ? $payload['totals'] : [],
             'error' => is_string($error) && trim($error) !== '' ? $error : null,
         ];
+    }
+
+    /**
+     * Ukuran storage satu app **di server agent** (`GET /system/disk-usage`):
+     * volume project + writable layer container (image bersama tidak dihitung).
+     *
+     * Nama project = `apps.name` (label `com.docker.compose.project` di sana),
+     * sama dengan jalur lokal. Bentuk nama dibatasi **sebelum** HTTP apa pun
+     * supaya tidak bisa dipakai menyusun query aneh.
+     *
+     * Agent lama yang belum punya endpoint ini menjawab 404 ⇒
+     * `AgentError::NOT_FOUND` (diteruskan, **tidak** ditelan) supaya pemanggil
+     * bisa membedakan "belum didukung" dari kegagalan Engine.
+     *
+     * @return array{
+     *   available:bool, volumes_bytes:int, containers_bytes:int, total_bytes:int,
+     *   total_human:string,
+     *   volumes:array<int,array{name:string,size:int,size_human:string}>,
+     *   containers:array<int,array{name:string,size:int,size_human:string}>,
+     *   error:?string
+     * }
+     * @throws AgentError
+     */
+    public function diskUsage(string $project): array
+    {
+        $project = trim($project);
+        if ($project === '' || strlen($project) > 63 || preg_match('/^[a-z0-9][a-z0-9-]*$/', $project) !== 1) {
+            throw AgentError::invalidConfig(
+                $this->label() . ': nama project app tidak sah untuk permintaan ukuran storage.'
+            );
+        }
+
+        $data = $this->short(
+            'membaca ukuran storage',
+            fn (): array => $this->client->getWithQuery('/system/disk-usage', ['project' => $project])
+        );
+        $data = $this->ok($data, 'membaca ukuran storage');
+
+        $payload = $data['data'] ?? null;
+        if (!is_array($payload) || !array_key_exists('available', $payload)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan ukuran storage (kontrak: `{code:0,data:{available,…}}`).'
+            );
+        }
+
+        $error = $payload['error'] ?? null;
+
+        return [
+            'available' => (bool) $payload['available'],
+            'volumes_bytes' => (int) ($payload['volumes_bytes'] ?? 0),
+            'containers_bytes' => (int) ($payload['containers_bytes'] ?? 0),
+            'total_bytes' => (int) ($payload['total_bytes'] ?? 0),
+            'total_human' => is_string($payload['total_human'] ?? null) && $payload['total_human'] !== ''
+                ? $payload['total_human']
+                : VolumeUsage::human((int) ($payload['total_bytes'] ?? 0)),
+            'volumes' => self::sizeRows($payload['volumes'] ?? null),
+            'containers' => self::sizeRows($payload['containers'] ?? null),
+            'error' => is_string($error) && trim($error) !== '' ? $error : null,
+        ];
+    }
+
+    /**
+     * Normalisasi daftar `{name,size,size_human}` dari agent (bentuk tak sah
+     * dibuang; `size_human` hilang dihitung ulang dengan rumus yang sama).
+     *
+     * @return array<int,array{name:string,size:int,size_human:string}>
+     */
+    private static function sizeRows(mixed $rows): array
+    {
+        $out = [];
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = is_scalar($row['name'] ?? null) ? trim((string) $row['name']) : '';
+            if ($name === '') {
+                continue;
+            }
+            $size = is_numeric($row['size'] ?? null) ? (int) $row['size'] : 0;
+            $human = $row['size_human'] ?? null;
+            $out[] = [
+                'name' => $name,
+                'size' => $size,
+                'size_human' => is_string($human) && $human !== '' ? $human : VolumeUsage::human($size),
+            ];
+        }
+
+        return $out;
     }
 
     // ==================================================================

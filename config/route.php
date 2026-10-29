@@ -22,6 +22,7 @@ use app\controller\AgentJobController;
 use app\controller\AgentLogController;
 use app\controller\AgentNetworkController;
 use app\controller\AgentTerminalController;
+use app\controller\AppMetricsController;
 use app\controller\AuthController;
 use app\controller\BackupController;
 use app\controller\BrandingController;
@@ -168,6 +169,9 @@ if ($ramesMode === 'agent') {
         // akses (`AppAccess::visible()`) dilakukan control plane, bukan di sini.
         Route::get('/system/host-usage', [AgentDockerController::class, 'hostUsage']);
         Route::get('/monitor/containers', [AgentDockerController::class, 'containers']);
+        // Ukuran storage satu app **server ini** (volume project + writable
+        // layer container) untuk tab Info detail app di control plane.
+        Route::get('/system/disk-usage', [AgentDockerController::class, 'diskUsage']);
 
         // F3d multi-server (plan §4.1/§5): **database/Adminer** & **network/volume**
         // app yang berjalan di server ini. Helper Adminer dijalankan di sini
@@ -264,6 +268,8 @@ Route::get('/api/apps/{id}/status', [AppController::class, 'status']);
 Route::get('/api/apps/{id}/logs', [LogController::class, 'index']);
 // Log deploy app (popup modal; output build live + tahap worker)
 Route::get('/api/apps/{id}/deploy-log', [LogController::class, 'deployLog']);
+// Snapshot metrik CPU/RAM + total storage app (tab Info; grafik dirakit browser)
+Route::get('/api/apps/{id}/metrics', [AppMetricsController::class, 'show']);
 
 // Aksi app
 Route::post('/apps/{id}/rebuild', [AppController::class, 'rebuild']);

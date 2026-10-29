@@ -120,11 +120,17 @@ class AgentModeTest extends TestCase
      * `GET /errors/{id}`, `POST /errors/{id}/status`,
      * `POST /errors/{id}/delete` — semuanya dashboard-only (mode agent tidak
      * punya UI/sesi error log, dan arah recorder sengaja control plane saja).
+     *
+     * +1 (metrik per-app tab Info): `GET /api/apps/{id}/metrics` — ability `view`
+     * (Viewer+), dashboard-only (agent tidak punya identitas user; datanya
+     * diambil dari agent lewat `/system/disk-usage` & `/monitor/containers`).
+     * Agent mendapat **route terpisah** `GET /system/disk-usage` (+1 definisi
+     * agent) yang bukan route dashboard.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 141;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 142;
 
-    /** Definisi di atas menghasilkan 147 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 147;
+    /** Definisi di atas menghasilkan 148 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 148;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -140,6 +146,9 @@ class AgentModeTest extends TestCase
         'GET /users',
         'GET /api/monitor/overview',
         'GET /api/apps/{id}/status',
+        // Metrik per-app (tab Info) hanya bermakna di dashboard; agent melayani
+        // potongan datanya lewat `/system/disk-usage` & `/monitor/containers`.
+        'GET /api/apps/{id}/metrics',
         // SSL mode AJAX (SPECS §8a): endpoint JSON status & enable tidak boleh
         // bocor ke mode agent (agent tidak melayani tabel SSL control plane).
         'GET /api/ssl/status',
@@ -245,6 +254,7 @@ class AgentModeTest extends TestCase
                 'GET /monitor/containers',
                 'GET /networks',
                 'GET /networks/{id}',
+                'GET /system/disk-usage',
                 'GET /system/host-usage',
                 'GET /terminal/{token}/stream',
                 'GET /version',
@@ -397,6 +407,11 @@ class AgentModeTest extends TestCase
             [AgentDockerController::class, 'containers'],
             $routes['pairs']['GET /monitor/containers']->getCallback()
         );
+        // Ukuran storage per app (tab Info) — dihitung dari Engine server ini.
+        $this->assertSame(
+            [AgentDockerController::class, 'diskUsage'],
+            $routes['pairs']['GET /system/disk-usage']->getCallback()
+        );
         // Operasional per server (F3d): database/Adminer & network/volume app
         // yang berjalan di server ini (helper Adminer hidup di sini; control plane
         // mem-forward permintaannya).
@@ -453,12 +468,13 @@ class AgentModeTest extends TestCase
             $routes['pairs']['GET /healthz']->getCallback()
         );
         $this->assertCount(
-            40,
+            41,
             $routes['definitions'],
             'route agent F0 (diagnostik) + F1 (3 job + proyeksi app + preflight nama app + cancel job) + F2 (nginx)'
             . ' + F3a (log + 5 terminal)'
             . ' + F3b/F3c (10 file manager + 2 monitoring) + F3d (1 database + 1 adminer + 7 network/volume)'
             . ' + F4 (3 route data: daftar volume backup + daftar snapshot + unduh dump bertahap)'
+            . ' + metrik per-app (1 ukuran storage)'
         );
     }
 

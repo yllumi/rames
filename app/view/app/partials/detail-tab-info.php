@@ -95,6 +95,47 @@
   </div>
 </div>
 
+<?php // Metrik live: CPU & memori (rolling 5 menit) + total storage app. Diisi public/js/app-metrics.js. ?>
+    <section class="card mb-4" id="app-metrics" data-app-id="<?= e($app['id']) ?>">
+      <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <h2 class="h6 mb-0">Penggunaan Resource</h2>
+        <span class="text-muted small">5 menit terakhir</span>
+      </div>
+      <div class="card-body">
+        <div class="row g-3">
+          <div class="col-12 col-md-4">
+            <div class="border rounded p-3 h-100 d-flex flex-column">
+              <div class="text-muted small">CPU</div>
+              <div class="fs-4 fw-semibold mono" data-metrics-value="cpu">—</div>
+              <div class="text-muted small mb-2">dari total core app</div>
+              <svg class="app-metrics-chart" data-metrics-chart="cpu" viewBox="0 0 300 80" preserveAspectRatio="none" role="img" aria-label="Grafik pemakaian CPU 5 menit terakhir" style="height:72px; width:100%; display:block">
+                <path data-metrics-line="cpu" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke"></path>
+              </svg>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="border rounded p-3 h-100 d-flex flex-column">
+              <div class="text-muted small">Memori</div>
+              <div class="fs-4 fw-semibold mono" data-metrics-value="mem">—</div>
+              <div class="text-muted small mb-2 mono" data-metrics-sub="mem">—</div>
+              <svg class="app-metrics-chart" data-metrics-chart="mem" viewBox="0 0 300 80" preserveAspectRatio="none" role="img" aria-label="Grafik pemakaian memori 5 menit terakhir" style="height:72px; width:100%; display:block">
+                <path data-metrics-line="mem" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke"></path>
+              </svg>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="border rounded p-3 h-100 d-flex flex-column">
+              <div class="text-muted small">Storage</div>
+              <div class="fs-4 fw-semibold mono" data-metrics-value="storage-total">—</div>
+              <div class="text-muted small mono" data-metrics-sub="storage-breakdown">—</div>
+              <div class="text-muted small mt-2" data-metrics-note="storage"></div>
+            </div>
+          </div>
+        </div>
+        <div class="text-muted small mt-2" data-metrics-note="usage"></div>
+      </div>
+    </section>
+
     <?php if (($app['auth_method'] ?? 'none') === 'ssh' && $sshPubkey): ?>
     <div class="collapse" id="deploykey-card">
       <div class="card mb-4">

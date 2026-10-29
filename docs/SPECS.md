@@ -343,6 +343,17 @@ Halaman global `/monitor`: ringkasan host + tabel container per **server**. Host
 
 **Hak akses**: admin melihat semua container termasuk eksternal; non-admin hanya container app yang boleh diakses. Angka host server agent **tidak dikirim** bila user tidak melihat satu pun app di server itu (fail-closed; server tak dihubungi). Satu server mati ⇒ entri offline + error tersanitasi, halaman tetap 200. Batasan: deteksi dini, bukan monitoring historis/alerting (§12).
 
+### 8d.1 Metrik per-App di Tab Info (CPU, Memori, Storage)
+
+Tab **Info** di detail app (`/apps/{id}`) menunjukkan pemakaian **satu app** — pelengkap halaman `/monitor` (§8d) yang bersudut pandang host/server:
+
+- **Kartu CPU & Memori**: nilai terkini + grafik **rolling 5 menit** (maks 60 titik × 5 detik). Grafik dirakit **di browser** dari snapshot berkala; server tidak menyimpan histori sehingga tidak ada tabel metrik baru dan grafik hilang saat halaman ditutup (§12). Polling berhenti saat tab disembunyikan dan saat halaman ditinggalkan — tanpa permintaan latar belakang.
+- **Kartu Storage**: total ukuran app = **volume project** + **writable layer container** milik compose project app. **Image bersama tidak dihitung**; menambahkannya membuat "ukuran app" menyesatkan karena satu image dipakai banyak app. Ukuran yang tidak bisa dihitung Engine (nilai negatif) dilaporkan `N/A` dan **tidak** dijumlahkan.
+- **Nilai jujur**: CPU/memori yang memang tak terbaca (app tanpa container, seluruh container berhenti) = **N/A**, bukan `0%` yang menyesatkan; jumlah container (`containers`/`running`) tetap dilaporkan sebagai angka.
+- **Hak akses**: ability `view` (Viewer ke atas) — membaca metrik tidak mengubah apa pun. App tak dikenal atau user tanpa hak ⇒ **404** (bukan 403), konsisten dengan seluruh detail app.
+- **Multi-server**: app di server agent diukur **di server itu** (statistik container + ukuran disk server itu, dengan penyaringan per app); agent versi lama yang belum mendukung ukuran disk ⇒ storage "—" + keterangan, bukan galat. Server app hilang/rusak ⇒ tab tetap terbuka dengan data kosong + pesan generik (bukan 500).
+- **Batas**: tanpa histori tersimpan/alerting (§12); ukuran storage diperbarui jauh lebih jarang daripada CPU/memori karena biaya membacanya mahal (detail teknis di dokumentasi arsitektur).
+
 ## 8e. Search / Filter / Pagination Daftar App
 
 `/apps` menerima `?name=`, `?domain=` (substring case-insensitive pada domain efektif/custom), `?owner=` (persis; **hanya admin**, diabaikan untuk non-admin), digabung AND dengan `?scope=` dan `?server=`. Filter berbasis query string (bisa dibagikan, back bekerja); tab mempertahankan filter; `counts` tab ikut menyempit. Satu pintu pencocokan `AppFilter` (statik, tanpa I/O/otorisasi); pengaman daftar tetap `AppAccess::visible()`. **Belum ada**: pagination (`SITES_PER_PAGE` belum dipakai) dan filter status/`?q=` bebas.

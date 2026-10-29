@@ -23,7 +23,7 @@ Dokumen dipecah per bagian di folder [`ARCHITECTURE/`](./ARCHITECTURE/): setiap 
 | 5.6–5.6b | Custom domain, SSL per domain, rute proxy, subdomain | [`05-03-domain-ssl-subdomain.md`](./ARCHITECTURE/05-03-domain-ssl-subdomain.md) |
 | 5.7–5.10 | Rollback, network, terminal, kepemilikan & sharing | [`05-04-rollback-network-terminal-sharing.md`](./ARCHITECTURE/05-04-rollback-network-terminal-sharing.md) |
 | 5.11–5.12a | Log container/deploy, batalkan build, nama container, batas resource | [`05-05-log-deploy-container-limits.md`](./ARCHITECTURE/05-05-log-deploy-container-limits.md) |
-| 5.13–5.15 | Monitoring, self-update dashboard, backup volume | [`05-06-monitoring-update-backup.md`](./ARCHITECTURE/05-06-monitoring-update-backup.md) |
+| 5.13–5.15 | Monitoring (host & per-app), self-update dashboard, backup volume | [`05-06-monitoring-update-backup.md`](./ARCHITECTURE/05-06-monitoring-update-backup.md) |
 | 5.16–5.20 | File manager, Adminer, billing, SQLite, tarik image template | [`05-07-files-database-billing-sqlite-template.md`](./ARCHITECTURE/05-07-files-database-billing-sqlite-template.md) |
 | 5.21–5.26 | Multi-server inti: onboarding, create di agent, job async, artefak, registry | [`05-08-multiserver-core.md`](./ARCHITECTURE/05-08-multiserver-core.md) |
 | 5.27–5.35 | Multi-server operasional: Nginx/SSL, log/terminal, file, monitor, DB/network/volume, backup, versi agen | [`05-09-multiserver-operasional.md`](./ARCHITECTURE/05-09-multiserver-operasional.md) |
