@@ -41,6 +41,7 @@ $__navIcons = [
     'credits' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>',
     'users' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     'servers' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/></svg>',
+    'errors' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
     'profile' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
 ];
 // Ikon burger dipakai tombol lipat (desktop) & buka drawer (mobile).
@@ -100,6 +101,13 @@ $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke=
         <?php if (is_admin()): ?>
         <li class="nav-item">
           <a class="nav-link <?= ($active ?? '') === 'servers' ? 'active' : '' ?>" href="/servers" data-label="Servers" aria-label="Servers"<?= ($active ?? '') === 'servers' ? ' aria-current="page"' : '' ?>><span class="nav-ico" aria-hidden="true"><?= $__navIcons['servers'] ?></span><span class="nav-label">Servers</span></a>
+        </li>
+        <?php endif; ?>
+        <?php if (is_admin()): ?>
+        <li class="nav-item">
+          <?php // Helper disediakan misi Backend; fallback 0 menjaga smoke render partial/tes lama.
+          $__errorCount = function_exists('error_badge_count') ? (int) error_badge_count() : 0; ?>
+          <a class="nav-link <?= ($active ?? '') === 'errors' ? 'active' : '' ?>" href="/errors" data-label="Errors" aria-label="Errors"<?= ($active ?? '') === 'errors' ? ' aria-current="page"' : '' ?>><span class="nav-ico" aria-hidden="true"><?= $__navIcons['errors'] ?></span><span class="nav-label">Errors</span><?php if ($__errorCount > 0): ?><span class="badge text-bg-danger ms-1" title="<?= e($__errorCount . ' grup error open') ?>"><?= e((string) $__errorCount) ?></span><?php endif; ?></a>
         </li>
         <?php endif; ?>
       </ul>

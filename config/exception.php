@@ -13,5 +13,7 @@
  */
 
 return [
-    '' => support\exception\Handler::class,
+    // Handler aplikasi: meneruskan exception ke fitur "Rekam Error"
+    // (`app\exception\Handler`), lalu perilaku bawaan webman.
+    '' => app\exception\Handler::class,
 ];

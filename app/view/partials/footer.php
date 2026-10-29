@@ -9,5 +9,8 @@
 <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
 <script src="/js/layout.js"></script>
 <script src="/js/theme.js"></script>
+<?php if (current_user() !== null): ?>
+<script src="/js/error-report.js"></script>
+<?php endif; ?>
 </body>
 </html>

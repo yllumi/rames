@@ -287,6 +287,16 @@ Admin dapat mengganti nama brand (default `Rames`) dan logo (default `/logo-smal
 
 Mode `light`, `dark`, `system` (default `system`); nilai ter-resolve (`light|dark`) masuk `data-bs-theme`, `data-theme-mode` hanya untuk ikon. Disimpan **hanya** di `localStorage['rames.theme']` — **bukan** akun/server; tidak ada route/field/migrasi; preferensi per browser dan hilang bila data situs dibersihkan. Dua kontrol sinkron (tombol siklus di footer sidebar & radio di `/profile`), tab lain disinkronkan lewat event `storage`. **Anti-flash**: partial `theme-boot.php` di `<head>` sebelum stylesheet; `theme.js` menangani siklus, `matchMedia`, dan perubahan sistem.
 
+### 7.18 Rekam Error (Error Log self-hosted)
+
+Merekam error yang **tidak tertangani** di sisi user sebagai bahan bug fix, sepenuhnya self-hosted: tanpa SaaS, tanpa telemetri keluar, tanpa dependency baru. Dua sumber: (a) error JS browser (`window.onerror`, `unhandledrejection`) dari `public/js/error-report.js` → `POST /api/errors`; (b) exception server 5xx dari `app/exception/Handler.php` → reporter server. Error yang sudah ditangani (validasi 4xx, flash, 419, `BusinessException`) **tidak** direkam; halaman login tidak memuat reporter (hanya user login); mode `agent` tidak mencatat.
+
+**Pengelompokan & retensi.** Event dikelompokkan per **fingerprint** (normalisasi pesan + frame aplikasi teratas, fallback route) agar satu bug tidak menjadi ribuan baris. Grup menyimpan `status` (`open|resolved|ignored`), jumlah kejadian, sampel terbatas, waktu pertama/terakhir, route, status HTTP, app/server/user, dan jejak penyelesaian. Event baru pada grup `resolved` membuka kembali grup; grup `ignored` tetap diabaikan. Plafon: **20 sampel event/grup**, **5.000 event total**, retensi **30 hari** (dapat dikonfigurasi), prune oportunistik maksimal sekali per jam.
+
+**Akses & privasi.** Halaman `/errors`, detail, API baca, ubah status, dan hapus **admin-only**; non-admin menerima **404** (bukan 403) dan badge nav hanya dihitung untuk admin. Laporan klien wajib login + CSRF (tanpa pengecualian middleware), body ≤16 KiB, kuota 20 laporan/menit/user. Sebelum disimpan, pesan/stack/context diredaksi: header otorisasi/cookie, blok kunci privat, URL ber-userinfo, pasangan kunci sensitif, dan pola token. Yang **tidak pernah** disimpan: IP, cookie, body request, nilai environment, atau `_token`; `app_id` hanya dipertahankan bila user berhak melihat app tersebut; user-agent dipotong 512 byte. Log mentah webman (`runtime/logs/webman.log`) tetap ditulis apa adanya oleh handler lama — redaksi hanya berlaku untuk salinan yang masuk DB.
+
+**Control plane & fase 2.** Fitur berjalan di dashboard (control plane); server agent belum mengirim error-nya ke control plane. Belum ada tombol "Laporkan masalah" manual, notifikasi email/webhook, maupun uji HTTP hidup/JS browser di CI. Rincian alur dan batasan: §5.43, §8.
+
 ## 8. Reverse Proxy / Subdomain Routing
 
 ### 8.1 Domain dasar

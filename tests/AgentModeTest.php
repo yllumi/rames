@@ -114,11 +114,17 @@ class AgentModeTest extends TestCase
      *
      * +1 (grant pemilihan server per user): `POST /users/{id}/servers` —
      * admin-only (404 untuk non-admin), dashboard-only.
+     *
+     * +6 (fitur "Rekam Error"): `POST /api/errors` (laporan klien, wajib login
+     * & CSRF), `GET /errors` + `GET /api/errors` (admin-only ⇒ 404),
+     * `GET /errors/{id}`, `POST /errors/{id}/status`,
+     * `POST /errors/{id}/delete` — semuanya dashboard-only (mode agent tidak
+     * punya UI/sesi error log, dan arah recorder sengaja control plane saja).
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 135;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 141;
 
-    /** Definisi di atas menghasilkan 141 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 141;
+    /** Definisi di atas menghasilkan 147 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 147;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -152,6 +158,10 @@ class AgentModeTest extends TestCase
         'GET /branding/logo',
         'POST /nginx/branding',
         'POST /nginx/branding/reset',
+        // Rekam Error: halaman/API error log tidak boleh terdaftar di agent.
+        'GET /errors',
+        'GET /api/errors',
+        'POST /api/errors',
     ];
 
     private string $tmp = '';

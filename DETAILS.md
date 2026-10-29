@@ -33,6 +33,7 @@
 - **Data per server (F4 sebagian)** — backup/restore/dump volume app server agent dijalankan **di server itu** (job agent) dengan kredensial S3/restic milik server itu; riwayat backup di control plane ter-scope `server_id` sehingga dua server boleh punya volume bernama sama. **Metering & tagihan per server (F4b)** juga mendarat: akrual menuntut **bukti container hidup di server app** (`UsageProbe`), server tak terjangkau ⇒ dilewati + dicatat (tanpa akrual ganda), baris `usage` menyimpan `server_id` (SPECS §7.12). Jadwal backup terjadwal kini **fan-out per server** dari timer control plane (satu clock; agent tidak punya timer) dengan exit code `cli/backup.php run` per volume/server, dan hasil dump agent diunduh bertahap + dibatasi retensinya. Sisa: **purge/penghapusan volume server agent** belum punya op di agent (purge tetap lokal-only & dilaporkan eksplisit), baris volume agent menampilkan `—` untuk driver/mountpoint/dibuat/ukuran, dan risiko higienitas pesan galat worker/log (SPECS §8h.13).
 - **Keamanan dasar** — CSRF token, eksekusi command bebas injection (`array` + `bypass_shell`), validasi input ketat, data domain di SQLite (transaksi atomik), cache JSON dengan file locking (`flock`).
 - **Basis data dashboard (SQLite) + backup berkala** — app/user/billing/seleksi+riwayat volume disimpan di satu berkas SQLite (`rames.sqlite`) dalam named volume **`rames`** (tidak hilang saat `git clean`/update). Snapshot `VACUUM INTO` harian + retensi, impor otomatis **sekali** dari `database/*.json` lama, dan restore dari UI/CLI (kartu **Database dashboard (SQLite)** di `/backups`, admin). Lihat [Basis data dashboard (SQLite)](#basis-data-dashboard-sqlite) (SPECS §8i).
+- **Rekam error** — error JS yang tidak tertangani dan exception server 5xx direkam ke SQLite dashboard, dikelompokkan per fingerprint, dengan halaman `/errors` (admin-only) untuk triage status/hapus. Tanpa SaaS; rahasia diredaksi sebelum disimpan. Lihat [Rekam Error](docs/ARCHITECTURE/05-10-fitur-lain.md#543-rekam-error-error-klien--exception-server-5xx) (SPECS §7.18).
 
 ## Tech Stack
 
@@ -446,6 +447,11 @@ Tarif billing default global (`.env`: `BILLING_RATE_CPU_PER_CORE_HOUR`, `BILLING
 | `BILLING_DUITKU_STATUS_MIN_INTERVAL` | `900` | Jeda minimum cek `transactionStatus` per order (detik; hindari blokir hit-rate) |
 | `BILLING_DUITKU_FORCED_MIN_INTERVAL` | `15` | Floor jeda cek status saat pemicu user/halaman return (detik; efektif ≥1; throttle normal worker tetap `BILLING_DUITKU_STATUS_MIN_INTERVAL`) |
 | `BILLING_DUITKU_STATUS_MAX_PER_TICK` | `20` | Maksimum order yang dicek statusnya per tick meteran |
+| `ERROR_LOG_RETENTION_DAYS` | `30` | Retensi grup & event error (hari); `0` = bersihkan semua data saat prune (SPECS §7.18) |
+| `ERROR_LOG_MAX_EVENTS` | `5000` | Plafon total event error tersimpan; event tertua dibuang lebih dulu |
+| `ERROR_LOG_MAX_SAMPLES` | `20` | Plafon sampel event per grup (tertua dibuang) |
+| `ERROR_REPORT_MAX_BYTES` | `16384` | Batas body laporan klien `POST /api/errors` (byte) |
+| `ERROR_REPORT_RATE_PER_MIN` | `20` | Kuota laporan per menit per user (klien) / per fingerprint (server) |
 
 ## Struktur Direktori (Ringkas)
 
@@ -454,7 +460,7 @@ app/
 ├── command/MakeAdmin.php        # php webman make:admin (provisioning user awal)
 ├── controller/                  # AuthController, AppController, CreditController, PaymentController,
 │                                #   FileController, SslController, NginxController, BrandingController, UserController,
-│                                #   ServerController (registry server), AgentController + AgentJobController + AgentLogController + AgentTerminalController + AgentFilesController + AgentDockerController (route mesin agent)
+│                                #   ServerController (registry server), ErrorController (Error Log), AgentController + AgentJobController + AgentLogController + AgentTerminalController + AgentFilesController + AgentDockerController (route mesin agent)
 ├── library/                     # SELURUH logika bisnis (controller hanya mediator)
 │   ├── Auth/UserStore.php
 │   ├── Branding/                # BrandingManager, BrandingLogo (nama & logo dashboard — SPECS §7.16)
@@ -468,6 +474,8 @@ app/
 │   ├── Deploy/                  # DeployerInterface, LocalDeployer, AgentDeployer, DeployerFactory,
 │   │                            #   ServerResolver, DeployWorkerLauncher
 │   ├── Docker/                  # ComposeParser, DockerClient, DockerComposeRunner, PortManager, AppContainers
+│   ├── Errors/                  # Rekam Error: ErrorStore, ErrorReporter, ErrorRedactor,
+│   │                            #   ErrorRateLimiter, ErrorInput, ErrorFingerprint, ErrorQuery
 │   ├── Files/                   # file manager container: PathGuard, TextContent, ArchiveGuard,
 │   │                            #   ListingParser, FileError, FilesInput, ContainerFiles
 │   ├── Git/GitService.php

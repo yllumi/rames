@@ -22,7 +22,7 @@ use Throwable;
 final class SchemaMigrations
 {
     /** Versi skema terakhir yang dikenal. */
-    public const LATEST = 3;
+    public const LATEST = 4;
 
     /**
      * Daftar migrasi berversi. Kunci = nomor versi (menaik), nilai = callable.
@@ -61,6 +61,67 @@ final class SchemaMigrations
                 foreach (self::storeDefinitions()['parked'] as $collection) {
                     self::ensure($pdo, 'parked', $collection);
                 }
+            },
+            4 => static function (PDO $pdo): void {
+                // "Rekam Error" (error klien + exception server 5xx): dua tabel
+                // khusus di luar `storeDefinitions()` — event bersifat
+                // append-only dan ditulis lewat prepared statement langsung,
+                // sehingga tidak boleh memakai `SqliteStore` (yang menulis ulang
+                // seluruh koleksi per mutasi).
+                //
+                // `error_groups` = satu baris per fingerprint; `error_events` =
+                // sampel terbatas per grup (lihat `ErrorStore::record()`).
+                // Idempoten agar DB v1..v3 yang sudah ada ikut mendapat tabel.
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS "error_groups" ('
+                    . '"id" TEXT PRIMARY KEY,'
+                    . '"fingerprint" TEXT NOT NULL UNIQUE,'
+                    . '"kind" TEXT NOT NULL,'
+                    . '"status" TEXT NOT NULL DEFAULT \'open\','
+                    . '"message" TEXT NOT NULL,'
+                    . '"location" TEXT NOT NULL DEFAULT \'\','
+                    . '"route" TEXT NOT NULL DEFAULT \'\','
+                    . '"http_status" INTEGER,'
+                    . '"app_id" TEXT,'
+                    . '"server_id" TEXT,'
+                    . '"user_id" TEXT,'
+                    . '"username" TEXT,'
+                    . '"first_seen" TEXT NOT NULL,'
+                    . '"last_seen" TEXT NOT NULL,'
+                    . '"count" INTEGER NOT NULL DEFAULT 1,'
+                    . '"samples" INTEGER NOT NULL DEFAULT 0,'
+                    . '"resolved_at" TEXT,'
+                    . '"resolved_by" TEXT'
+                    . ')'
+                );
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS "idx_error_groups_status_seen"'
+                    . ' ON "error_groups" ("status","last_seen")'
+                );
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS "idx_error_groups_last_seen"'
+                    . ' ON "error_groups" ("last_seen")'
+                );
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS "error_events" ('
+                    . '"id" INTEGER PRIMARY KEY AUTOINCREMENT,'
+                    . '"group_id" TEXT NOT NULL,'
+                    . '"occurred_at" TEXT NOT NULL,'
+                    . '"kind" TEXT NOT NULL,'
+                    . '"message" TEXT NOT NULL,'
+                    . '"stack" TEXT NOT NULL DEFAULT \'\','
+                    . '"context" TEXT NOT NULL DEFAULT \'{}\','
+                    . '"user_agent" TEXT NOT NULL DEFAULT \'\''
+                    . ')'
+                );
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS "idx_error_events_group_time"'
+                    . ' ON "error_events" ("group_id","occurred_at")'
+                );
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS "idx_error_events_time"'
+                    . ' ON "error_events" ("occurred_at")'
+                );
             },
         ];
     }

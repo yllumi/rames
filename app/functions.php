@@ -214,6 +214,29 @@ if (!function_exists('is_admin')) {
     }
 }
 
+if (!function_exists('error_badge_count')) {
+    /**
+     * Jumlah grup error berstatus `open` untuk badge nav sidebar.
+     *
+     * Hanya admin (halaman `/errors` admin-only). **Tanpa cache/state**:
+     * worker Webman persistent membuat nilai statik basi setelah grup
+     * diselesaikan/dihapus. Fail-safe: kegagalan baca store (DB sibuk/rusak)
+     * tidak boleh merusak render halaman mana pun.
+     */
+    function error_badge_count(): int
+    {
+        if (!is_admin()) {
+            return 0;
+        }
+
+        try {
+            return (new \app\library\Errors\ErrorQuery())->openCount();
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+}
+
 if (!function_exists('app_role')) {
     /**
      * Role user terhadap app (owner|operator|viewer|admin) atau null bila tidak

@@ -19,6 +19,7 @@
 - **Multi-server** — satu dashboard sebagai control plane mengelola banyak server agent; pilihan server untuk admin (dan member yang diberi izin).
 - **Kredit & penagihan** — pemakaian CPU/RAM serta penyimpanan snapshot backup untuk role member, dengan top-up manual/Duitku.
 - **Branding, tema, dan self-update** — ganti nama/logo, mode gelap, serta update dashboard dari UI.
+- **Rekam error** — error klien tak tertangani + exception server 5xx direkam ke SQLite lokal, dikelompokkan per fingerprint, dan ditriase admin di `/errors`; tanpa SaaS.
 
 ## Prasyarat Minimum (Instalasi Satu Perintah)
 

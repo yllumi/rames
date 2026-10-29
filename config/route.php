@@ -34,6 +34,7 @@ use app\controller\NginxController;
 use app\controller\AppController;
 use app\controller\DatabaseController;
 use app\controller\DomainController;
+use app\controller\ErrorController;
 use app\controller\FileController;
 use app\controller\HealthController;
 use app\controller\PaymentController;
@@ -479,6 +480,22 @@ Route::post('/apps/{id}/files/delete', [FileController::class, 'delete']);
 Route::post('/apps/{id}/files/move', [FileController::class, 'move']);
 Route::post('/apps/{id}/files/upload', [FileController::class, 'upload']);
 Route::post('/apps/{id}/files/extract', [FileController::class, 'extract']);
+
+/*
+|--------------------------------------------------------------------------
+| Rekam Error (error klien + exception server 5xx)
+|--------------------------------------------------------------------------
+| Halaman `/errors` admin-only (non-admin ⇒ 404); laporan klien
+| (`POST /api/errors`) wajib login & CSRF (tidak ada pengecualian middleware).
+| Semua route ini dashboard-only — mode agent tidak mendaftarkannya.
+|--------------------------------------------------------------------------
+*/
+Route::post('/api/errors', [ErrorController::class, 'report']);
+Route::get('/errors', [ErrorController::class, 'index']);
+Route::get('/api/errors', [ErrorController::class, 'apiIndex']);
+Route::get('/errors/{id}', [ErrorController::class, 'show']);
+Route::post('/errors/{id}/status', [ErrorController::class, 'status']);
+Route::post('/errors/{id}/delete', [ErrorController::class, 'delete']);
 
 /*
 |--------------------------------------------------------------------------
