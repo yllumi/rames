@@ -27,6 +27,11 @@
  * hanya membaca body). Tombol = lapisan kedua; controller tetap fail-fast
  * (404 non-admin, 400 untuk baris lokal / agen yang tidak kompatibel).
  *
+ * Setelah job dimulai, `server.js` memantau `GET
+ * /servers/{id}/agent-update/status?job=<id>&offset=<n>` tiap 2 detik (maks. 90
+ * percobaan) dan menulis status/tahap/galat ke `[data-server-update]` baris itu
+ * (teks saja + 8 baris log terakhir di `title`).
+ *
  * Halaman ini admin-only di sisi server (non-admin ⇒ 404); nav di header hanya
  * lapisan kedua.
  */
@@ -333,6 +338,6 @@ $breadcrumbs = [
   <?php endif; ?>
 </section>
 
-<script src="/js/server.js?v=2"></script>
+<script src="/js/server.js?v=5"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

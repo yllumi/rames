@@ -126,11 +126,15 @@ class AgentModeTest extends TestCase
      * diambil dari agent lewat `/system/disk-usage` & `/monitor/containers`).
      * Agent mendapat **route terpisah** `GET /system/disk-usage` (+1 definisi
      * agent) yang bukan route dashboard.
+     *
+     * +1 (polling status job update agen): `GET /servers/{id}/agent-update/status`
+     * — admin-only (non-admin ⇒ 404), dashboard-only: rekaman job `self_update`
+     * hanya ada di agen dan statusnya dibaca control plane untuk UI `/servers`.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 142;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 143;
 
-    /** Definisi di atas menghasilkan 148 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 148;
+    /** Definisi di atas menghasilkan 149 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 149;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -159,9 +163,11 @@ class AgentModeTest extends TestCase
         'POST /domains/parked/{id}/ssl',
         'POST /api/domains/parked/{id}/enable',
         // Registry server (F0 multi-server): halaman & daftar JSON-nya tidak boleh
-        // bocor ke mode agent (agent tidak mengenal server lain).
+        // bocor ke mode agent (agent tidak mengenal server lain). Polling status
+        // job update agen juga dashboard-only (agen tidak memantau dirinya dari UI).
         'GET /servers',
         'GET /api/servers',
+        'GET /servers/{id}/agent-update/status',
         // Rebranding (tab Branding di Config + logo publik untuk halaman login):
         // tidak ada padanannya di agent.
         'GET /branding/logo',

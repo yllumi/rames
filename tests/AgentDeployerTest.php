@@ -1008,6 +1008,27 @@ class AgentDeployerTest extends TestCase
         $this->assertSame(0, $handler->count());
     }
 
+    /**
+     * Id job ber-spasi di-trim **sekali** di awal {@see AgentDeployer::serverJobProgress()}:
+     * validator memang mengizinkan `" job "`, tetapi `AgentClient` menolak id
+     * mentah ber-spasi (`job id tidak valid`) — id yang sampai ke agen wajib bersih.
+     */
+    public function testServerJobProgressTrimsJobIdBeforeCallingAgent(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler
+            ->reply(200, (string) json_encode(['code' => 0, 'job' => ['status' => 'running']]))
+            ->reply(200, "baris log\n");
+
+        $progress = $this->deployer($handler)->serverJobProgress(' job ');
+
+        $this->assertSame('running', $progress['job']['status'] ?? null);
+        $this->assertSame("baris log\n", $progress['log']);
+        $this->assertSame(2, $handler->count());
+        $this->assertSame('/jobs/job', $handler->call(0)['path']);
+        $this->assertSame('/jobs/job/log', $handler->call(1)['path']);
+    }
+
     // ==================================================================
     // Helper
     // ==================================================================

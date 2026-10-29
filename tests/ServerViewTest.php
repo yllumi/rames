@@ -220,7 +220,7 @@ class ServerViewTest extends TestCase
         // Hapus server agent = form HTML biasa + CSRF (semua POST controller selalu redirect).
         self::assertStringContainsString('action="/servers/vps-jakarta/delete"', $html);
         self::assertStringContainsString('name="_token" value="smoke-csrf-token"', $html);
-        self::assertStringContainsString('src="/js/server.js?v=2"', $html);
+        self::assertStringContainsString('src="/js/server.js?v=5"', $html);
 
         $this->assertNoSecretLeak($html);
     }

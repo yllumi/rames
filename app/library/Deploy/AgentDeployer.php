@@ -97,6 +97,25 @@ final class AgentDeployer implements DeployerInterface
     /** Galat polling job yang dianggap sementara (boleh diulang). */
     private const TRANSIENT_REASONS = [AgentError::UNREACHABLE, AgentError::SERVER_ERROR];
 
+    /**
+     * Galat agent yang dianggap **sementara** saat control plane memantau job
+     * tingkat server: transien biasa ({@see self::TRANSIENT_REASONS}) **plus**
+     * `not_found` — `self_update` me-recreate container agen, sehingga rekaman
+     * job lama bisa lenyap tepat setelah update berhasil. Ditulis eksplisit
+     * (bukan spread) agar tetap sah di PHP 8.1.
+     *
+     * Sengaja BEDA dari {@see self::TRANSIENT_REASONS}: `not_found` transien
+     * hanya untuk pemantauan status job di dashboard (rekaman bisa hilang saat
+     * agen di-recreate), sementara pada loop tunggu job sinkron `not_found`
+     * tetap permanen. Jangan menyatukan kedua daftar tanpa meninjau pemakaian
+     * `TRANSIENT_REASONS`.
+     */
+    private const JOB_POLL_TRANSIENT_REASONS = [
+        AgentError::UNREACHABLE,
+        AgentError::SERVER_ERROR,
+        AgentError::NOT_FOUND,
+    ];
+
     /** Batas kegagalan polling **berturut-turut** sebelum job dianggap gagal. */
     public const MAX_POLL_FAILURES = 5;
 
@@ -380,7 +399,10 @@ final class AgentDeployer implements DeployerInterface
      */
     public function serverJobProgress(string $jobId, int $offset = 0): array
     {
-        if (preg_match(self::ID_PATTERN, trim($jobId)) !== 1) {
+        // Validasi **dan** normalisasi sekali di awal: `AgentClient` menolak id
+        // ber-spasi, jadi id mentah tidak boleh diteruskan ke `jobRecord()`/log.
+        $jobId = trim($jobId);
+        if (!self::isValidJobId($jobId)) {
             throw AgentError::badResponse($this->label() . ': id job tidak sah.');
         }
 
@@ -408,6 +430,32 @@ final class AgentDeployer implements DeployerInterface
     public function serverJobFailure(array $job, string $op): string
     {
         return $this->jobError($job, $op);
+    }
+
+    /**
+     * Bentuk id job yang boleh dipakai untuk membaca progres job agent.
+     *
+     * **Satu sumber** dengan validasi di {@see self::serverJobProgress()}: pemanggil
+     * (mis. endpoint polling status update agen) bisa menolak input pengguna
+     * **sebelum** panggilan jaringan tanpa menyalin regex-nya.
+     */
+    public static function isValidJobId(string $jobId): bool
+    {
+        return preg_match(self::ID_PATTERN, trim($jobId)) === 1;
+    }
+
+    /**
+     * Galat agent yang boleh dianggap **sementara** saat memantau job tingkat
+     * server (`template_pull`, `self_update`) — lihat
+     * {@see self::JOB_POLL_TRANSIENT_REASONS}.
+     *
+     * Pemanggil (mis. endpoint polling status update agen) memakai ini untuk
+     * membedakan "agen sedang restart" (lanjutkan polling) dari galat
+     * konfigurasi/otorisasi deterministik yang tidak akan sembuh sendiri.
+     */
+    public static function isTransientJobPollError(AgentError $error): bool
+    {
+        return in_array($error->reason, self::JOB_POLL_TRANSIENT_REASONS, true);
     }
 
     // ==================================================================

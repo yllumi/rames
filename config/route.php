@@ -381,6 +381,9 @@ Route::post('/servers/{id}/test', [ServerController::class, 'testConnection']);
 // Perbarui agen di server itu (JSON; job async `self_update` dijalankan DI agen,
 // dengan gerbang versi/kapabilitas sebelum efek samping) — F4 lanjutan.
 Route::post('/servers/{id}/agent-update', [ServerController::class, 'agentUpdate']);
+// Polling status job update agen (JSON, admin-only ⇒ 404 untuk non-admin): rekaman
+// job + potongan log baru dari agen, supaya kegagalan preflight di sana terlihat.
+Route::get('/servers/{id}/agent-update/status', [ServerController::class, 'agentUpdateStatus']);
 // Daftar server untuk JS dashboard (tanpa token/PEM).
 Route::get('/api/servers', [ServerController::class, 'apiIndex']);
 

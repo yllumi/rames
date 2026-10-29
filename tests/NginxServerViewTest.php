@@ -362,8 +362,8 @@ class NginxServerViewTest extends TestCase
         self::assertStringContainsString('Perbarui agen tidak tersedia: versi agen belum kompatibel', $html);
         self::assertStringContainsString('Perbarui agen tidak tersedia: server ini nonaktif', $html);
 
-        // Sudah dinaikkan cache-bust JS-nya.
-        self::assertStringContainsString('src="/js/server.js?v=2"', $html);
+        // Sudah dinaikkan cache-bust JS-nya (v=5: status `unreachable` + `reason`).
+        self::assertStringContainsString('src="/js/server.js?v=5"', $html);
 
         $this->assertNoServerIndexSecretLeak($html);
     }
@@ -396,9 +396,75 @@ class NginxServerViewTest extends TestCase
         self::assertStringContainsString('window.confirm(', $js);
         self::assertStringContainsString("target('data-server-update', id)", $js);
         self::assertStringNotContainsString('.innerHTML', $js, 'JS tidak boleh menyisipkan HTML dari data server');
-        // Aksi manual: tanpa polling/timer.
+    }
+
+    /**
+     * Pemantauan job update agen: endpoint status, interval 2 detik, batas
+     * percobaan/kegagalan, status terminal, penanganan `unreachable` (bukan
+     * galat), penulisan teks tanpa HTML, dan higienitas timer (jeda saat tab
+     * tersembunyi, bersih saat halaman pergi).
+     */
+    public function testServerJsPollsAgentUpdateStatusWithBoundedTimer(): void
+    {
+        $js = (string) file_get_contents(self::ROOT_DIR . '/public/js/server.js');
+
+        // Kontrak endpoint: GET status dengan `job` + `offset` lanjutan.
+        self::assertStringContainsString("'/agent-update/status'", $js);
+        self::assertStringContainsString("'?job=' + encodeURIComponent(state.jobId)", $js);
+        self::assertStringContainsString("'&offset=' + encodeURIComponent(String(state.offset))", $js);
+        self::assertStringContainsString('state.offset = next;', $js);
+
+        // Batas polling: 2 detik, 90 percobaan, 5 kegagalan jaringan berturut-turut.
+        self::assertStringContainsString('var POLL_MS = 2000;', $js);
+        self::assertStringContainsString('var POLL_MAX_ATTEMPTS = 90;', $js);
+        self::assertStringContainsString('var POLL_MAX_FAILURES = 5;', $js);
+        self::assertStringContainsString('state.attempts >= POLL_MAX_ATTEMPTS', $js);
+        self::assertStringContainsString('state.failures >= POLL_MAX_FAILURES', $js);
+
+        // Status terminal menghentikan polling.
+        self::assertStringContainsString("if (status === 'done')", $js);
+        self::assertStringContainsString("if (status === 'error')", $js);
+        self::assertStringContainsString('function finishPoll(', $js);
+
+        // Pesan selalu teks; log terakhir hanya di `title` (maks. 8 baris).
+        self::assertStringContainsString('var POLL_LOG_LINES = 8;', $js);
+        self::assertStringContainsString('box.textContent = message', $js);
+        self::assertStringContainsString("box.setAttribute('title', lines.join(", $js);
+        self::assertStringContainsString("clip(error || 'Update agen gagal.', POLL_ERROR_MAX)", $js);
+
+        // `unreachable` (agent restart saat update) = 200 + status, BUKAN galat:
+        // pesan ⏳, ambang 10 tick berturut-turut, lalu ajakan Test connection;
+        // polling tetap lanjut sampai batas percobaan/kegagalan.
+        self::assertStringContainsString(
+            "status: 'pending' | 'running' | 'done' | 'error' | 'unreachable'",
+            $js,
+            'Kontrak status harus mencantumkan `unreachable`'
+        );
+        self::assertStringContainsString('**bukan** 400', $js, 'Agent tak terjangkau bukan 400');
+        self::assertStringContainsString('var UNREACHABLE_NOTICE_AFTER = 10;', $js);
+        self::assertStringContainsString("if (status === 'unreachable')", $js);
+        self::assertStringContainsString('state.unreachable += 1;', $js);
+        self::assertStringContainsString('state.unreachable >= UNREACHABLE_NOTICE_AFTER', $js);
+        self::assertStringContainsString(
+            'Bila berlanjut, jalankan Test connection untuk memverifikasi versi.',
+            $js
+        );
+        self::assertStringContainsString("(notice || 'Agent tidak terjangkau", $js);
+        self::assertStringContainsString("var reason = data && data.reason ? String(data.reason) : '';", $js);
+        self::assertStringContainsString("if (reason === 'not_found')", $js);
+        self::assertStringContainsString('var JOB_GONE_MESSAGE =', $js);
+        self::assertStringContainsString(
+            'Job update tidak ditemukan di agen (kemungkinan agen sudah ',
+            $js
+        );
+        self::assertStringContainsString("setUpdateMessage(state.id, unreachableText, state.logLines.slice(0), 'muted')", $js);
+
+        // Higienitas timer: satu setTimeout terjadwal, tanpa setInterval.
         self::assertStringNotContainsString('setInterval', $js);
-        self::assertStringNotContainsString('setTimeout', $js);
+        self::assertStringContainsString("if (document.hidden) return;", $js);
+        self::assertStringContainsString("document.addEventListener('visibilitychange'", $js);
+        self::assertStringContainsString("window.addEventListener('pagehide', stopAllPolls)", $js);
+        self::assertStringContainsString("window.addEventListener('beforeunload', stopAllPolls)", $js);
     }
 
     // ------------------------------------------------------------------

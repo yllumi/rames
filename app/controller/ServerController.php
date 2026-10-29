@@ -490,6 +490,131 @@ class ServerController
     }
 
     /**
+     * `GET /servers/{id}/agent-update/status?job=<jobId>[&offset=N]` — status
+     * job **update agen** di server itu (JSON, admin-only).
+     *
+     * Latar: `POST /servers/{id}/agent-update` hanya mengembalikan `job_id`; job
+     * `self_update` berjalan **di agen** (asinkron). Kegagalan preflight di sana
+     * (mis. `UpdateService::preflight()` menolak repo dengan perubahan yang belum
+     * di-commit) hanya tercatat di `runtime/logs/deploy/agent.log` server agen.
+     * Endpoint ini meneruskan rekaman job agen + potongan log barunya ke UI.
+     *
+     * Kontrak:
+     *  - **200** `{code:0, data:{job_id,status,stage,message,error,finished_at,log,offset}}`
+     *    — `status` dari rekaman job (fallback `pending`), `error` **hanya** diisi
+     *    saat `status=error` ({@see AgentDeployer::serverJobFailure()} yang sudah
+     *    tersanitasi), `log` = baris lengkap baru, `offset` = offset lanjutan;
+     *  - **200** `status="unreachable"` **hanya** untuk galat agent transien
+     *    ({@see AgentDeployer::isTransientJobPollError()}): `unreachable`,
+     *    `server_error`, dan `not_found` (rekaman job hilang setelah container
+     *    agen di-recreate oleh `self_update`). Transport putus sesaat adalah
+     *    keadaan normal — menjawab 4xx akan membuat UI menampilkan "gagal" padahal
+     *    update mungkin sukses. `data.reason` membawa alasan mentah agar UI bisa
+     *    membedakan job hilang vs agen mati; pesan lewat
+     *    {@see AgentError::sanitizeForServer()} (tanpa token/host) dan `offset`
+     *    dikembalikan apa adanya (tanpa kemajuan) untuk polling berikutnya;
+     *  - **400** `{code:400, msg, reason}` — input salah (`job` kosong/tidak
+     *    sah), konfigurasi deterministik (baris `local`, `kind` server tak
+     *    dikenal), atau `AgentError` **non-transien** (`invalid_config`,
+     *    `unauthorized`, `tls_failed`, `unsupported`, `bad_response`) yang tidak
+     *    akan sembuh sendiri dengan menunggu; semua pesan disanitasi;
+     *  - **404** — non-admin ({@see self::guard()}) atau server tidak ada.
+     *
+     * **Satu** pembacaan progres per request (di dalamnya dua panggilan HTTP ke
+     * agen: status job + potongan log) — tanpa loop/tidur dan **tanpa cache**
+     * hasil terakhir di controller: pengulangan adalah urusan browser
+     * (`public/js/server.js`). Gerbang versi **tidak** diperiksa di sini: agen
+     * lama pun berhak melaporkan status job-nya, dan galat kontrak agent tetap
+     * tersanitasi.
+     */
+    public function agentUpdateStatus(Request $request, string $id): Response
+    {
+        $denied = $this->guard($request);
+        if ($denied !== null) {
+            return $denied;
+        }
+
+        $server = $this->servers()->find($id);
+        if ($server === null) {
+            return json(['code' => 1, 'error' => 'Server tidak ditemukan.'])->withStatus(404);
+        }
+
+        // Semua pesan 400 disanitasi terhadap server ini (token/host tidak bocor).
+        $badRequest = static fn (string $message): Response => json([
+            'code' => 400,
+            'msg' => AgentError::sanitizeForServer($message, $server),
+        ])->withStatus(400);
+
+        if (ServerResolver::isLocal($server)) {
+            return $badRequest('Server lokal adalah dashboard ini sendiri — tidak punya job update agen.');
+        }
+
+        $rawJob = $request->get('job', '');
+        $jobId = is_scalar($rawJob) ? trim((string) $rawJob) : '';
+        if ($jobId === '') {
+            return $badRequest('Parameter `job` wajib diisi dengan id job update agen.');
+        }
+        if (!AgentDeployer::isValidJobId($jobId)) {
+            return $badRequest('Id job tidak sah.');
+        }
+
+        // `offset` non-numerik/array diabaikan (bukan 500); negatif di-clamp ke 0.
+        $rawOffset = $request->get('offset', '0');
+        $offset = is_array($rawOffset) || !is_numeric($rawOffset) ? 0 : max(0, (int) $rawOffset);
+
+        try {
+            $deployer = $this->agentDeployerForServer($server);
+            if (!$deployer instanceof AgentDeployer) {
+                throw new RuntimeException('Status job update agen membutuhkan server `kind=agent` yang valid.');
+            }
+
+            $progress = $deployer->serverJobProgress($jobId, $offset);
+        } catch (AgentError $e) {
+            // Hanya galat **transien** (agen tak terjangkau/5xx, atau rekaman job
+            // hilang setelah container agen di-recreate) yang dijawab 200
+            // `unreachable`: self-update memang memutus transport sesaat. Galat
+            // deterministik (token/PEM kosong, unauthorized, TLS, `badResponse`,
+            // `unsupported`) tidak akan sembuh sendiri — jawab 400 + `reason`
+            // supaya admin tidak menunggu polling sia-sia (pola `agentUpdate()`).
+            if (AgentDeployer::isTransientJobPollError($e)) {
+                return $this->agentUpdateUnreachable($jobId, $offset, $server, $e->reason);
+            }
+
+            return json([
+                'code' => 400,
+                'msg' => AgentError::sanitizeForServer($e->getMessage(), $server),
+                'reason' => $e->reason,
+            ])->withStatus(400);
+        } catch (RuntimeException $e) {
+            // Galat konfigurasi deterministik (bukan transport) — tetap terlihat admin.
+            return $badRequest('Gagal membaca status job update agen: ' . $e->getMessage());
+        }
+
+        $job = is_array($progress['job'] ?? null) ? $progress['job'] : [];
+        $status = $this->jobString($job, 'status');
+        if ($status === '') {
+            $status = 'pending';
+        }
+
+        return json([
+            'code' => 0,
+            'data' => [
+                'job_id' => $jobId,
+                'status' => $status,
+                // Teks bebas dari agen tetap disanitasi (higienitas kredensial).
+                'stage' => AgentError::sanitizeForServer($this->jobString($job, 'stage'), $server),
+                'message' => AgentError::sanitizeForServer($this->jobString($job, 'message'), $server),
+                'error' => $status === 'error'
+                    ? $deployer->serverJobFailure($job, DeployWorkerLauncher::AGENT_UPDATE_OP)
+                    : '',
+                'finished_at' => $this->jobString($job, 'finished_at'),
+                'log' => is_string($progress['log'] ?? null) ? $progress['log'] : '',
+                'offset' => max(0, (int) ($progress['offset'] ?? $offset)),
+            ],
+        ]);
+    }
+
+    /**
      * `GET /api/servers` — daftar server untuk konsumsi JS (JSON).
      *
      * **Tanpa** `token`/`token_ref`/`tls_cert_pem` (hanya `has_token` boolean).
@@ -743,6 +868,58 @@ class ServerController
         $this->flash('error', $message);
 
         return redirect($redirectTo ?? ('/servers/' . ServerStore::LOCAL_ID));
+    }
+
+    /**
+     * Respons **200** `status="unreachable"` untuk job update agen yang rekamannya
+     * belum bisa dibaca (agen sedang restart / galat HTTP).
+     *
+     * Sengaja bukan 4xx: `self_update` me-recreate container agen sehingga
+     * transport putus sesaat adalah keadaan normal; UI harus tetap polling.
+     * `offset` dikembalikan apa adanya (tidak ada log baru yang dikonsumsi) dan
+     * **tidak ada** state yang disimpan di controller — polling berikutnya
+     * mencoba agen lagi dari offset yang sama.
+     *
+     * @param array<string,mixed> $server dokumen server (untuk sanitasi pesan)
+     * @param string              $reason alasan mesin-terbaca (`AgentError::*`) agar UI
+     *                                    bisa membedakan job hilang (`not_found`) dari
+     *                                    agen tak terjangkau (`unreachable`/`server_error`)
+     */
+    private function agentUpdateUnreachable(string $jobId, int $offset, array $server, string $reason): Response
+    {
+        return json([
+            'code' => 0,
+            'data' => [
+                'job_id' => $jobId,
+                'status' => 'unreachable',
+                'stage' => '',
+                'message' => AgentError::sanitizeForServer(
+                    'Agent tidak terjangkau (kemungkinan sedang restart saat update).',
+                    $server
+                ),
+                'error' => '',
+                'finished_at' => '',
+                'log' => '',
+                'offset' => max(0, $offset),
+                // Alasan mesin-terbaca (bukan rahasia): UI/jebakan diagnosis.
+                'reason' => $reason,
+            ],
+        ]);
+    }
+
+    /**
+     * Field teks rekaman job agent (`''` bila tidak ada/bukan skalar).
+     *
+     * Rekaman itu berasal dari HTTP agen, jadi bentuknya tidak boleh dipercaya
+     * mentah-mentah (array/objek ⇒ string kosong, bukan galat konversi).
+     *
+     * @param array<string,mixed> $job
+     */
+    private function jobString(array $job, string $key): string
+    {
+        $value = $job[$key] ?? '';
+
+        return is_scalar($value) ? trim((string) $value) : '';
     }
 
     private function notFound(Request $request): Response
