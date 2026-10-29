@@ -209,7 +209,7 @@
     if (storageBusy || !alive()) return;
     storageBusy = true;
     fetchJson('/api/apps/' + encodeURIComponent(appId) + '/metrics?storage=1')
-      .then(renderStorage)
+      .then(function (data) { renderStorage(data && data.storage ? data.storage : null); })
       .catch(function () { /* diam: biarkan nilai terakhir / "—" */ })
       .then(function () { storageBusy = false; });
   }

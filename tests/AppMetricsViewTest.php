@@ -108,6 +108,12 @@ final class AppMetricsViewTest extends TestCase
         self::assertStringContainsString("'/metrics'", $code);
         self::assertStringContainsString("'/metrics?storage=1'", $code);
         self::assertStringNotContainsString('innerHTML =', $code);
+
+        // Regresi: `fetchJson()` mengembalikan `data` utuh; blok storage ada di
+        // `data.storage`. Meneruskan `data` langsung ke `renderStorage()`
+        // membuat `available` tak terbaca → UI salah menampilkan "tidak tersedia".
+        self::assertStringContainsString('renderStorage(data && data.storage', $code);
+        self::assertStringNotContainsString('.then(renderStorage)', $code);
     }
 
     // ==================================================================
