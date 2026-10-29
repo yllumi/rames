@@ -228,7 +228,7 @@ foreach ($apps as $__app) {
         <td>
           <a class="mono fw-semibold text-decoration-none me-1" href="/apps/<?= e($__card['id']) ?>"><?= e($__card['name']) ?></a>
           <?php if (!$__card['isOwner']): ?>
-            <span class="badge p-1 text-bg-light border" title="Anda punya akses <?= e(app_role_label($__card['role'])) ?> ke app ini">Dibagikan · <?= e(app_role_label($__card['role'])) ?></span>
+            <span class="badge p-1 text-bg-light border" role="img" title="Anda punya akses <?= e(app_role_label($__card['role'])) ?> ke app ini" aria-label="Dibagikan · <?= e(app_role_label($__card['role'])) ?>"><svg viewBox="0 0 18 18" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="13.5" cy="3.5" r="2.1"/><circle cx="4.5" cy="9" r="2.1"/><circle cx="13.5" cy="14.5" r="2.1"/><line x1="6.4" y1="8.1" x2="11.7" y2="4.6"/><line x1="6.4" y1="9.9" x2="11.7" y2="13.4"/></svg></span>
           <?php endif; ?>
         </td>
         <td class="small">
@@ -294,7 +294,7 @@ foreach ($apps as $__app) {
         <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
           <a class="mono fw-semibold text-decoration-none" href="/apps/<?= e($__card['id']) ?>"><?= e($__card['name']) ?></a>
           <?php if (!$__card['isOwner']): ?>
-            <span class="badge p-1 text-bg-light border" title="Anda punya akses <?= e(app_role_label($__card['role'])) ?> ke app ini">Dibagikan · <?= e(app_role_label($__card['role'])) ?></span>
+            <span class="badge p-1 text-bg-light border" role="img" title="Anda punya akses <?= e(app_role_label($__card['role'])) ?> ke app ini" aria-label="Dibagikan · <?= e(app_role_label($__card['role'])) ?>"><svg viewBox="0 0 18 18" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="13.5" cy="3.5" r="2.1"/><circle cx="4.5" cy="9" r="2.1"/><circle cx="13.5" cy="14.5" r="2.1"/><line x1="6.4" y1="8.1" x2="11.7" y2="4.6"/><line x1="6.4" y1="9.9" x2="11.7" y2="13.4"/></svg></span>
           <?php endif; ?>
         </div>
         <div class="d-flex flex-wrap align-items-center gap-2 mb-2">

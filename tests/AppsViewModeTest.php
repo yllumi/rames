@@ -175,8 +175,11 @@ final class AppsViewModeTest extends TestCase
         self::assertStringContainsString('1 container', $thumbs);
         self::assertStringContainsString('2026-10-29 08:00', $thumbs);
         self::assertSame(2, substr_count($thumbs, '>Detail</a>'));
-        // Badge "Dibagikan · role" dipertahankan untuk app yang bukan milik user.
-        self::assertStringContainsString('Dibagikan · Viewer', $thumbs);
+        // App yang bukan milik user memakai ikon shared (bukan label teks);
+        // peran tetap terbaca lewat title/aria-label.
+        self::assertStringContainsString('aria-label="Dibagikan · Viewer"', $thumbs);
+        self::assertStringContainsString('Anda punya akses Viewer ke app ini', $thumbs);
+        self::assertStringNotContainsString('Dibagikan · Viewer</span>', $thumbs);
     }
 
     // ------------------------------------------------------------------
