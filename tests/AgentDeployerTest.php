@@ -156,6 +156,7 @@ class AgentDeployerTest extends TestCase
             'rebuild' => ['rebuild', [], ['op' => 'rebuild']],
             'apply' => ['apply', [], ['op' => 'apply']],
             'apply_env' => ['applyEnv', [], ['op' => 'apply_env']],
+            'apply_limits' => ['applyLimits', [], ['op' => 'apply_limits']],
             'rollback' => ['rollback', ['ref' => 'abc1234'], ['op' => 'rollback', 'ref' => 'abc1234']],
             'stop' => ['stop', [], ['op' => 'stop']],
             'start' => ['start', [], ['op' => 'start']],
@@ -183,6 +184,7 @@ class AgentDeployerTest extends TestCase
             'rebuild' => $deployer->rebuild($this->app(), $this->logger()),
             'apply' => $deployer->apply($this->app(), $this->logger()),
             'applyEnv' => $deployer->applyEnv($this->app(), $this->logger()),
+            'applyLimits' => $deployer->applyLimits($this->app(), $this->logger()),
             'rollback' => $deployer->rollback($this->app(), (string) $args['ref'], $this->logger()),
             'stop' => $deployer->stop($this->app()),
             'start' => $deployer->start($this->app()),
@@ -605,6 +607,65 @@ class AgentDeployerTest extends TestCase
         $this->assertSame('GET', $handler->call(0)['method']);
     }
 
+    /**
+     * `GET /apps/{id}/services` — daftar service + limit base compose **dari
+     * agent**, satu panggilan, bentuk respons divalidasi & dinormalkan (tidak ada
+     * field asing yang ikut keluar).
+     */
+    public function testAppServicesReadsServicesAndDetectedFromTheAgent(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, (string) json_encode([
+            'code' => 0,
+            'data' => [
+                'services' => ['web', 'db', 'web', ''],
+                'detected' => [
+                    'web' => ['cpus' => 1, 'memory_mb' => 512, 'cpu_families' => ['legacy']],
+                    'db' => ['cpus' => null, 'memory_mb' => null],
+                ],
+            ],
+        ]));
+
+        $data = $this->deployer($handler)->appServices($this->app());
+
+        $this->assertSame(['web', 'db'], $data['services'], 'duplikat & entri kosong dibuang');
+        $this->assertSame(['cpus' => 1.0, 'memory_mb' => 512], $data['detected']['web'], 'hanya field kontrak');
+        $this->assertSame(['cpus' => null, 'memory_mb' => null], $data['detected']['db']);
+        $this->assertNull($data['error']);
+
+        $this->assertSame(1, $handler->count());
+        $this->assertSame('GET', $handler->call(0)['method']);
+        $this->assertSame('/apps/' . self::APP_ID . '/services', $handler->call(0)['path']);
+    }
+
+    /**
+     * Agent lama (endpoint belum ada) ⇒ 404 yang diterjemahkan menjadi
+     * `AgentError::NOT_FOUND` — pemanggil menampilkan "perbarui agent".
+     */
+    public function testAppServicesOnOldAgentIsNotFound(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(404, (string) json_encode(['code' => 1, 'error' => 'Endpoint tidak ada.']));
+
+        try {
+            $this->deployer($handler)->appServices($this->app());
+            $this->fail('404 harus menjadi AgentError::NOT_FOUND');
+        } catch (AgentError $e) {
+            $this->assertSame(AgentError::NOT_FOUND, $e->reason);
+        }
+    }
+
+    /** Bentuk respons di luar kontrak ⇒ `AgentError`, bukan array kosong diam-diam. */
+    public function testAppServicesRejectsMalformedPayload(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+        $handler->reply(200, (string) json_encode(['code' => 0, 'services' => ['web']]));
+
+        $this->expectException(AgentError::class);
+
+        $this->deployer($handler)->appServices($this->app());
+    }
+
     public function testAppWithoutValidIdIsRejected(): void
     {
         $handler = new AgentDeployerFakeHandler();
@@ -637,6 +698,7 @@ class AgentDeployerTest extends TestCase
             'apply' => ['apply', true],
             'rollback' => ['rollback', true],
             'apply_env' => ['applyEnv', false],
+            'apply_limits' => ['applyLimits', false],
             'stop' => ['stop', false],
             'start' => ['start', false],
             'teardown' => ['teardown', false],
@@ -662,6 +724,7 @@ class AgentDeployerTest extends TestCase
             'rebuild' => $deployer->rebuild($app, $this->logger()),
             'apply' => $deployer->apply($app, $this->logger()),
             'applyEnv' => $deployer->applyEnv($app, $this->logger()),
+            'applyLimits' => $deployer->applyLimits($app, $this->logger()),
             'rollback' => $deployer->rollback($app, 'abc1234', $this->logger()),
             'stop' => $deployer->stop($app),
             'start' => $deployer->start($app),

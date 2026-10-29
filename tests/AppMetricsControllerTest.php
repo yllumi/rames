@@ -572,6 +572,11 @@ final class AppMetricsControllerTestDeployer implements DeployerInterface
         return $app;
     }
 
+    public function applyLimits(array $app, callable $logger): array
+    {
+        return $app;
+    }
+
     public function teardown(array $app, ?array $preserveVolumes = null): void
     {
     }

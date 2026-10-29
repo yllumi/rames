@@ -241,6 +241,7 @@ class AgentModeTest extends TestCase
                 'GET /apps/{id}',
                 'GET /apps/{id}/logs',
                 'GET /apps/{id}/nginx',
+                'GET /apps/{id}/services',
                 'GET /backups/dump',
                 'GET /backups/snapshots',
                 'GET /backups/volumes',
@@ -322,6 +323,12 @@ class AgentModeTest extends TestCase
         $this->assertSame(
             [AgentJobController::class, 'checkNginx'],
             $routes['pairs']['POST /nginx/check']->getCallback()
+        );
+        // Batas CPU/memori app agent: daftar service dibaca dari base compose
+        // server ini (control plane tidak punya salinan artefak app agent).
+        $this->assertSame(
+            [AgentJobController::class, 'services'],
+            $routes['pairs']['GET /apps/{id}/services']->getCallback()
         );
         // Preflight create app (F1 lanjutan): ketersediaan direktori `apps/<name>`
         // di server ini sebelum control plane menulis record app.
@@ -468,13 +475,14 @@ class AgentModeTest extends TestCase
             $routes['pairs']['GET /healthz']->getCallback()
         );
         $this->assertCount(
-            41,
+            42,
             $routes['definitions'],
             'route agent F0 (diagnostik) + F1 (3 job + proyeksi app + preflight nama app + cancel job) + F2 (nginx)'
             . ' + F3a (log + 5 terminal)'
             . ' + F3b/F3c (10 file manager + 2 monitoring) + F3d (1 database + 1 adminer + 7 network/volume)'
             . ' + F4 (3 route data: daftar volume backup + daftar snapshot + unduh dump bertahap)'
             . ' + metrik per-app (1 ukuran storage)'
+            . ' + batas resource app agent (1 daftar service dari base compose server itu)'
         );
     }
 

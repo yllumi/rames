@@ -385,8 +385,10 @@ class AppController
             // engine tidak tersedia — tab Database tidak muncul
         }
 
-        // Batas CPU/memori per service (tab Container). Tanpa panggilan Engine
-        // tambahan; bila base compose tidak terbaca → data minimal + pesan error.
+        // Batas CPU/memori per service (tab Container). Server **lokal** membaca
+        // base compose di disk (perilaku lama); server **agent** meminta daftar
+        // service + nilai base ke agent — control plane tidak punya salinan
+        // compose app remote. Satu panggilan HTTP per render detail.
         $limitsDir = (string) config('deploy.apps_path') . '/' . $app['name'];
         $savedLimits = [];
         try {
@@ -394,6 +396,14 @@ class AppController
         } catch (\Throwable $e) {
             // data limits di apps.json tidak valid → form tampil tanpa nilai tersimpan
         }
+        $resourceLimits = ($appServer === null || ServerResolver::isLocal($appServer))
+            ? $this->limitsContext(
+                $limitsDir,
+                (array) ($app['compose_files'] ?? ['docker-compose.yml']),
+                app_can('limits', $app),
+                $savedLimits
+            )
+            : $this->agentLimitsContext($app, app_can('limits', $app), $savedLimits);
 
         // Presentasi subdomain: view memakai `$app['subdomain']` sebagai FQDN.
         // Field tersimpan menyimpan label → kirim FQDN efektif, plus label & flag
@@ -422,12 +432,7 @@ class AppController
             'dbContainers' => $dbContainers,
             'access' => $this->accessContext($app),
             'compose' => $this->composeContext($app),
-            'resourceLimits' => $this->limitsContext(
-                $limitsDir,
-                (array) ($app['compose_files'] ?? ['docker-compose.yml']),
-                app_can('limits', $app),
-                $savedLimits
-            ),
+            'resourceLimits' => $resourceLimits,
             'billingEstimate' => $this->billingEstimateFor(
                 $savedLimits,
                 $this->billingPayerFor($app, current_user()),
@@ -717,7 +722,7 @@ class AppController
 
     /**
      * Direktori artefak app **di host ini** untuk jalur yang masih menulis file
-     * lokal (limits/network/nama container, dan cabang **lokal** env) — atau
+     * lokal (network/nama container, dan cabang **lokal** env/limits) — atau
      * `null` + flash error.
      *
      * Multi-server F1/F2: jalur-jalur itu menulis berkas di server lokal, jadi
@@ -727,10 +732,10 @@ class AppController
      * mengira app/direktori sudah terhapus. Perilaku server lokal **tidak
      * berubah** (pesan & alur lama).
      *
-     * Jalur env kini **server-aware**: pemanggilnya (`saveEnv`, `uploadEnv`,
-     * `importEnv`) memutuskan lebih dulu berdasarkan `ServerResolver::isLocal()`
-     * sehingga app agent tidak lagi sampai ke guard ini (yang berarti menulis
-     * artefak lokal untuk server yang salah).
+     * Jalur env & limits kini **server-aware**: pemanggilnya (`saveEnv`,
+     * `uploadEnv`, `importEnv`, `saveLimits`) memutuskan lebih dulu berdasarkan
+     * `ServerResolver::isLocal()` sehingga app agent tidak lagi sampai ke guard
+     * ini (yang berarti menulis artefak lokal untuk server yang salah).
      *
      * @param array<string,mixed> $app
      * @param string              $feature nama fitur untuk pesan galat
@@ -3499,21 +3504,44 @@ class AppController
      * form "Batas resource" di tab Container. Ability `limits` = **admin saja**
      * (penolakan → 404, satu pintu lewat AppAccess).
      *
-     * Alur (validasi dulu, baru tulis — gagal = tidak ada state yang berubah):
-     *  1) Whitelist service terhadap base compose; validasi nilai (normalize).
-     *  2) Tulis/hapus `docker-compose.override.limits.yml` + rapikan compose_files.
-     *  3) Recreate container (`up -d` tanpa build) agar batas baru dipakai.
+     * Dua jalur, dipilih dari **server pemilik app**:
+     *  - server **lokal** (perilaku lama, tidak berubah): whitelist service
+     *    terhadap base compose lokal → validasi nilai → tulis/hapus
+     *    `docker-compose.override.limits.yml` + rapikan `compose_files` →
+     *    recreate container (`applyEnv`, `up -d` tanpa build) secara sinkron;
+     *  - server **agent**: control plane **tidak** punya base compose app itu,
+     *    jadi daftar service dibaca dari agent (`GET /apps/{id}/services`),
+     *    `limits`/`compose_files` disimpan sebagai **metadata**, lalu worker
+     *    `apply_limits` menerapkannya di agent. Tidak ada artefak lokal ditulis.
      *
      * Field kosong = tidak diatur dashboard → key tidak ditulis, nilai CPU/memori
      * milik base compose repo tetap berlaku (bukan `!reset`).
+     *
+     * @param DeployWorkerLauncher|null $launcher seam uji: peluncur worker palsu
+     *                                            (null = bawaan); jalur produksi
+     *                                            tidak pernah mengisinya
      */
-    public function saveLimits(Request $request, string $id)
+    public function saveLimits(Request $request, string $id, ?DeployWorkerLauncher $launcher = null)
     {
         $store = new AppStore();
         $app = $this->findApp($id, 'limits');
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
             return redirect('/apps/' . $id);
+        }
+
+        // Server pemilik app (fail-fast bila `server_id` menunjuk server hilang):
+        // jangan pernah menulis artefak app agent di host control plane.
+        try {
+            $local = ServerResolver::isLocal($this->serverForApp($app));
+        } catch (\Throwable $e) {
+            flash_set('error', 'Batas CPU/memori tidak bisa dijalankan: ' . $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
+
+        if (!$local) {
+            return $this->saveLimitsOnAgent($request, $app, $store, $launcher);
         }
 
         $dir = $this->appArtifactDirOrFail($app, 'Batas CPU/memori');
@@ -3552,6 +3580,102 @@ class AppController
                     ? 'Batas CPU/memori dihapus, tetapi gagal diterapkan ke container: ' . $e->getMessage() . ' — coba Rebuild.'
                     : 'Batas CPU/memori tersimpan, tetapi gagal diterapkan ke container: ' . $e->getMessage() . ' — coba Rebuild.');
             }
+        } catch (\Throwable $e) {
+            flash_set('error', $e->getMessage());
+        }
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Simpan batas CPU/memori app yang berjalan di server **agent**
+     * (POST /apps/{id}/limits — cabang non-lokal `saveLimits()`).
+     *
+     * Control plane tidak punya base compose app agent, sehingga:
+     *  1) daftar service dibaca **dari agent** (`GET /apps/{id}/services`).
+     *     Agent lama (endpoint 404) ⇒ pesan "perbarui agent" — bukan galat 500;
+     *  2) validasi service/nilai + persist **metadata** (`limits`,
+     *     `compose_files`) lewat `ResourceLimits::persistMetadata()` — fail-fast,
+     *     tanpa menyentuh filesystem;
+     *  3) worker `apply_limits` dipicu; agent menulis override limits & `up -d`
+     *     tanpa build dari metadata itu.
+     *
+     * Urutan: gerbang kredit **sebelum** panggilan agent/metadata (op ini
+     * menciptakan ulang container di agent).
+     *
+     * @param array<string,mixed>       $app      dokumen app (server agent)
+     * @param DeployWorkerLauncher|null $launcher seam uji (null = bawaan)
+     */
+    private function saveLimitsOnAgent(
+        Request $request,
+        array $app,
+        AppStore $store,
+        ?DeployWorkerLauncher $launcher = null
+    ): \Webman\Http\Response {
+        $id = (string) $app['id'];
+
+        try {
+            $this->billingAssertCanStart($app, current_user());
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        }
+
+        try {
+            // 1) Daftar service dari base compose server agent.
+            try {
+                $data = $this->agentAppServices($app);
+            } catch (AgentError $e) {
+                if ($e->reason === AgentError::NOT_FOUND) {
+                    throw new RuntimeException(
+                        'Perbarui agent di server ini agar batas resource (CPU/memori) bisa diatur dari dashboard.'
+                    );
+                }
+
+                throw new RuntimeException($this->appErrorText($app, $e), 0, $e);
+            }
+
+            $services = array_values(array_map('strval', (array) ($data['services'] ?? [])));
+            if ($services === []) {
+                $detail = trim((string) ($data['error'] ?? ''));
+                throw new RuntimeException(
+                    'Daftar service app tidak bisa dibaca di server agent'
+                    . ($detail !== '' ? ': ' . $this->appErrorText($app, $detail) : '.')
+                    . ' Pastikan base compose app tersedia di server itu, lalu coba lagi.'
+                );
+            }
+
+            // 2) Validasi + persist metadata SAJA (tanpa artefak lokal).
+            $result = ResourceLimits::persistMetadata(
+                $store,
+                $app,
+                (array) $request->post('limits', []),
+                $services
+            );
+            $limits = $result['limits'];
+
+            // 3) Serahkan penerapan ke worker agent.
+            $store->update($id, static function (array &$s): void {
+                $s['status'] = 'deploying';
+                $s['stage'] = 'queued';
+                $s['message'] = 'Menerapkan batas CPU/memori di server agent ...';
+                $s['error'] = null;
+            });
+
+            if (!$this->spawnWorker($id, 'apply_limits', null, $this->currentActorId(), $launcher)) {
+                $store->update($id, static function (array &$s): void {
+                    $s['status'] = 'error';
+                    $s['stage'] = null;
+                    $s['message'] = 'Gagal menjalankan worker penerapan batas CPU/memori di server agent.';
+                    $s['error'] = 'Gagal spawn worker apply_limits.';
+                });
+                flash_set('error', 'Batas CPU/memori tersimpan, tetapi gagal menjalankan worker penerapan di server agent. Coba Rebuild untuk menerapkan.');
+
+                return redirect('/apps/' . $id);
+            }
+
+            flash_set('success', $limits === []
+                ? 'Batas CPU/memori dihapus — container diciptakan ulang di server agent (tanpa build).'
+                : 'Batas CPU/memori disimpan — container diciptakan ulang di server agent (tanpa build).');
         } catch (\Throwable $e) {
             flash_set('error', $e->getMessage());
         }
@@ -3689,6 +3813,117 @@ class AppController
         return [
             'canManage' => $canManage,
             'services' => $services,
+            'saved' => $saved,
+            'repo' => $repo,
+            'hasSaved' => $saved !== [],
+            'error' => $error,
+        ];
+    }
+
+    /**
+     * Konteks `resourceLimits` app milik server **agent** — daftar service dan
+     * nilai base compose dibaca dari server itu (`GET /apps/{id}/services`, satu
+     * panggilan HTTP per render), karena control plane tidak punya salinan
+     * artefak app agent.
+     *
+     * Kegagalan (agent tak terjangkau / agent lama tanpa endpoint / base compose
+     * belum ada di server itu) **tidak** menggagalkan halaman: daftar service
+     * jatuh ke metadata yang ada (`limits`, lalu `primary_service`) dan pesan
+     * ramah masuk `error` — tanpa token/host (disanitasi
+     * `AgentError::sanitizeForServer()` lewat `appErrorText()`).
+     *
+     * @param array<string,mixed>                              $app
+     * @param array<string,array{cpus:?float,memory_mb:?int}>  $saved
+     * @return array{canManage:bool,services:array<int,string>,saved:array<string,array{cpus:?float,memory_mb:?int}>,repo:array<string,array{cpus:?float,memory_mb:?int}>,hasSaved:bool,error:?string}
+     */
+    private function agentLimitsContext(array $app, bool $canManage, array $saved): array
+    {
+        $services = [];
+        $repo = [];
+        $error = null;
+
+        try {
+            $data = $this->agentAppServices($app);
+            $services = array_values(array_map('strval', (array) ($data['services'] ?? [])));
+            $detected = (array) ($data['detected'] ?? []);
+
+            $agentError = trim((string) ($data['error'] ?? ''));
+            if ($agentError !== '') {
+                $error = 'Daftar service app tidak terbaca lengkap di server agent: '
+                    . $this->appErrorText($app, $agentError);
+            }
+
+            foreach ($services as $service) {
+                $entry = is_array($detected[$service] ?? null) ? $detected[$service] : [];
+                $repo[$service] = [
+                    'cpus' => $entry['cpus'] ?? null,
+                    'memory_mb' => $entry['memory_mb'] ?? null,
+                ];
+            }
+        } catch (\Throwable $e) {
+            $error = ($e instanceof AgentError && $e->reason === AgentError::NOT_FOUND)
+                ? 'Agent di server ini belum mendukung pembacaan daftar service — perbarui agent agar batas resource bisa diatur dari dashboard.'
+                : 'Daftar service app tidak bisa dibaca dari server agent: ' . $this->appErrorText($app, $e);
+        }
+
+        if ($services === []) {
+            // Fallback metadata: service yang sudah punya limit, lalu primary.
+            $fallback = array_keys((array) ($app['limits'] ?? []));
+            $primary = trim((string) ($app['primary_service'] ?? ''));
+            if ($fallback === [] && $primary !== '') {
+                $fallback[] = $primary;
+            }
+            foreach ($fallback as $service) {
+                $service = trim((string) $service);
+                if ($service !== '' && !in_array($service, $services, true)) {
+                    $services[] = $service;
+                }
+            }
+        }
+
+        return $this->limitsContextResult($services, $repo, $canManage, $saved, $error);
+    }
+
+    /**
+     * Data service + limit base compose app dari **server agent** (satu panggilan
+     * HTTP `GET /apps/{id}/services`).
+     *
+     * `protected` = seam uji: subclass dapat menimpanya supaya render detail &
+     * simpan batas bisa diuji tanpa jaringan (pola `renderView()`).
+     *
+     * @param array<string,mixed> $app
+     * @return array{services:array<int,string>,detected:array<string,array{cpus:?float,memory_mb:?int}>,error:?string}
+     * @throws AgentError|RuntimeException
+     */
+    protected function agentAppServices(array $app): array
+    {
+        $deployer = DeployerFactory::createForApp($app);
+        if (!$deployer instanceof AgentDeployer) {
+            throw new RuntimeException('App ini tidak berjalan di server agent.');
+        }
+
+        return $deployer->appServices($app);
+    }
+
+    /**
+     * Bentuk baku konteks `resourceLimits` untuk view (kontrak view tidak
+     * berubah) — satu tempat untuk jalur lokal & agent.
+     *
+     * @param array<int,string>                               $services
+     * @param array<string,array{cpus:?float,memory_mb:?int}> $repo
+     * @param array<string,array{cpus:?float,memory_mb:?int}> $saved
+     * @return array{canManage:bool,services:array<int,string>,saved:array<string,array{cpus:?float,memory_mb:?int}>,repo:array<string,array{cpus:?float,memory_mb:?int}>,hasSaved:bool,error:?string}
+     */
+    private function limitsContextResult(
+        array $services,
+        array $repo,
+        bool $canManage,
+        array $saved,
+        ?string $error
+    ): array {
+        return [
+            'canManage' => $canManage,
+            'services' => array_values(array_map('strval', $services)),
             'saved' => $saved,
             'repo' => $repo,
             'hasSaved' => $saved !== [],

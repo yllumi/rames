@@ -87,6 +87,23 @@ interface DeployerInterface
     public function applyEnv(array $app, callable $logger): array;
 
     /**
+     * Terapkan perubahan **batas CPU/memori** app TANPA rebuild source: sinkronkan
+     * `docker-compose.override.limits.yml` dari metadata `limits`, lalu
+     * `docker compose up -d` (tanpa `--build`) — hanya container yang batas
+     * resourcenya berubah yang diciptakan ulang. Perubahan environment/network/
+     * nama container **tidak** disentuh di sini: op ini hanya menyinkronkan
+     * override limits (jalur env punya `applyEnv()` sendiri).
+     *
+     * Di server agent, op ini dijalankan sebagai job `apply_limits` (worker
+     * membaca metadata `limits`/`compose_files` dari proyeksi app agent).
+     *
+     * @param array    $app
+     * @param callable $logger callable(string $stage, string $message): void
+     * @return array app yang diperbarui (containers + status)
+     */
+    public function applyLimits(array $app, callable $logger): array;
+
+    /**
      * Teardown: down container + hapus config Nginx.
      *
      * Bila $preserveVolumes === null → `down -v` (hapus SEMUA volume termasuk

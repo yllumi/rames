@@ -240,6 +240,37 @@ class LocalDeployer implements DeployerInterface
     }
 
     /**
+     * Terapkan **batas CPU/memori** dari metadata app tanpa rebuild source:
+     * tulis/hapus `docker-compose.override.limits.yml` (satu-satunya override
+     * yang disentuh — env/network/nama container tidak diubah) lalu `up -d`
+     * tanpa build sehingga hanya container yang resource-nya berubah yang
+     * diciptakan ulang.
+     *
+     * Daftar compose files **dihitung ulang** sesudah `ResourceLimits::sync()`:
+     * di server agent entri `docker-compose.override.limits.yml` sudah ada di
+     * metadata app padahal berkasnya baru ditulis di sini — tanpa hitung ulang,
+     * `filterMissingGenerated()` membuangnya dan `up` berjalan tanpa batas baru.
+     */
+    public function applyLimits(array $app, callable $logger): array
+    {
+        $project = (string) $app['name'];
+        $dir = $this->appDir($app);
+        $files = $this->resolveComposeFiles($app, $dir);
+
+        ResourceLimits::sync($app, $dir, $files);
+        $files = $this->resolveComposeFiles($app, $dir);
+
+        $logger('build', 'Menciptakan ulang container dengan batas CPU/memori baru ...');
+        $this->upCompose($project, $app, $dir, $files, false, $logger);
+
+        $app['containers'] = $this->getContainers($project);
+        $app['status'] = 'running';
+        $logger('done', 'Batas CPU/memori diterapkan.');
+
+        return $app;
+    }
+
+    /**
      * @param callable|null $logger opsional — callable(string $stage, string $message): void.
      *        Tidak ada di DeployerInterface (kontrak lama): dipakai test & pemanggil
      *        yang ingin menangkap peringatan non-fatal; tanpa logger, peringatan

@@ -95,6 +95,13 @@ class FakeCliDeployer implements DeployerInterface
         return $this->finish($app, 'apply-env');
     }
 
+    public function applyLimits(array $app, callable $logger): array
+    {
+        $this->note('apply-limits');
+
+        return $this->finish($app, 'apply-limits');
+    }
+
     /**
      * @param array<int,string>|null $preserveVolumes
      */

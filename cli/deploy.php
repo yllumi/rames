@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * Background worker deploy app.
  *
- *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]
+ *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|apply_limits|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]
  *
  * Untuk op **tingkat server** (`template_pull`, `self_update` — op yang tidak
  * terikat satu app) slot `appId` berisi *target*: slug template (pull) atau
@@ -15,7 +15,7 @@ declare(strict_types=1);
  * HTTP tidak terblokir oleh operasi build yang lama. Pipeline:
  *   - muat app dari apps.json
  *   - update status tiap tahap (deploying / running / error)
- *   - jalankan deployer (deploy/rebuild/rollback/apply/apply_env/stop/start/teardown)
+ *   - jalankan deployer (deploy/rebuild/rollback/apply/apply_env/apply_limits/stop/start/teardown)
  *   - simpan hasil (containers, deploy_history, status) kembali ke apps.json
  * Log per-app ditulis ke runtime/logs/deploy/{appId}.log.
  *
@@ -77,8 +77,8 @@ $ref = $argv[3] ?? '';
 
 // Daftar mode = satu sumber untuk `DeployWorkerLauncher::MODES` (capabilities
 // agent) — jangan menyalinnya di tempat lain.
-if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback', 'apply', 'stop', 'start', 'teardown', 'apply_env', 'nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue', 'ssl_revoke', 'backup_run', 'restore', 'db_dump', 'restore_archived', 'template_pull', 'self_update'], true) || ($mode === 'rollback' && $ref === '')) {
-    fwrite(STDERR, "Usage: php cli/deploy.php <appId|target> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]\n");
+if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback', 'apply', 'stop', 'start', 'teardown', 'apply_env', 'apply_limits', 'nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue', 'ssl_revoke', 'backup_run', 'restore', 'db_dump', 'restore_archived', 'template_pull', 'self_update'], true) || ($mode === 'rollback' && $ref === '')) {
+    fwrite(STDERR, "Usage: php cli/deploy.php <appId|target> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|apply_limits|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]\n");
     exit(1);
 }
 
@@ -699,6 +699,7 @@ try {
         'rollback'  => $deployer->rollback($app, $ref, $logger),
         'apply'     => $deployer->apply($app, $logger),
         'apply_env' => $deployer->applyEnv($app, $logger),
+        'apply_limits' => $deployer->applyLimits($app, $logger),
         default     => $deployer->deploy($app, $logger),
     };
 

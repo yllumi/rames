@@ -81,6 +81,12 @@ final class DeployWorkerLauncher
      * (`VolumeArchiveRestore`, `VolumeStateGuard` tetap ditegakkan). Ketiga op ini
      * **tidak terikat app** sehingga `argv[1]` berisi *target* (slug template /
      * `agent` / nama volume), bukan id app — lihat {@see self::SERVER_OPS}.
+     *
+     * F-lanjutan (batas CPU/memori app agent): `apply_limits` — worker **di
+     * server agent** menulis `docker-compose.override.limits.yml` dari metadata
+     * `limits` di proyeksi app agent lalu `up -d` tanpa build
+     * (`LocalDeployer::applyLimits()`). Control plane tidak menulis artefak app
+     * agent; ia hanya menyimpan metadata + memicu op ini.
      */
     public const MODES = [
         'deploy',
@@ -91,6 +97,7 @@ final class DeployWorkerLauncher
         'start',
         'teardown',
         'apply_env',
+        'apply_limits',
         'nginx_write',
         'nginx_remove',
         'nginx_reload',

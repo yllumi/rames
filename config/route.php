@@ -109,6 +109,11 @@ if ($ramesMode === 'agent') {
         // job di `POST /jobs` (op `nginx_write|nginx_remove|nginx_reload|
         // ssl_issue|ssl_revoke`) supaya pipeline & log tetap satu jalur.
         Route::get('/apps/{id}/nginx', [AgentJobController::class, 'renderNginx']);
+        // Service + limit base compose **server ini** (batas CPU/memori app
+        // agent): control plane tidak punya base compose app remote, jadi form
+        // "Batas resource" membaca daftar service dari sini. Read-only, tanpa
+        // secret (nama service + angka limit saja).
+        Route::get('/apps/{id}/services', [AgentJobController::class, 'services']);
         Route::post('/nginx/check', [AgentJobController::class, 'checkNginx']);
 
         // Preflight create app (F1 lanjutan): ketersediaan direktori artefak

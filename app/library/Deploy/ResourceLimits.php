@@ -434,6 +434,51 @@ final class ResourceLimits
         return ['limits' => $limits, 'app' => $store->find($id) ?? $app];
     }
 
+    /**
+     * Simpan batas CPU/memori sebagai **metadata app saja** — untuk app yang
+     * artefaknya hidup di server **agent** (control plane tidak punya base
+     * compose sehingga tidak bisa menulis/memvalidasi lewat disk).
+     *
+     * Tidak menyentuh filesystem sama sekali: `limits` + `compose_files`
+     * diperbarui di store, lalu worker agent (`apply_limits`) yang menulis
+     * `docker-compose.override.limits.yml` di server itu dari metadata ini.
+     *
+     * Validasi tetap fail-fast **sebelum** store berubah: service di luar
+     * `$services` (daftar dari base compose agent) ditolak, nilai invalid
+     * ditolak. Tanpa batas aktif ⇒ `limits = null` dan entri override limits
+     * dibuang dari `compose_files` — tidak perlu mem-parse base compose.
+     *
+     * @param array<string,mixed> $app
+     * @param array<string,mixed> $posted input mentah form `limits`
+     * @param array<int,string>   $services nama service dari base compose agent
+     * @return array{limits:array<string,array{cpus:?float,memory_mb:?int}>,app:array}
+     */
+    public static function persistMetadata(AppStore $store, array $app, array $posted, array $services): array
+    {
+        $id = (string) ($app['id'] ?? '');
+        if ($id === '') {
+            throw new RuntimeException('App tanpa id tidak bisa menyimpan batas CPU/memori.');
+        }
+
+        // Validasi nilai SELALU lebih dulu (juga saat mengosongkan).
+        $normalized = self::normalize($posted);
+        $limits = self::isActive($normalized) ? self::fromInput($posted, $services) : [];
+
+        $store->update($id, function (array &$s) use ($limits, $app): void {
+            $s['limits'] = $limits !== [] ? $limits : null;
+            $files = array_values(array_filter(
+                array_map('strval', (array) ($s['compose_files'] ?? $app['compose_files'] ?? ['docker-compose.yml'])),
+                static fn (string $f): bool => $f !== self::OVERRIDE_FILE
+            ));
+            if ($limits !== []) {
+                $files[] = self::OVERRIDE_FILE;
+            }
+            $s['compose_files'] = ComposeSource::orderFiles($files);
+        });
+
+        return ['limits' => $limits, 'app' => $store->find($id) ?? $app];
+    }
+
     // ==================================================================
     // Base compose: service & deteksi gaya/nilai
     // ==================================================================
@@ -690,6 +735,14 @@ final class ResourceLimits
         }
 
         $cpus = (float) $raw;
+        // NAN/INF lolos `is_numeric()` dan **kedua** perbandingan batas bernilai
+        // false untuk NAN — nilainya lalu gagal di `json_encode` ("Inf and NaN
+        // cannot be JSON encoded"). Tolak sebagai kesalahan validasi biasa.
+        if (!is_finite($cpus)) {
+            throw new RuntimeException(
+                'Batas CPU service "' . $service . '" harus berupa angka hingga (bukan NAN/INF).'
+            );
+        }
         if ($cpus <= 0.0) {
             throw new RuntimeException('Batas CPU service "' . $service . '" harus lebih besar dari 0.');
         }

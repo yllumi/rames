@@ -621,4 +621,121 @@ class ResourceLimitsPersistTest extends TestCase
         $this->assertSame([], ComposeSource::orderFiles([]));
         $this->assertSame([], ComposeSource::orderFiles(['', '']));
     }
+
+    // ==================================================================
+    // persistMetadata() — jalur app server agent (tanpa filesystem)
+    // ==================================================================
+
+    /**
+     * Metadata saja: `limits` + `compose_files` diperbarui, **tanpa** menulis
+     * file apa pun (control plane tidak punya base compose app agent).
+     */
+    public function testPersistMetadataTidakMenyentuhFilesystemDanMerapikanComposeFiles(): void
+    {
+        $result = $this->persistMetadata(['web' => ['cpus' => '1.5', 'memory_mb' => '512']]);
+
+        $this->assertSame(['web' => ['cpus' => 1.5, 'memory_mb' => 512]], $result['limits']);
+        $this->assertFileDoesNotExist($this->overridePath(), 'metadata tidak boleh menulis override lokal');
+
+        $files = $this->storedApp()['compose_files'];
+        $this->assertSame(1, count(array_keys($files, ResourceLimits::OVERRIDE_FILE, true)));
+        $this->assertSame(EnvManager::OVERRIDE_FILE, end($files), 'override env wajib tetap paling akhir');
+        $this->assertLessThan(
+            array_search(EnvManager::OVERRIDE_FILE, $files, true),
+            array_search(ResourceLimits::OVERRIDE_FILE, $files, true)
+        );
+    }
+
+    /**
+     * Service di luar base compose agent ⇒ throw **sebelum** store berubah.
+     */
+    public function testPersistMetadataMenolakServiceTidakDikenalTanpaMutasi(): void
+    {
+        $before = $this->appSnapshot();
+
+        try {
+            $this->persistMetadata(['hantu' => ['cpus' => '1']]);
+            $this->fail('service tak dikenal harus ditolak');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('Service tidak dikenal', $e->getMessage());
+            $this->assertStringContainsString('hantu', $e->getMessage());
+        }
+
+        $this->assertSame($before, $this->appSnapshot(), 'store tidak boleh berubah');
+        $this->assertFileDoesNotExist($this->overridePath());
+    }
+
+    /**
+     * Nilai tidak valid (termasuk `NAN`/`INF` yang lolos `is_numeric()`) ⇒
+     * kesalahan validasi biasa, bukan `JsonException` dari `AppStore`.
+     */
+    public function testPersistMetadataMenolakNilaiTidakValidTanpaMutasi(): void
+    {
+        $before = $this->appSnapshot();
+
+        $cases = [
+            'memory bersatuan' => [['web' => ['memory_mb' => '128MB']], 'angka MB'],
+            'NAN' => [['web' => ['cpus' => NAN]], 'NAN/INF'],
+            'INF' => [['web' => ['cpus' => INF]], 'NAN/INF'],
+        ];
+
+        foreach ($cases as $label => [$posted, $needle]) {
+            try {
+                $this->persistMetadata($posted);
+                $this->fail("{$label} harus ditolak sebagai kesalahan validasi");
+            } catch (RuntimeException $e) {
+                $this->assertStringContainsString($needle, $e->getMessage(), $label);
+            }
+        }
+
+        $this->assertSame($before, $this->appSnapshot(), 'store tidak boleh berubah');
+        $this->assertFileDoesNotExist($this->overridePath());
+    }
+
+    /**
+     * Idempoten: simpan dua kali dengan input sama ⇒ satu entri override &
+     * urutan kanonik tetap.
+     */
+    public function testPersistMetadataIdempoten(): void
+    {
+        $posted = ['web' => ['cpus' => '1.5', 'memory_mb' => '512']];
+
+        $this->persistMetadata($posted);
+        $first = $this->storedApp()['compose_files'];
+        $this->persistMetadata($posted);
+        $second = $this->storedApp()['compose_files'];
+
+        $this->assertSame($first, $second, 'simpan ulang tidak boleh menggeser urutan');
+        $this->assertSame(1, count(array_keys($second, ResourceLimits::OVERRIDE_FILE, true)));
+    }
+
+    /**
+     * Batas dikosongkan ⇒ `limits = null` dan entri override dibuang dari
+     * `compose_files` (tanpa mem-parse base compose).
+     */
+    public function testPersistMetadataMengosongkanMembuangEntriOverride(): void
+    {
+        $this->persistMetadata(['web' => ['cpus' => '1.5', 'memory_mb' => '512']]);
+        $this->assertContains(ResourceLimits::OVERRIDE_FILE, $this->storedApp()['compose_files']);
+
+        $result = $this->persistMetadata([]);
+
+        $this->assertSame([], $result['limits']);
+        $stored = $this->storedApp();
+        $this->assertNull($stored['limits']);
+        $this->assertNotContains(ResourceLimits::OVERRIDE_FILE, $stored['compose_files']);
+        $this->assertSame(EnvManager::OVERRIDE_FILE, end($stored['compose_files']));
+    }
+
+    /**
+     * @param array<string,mixed> $posted
+     * @return array{limits:array,app:array}
+     */
+    private function persistMetadata(array $posted): array
+    {
+        $app = $this->store->find(self::APP_ID);
+        $this->assertNotNull($app, 'App seed wajib ada.');
+
+        return ResourceLimits::persistMetadata($this->store, $app, $posted, ['web', 'db']);
+    }
 }

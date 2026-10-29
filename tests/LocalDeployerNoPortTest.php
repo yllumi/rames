@@ -6,6 +6,7 @@ namespace Tests;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\LocalDeployer;
 use app\library\Deploy\NetworkManager;
+use app\library\Deploy\ResourceLimits;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
 use app\library\Nginx\NginxConfigGenerator;
@@ -271,6 +272,44 @@ class LocalDeployerNoPortTest extends TestCase
         $files = $this->compose->upCalls[0]['files'];
         $this->assertNotContains(EnvManager::OVERRIDE_FILE, $files, 'entri yatim tidak boleh dikirim ke `up`');
         $this->assertSame(['docker-compose.yml'], array_values($files));
+    }
+
+    /**
+     * `applyLimits()` (batas CPU/memori app agent): override limits ditulis dari
+     * metadata app, daftar file dihitung ulang sesudah sync (entri override yang
+     * belum ada di disk ikut terkirim ke `up`), dan `up` berjalan TANPA build.
+     */
+    public function testApplyLimitsWritesOverrideAndRecreatesWithoutBuild(): void
+    {
+        $dir = $this->appsPath . '/dbsaya';
+        file_put_contents(
+            $dir . '/docker-compose.yml',
+            "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"8123:80\"\n  db:\n    image: mariadb:11.4\n"
+        );
+        $this->docker->containers = [$this->container('web', [['host' => 8123, 'container' => 80]])];
+
+        // Entri override limits sudah tercatat di metadata, berkasnya belum ada.
+        $this->assertFileDoesNotExist($dir . '/' . ResourceLimits::OVERRIDE_FILE);
+
+        $app = $this->app([
+            'limits' => ['web' => ['cpus' => 1.5, 'memory_mb' => 512]],
+            'compose_files' => ['docker-compose.yml', ResourceLimits::OVERRIDE_FILE],
+        ]);
+
+        $result = $this->deployer->applyLimits($app, $this->logger());
+
+        $this->assertSame('running', $result['status']);
+        $this->assertFileExists($dir . '/' . ResourceLimits::OVERRIDE_FILE);
+
+        $files = $this->compose->upCalls[0]['files'];
+        $this->assertContains(ResourceLimits::OVERRIDE_FILE, $files, 'override limits harus ikut ke `up`');
+        $this->assertFalse($this->compose->upCalls[0]['build'], 'applyLimits tidak boleh build');
+        $this->assertSame('dbsaya', $this->compose->upCalls[0]['project']);
+
+        $override = (string) file_get_contents($dir . '/' . ResourceLimits::OVERRIDE_FILE);
+        $this->assertStringContainsString('cpus: 1.5', $override);
+        $this->assertStringContainsString('mem_limit: 512m', $override);
+        $this->assertStringNotContainsString('db:', $override, 'service tanpa limit tidak ditulis');
     }
 
     /**

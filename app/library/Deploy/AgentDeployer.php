@@ -233,6 +233,18 @@ final class AgentDeployer implements DeployerInterface
         return $this->runJob('apply_env', $app, $logger);
     }
 
+    /**
+     * Terapkan batas CPU/memori di server agent (op job `apply_limits`) —
+     * worker agent menyinkronkan override limits dari metadata `limits` lalu
+     * `up -d` tanpa build. Metadata app (`limits`/`compose_files`) sudah ikut
+     * payload job lewat dokumen `app` (proyeksi agent menimpanya), jadi tidak
+     * ada artefak yang perlu dipaketkan di sini.
+     */
+    public function applyLimits(array $app, callable $logger): array
+    {
+        return $this->runJob('apply_limits', $app, $logger);
+    }
+
     public function stop(array $app): void
     {
         $this->runJob('stop', $app, null);
@@ -430,6 +442,72 @@ final class AgentDeployer implements DeployerInterface
         $containers = $doc['containers'] ?? [];
 
         return is_array($containers) ? array_values($containers) : [];
+    }
+
+    /**
+     * Daftar service + batas CPU/memori yang sudah tertulis di **base compose
+     * server agent** (`GET /apps/{id}/services`) — sumber data form "Batas
+     * resource" untuk app yang artefaknya hanya ada di sana.
+     *
+     * Envelope kontrak: `{code:0,data:{services:[…],detected:{…},error?:string}}`.
+     * `error` non-kosong berarti agent **membaca** app tetapi base compose-nya
+     * tidak terbaca (mis. checkout belum ada) — bentuk respons tetap sah, jadi
+     * pemanggil dapat menampilkan peringatan alih-alih menggagalkan seluruh
+     * halaman.
+     *
+     * Agent versi lama (endpoint belum ada) menjawab HTTP 404 ⇒
+     * `AgentError::NOT_FOUND` (pemanggil menampilkan "perbarui agent").
+     *
+     * @param array<string,mixed> $app
+     * @return array{services:array<int,string>,detected:array<string,array{cpus:?float,memory_mb:?int}>,error:?string}
+     * @throws AgentError transport/HTTP/404/kontrak respons tidak sah
+     * @throws RuntimeException app tanpa id yang sah
+     */
+    public function appServices(array $app): array
+    {
+        $appId = $this->appId($app);
+
+        $data = $this->client->get('/apps/' . rawurlencode($appId) . '/services');
+        $data = $this->ok($data, 'membaca daftar service app');
+
+        $payload = $data['data'] ?? null;
+        if (!is_array($payload)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan daftar service app '
+                . '(kontrak: `{code:0,data:{services,detected}}`).'
+            );
+        }
+
+        $services = [];
+        foreach (is_array($payload['services'] ?? null) ? $payload['services'] : [] as $service) {
+            $service = is_scalar($service) ? trim((string) $service) : '';
+            if ($service !== '' && !in_array($service, $services, true)) {
+                $services[] = $service;
+            }
+        }
+
+        $detected = [];
+        $rawDetected = is_array($payload['detected'] ?? null) ? $payload['detected'] : [];
+        foreach ($services as $service) {
+            $entry = $rawDetected[$service] ?? null;
+            $entry = is_array($entry) ? $entry : [];
+            $cpus = $entry['cpus'] ?? null;
+            $memory = $entry['memory_mb'] ?? null;
+            $detected[$service] = [
+                'cpus' => is_int($cpus) || is_float($cpus) ? (float) $cpus : null,
+                'memory_mb' => is_int($memory) || (is_float($memory) && floor($memory) === $memory)
+                    ? (int) $memory
+                    : null,
+            ];
+        }
+
+        $error = $payload['error'] ?? null;
+
+        return [
+            'services' => $services,
+            'detected' => $detected,
+            'error' => is_string($error) && trim($error) !== '' ? trim($error) : null,
+        ];
     }
 
     /**

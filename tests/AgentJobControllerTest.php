@@ -1011,7 +1011,7 @@ class AgentJobControllerTest extends TestCase
         }
 
         $this->assertEqualsCanonicalizing(
-            ['__construct', 'create', 'show', 'log', 'cancel', 'showApp', 'renderNginx', 'checkNginx', 'checkApp', 'backupVolumes', 'backupSnapshots', 'backupDump'],
+            ['__construct', 'create', 'show', 'log', 'cancel', 'showApp', 'renderNginx', 'services', 'checkNginx', 'checkApp', 'backupVolumes', 'backupSnapshots', 'backupDump'],
             get_class_methods(AgentJobController::class)
         );
 
@@ -1022,6 +1022,7 @@ class AgentJobControllerTest extends TestCase
         $this->assertStringContainsString("Route::post('/jobs/{id}/cancel'", $source);
         $this->assertStringContainsString("Route::get('/apps/{id}'", $source);
         $this->assertStringContainsString("Route::get('/apps/{id}/nginx'", $source);
+        $this->assertStringContainsString("Route::get('/apps/{id}/services'", $source);
         $this->assertStringContainsString("Route::post('/nginx/check'", $source);
         $this->assertStringContainsString("Route::post('/apps/check'", $source);
     }

@@ -14,6 +14,7 @@ use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\LocalDeployer;
+use app\library\Deploy\ResourceLimits;
 use app\library\Deploy\ServerResolver;
 use app\library\Git\GitService;
 use app\library\Storage\AppStore;
@@ -163,14 +164,19 @@ final class AppControllerServerSessionRequest extends Request
  *     `offline` / agent tanpa capability `deploy` ditolak dengan pesan jelas
  *     ("Test connection" untuk capability);
  *  2. validasi nama app, subdomain, dan port **per server** dipakai jalur create;
- *  3. jalur app-scoped yang masih menulis artefak lokal (limits, jaringan
- *     eksternal, nama container) menolak app di server agent dengan alasan
- *     sesungguhnya ("belum aktif untuk server agent (fase F2/F3)") — bukan
- *     "Direktori app tidak ada"; server lokal tidak berubah;
+ *  3. jalur app-scoped yang masih menulis artefak lokal (jaringan eksternal,
+ *     nama container) menolak app di server agent dengan alasan sesungguhnya
+ *     ("belum aktif untuk server agent (fase F2/F3)") — bukan "Direktori app
+ *     tidak ada"; server lokal tidak berubah;
  *  3b. jalur **env** sudah server-aware: `saveEnv` di agent menyimpan metadata
  *     (`env` + `compose_files`) dan memicu worker `apply_env` tanpa menulis
  *     artefak lokal, `uploadEnv` review-only hanya metadata, dan `importEnv`
  *     menolak agent dengan pesan akurat (butuh checkout `.env.example` lokal);
+ *  3c. jalur **batas CPU/memori** juga server-aware: daftar service dibaca dari
+ *     agent (`GET /apps/{id}/services`), metadata `limits`/`compose_files`
+ *     disimpan di control plane, lalu worker `apply_limits` menerapkannya di
+ *     agent; agent lama (404) ⇒ pesan "Perbarui agent" tanpa spawn; tab detail
+ *     tetap dirender dengan fallback metadata + peringatan;
  *  4. create-form mengirim kontrak view `servers`/`selectedServerId`/`canSelectServer`.
  *
  * Data & konfigurasi 100% temp (`sys_get_temp_dir()`): `database/rames.sqlite`,
@@ -542,14 +548,15 @@ class AppControllerServerScopeTest extends TestCase
 
     /**
      * Jalur app-scoped yang **masih** menulis artefak lokal wajib lewat satu
-     * guard (`appArtifactDirOrFail()`). Jalur env sudah **server-aware**: server
-     * lokal tetap memakai guard (perilaku lama), server agent berhenti menulis
-     * artefak lokal dan memicu worker `apply_env`; `importEnv` menolak agent
-     * dengan pesan akurat (tanpa istilah fase).
+     * guard (`appArtifactDirOrFail()`). Jalur env & batas resource sudah
+     * **server-aware**: server lokal tetap memakai guard (perilaku lama), server
+     * agent berhenti menulis artefak lokal dan memicu worker (`apply_env`/
+     * `apply_limits`); `importEnv` menolak agent dengan pesan akurat (tanpa
+     * istilah fase).
      */
     public function testAppScopedPathsUseTheSingleGuard(): void
     {
-        foreach (['saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
+        foreach (['saveNetworks', 'saveContainerNames'] as $method) {
             $body = $this->methodBody($method);
 
             $this->assertStringContainsString('appArtifactDirOrFail(', $body, $method);
@@ -560,8 +567,8 @@ class AppControllerServerScopeTest extends TestCase
             );
         }
 
-        // Jalur env wajib bercabang menurut server pemilik app.
-        foreach (['saveEnv', 'uploadEnv'] as $method) {
+        // Jalur env & limits wajib bercabang menurut server pemilik app.
+        foreach (['saveEnv', 'uploadEnv', 'saveLimits'] as $method) {
             $body = $this->methodBody($method);
 
             $this->assertStringContainsString('ServerResolver::isLocal(', $body, $method);
@@ -577,6 +584,12 @@ class AppControllerServerScopeTest extends TestCase
         $this->assertStringContainsString('appArtifactDirOrFail(', $saveEnv);
         $this->assertStringContainsString('->applyEnv(', $saveEnv);
 
+        // Server lokal `saveLimits` tetap jalur lama: guard + persist + applyEnv.
+        $saveLimits = $this->methodBody('saveLimits');
+        $this->assertStringContainsString('appArtifactDirOrFail(', $saveLimits);
+        $this->assertStringContainsString('ResourceLimits::persist(', $saveLimits);
+        $this->assertStringContainsString('->applyEnv(', $saveLimits);
+
         // Server agent: metadata saja + worker `apply_env`; tanpa artefak lokal.
         $agent = $this->methodBody('saveEnvOnAgent');
         $this->assertStringContainsString("spawnWorker(\$id, 'apply_env'", $agent);
@@ -584,6 +597,16 @@ class AppControllerServerScopeTest extends TestCase
         $this->assertStringNotContainsString('appArtifactDirOrFail(', $agent);
         $this->assertStringNotContainsString('EnvManager', $agent, 'jalur agent tidak boleh menyentuh env manager lokal');
         $this->assertStringNotContainsString('apps_path', $agent, 'jalur agent tidak boleh menyentuh direktori artefak');
+
+        // Server agent (limits): service dari agent + persistMetadata + worker
+        // `apply_limits`; tanpa guard/artefak lokal dan tanpa `ResourceLimits::persist`.
+        $agentLimits = $this->methodBody('saveLimitsOnAgent');
+        $this->assertStringContainsString('agentAppServices(', $agentLimits);
+        $this->assertStringContainsString('ResourceLimits::persistMetadata(', $agentLimits);
+        $this->assertStringContainsString("spawnWorker(\$id, 'apply_limits'", $agentLimits);
+        $this->assertStringNotContainsString('appArtifactDirOrFail(', $agentLimits);
+        $this->assertStringNotContainsString('ResourceLimits::persist(', $agentLimits);
+        $this->assertStringNotContainsString('apps_path', $agentLimits, 'jalur agent tidak boleh menyentuh direktori artefak');
 
         // Review-only (`uploadEnv` agent / import lokal): filesystem hanya bila ada $dir.
         $review = $this->methodBody('persistEnvForReview');
@@ -613,8 +636,9 @@ class AppControllerServerScopeTest extends TestCase
             'status' => 'running',
         ]);
 
-        // Jalur yang MASIH menulis artefak lokal (jaringan/limits/nama container).
-        foreach (['saveNetworks', 'saveContainerNames', 'saveLimits'] as $method) {
+        // Jalur yang MASIH menulis artefak lokal (jaringan/nama container).
+        // `saveLimits` sudah server-aware (lihat test khusus di bawah).
+        foreach (['saveNetworks', 'saveContainerNames'] as $method) {
             $GLOBALS['RAMES_FLASH'] = [];
             $request = new Request("POST /apps/{$app['id']}/x HTTP/1.1\r\nHost: localhost\r\n\r\n");
 
@@ -896,6 +920,412 @@ class AppControllerServerScopeTest extends TestCase
         }
 
         $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-hilang');
+    }
+
+    /**
+     * `saveLimits` untuk app di server **agent**: daftar service dibaca dari
+     * agent, `limits`/`compose_files` disimpan sebagai **metadata**, worker
+     * `apply_limits` dipicu, dan **tidak ada** artefak app yang dibuat di host
+     * ini (`apps/<name>`).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSaveLimitsOnAgentPersistsMetadataAndSpawnsApplyLimitsWorker(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-limit',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+            'compose_files' => ['docker-compose.yml', 'docker-compose.override.networks.yml'],
+        ]);
+
+        $request = $this->postForm('/apps/' . $app['id'] . '/limits', [
+            'limits' => [
+                'web' => ['cpus' => '1.5', 'memory_mb' => '512'],
+                'worker' => ['cpus' => '', 'memory_mb' => ''],
+            ],
+        ]);
+
+        $controller = new class extends AppController {
+            protected function agentAppServices(array $app): array
+            {
+                return [
+                    'services' => ['web', 'worker', 'db'],
+                    'detected' => [
+                        'web' => ['cpus' => null, 'memory_mb' => null],
+                        'worker' => ['cpus' => null, 'memory_mb' => null],
+                        'db' => ['cpus' => 1.0, 'memory_mb' => 512],
+                    ],
+                    'error' => null,
+                ];
+            }
+        };
+
+        $response = $controller->saveLimits($request, $app['id'], $this->fakeLauncher());
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(
+            ['web' => ['cpus' => 1.5, 'memory_mb' => 512]],
+            $stored['limits'] ?? null,
+            'entri tanpa nilai dibuang; nilai disimpan sebagai metadata'
+        );
+
+        // Override limits tepat satu & ada di urutan kanonik; override lain tetap.
+        $files = (array) ($stored['compose_files'] ?? []);
+        $this->assertSame(1, count(array_keys($files, ResourceLimits::OVERRIDE_FILE, true)));
+        $this->assertContains('docker-compose.override.networks.yml', $files);
+        $this->assertLessThan(
+            array_search('docker-compose.override.networks.yml', $files, true),
+            array_search(ResourceLimits::OVERRIDE_FILE, $files, true),
+            'override limits ada pada urutan kanonik (sebelum override generated lain)'
+        );
+
+        // Status diserahkan ke worker agent.
+        $this->assertSame('deploying', $stored['status'] ?? null);
+        $this->assertSame('queued', $stored['stage'] ?? null);
+        $this->assertStringContainsString('server agent', (string) ($stored['message'] ?? ''));
+        $this->assertNull($stored['error'] ?? null);
+
+        // Worker `apply_limits` (bukan apply_env/apply) dipicu sekali.
+        $this->assertCount(1, $GLOBALS['RAMES_SPAWN']);
+        $this->assertSame($app['id'], $GLOBALS['RAMES_SPAWN'][0][2]);
+        $this->assertSame('apply_limits', $GLOBALS['RAMES_SPAWN'][0][3]);
+
+        // Tanpa artefak lokal apa pun (tidak ada override/tulis di apps/<name>).
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-limit');
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('success', $flash[0]['type']);
+        $this->assertStringContainsString('server agent', $flash[0]['message']);
+    }
+
+    /**
+     * Prefill (`detect()`) gagal tetapi daftar service valid ⇒ simpan batas di
+     * agent tetap **berhasil** (`error` hanya peringatan, bukan alasan menolak).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSaveLimitsOnAgentSucceedsWhenOnlyPrefillFails(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-prefill-gagal',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+        ]);
+
+        $request = $this->postForm('/apps/' . $app['id'] . '/limits', [
+            'limits' => ['web' => ['cpus' => '1', 'memory_mb' => '256']],
+        ]);
+
+        $controller = new class extends AppController {
+            protected function agentAppServices(array $app): array
+            {
+                return [
+                    'services' => ['web'],
+                    'detected' => [],
+                    'error' => 'Gagal parse docker-compose.yml: nilai limit tidak konsisten',
+                ];
+            }
+        };
+
+        $controller->saveLimits($request, $app['id'], $this->fakeLauncher());
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(['web' => ['cpus' => 1.0, 'memory_mb' => 256]], $stored['limits'] ?? null);
+        $this->assertSame('apply_limits', $GLOBALS['RAMES_SPAWN'][0][3] ?? null, 'simpan tetap diterapkan');
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertSame('success', $flash[0]['type'] ?? null, 'prefill gagal bukan alasan menolak simpan');
+    }
+
+    /**
+     * Agent lama (belum punya `GET /apps/{id}/services`) ⇒ 404 dari agent
+     * diterjemahkan menjadi pesan **"perbarui agent"** (bukan 500), tanpa
+     * mengubah metadata & tanpa spawn worker.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSaveLimitsOnOldAgentAsksToUpdateTheAgentWithoutSpawning(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-lama',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+            'limits' => null,
+        ]);
+
+        $request = $this->postForm('/apps/' . $app['id'] . '/limits', [
+            'limits' => ['web' => ['cpus' => '1', 'memory_mb' => '256']],
+        ]);
+
+        $controller = new class extends AppController {
+            protected function agentAppServices(array $app): array
+            {
+                throw new AgentError('Endpoint/job tidak ada di agent (HTTP 404)', AgentError::NOT_FOUND);
+            }
+        };
+
+        $response = $controller->saveLimits($request, $app['id'], $this->fakeLauncher());
+
+        $this->assertSame(302, $response->getStatusCode());
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('Perbarui agent', $flash[0]['message']);
+        $this->assertStringNotContainsString(self::AGENT_TOKEN, $flash[0]['message'], 'token tidak boleh bocor');
+        $this->assertStringNotContainsString('internal.test', $flash[0]['message'], 'host internal tidak boleh bocor');
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertNull($stored['limits'] ?? null, 'metadata tidak boleh berubah saat agent lama');
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'tanpa worker');
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-lama');
+    }
+
+    /**
+     * Service tak dikenal di jalur agent ⇒ validasi gagal **sebelum** store
+     * berubah dan **tanpa** spawn worker (fail-fast, bukan job yang pasti gagal).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSaveLimitsOnAgentRejectsUnknownServiceWithoutSpawnOrMutation(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-limit-hantu',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+            'compose_files' => ['docker-compose.yml', 'docker-compose.override.networks.yml'],
+            'limits' => null,
+        ]);
+        $before = (string) json_encode((new AppStore())->find($app['id']));
+
+        $request = $this->postForm('/apps/' . $app['id'] . '/limits', [
+            'limits' => ['hantu' => ['cpus' => '1', 'memory_mb' => '256']],
+        ]);
+
+        $controller = new class extends AppController {
+            protected function agentAppServices(array $app): array
+            {
+                return [
+                    'services' => ['web', 'db'],
+                    'detected' => [],
+                    'error' => null,
+                ];
+            }
+        };
+
+        $response = $controller->saveLimits($request, $app['id'], $this->fakeLauncher());
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('Service tidak dikenal', $flash[0]['message']);
+        $this->assertStringContainsString('hantu', $flash[0]['message']);
+
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'tanpa worker');
+        $this->assertSame(
+            $before,
+            (string) json_encode((new AppStore())->find($app['id'])),
+            'metadata limits/compose_files tidak boleh berubah'
+        );
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-limit-hantu');
+    }
+
+    /**
+     * Gerbang kredit jalur agent: saldo member habis ⇒ ditolak **sebelum**
+     * panggilan `services`/spawn, dengan respons standar `billingBlocked`
+     * (flash + redirect `/credits`).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSaveLimitsOnAgentIsBlockedByBillingBeforeAnyAgentCall(): void
+    {
+        $this->installStubs(self::MEMBER);
+        $this->agent(self::AGENT_ID);
+        $store = new AppStore();
+        $app = $store->create([
+            'name' => 'agen-limit-kredit',
+            'server_id' => self::AGENT_ID,
+            'owner_id' => self::MEMBER['id'],
+            'status' => 'running',
+            'limits' => null,
+        ]);
+
+        $request = $this->postForm('/apps/' . $app['id'] . '/limits', [
+            'limits' => ['web' => ['cpus' => '1', 'memory_mb' => '256']],
+        ]);
+
+        $controller = new class extends AppController {
+            public bool $called = false;
+
+            protected function agentAppServices(array $app): array
+            {
+                $this->called = true;
+
+                return ['services' => ['web'], 'detected' => [], 'error' => null];
+            }
+        };
+
+        $response = $this->invokeOn($controller, 'saveLimitsOnAgent', [
+            $request,
+            $app,
+            $store,
+            $this->fakeLauncher(),
+        ]);
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/credits', $response->getHeader('Location'), 'respons standar blokir kredit');
+        $this->assertFalse($controller->called, 'agent tidak boleh dipanggil saat kredit habis');
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'tanpa worker');
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('Kredit', $flash[0]['message']);
+
+        $stored = $store->find($app['id']) ?? [];
+        $this->assertNull($stored['limits'] ?? null);
+        $this->assertSame('running', $stored['status'] ?? null);
+    }
+
+    /**
+     * App yatim (`server_id` menunjuk server yang sudah dihapus) ⇒ `saveLimits`
+     * menolak dengan pesan jelas (bukan 500) & tanpa efek samping.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSaveLimitsOnRemovedServerIsRejectedClearly(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $orphan = (new AppStore())->create([
+            'name' => 'agen-limit-hilang',
+            'server_id' => 'server-yang-dihapus',
+            'status' => 'running',
+        ]);
+
+        $request = $this->postForm('/apps/' . $orphan['id'] . '/limits', [
+            'limits' => ['web' => ['cpus' => '1', 'memory_mb' => '256']],
+        ]);
+        $response = (new AppController())->saveLimits($request, $orphan['id'], $this->fakeLauncher());
+
+        $this->assertSame(302, $response->getStatusCode());
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('Batas CPU/memori tidak bisa dijalankan', $flash[0]['message']);
+        $this->assertStringContainsString('Server tidak dikenal', $flash[0]['message']);
+
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN']);
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-limit-hilang');
+    }
+
+    /**
+     * Konteks `resourceLimits` app agent dibaca dari agent (satu sumber service +
+     * nilai base compose) dan **tidak** menyentuh disk control plane.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAgentLimitsContextReadsServicesFromTheAgent(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = [
+            'id' => 'app-agent-ctx',
+            'name' => 'agen-ctx',
+            'server_id' => self::AGENT_ID,
+            'limits' => null,
+            'primary_service' => 'web',
+        ];
+
+        $controller = new class extends AppController {
+            public bool $called = false;
+
+            protected function agentAppServices(array $app): array
+            {
+                $this->called = true;
+
+                return [
+                    'services' => ['web', 'db'],
+                    'detected' => [
+                        'web' => ['cpus' => 1.5, 'memory_mb' => 256],
+                        'db' => ['cpus' => null, 'memory_mb' => null],
+                    ],
+                    'error' => null,
+                ];
+            }
+        };
+
+        $context = $this->invokeOn($controller, 'agentLimitsContext', [
+            $app,
+            true,
+            ['web' => ['cpus' => 1.5, 'memory_mb' => null]],
+        ]);
+
+        $this->assertTrue($controller->called, 'satu panggilan agent untuk daftar service');
+        $this->assertSame(['web', 'db'], $context['services']);
+        $this->assertSame(['cpus' => 1.5, 'memory_mb' => 256], $context['repo']['web']);
+        $this->assertSame(['cpus' => null, 'memory_mb' => null], $context['repo']['db']);
+        $this->assertTrue($context['hasSaved']);
+        $this->assertNull($context['error']);
+        $this->assertSame(
+            ['canManage', 'services', 'saved', 'repo', 'hasSaved', 'error'],
+            array_keys($context),
+            'kontrak `resourceLimits` ke view tidak berubah'
+        );
+    }
+
+    /**
+     * Agent tak terjangkau / agent lama ⇒ tab tetap dirender: daftar service
+     * jatuh ke metadata (`limits`, lalu `primary_service`) + peringatan ramah
+     * tanpa token/host (bukan istilah fase F2/F3).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAgentLimitsContextFallsBackToMetadataWithFriendlyWarning(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = [
+            'id' => 'app-agent-fallback',
+            'name' => 'agen-fallback',
+            'server_id' => self::AGENT_ID,
+            'limits' => ['db' => ['cpus' => 2.0, 'memory_mb' => null]],
+            'primary_service' => 'db',
+        ];
+
+        $controller = new class extends AppController {
+            protected function agentAppServices(array $app): array
+            {
+                throw new AgentError(
+                    'Server "vps-rahasia" (vps-rahasia): gagal membaca daftar service app di server agent: '
+                    . 'cURL error 7: Failed to connect to https://vps-rahasia.internal.test:8443',
+                    AgentError::UNREACHABLE
+                );
+            }
+        };
+
+        $context = $this->invokeOn($controller, 'agentLimitsContext', [$app, true, []]);
+
+        $this->assertSame(['db'], $context['services'], 'fallback dari metadata limits');
+        $this->assertSame([], $context['repo']);
+        $this->assertNotEmpty($context['error']);
+        $this->assertStringNotContainsString('internal.test', $context['error'], 'host internal tidak boleh bocor');
+        $this->assertStringNotContainsString(self::AGENT_TOKEN, $context['error']);
+        $this->assertStringNotContainsString('F2/F3', $context['error']);
+        $this->assertStringContainsString('server agent', $context['error']);
     }
 
     /**
@@ -2419,6 +2849,20 @@ class AppControllerServerScopeTest extends TestCase
         $reflection->setAccessible(true);
 
         return $reflection->invoke(new AppController(), ...$args);
+    }
+
+    /**
+     * Panggil method controller pada **instance tertentu** (mis. subclass uji
+     * yang menimpa seam `agentAppServices()`).
+     *
+     * @param array<int,mixed> $args
+     */
+    private function invokeOn(AppController $controller, string $method, array $args): mixed
+    {
+        $reflection = new ReflectionMethod(AppController::class, $method);
+        $reflection->setAccessible(true);
+
+        return $reflection->invoke($controller, ...$args);
     }
 
     /** Isi berkas satu method controller (untuk pemeriksaan kontrak statik). */

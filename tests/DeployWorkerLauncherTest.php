@@ -147,6 +147,21 @@ class DeployWorkerLauncherTest extends TestCase
         $this->assertCount(count(DeployWorkerLauncher::MODES), $this->spawned);
     }
 
+    /**
+     * Mode `apply_limits` (batas CPU/memori app agent) terdaftar di daftar mode —
+     * otomatis ikut `AgentJobController::OPS` & capabilities agent, dan boleh
+     * diluncurkan dengan argv yang sama seperti mode app lain.
+     */
+    public function testApplyLimitsModeIsDeclaredAndLaunchable(): void
+    {
+        $this->assertContains('apply_limits', DeployWorkerLauncher::MODES);
+        $this->assertContains('apply_limits', AgentJobController::OPS);
+
+        $launcher = $this->launcher();
+        $this->assertTrue($launcher->launch('app1', 'apply_limits'));
+        $this->assertSame([PHP_BINARY, $this->tmp . '/cli/deploy.php', 'app1', 'apply_limits'], $this->spawned[0]);
+    }
+
     public function testSpawnFailureIsReportedAsFalse(): void
     {
         $launcher = $this->launcher(false);

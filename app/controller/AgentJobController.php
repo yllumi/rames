@@ -15,6 +15,7 @@ use app\library\Deploy\DeployCanceller;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\DeployLog;
 use app\library\Deploy\DeployWorkerLauncher;
+use app\library\Deploy\ResourceLimits;
 use app\library\Storage\AppStore;
 use app\library\Template\TemplateCatalog;
 use app\library\Template\TemplatePullService;
@@ -38,6 +39,7 @@ use Webman\Http\Response;
  * GET  /jobs/{id}/log?offset=N                           → teks log (polling)
  * GET  /apps/{id}                                        → {code:0, app:{…}} | 404
  * GET  /apps/{id}/nginx                                  → {code:0, config} (F2)
+ * GET  /apps/{id}/services                               → {code:0,data:{services,detected}} (batas resource)
  * POST /nginx/check                                      → {code:0, op:'nginx_check'} (F2)
  * POST /apps/check   {app:{id, name, repo_url?}}           → {code:0, op:'app_check', available, state, message} (F1 lanjutan)
  * GET  /backups/dump?volume=…&offset=N&limit=M           → potongan berkas .sql (F4 lanjutan)
@@ -823,6 +825,124 @@ class AgentJobController
         }
 
         return json(['code' => 0, 'op' => 'nginx_render', 'config' => $config]);
+    }
+
+    /**
+     * `GET /apps/{id}/services` — nama service + batas CPU/memori yang sudah
+     * tertulis di **base compose server ini**.
+     *
+     * Dipakai control plane untuk form "Batas resource" app yang artefaknya
+     * hanya ada di server agent (control plane tidak punya salinan compose).
+     * Read-only: tidak menulis apa pun, tanpa secret — hanya nama service dan
+     * angka `cpus`/`memory_mb`.
+     *
+     * App tak dikenal ⇒ 404 envelope (agent lama yang belum punya endpoint ini
+     * juga menjawab 404 ⇒ control plane menampilkan "perbarui agent"). Galat
+     * **membaca** compose (checkout belum ada / base rusak) bukan kegagalan
+     * server: dijawab 200 dengan `services: []` + `error` supaya UI menampilkan
+     * peringatan, bukan halaman galat. Bila hanya **prefill** (`detect()`) yang
+     * gagal, daftar service tetap dikirim (`detected: []` + `error`) sehingga
+     * simpan batas tetap bisa dilakukan.
+     *
+     * Pesan galat tidak pernah memuat path host: path direktori app direlatifkan
+     * (`apps/<name>`) dan sisa path absolut diganti pesan generik
+     * ({@see self::servicesErrorMessage()}).
+     */
+    public function services(Request $request, string $id): Response
+    {
+        try {
+            $app = $this->appStore()->find(trim($id));
+        } catch (\Throwable) {
+            return $this->error('Gagal membaca data app di server agent.', 'store_failed', 500);
+        }
+
+        if ($app === null) {
+            return $this->error('App tidak ditemukan.', 'not_found', 404);
+        }
+
+        $name = trim((string) ($app['name'] ?? ''));
+        if ($name === '') {
+            return $this->error('App tidak memiliki nama yang sah di server agent.', 'invalid_app', 500);
+        }
+
+        // Nama direktori divalidasi library yang sama dengan materialisasi
+        // artefak (anti path traversal) — bukan sekadar `trim()`, karena nilai di
+        // store bisa saja berasal dari payload job yang sudah usang.
+        try {
+            $dirName = AgentArtifactMaterializer::appDirName(['name' => $name]);
+        } catch (RuntimeException) {
+            return $this->error('App tidak memiliki nama yang sah di server agent.', 'invalid_app', 500);
+        }
+
+        $dir = (string) config('deploy.apps_path') . '/' . $dirName;
+        $files = array_values(array_filter(
+            array_map('strval', (array) ($app['compose_files'] ?? ['docker-compose.yml'])),
+            static fn (string $file): bool => trim($file) !== ''
+        ));
+        if ($files === []) {
+            $files = ['docker-compose.yml'];
+        }
+
+        try {
+            $services = ResourceLimits::services($dir, $files);
+        } catch (\Throwable $e) {
+            return json(['code' => 0, 'data' => [
+                'services' => [],
+                'detected' => [],
+                'error' => $this->servicesErrorMessage($e->getMessage(), $dir, $dirName),
+            ]]);
+        }
+
+        // Prefill (nilai base compose) dihitung **terpisah**: daftar service yang
+        // sudah terbaca tetap dikirim walau base compose sendiri tidak konsisten
+        // untuk `detect()` (mis. nilai legacy/modern berbeda). Tanpa pemisahan
+        // ini, form menampilkan "Daftar service tidak tersedia" dan **menolak
+        // simpan** padahal daftar service valid — paritas dengan jalur lokal
+        // (`AppController::limitsContext()`).
+        $repo = [];
+        $error = null;
+        try {
+            $detected = ResourceLimits::detect($dir, $files);
+            foreach ($services as $service) {
+                $repo[$service] = [
+                    'cpus' => $detected[$service]['cpus'] ?? null,
+                    'memory_mb' => $detected[$service]['memory_mb'] ?? null,
+                ];
+            }
+        } catch (\Throwable $e) {
+            $repo = [];
+            $error = $this->servicesErrorMessage($e->getMessage(), $dir, $dirName);
+        }
+
+        $data = ['services' => $services, 'detected' => $repo];
+        if ($error !== null) {
+            $data['error'] = $error;
+        }
+
+        return json(['code' => 0, 'data' => $data]);
+    }
+
+    /**
+     * Pesan galat endpoint `services` yang **bebas path host**: runtime compose
+     * menyertakan path absolut direktori app agent (`Base compose tidak ditemukan:
+     * /srv/rames/apps/demo/docker-compose.yml`). Endpoint agent tidak pernah
+     * mengirim path host mana pun, jadi path direktori app diganti bentuk relatif
+     * (`apps/<name>`) dan — bila masih ada path absolut — pesan diganti generik.
+     *
+     * `sanitizeMessage()` tetap dipakai (trim + potong) untuk sisanya.
+     */
+    private function servicesErrorMessage(string $message, string $dir, string $name): string
+    {
+        $message = str_replace($dir, 'apps/' . $name, $message);
+        $message = $this->sanitizeMessage($message);
+
+        // Sisa path absolut (host agent): jangan pernah diteruskan ke control
+        // plane/UI — ganti pesan generik yang tetap informatif.
+        if (preg_match('~(?<![\w.:-])/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+~', $message) === 1) {
+            return 'Base compose app tidak ditemukan di server agent';
+        }
+
+        return $message;
     }
 
     /**

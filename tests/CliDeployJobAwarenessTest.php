@@ -210,6 +210,20 @@ class CliDeployJobAwarenessTest extends TestCase
         $this->assertSame('running', (string) $this->storedApp()['status']);
     }
 
+    /**
+     * Mode `apply_limits` (batas CPU/memori app agent): worker **di server agent**
+     * memanggil `DeployerInterface::applyLimits()` — bukan `applyEnv()` — dan
+     * menandai app `running` seperti mode penerapan lain.
+     */
+    public function testApplyLimitsModeCallsApplyLimits(): void
+    {
+        $result = $this->worker('apply_limits');
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr']);
+        $this->assertSame(['apply-limits'], $this->notes());
+        $this->assertSame('running', (string) $this->storedApp()['status']);
+    }
+
     public function testTeardownModeUsesPreserveVolumesFromJobPayload(): void
     {
         $record = $this->jobStore()->create('teardown', self::APP_ID, [
