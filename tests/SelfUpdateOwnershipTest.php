@@ -313,7 +313,12 @@ class SelfUpdateOwnershipTest extends TestCase
             'fixture: owner sama'
         );
         $this->assertStringNotContainsString('sudo chown', $layout);
-        $this->assertStringNotContainsString('sudo chown', implode(' | ', $pf['errors']));
+        if ((int) fileowner($root) > 0) {
+            // Bila uji dijalankan sebagai root, repo fixture memang milik uid 0 →
+            // galat "dimiliki root" (dengan `chown`) memang WAJIB muncul; asersi
+            // "tanpa chown" hanya berlaku untuk repo milik uid non-root.
+            $this->assertStringNotContainsString('sudo chown', implode(' | ', $pf['errors']));
+        }
     }
 
     public function testLayoutErrorStillOffersChownWhenGitFileOwnerDiffers(): void

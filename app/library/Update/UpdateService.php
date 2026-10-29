@@ -55,12 +55,21 @@ final class UpdateService implements UpdateRunner
     private ProcessRunner $runner;
     private DockerClient $docker;
 
+    /**
+     * @param string        $branchOverride branch paksa (UPDATE_BRANCH), '' = dari HEAD
+     * @param Closure|null  $ownerStat      seam uji: `(string $root): array{0:int|false,1:int|false}`
+     *                                      pengganti `fileowner()`/`filegroup()` direktori repo
+     *                                      (default: stat sungguhan). Dipakai uji untuk
+     *                                      mensimulasikan repo milik root / stat gagal tanpa
+     *                                      bergantung pada uid proses uji.
+     */
     public function __construct(
         private readonly RepoInfo $repo,
         private readonly UpdateState $state,
         ?DockerClient $docker = null,
         ?ProcessRunner $runner = null,
         private readonly string $branchOverride = '',
+        private readonly ?\Closure $ownerStat = null,
     ) {
         $this->docker = $docker ?? new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'), 10);
         $this->runner = $runner ?? new ProcessRunner();
@@ -207,9 +216,21 @@ final class UpdateService implements UpdateRunner
         //    WAJIB bisa ditulis oleh uid:gid itu; kalau tidak, helper sudah menyentuh
         //    repo (fetch/merge) lalu gagal di tengah jalan. Kepemilikan campuran
         //    (mis. `.git` root-owned sisa `sudo git …`) adalah penyebab klasiknya.
-        $repoUid = $this->repoUid();
-        if ($this->repo->isRepo() && $repoUid > 0) {
-            $repoGid = $this->repoGid();
+        //    Bila pemilik direktori repo TIDAK bisa dipakai (stat gagal atau uid 0
+        //    = root), itu ditolak lebih dulu dengan pesan yang menyebut sebab +
+        //    jalan keluar — dulu kasus ini hanya muncul sebagai kegagalan job
+        //    ("Tidak bisa menentukan pemilik direktori repo (uid)") di `start()`.
+        $owner = $this->repoOwnerStat();
+        $repoUid = $owner['uid'] === false ? 0 : (int) $owner['uid'];
+        $ownerError = $this->repo->isRepo()
+            ? self::repoOwnerUnusableError($this->repo->root(), $owner['uid'], $owner['gid'])
+            : null;
+        if ($ownerError !== null) {
+            $errors[] = $ownerError;
+        }
+
+        if ($this->repo->isRepo() && $ownerError === null) {
+            $repoGid = $owner['gid'] === false ? 0 : (int) $owner['gid'];
             $offenders = self::unwritableHelperPaths($this->repo->root(), $repoUid, $repoGid);
             if ($offenders !== []) {
                 $errors[] = 'Repo tidak bisa ditulis oleh helper update (uid:gid '
@@ -270,10 +291,18 @@ final class UpdateService implements UpdateRunner
             $targetSha = $candidate;
         }
 
-        $uid = $this->repoUid();
-        $gid = $this->repoGid();
+        // Sabuk pengaman terakhir (preflight sudah menolak lebih dulu dengan pesan
+        // yang sama): pastikan TIDAK ADA efek samping sebelum uid:gid helper jelas.
+        $owner = $this->repoOwnerStat();
+        $uid = $owner['uid'] === false ? 0 : (int) $owner['uid'];
+        $gid = $owner['gid'] === false ? 0 : (int) $owner['gid'];
         if ($uid <= 0) {
-            throw new RuntimeException('Tidak bisa menentukan pemilik direktori repo (uid) — update dibatalkan agar kepemilikan berkas tidak rusak.');
+            throw new RuntimeException(
+                self::repoOwnerUnusableError($this->repo->root(), $owner['uid'], $owner['gid'])
+                    ?? 'Tidak bisa menentukan pemilik direktori repo ' . $this->repo->root()
+                        . ' (uid:gid ' . self::ownerLabel($owner['uid'], $owner['gid'])
+                        . ') — update dibatalkan agar kepemilikan berkas tidak rusak.'
+            );
         }
 
         $id = date('Ymd-His') . '-' . substr(bin2hex(random_bytes(3)), 0, 6);
@@ -661,16 +690,41 @@ final class UpdateService implements UpdateRunner
     // Util
     // ==================================================================
 
+    /**
+     * Pemilik direktori repo **mentah** (`false` = stat gagal). Dibedakan dari
+     * `repoUid()`/`repoGid()` yang memetakan kegagalan ke 0, karena pesan galat
+     * harus bisa membedakan "path tidak terbaca dari container" dari "pemiliknya
+     * memang root".
+     *
+     * @return array{uid:int|false,gid:int|false}
+     */
+    public function repoOwnerStat(): array
+    {
+        if ($this->ownerStat !== null) {
+            $stat = ($this->ownerStat)($this->repo->root());
+
+            return [
+                'uid' => $stat[0] ?? false,
+                'gid' => $stat[1] ?? false,
+            ];
+        }
+
+        return [
+            'uid' => @fileowner($this->repo->root()),
+            'gid' => @filegroup($this->repo->root()),
+        ];
+    }
+
     public function repoUid(): int
     {
-        $uid = @fileowner($this->repo->root());
+        $uid = $this->repoOwnerStat()['uid'];
 
         return $uid === false ? 0 : (int) $uid;
     }
 
     public function repoGid(): int
     {
-        $gid = @filegroup($this->repo->root());
+        $gid = $this->repoOwnerStat()['gid'];
 
         return $gid === false ? 0 : (int) $gid;
     }
@@ -752,6 +806,86 @@ final class UpdateService implements UpdateRunner
             . $repoOwner . ' (uid:gid itulah yang dipakai helper) — helper berjalan sebagai pemilik direktori repo, dan git menolak '
             . 'repository milik user lain: "fatal: detected dubious ownership in repository at \'' . $root . '\'" '
             . '(repo ini sengaja tidak menambah `safe.directory`). ' . $fix . '.';
+    }
+
+    /**
+     * Sebab **uid:gid pemilik direktori repo tidak bisa dipakai helper update**
+     * (stat gagal atau pemiliknya root/uid 0) — `null` bila kepemilikannya wajar
+     * (uid > 0, baik tertulis maupun tidak).
+     *
+     * Dua sebab yang dulu memunculkan pesan yang sama di `start()`
+     * ("Tidak bisa menentukan pemilik direktori repo (uid)") dibedakan di sini:
+     *
+     *  a. `fileowner()` gagal ⇒ direktori repo tidak terbaca dari dalam container
+     *     (path tidak ada / bind-mount `${PWD}:${PWD}` hilang).
+     *  b. pemilik = root (uid 0) ⇒ helper SENGAJA tidak dijalankan sebagai root
+     *     (berkas hasil `git pull`/build akan jadi milik root dan repo milik user
+     *     host rusak), jadi checkout hasil `sudo git clone`/`sudo ./agent/install.sh`
+     *     tidak didukung — pesannya menyertakan perintah `chown` konkret.
+     *
+     * Aturan keamanannya **tidak dilonggarkan**: uid 0 tetap ditolak.
+     *
+     * @param int|false $uid hasil `fileowner()` direktori repo (false = stat gagal)
+     * @param int|false $gid hasil `filegroup()` direktori repo
+     * @return string|null pesan galat satu baris (path + sebab + jalan keluar)
+     */
+    public static function repoOwnerUnusableError(string $root, int|false $uid, int|false $gid): ?string
+    {
+        $root = rtrim($root, '/');
+        if ($root === '') {
+            $root = '/';
+        }
+
+        if ($uid === false) {
+            return 'Direktori repo tidak bisa dibaca dari dalam container dashboard/agent: ' . $root
+                . ' — `fileowner()` gagal, jadi pemilik direktori (uid:gid yang dipakai helper update) tidak bisa ditentukan '
+                . 'dan update dibatalkan sebelum menyentuh repo. Pastikan path tersebut ada di host dan ter-bind ke container '
+                . '(bind-mount `- ${PWD}:${PWD}` pada docker-compose.yml dashboard/agent), lalu deploy ulang dashboard.';
+        }
+
+        if ((int) $uid > 0) {
+            return null;
+        }
+
+        $fix = self::ownershipFixHint($root);
+
+        return 'Direktori repo dimiliki root (uid:gid ' . self::ownerLabel($uid, $gid) . '): ' . $root
+            . ' — self-update tidak dijalankan karena helper update berjalan `--user <uid>:<gid>` sebagai pemilik direktori repo; '
+            . 'helper sebagai root akan meninggalkan berkas hasil `git pull`/build milik root di repo milik user host '
+            . '(pull berikutnya dari SSH user itu gagal) — jadi checkout milik root memang tidak didukung. '
+            . 'Perbaiki di host: sudo chown -R ' . $fix['owner'] . ' ' . $root
+            . ($fix['concrete'] ? '' : ' (<uid>:<gid> = pemilik direktori induk repo, biasanya user yang menjalankan instalasi)')
+            . ', lalu jalankan ulang update. Alternatif aman: ulangi instalasi sebagai user itu — sudo -u ' . $fix['user']
+            . ' ./agent/install.sh … — jangan menjalankan helper sebagai root.';
+    }
+
+    /**
+     * Jalan keluar `chown` untuk repo milik root: `uid:gid` pemilik **direktori
+     * induk** repo (yang biasanya milik user host, bukan root). Placeholder
+     * `<uid>:<gid>`/`<user>` dipakai bila induknya tidak terbaca atau juga milik
+     * root — lebih baik daripada mencetak angka yang salah.
+     *
+     * @return array{owner:string,user:string,concrete:bool}
+     */
+    private static function ownershipFixHint(string $root): array
+    {
+        $parent = dirname($root === '/' ? '/' : $root);
+        $uid = @fileowner($parent);
+        $gid = @filegroup($parent);
+
+        if ($uid === false || $gid === false || (int) $uid <= 0) {
+            return ['owner' => '<uid>:<gid>', 'user' => '<user>', 'concrete' => false];
+        }
+
+        $user = '<user>';
+        if (function_exists('posix_getpwuid')) {
+            $pw = @posix_getpwuid((int) $uid);
+            if (is_array($pw) && isset($pw['name']) && (string) $pw['name'] !== '') {
+                $user = (string) $pw['name'];
+            }
+        }
+
+        return ['owner' => (int) $uid . ':' . (int) $gid, 'user' => $user, 'concrete' => true];
     }
 
     /**
