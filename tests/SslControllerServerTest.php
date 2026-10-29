@@ -5,6 +5,7 @@ namespace Tests;
 
 use app\controller\SslController;
 use app\library\Deploy\ServerResolver;
+use app\library\SSL\SslQueue;
 use app\library\Storage\AppStore;
 use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteDatabase;
@@ -32,8 +33,9 @@ if (!defined('BASE_PATH')) {
  *     SSL diambil dari `servers.domain` server itu (`{label}.{domain}`), dan app
  *     lokal tetap memakai `APP_DOMAIN` control plane (perilaku lama identik);
  *  2. `enable()` untuk app di server agent **tetap** menandai status `pending`
- *     dan meluncurkan worker `cli/ssl.php` (worker itu yang mengirim job
- *     `ssl_issue` ke server agent) — controller tidak menjalankan certbot;
+ *     dan memasukkan job ke antrean SSL global; drainer `ssl-queue` yang
+ *     menjalankan `cli/ssl.php` (worker itu yang mengirim job `ssl_issue` ke
+ *     server agent) — controller tidak menjalankan certbot;
  *  3. server agent tanpa `APP_DOMAIN` (`domain`) ⇒ **ditolak lebih awal** dengan
  *     pesan yang meminta admin mengisi domain server itu (kontrak F2 §5):
  *     tidak ada status `pending`, tidak ada worker yang diluncurkan;
@@ -107,9 +109,6 @@ class SslControllerServerTest extends TestCase
     /** @var array<string,mixed> */
     private array $configState = [];
 
-    /** @var array<int,array{0:string,1:string}> */
-    private array $spawned = [];
-
     protected function setUp(): void
     {
         $this->tmp = sys_get_temp_dir() . '/rames-ssl-server-' . bin2hex(random_bytes(5));
@@ -117,7 +116,6 @@ class SslControllerServerTest extends TestCase
             mkdir($this->tmp . '/' . $dir, 0777, true);
         }
 
-        $this->spawned = [];
         $GLOBALS['RAMES_FLASH'] = [];
 
         SqliteDatabase::reset();
@@ -207,7 +205,7 @@ class SslControllerServerTest extends TestCase
 
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
-    public function testEnableForRemoteAppSpawnsTheWorkerWithTheServerDomain(): void
+    public function testEnableForRemoteAppEnqueuesTheJobWithTheServerDomain(): void
     {
         $this->installStubs(self::ADMIN);
         $this->agent(self::AGENT_ID, ['domain' => 'remote.example.com']);
@@ -222,13 +220,22 @@ class SslControllerServerTest extends TestCase
 
         $this->assertSame(302, $response->getStatusCode());
         $this->assertSame('/domains', $response->getHeader('Location'), 'tabel SSL menyatu di /domains');
-        $this->assertSame([[$app['id'], 'remote-app.remote.example.com']], $this->spawned, 'worker SSL dijalankan dengan domain server app');
+        $job = $this->queue()->findActive('app:' . $app['id'] . ':remote-app.remote.example.com:ssl');
+        $this->assertIsArray($job, 'job antrean memakai domain server app');
+        $this->assertSame('remote-app.remote.example.com', $job['domain']);
+        $this->assertSame(self::AGENT_ID, $job['server_id']);
 
         $saved = (new AppStore())->find($app['id']);
         $this->assertSame('pending', $saved['ssl_status']);
         $this->assertSame('queued', $saved['ssl_stage']);
         $this->assertTrue($saved['needs_ssl']);
-        $this->assertSame([['type' => 'success', 'message' => 'Penerbitan SSL untuk remote-app.remote.example.com dijalankan.']], $GLOBALS['RAMES_FLASH']);
+        $this->assertSame(
+            [[
+                'type' => 'success',
+                'message' => 'SSL untuk remote-app.remote.example.com masuk antrean (posisi 1 dari 1).',
+            ]],
+            $GLOBALS['RAMES_FLASH']
+        );
     }
 
     #[RunInSeparateProcess]
@@ -247,7 +254,7 @@ class SslControllerServerTest extends TestCase
         $response = $this->controller(true)->enable($this->post(), $app['id']);
 
         $this->assertSame(302, $response->getStatusCode());
-        $this->assertSame([], $this->spawned, 'tidak boleh ada worker SSL untuk domain yang salah');
+        $this->assertSame(0, $this->queue()->queueSize(), 'tidak boleh ada job SSL untuk domain yang salah');
         $this->assertSame('error', $GLOBALS['RAMES_FLASH'][0]['type'] ?? '');
         $this->assertStringContainsString('APP_DOMAIN', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '');
         $this->assertStringContainsString('halaman Servers', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '');
@@ -274,14 +281,14 @@ class SslControllerServerTest extends TestCase
         $response = $this->controller(true)->enable($this->post(), $app['id']);
 
         $this->assertSame(302, $response->getStatusCode());
-        $this->assertSame([[$app['id'], 'local-app.example.org']], $this->spawned);
+        $this->assertIsArray($this->queue()->findActive('app:' . $app['id'] . ':local-app.example.org:ssl'));
         $this->assertSame('pending', (new AppStore())->find($app['id'])['ssl_status']);
         $this->assertSame('success', $GLOBALS['RAMES_FLASH'][0]['type'] ?? '');
     }
 
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
-    public function testEnableSpawFailureMarksTheSlotFailed(): void
+    public function testEnableEnqueueFailureMarksTheSlotFailed(): void
     {
         $this->installStubs(self::ADMIN);
         $app = (new AppStore())->create([
@@ -294,7 +301,7 @@ class SslControllerServerTest extends TestCase
 
         $saved = (new AppStore())->find($app['id']);
         $this->assertSame('failed', $saved['ssl_status']);
-        $this->assertStringContainsString('Gagal spawn worker SSL', (string) $saved['ssl_error']);
+        $this->assertStringContainsString('Gagal memasukkan permintaan SSL ke antrean', (string) $saved['ssl_error']);
     }
 
     #[RunInSeparateProcess]
@@ -318,7 +325,7 @@ class SslControllerServerTest extends TestCase
         // Domain baris = FQDN server yang tidak publik ⇒ tombol tidak berguna.
         $this->controller(true)->enable($this->post(), $app['id']);
 
-        $this->assertSame([], $this->spawned, 'domain non-publik tidak boleh meluncurkan worker');
+        $this->assertSame(0, $this->queue()->queueSize(), 'domain non-publik tidak boleh masuk antrean');
         $this->assertStringContainsString('bukan domain publik', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '');
     }
 
@@ -427,13 +434,25 @@ class SslControllerServerTest extends TestCase
     // Helper
     // ==================================================================
 
-    private function controller(bool $spawnOk): SslController
+    /**
+     * Controller dengan antrean SSL ber-basis data temp.
+     *
+     * `$queueOk = false` menyuntikkan antrean yang **tidak bisa** membuka basis
+     * data (`/dev/null/...`) untuk membuktikan jalur gagal-enqueue.
+     */
+    private function controller(bool $queueOk): SslController
     {
-        return new SslController(function (string $appId, string $domain) use ($spawnOk): bool {
-            $this->spawned[] = [$appId, $domain];
+        return new SslController($queueOk ? $this->queue() : $this->brokenQueue());
+    }
 
-            return $spawnOk;
-        });
+    private function queue(): SslQueue
+    {
+        return new SslQueue(new SqliteDatabase($this->tmp . '/rames.sqlite'));
+    }
+
+    private function brokenQueue(): SslQueue
+    {
+        return new SslQueue(new SqliteDatabase('/dev/null/rames-ssl/rames.sqlite'));
     }
 
     private function post(string $domain = ''): Request

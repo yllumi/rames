@@ -4,103 +4,107 @@ declare(strict_types=1);
 namespace Tests;
 
 use app\library\SSL\ParkedSslEnabler;
+use app\library\SSL\SslQueue;
 use app\library\Storage\ParkedDomainStore;
+use app\library\Storage\SqliteDatabase;
 use PHPUnit\Framework\TestCase;
 use Tests\Support\StoreDbFiles;
 
 /**
  * Test mediator pengaktifan SSL domain parkir ({@see ParkedSslEnabler}).
  *
- * Tanpa HTTP, certbot, maupun Docker: seam `$spawn` berupa closure
- * `fn(string $id): bool` menggantikan peluncuran worker detached, dan store
- * disuntikkan lewat konstruktor sehingga seluruh data tinggal di berkas
- * .sqlite temp (`database/` nyata tidak disentuh).
+ * Tanpa HTTP, certbot, maupun Docker: seam `?SslQueue $queue` berupa antrean
+ * ber-basis data temp menggantikan worker detached, dan store disuntikkan lewat
+ * konstruktor sehingga seluruh data tinggal di berkas .sqlite temp
+ * (`database/` nyata tidak disentuh).
  *
- * Yang dibuktikan: sukses spawn ⇒ `pending`/`queued`/`ssl_message` terisi,
- * gagal spawn ⇒ `failed` + `ssl_error`, status `active`/`pending` ditolak
- * sebagai info tanpa spawn, domain non-publik ditolak, dan entri tak ada
- * ditolak — semuanya tanpa mengubah state atau memanggil spawn.
+ * Yang dibuktikan: sukses enqueue ⇒ `pending`/`queued`/`ssl_message` terisi +
+ * job `ssl_jobs` dibuat, gagal enqueue ⇒ `failed` + `ssl_error`, status
+ * `active`/`pending` ditolak sebagai info tanpa job, domain non-publik ditolak,
+ * dan entri tak ada ditolak — semuanya tanpa menjalankan certbot.
  */
 class ParkedSslEnablerTest extends TestCase
 {
     private string $file;
     private ParkedDomainStore $store;
+    private SslQueue $queue;
 
     protected function setUp(): void
     {
         $this->file = sys_get_temp_dir() . '/rames-parked-ssl-enabler-' . bin2hex(random_bytes(5)) . '.sqlite';
+        SqliteDatabase::reset();
         $this->store = new ParkedDomainStore($this->file);
+        $this->queue = new SslQueue(new SqliteDatabase($this->file));
     }
 
     protected function tearDown(): void
     {
+        SqliteDatabase::reset();
         StoreDbFiles::remove($this->file);
     }
 
     /**
-     * Enabler dengan seam spawn yang mencatat id dan mengembalikan hasil tetap.
-     *
-     * @param array<int,string> $calls
+     * Enabler dengan antrean temp; `$queueOk = false` memakai antrean yang
+     * tidak bisa membuka basis data (`/dev/null/...`) untuk jalur gagal-enqueue.
      */
-    private function enabler(bool $spawnOk, array &$calls): ParkedSslEnabler
+    private function enabler(bool $queueOk = true): ParkedSslEnabler
     {
-        return new ParkedSslEnabler(
-            static function (string $id) use ($spawnOk, &$calls): bool {
-                $calls[] = $id;
+        $queue = $queueOk
+            ? $this->queue
+            : new SslQueue(new SqliteDatabase('/dev/null/rames-parked/rames.sqlite'));
 
-                return $spawnOk;
-            },
-            $this->store
-        );
+        return new ParkedSslEnabler($queue, $this->store);
     }
 
     public function testSuccessMarksEntryPendingAndReportsSuccess(): void
     {
         $entry = $this->store->create(['domain' => 'ssl-parkir.example.com', 'mode' => 'html']);
 
-        $calls = [];
-        $result = $this->enabler(true, $calls)->enable($entry['id']);
+        $result = $this->enabler()->enable($entry['id']);
 
-        $this->assertSame([$entry['id']], $calls, 'worker SSL diploncat tepat sekali untuk id entri');
         $this->assertTrue($result['ok']);
         $this->assertNull($result['error']);
         $this->assertSame('pending', $result['status']);
         $this->assertSame('success', $result['flash']);
         $this->assertSame('ssl-parkir.example.com', $result['domain']);
-        $this->assertStringContainsString('ssl-parkir.example.com', $result['message']);
+        $this->assertSame(
+            'SSL untuk ssl-parkir.example.com masuk antrean (posisi 1 dari 1).',
+            $result['message']
+        );
 
         $saved = $this->store->find($entry['id']);
         $this->assertNotNull($saved);
         $this->assertSame('pending', $saved['ssl_status']);
         $this->assertSame('queued', $saved['ssl_stage']);
-        $this->assertIsString($saved['ssl_message']);
-        $this->assertNotSame('', trim((string) $saved['ssl_message']), 'ssl_message harus terisi sebelum spawn');
+        $this->assertSame('Menunggu antrean SSL ...', $saved['ssl_message']);
         $this->assertNull($saved['ssl_error']);
+
+        $job = $this->queue->findActive('parked:' . $entry['id'] . ':ssl-parkir.example.com');
+        $this->assertIsArray($job, 'entri harus menjadi job antrean');
+        $this->assertSame('parked', $job['target_type']);
+        $this->assertSame(1, $this->queue->queueSize());
     }
 
-    public function testSpawnFailureMarksEntryFailedAndReportsError(): void
+    public function testEnqueueFailureMarksEntryFailedAndReportsError(): void
     {
         $entry = $this->store->create(['domain' => 'ssl-gagal.example.com', 'mode' => 'html']);
 
-        $calls = [];
-        $result = $this->enabler(false, $calls)->enable($entry['id']);
+        $result = $this->enabler(false)->enable($entry['id']);
 
-        $this->assertSame([$entry['id']], $calls, 'spawn tetap dipanggil sekali walau gagal');
         $this->assertFalse($result['ok']);
         $this->assertSame('failed', $result['status']);
         $this->assertSame('error', $result['flash']);
-        $this->assertNotNull($result['error']);
-        $this->assertStringContainsString('Gagal menjalankan worker SSL', (string) $result['error']);
+        $this->assertSame('Gagal memasukkan permintaan SSL ke antrean.', (string) $result['error']);
 
         $saved = $this->store->find($entry['id']);
         $this->assertNotNull($saved);
         $this->assertSame('failed', $saved['ssl_status']);
         $this->assertNull($saved['ssl_stage']);
         $this->assertNull($saved['ssl_message']);
-        $this->assertStringContainsString('Gagal spawn worker SSL', (string) $saved['ssl_error']);
+        $this->assertStringContainsString('Gagal memasukkan permintaan SSL ke antrean', (string) $saved['ssl_error']);
     }
 
-    public function testActiveEntryIsRejectedAsInfoWithoutSpawn(): void
+    public function testActiveEntryIsRejectedAsInfoWithoutEnqueue(): void
     {
         $entry = $this->store->create([
             'domain' => 'ssl-aktif.example.com',
@@ -109,10 +113,9 @@ class ParkedSslEnablerTest extends TestCase
         ]);
         $before = $this->store->find($entry['id']);
 
-        $calls = [];
-        $result = $this->enabler(true, $calls)->enable($entry['id']);
+        $result = $this->enabler()->enable($entry['id']);
 
-        $this->assertSame([], $calls, 'SSL yang sudah active tidak boleh spawn ulang');
+        $this->assertSame(0, $this->queue->queueSize(), 'SSL yang sudah active tidak boleh masuk antrean');
         $this->assertFalse($result['ok']);
         $this->assertSame('already', $result['status']);
         $this->assertSame('info', $result['flash']);
@@ -120,7 +123,7 @@ class ParkedSslEnablerTest extends TestCase
         $this->assertSame($before, $this->store->find($entry['id']), 'state tidak boleh berubah');
     }
 
-    public function testPendingEntryIsRejectedAsInfoWithoutSpawn(): void
+    public function testPendingEntryIsRejectedAsInfoWithoutEnqueue(): void
     {
         $entry = $this->store->create([
             'domain' => 'ssl-menunggu.example.com',
@@ -130,25 +133,23 @@ class ParkedSslEnablerTest extends TestCase
         ]);
         $before = $this->store->find($entry['id']);
 
-        $calls = [];
-        $result = $this->enabler(true, $calls)->enable($entry['id']);
+        $result = $this->enabler()->enable($entry['id']);
 
-        $this->assertSame([], $calls, 'SSL yang sedang pending tidak boleh spawn ulang');
+        $this->assertSame(0, $this->queue->queueSize(), 'SSL yang sedang pending tidak boleh masuk antrean');
         $this->assertFalse($result['ok']);
         $this->assertSame('already', $result['status']);
         $this->assertSame('info', $result['flash']);
         $this->assertSame($before, $this->store->find($entry['id']), 'state tidak boleh berubah');
     }
 
-    public function testNonPublicDomainIsRejectedWithoutSpawn(): void
+    public function testNonPublicDomainIsRejectedWithoutEnqueue(): void
     {
         $entry = $this->store->create(['domain' => 'parkir.local', 'mode' => 'html']);
         $before = $this->store->find($entry['id']);
 
-        $calls = [];
-        $result = $this->enabler(true, $calls)->enable($entry['id']);
+        $result = $this->enabler()->enable($entry['id']);
 
-        $this->assertSame([], $calls, 'domain .local tidak boleh memicu certbot');
+        $this->assertSame(0, $this->queue->queueSize(), 'domain .local tidak boleh memicu certbot');
         $this->assertFalse($result['ok']);
         $this->assertSame('rejected', $result['status']);
         $this->assertSame('error', $result['flash']);
@@ -156,12 +157,11 @@ class ParkedSslEnablerTest extends TestCase
         $this->assertSame($before, $this->store->find($entry['id']), 'state tidak boleh berubah');
     }
 
-    public function testMissingEntryIsRejectedWithoutSpawn(): void
+    public function testMissingEntryIsRejectedWithoutEnqueue(): void
     {
-        $calls = [];
-        $result = $this->enabler(true, $calls)->enable('pd_000000000000');
+        $result = $this->enabler()->enable('pd_000000000000');
 
-        $this->assertSame([], $calls, 'entri tak ada tidak boleh spawn worker');
+        $this->assertSame(0, $this->queue->queueSize(), 'entri tak ada tidak boleh masuk antrean');
         $this->assertFalse($result['ok']);
         $this->assertSame('rejected', $result['status']);
         $this->assertSame('error', $result['flash']);

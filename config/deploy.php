@@ -157,6 +157,22 @@ return [
     'certbot_logs_dir' => getenv('CERTBOT_LOGS_DIR') ?: '/var/log/letsencrypt',
     'cloudflare_creds' => getenv('CLOUDFLARE_CREDS') ?: '',
 
+    // ---- Antrean aktivasi SSL (docs/SPECS.md §8a) ----
+    // Certbot memakai lock global + Let's Encrypt punya rate limit, jadi
+    // penerbitan dijalankan satu per satu lewat tabel `ssl_jobs` (migrasi v5).
+    // Nilai dibaca eksplisit (pola blok billing): `?:` menelan `0` yang sah.
+    //  - timeout       : batas satu proses worker SSL (detik; 0 = tanpa batas)
+    //  - stale_seconds : job `running` lebih tua dari ini dianggap macet
+    //  - max_attempts  : percobaan otomatis maksimum (retry hanya utk error
+    //                    transien; rate limit/validasi langsung gagal)
+    //  - backoff       : jeda (detik) setelah percobaan ke-1, ke-2, dst.
+    //  - prune_days    : retensi job `done`/`failed`
+    'ssl_queue_timeout' => $billingInt('SSL_QUEUE_TIMEOUT', 900),
+    'ssl_queue_stale_seconds' => $billingInt('SSL_QUEUE_STALE_SECONDS', 900),
+    'ssl_queue_max_attempts' => $billingInt('SSL_QUEUE_MAX_ATTEMPTS', 3),
+    'ssl_queue_backoff' => [30, 120],
+    'ssl_queue_prune_days' => $billingInt('SSL_QUEUE_PRUNE_DAYS', 7),
+
     // Socket Docker Engine
     'docker_socket' => getenv('DOCKER_SOCKET') ?: '/var/run/docker.sock',
     'docker_binary' => getenv('DOCKER_BINARY') ?: 'docker',

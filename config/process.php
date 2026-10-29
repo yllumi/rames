@@ -187,6 +187,17 @@ if (!$ramesIsAgent) {
         'reloadable' => true,
         'count' => 1,
     ];
+    // Antrean aktivasi SSL (docs/SPECS.md §8a): satu job certbot pada satu
+    // waktu lintas seluruh domain (lock global certbot + rate limit Let's
+    // Encrypt). Controller hanya menulis job; proses ini yang menjalankannya
+    // tiap 5 dtk. Satu worker (`count=1`) sehingga tidak ada penerbitan paralel.
+    // Semua error ditangkap proses (tidak boleh mematikan worker). CATATAN:
+    // proses BARU → butuh restart (bukan reload) saat pertama kali di-deploy.
+    $ramesProcesses['ssl-queue'] = [
+        'handler' => app\process\SslQueueProcess::class,
+        'reloadable' => true,
+        'count' => 1,
+    ];
 }
 
 return $ramesProcesses;

@@ -11,6 +11,7 @@ use app\library\Domain\ParkedDomainValidator;
 use app\library\Nginx\NginxConfigGenerator;
 use app\library\Nginx\NginxReloader;
 use app\library\SSL\SslErrorSummary;
+use app\library\SSL\SslQueue;
 use app\library\Storage\AppStore;
 use app\library\Storage\ParkedDomainStore;
 use app\library\Storage\SqliteDatabase;
@@ -52,8 +53,7 @@ class DomainControllerTest extends TestCase
     private ParkedDomainStore $parked;
     private AppStore $apps;
 
-    /** @var array<int,string> id domain parkir yang di-spawn worker SSL-nya */
-    private array $spawned = [];
+    private SslQueue $queue;
 
     /** @var array<string,mixed> */
     private array $configState = [];
@@ -74,7 +74,7 @@ class DomainControllerTest extends TestCase
         $db = $this->tmp . '/rames.sqlite';
         $this->parked = new ParkedDomainStore($db);
         $this->apps = new AppStore($db);
-        $this->spawned = [];
+        $this->queue = new SslQueue(new SqliteDatabase($db));
     }
 
     protected function tearDown(): void
@@ -115,7 +115,7 @@ class DomainControllerTest extends TestCase
         foreach ($responses as $method => $response) {
             $this->assertSame(404, $response->getStatusCode(), $method . ' harus 404 untuk non-admin');
         }
-        $this->assertSame([], $this->spawned, 'tidak boleh ada worker SSL untuk non-admin');
+        $this->assertSame(0, $this->queue->queueSize(), 'tidak boleh ada job SSL untuk non-admin');
         $this->assertSame(0, $controller->managerCalls, 'manager tidak boleh dipanggil non-admin');
         $this->assertNull($controller->rendered, 'view tidak boleh dirender untuk non-admin');
         $this->assertSame([], $controller->flashes, 'tidak ada flash untuk non-admin');
@@ -277,6 +277,26 @@ class DomainControllerTest extends TestCase
      * `GET /api/domains/status` memakai baris terdekorasi yang sama: app +
      * parkir untuk admin, tanpa objek `app` mentah.
      */
+    public function testApiStatusCarriesQueuePositionForPendingRows(): void
+    {
+        $app = $this->apps->create([
+            'name' => 'antre-app',
+            'status' => 'running',
+            'owner_id' => self::ADMIN['id'],
+            'containers' => [['host_port' => 30006, 'internal_port' => 80]],
+            'ssl_status' => 'pending',
+            'ssl_stage' => 'queued',
+            'ssl_message' => 'Menunggu antrean SSL ...',
+        ]);
+        $this->queue->enqueueApp($app, 'antre-app.example.org', 'ssl');
+
+        $controller = $this->controller(self::ADMIN);
+        $body = json_decode((string) $controller->apiStatus($this->get('/api/domains/status'))->rawBody(), true);
+
+        $this->assertSame(1, $body['rows'][0]['ssl_queue_position']);
+        $this->assertSame(1, $body['rows'][0]['ssl_queue_size']);
+    }
+
     public function testApiStatusIncludesAppAndParkedRowsForAdmin(): void
     {
         $app = $this->apps->create([
@@ -307,6 +327,9 @@ class DomainControllerTest extends TestCase
         $this->assertSame('status-parkir.example.com', $body['rows'][1]['domain']);
         foreach ($body['rows'] as $row) {
             $this->assertArrayNotHasKey('app', $row, 'payload JSON tidak boleh memuat objek app');
+            // Field BEKU untuk polling tambahan SSL (`public/js/ssl.js`).
+            $this->assertArrayHasKey('ssl_queue_position', $row);
+            $this->assertArrayHasKey('ssl_queue_size', $row);
         }
     }
 
@@ -369,15 +392,21 @@ class DomainControllerTest extends TestCase
 
         $this->assertSame(302, $response->getStatusCode());
         $this->assertSame('/domains?tab=parking', $response->getHeader('Location'));
-        $this->assertSame([$entry['id']], $this->spawned, 'worker SSL parkir diploncat');
+        $this->assertIsArray(
+            $this->queue->findActive('parked:' . $entry['id'] . ':ssl-parkir.example.com'),
+            'permintaan SSL parkir masuk antrean global'
+        );
         $this->assertCount(1, $controller->flashes);
         $this->assertSame('success', $controller->flashes[0]['type']);
-        $this->assertStringContainsString('ssl-parkir.example.com', $controller->flashes[0]['message']);
+        $this->assertSame(
+            'SSL untuk ssl-parkir.example.com masuk antrean (posisi 1 dari 1).',
+            $controller->flashes[0]['message']
+        );
 
         $saved = $this->parked->find($entry['id']);
         $this->assertSame('pending', $saved['ssl_status']);
         $this->assertSame('queued', $saved['ssl_stage']);
-        $this->assertSame('Menunggu worker SSL ...', $saved['ssl_message']);
+        $this->assertSame('Menunggu antrean SSL ...', $saved['ssl_message']);
         $this->assertNull($saved['ssl_error']);
     }
 
@@ -390,7 +419,7 @@ class DomainControllerTest extends TestCase
         );
 
         $this->assertSame(302, $response->getStatusCode());
-        $this->assertSame([], $this->spawned);
+        $this->assertSame(0, $this->queue->queueSize());
         $this->assertSame('error', $controller->flashes[0]['type'] ?? '');
         $this->assertStringContainsString('tidak ditemukan', $controller->flashes[0]['message'] ?? '');
     }
@@ -411,7 +440,13 @@ class DomainControllerTest extends TestCase
         $this->assertTrue($body['ok']);
         $this->assertSame('pending', $body['status']);
         $this->assertSame('api-parkir.example.com', $body['domain']);
-        $this->assertSame([$entry['id']], $this->spawned);
+        $this->assertSame(
+            'SSL untuk api-parkir.example.com masuk antrean (posisi 1 dari 1).',
+            $body['message']
+        );
+        $this->assertIsArray(
+            $this->queue->findActive('parked:' . $entry['id'] . ':api-parkir.example.com')
+        );
     }
 
     /**
@@ -429,7 +464,7 @@ class DomainControllerTest extends TestCase
 
         $this->assertSame(302, $response->getStatusCode());
         $this->assertSame('/domains', $response->getHeader('Location'));
-        $this->assertSame([], $this->spawned, 'alias tidak boleh melahirkan worker SSL');
+        $this->assertSame(0, $this->queue->queueSize(), 'alias tidak boleh melahirkan job SSL');
         $this->assertSame($before, $this->parked->all(), 'store tidak boleh berubah');
         $this->assertSame($entry['id'], $this->parked->find($entry['id'])['id'] ?? null, 'entri parkir tetap utuh');
         $this->assertSame(0, $controller->managerCalls, 'manager tidak boleh dipanggil');
@@ -577,11 +612,7 @@ class DomainControllerTest extends TestCase
             $this->parked,
             $this->apps,
             new FakeParkedReloader(),
-            function (string $id): bool {
-                $this->spawned[] = $id;
-
-                return true;
-            }
+            $this->queue
         );
         $controller->user = $user;
 
@@ -695,9 +726,9 @@ class FakeDomainController extends DomainController
         private readonly ParkedDomainStore $parked,
         private readonly AppStore $apps,
         private readonly NginxReloader $reloader,
-        ?\Closure $spawn = null,
+        ?SslQueue $queue = null,
     ) {
-        parent::__construct($spawn);
+        parent::__construct($queue);
     }
 
     protected function appStore(): AppStore

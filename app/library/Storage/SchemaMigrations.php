@@ -22,7 +22,7 @@ use Throwable;
 final class SchemaMigrations
 {
     /** Versi skema terakhir yang dikenal. */
-    public const LATEST = 4;
+    public const LATEST = 5;
 
     /**
      * Daftar migrasi berversi. Kunci = nomor versi (menaik), nilai = callable.
@@ -121,6 +121,54 @@ final class SchemaMigrations
                 $pdo->exec(
                     'CREATE INDEX IF NOT EXISTS "idx_error_events_time"'
                     . ' ON "error_events" ("occurred_at")'
+                );
+            },
+            5 => static function (PDO $pdo): void {
+                // Antrean aktivasi SSL (satu job pada satu waktu). Certbot
+                // memakai lock global + rate limit Let's Encrypt, jadi beberapa
+                // domain tidak boleh diterbitkan bersamaan.
+                //
+                // Tabel khusus di luar `storeDefinitions()`: job adalah antrean
+                // append-only yang dimutasi per baris lewat prepared statement
+                // (`SslQueue`), bukan koleksi JSON yang ditulis ulang seluruhnya.
+                // Idempoten (`IF NOT EXISTS`) agar DB v1..v4 ikut mendapat tabel.
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS "ssl_jobs" ('
+                    . '"id" TEXT PRIMARY KEY,'
+                    . '"dedupe_key" TEXT NOT NULL,'
+                    . '"target_type" TEXT NOT NULL,'
+                    . '"app_id" TEXT,'
+                    . '"parked_id" TEXT,'
+                    . '"server_id" TEXT,'
+                    . '"domain" TEXT NOT NULL,'
+                    . '"slot" TEXT,'
+                    . '"actor_id" TEXT,'
+                    . '"status" TEXT NOT NULL,'
+                    . '"attempts" INTEGER NOT NULL DEFAULT 0,'
+                    . '"max_attempts" INTEGER NOT NULL DEFAULT 3,'
+                    . '"available_at" TEXT NOT NULL,'
+                    . '"created_at" TEXT NOT NULL,'
+                    . '"started_at" TEXT,'
+                    . '"finished_at" TEXT,'
+                    . '"last_error" TEXT'
+                    . ')'
+                );
+                // Satu job aktif (queued/running) per dedupe key — indeks parsial
+                // supaya job yang sudah selesai/gagal tidak pernah memblokir
+                // permintaan baru untuk domain yang sama.
+                $pdo->exec(
+                    'CREATE UNIQUE INDEX IF NOT EXISTS "uniq_ssl_jobs_active"'
+                    . ' ON "ssl_jobs" ("dedupe_key") WHERE "status" IN (\'queued\',\'running\')'
+                );
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS "idx_ssl_jobs_queue"'
+                    . ' ON "ssl_jobs" ("status","available_at","created_at")'
+                );
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS "idx_ssl_jobs_app" ON "ssl_jobs" ("app_id")'
+                );
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS "idx_ssl_jobs_parked" ON "ssl_jobs" ("parked_id")'
                 );
             },
         ];

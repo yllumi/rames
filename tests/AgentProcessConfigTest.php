@@ -29,8 +29,8 @@ if (!defined('BASE_PATH')) {
  *  3. mode `agent` TANPA cert/key (kosong, tidak ada, atau penanda "mati") →
  *     gagal **tegas** (`RuntimeException` saat berkas dimuat = saat start),
  *     bukan jalan tanpa TLS; `AGENT_BIND` tak berbentuk `IP:PORT` juga ditolak;
- *  4. timer khusus dashboard (update-check/billing/db-backup) tidak dipasang di
- *     mode agent dan tetap dipasang di mode dashboard.
+ *  4. timer khusus dashboard (update-check/billing/db-backup/ssl-queue) tidak
+ *     dipasang di mode agent dan tetap dipasang di mode dashboard.
  *
  * Tidak menyentuh data runtime: hanya direktori temp + env proses yang
  * dipulihkan di `tearDown` (registry webman `Config` juga dipulihkan).
@@ -39,7 +39,7 @@ class AgentProcessConfigTest extends TestCase
 {
     /** Timer lokal (kedua mode) + timer khusus dashboard (plan §10.1). */
     private const LOCAL_PROCESSES = ['webman', 'monitor'];
-    private const DASHBOARD_ONLY_PROCESSES = ['update-check', 'billing', 'db-backup'];
+    private const DASHBOARD_ONLY_PROCESSES = ['update-check', 'billing', 'db-backup', 'ssl-queue'];
 
     private string $tmp = '';
 
@@ -227,10 +227,15 @@ class AgentProcessConfigTest extends TestCase
     {
         $this->applyEnv(['RAMES_MODE' => 'dashboard']);
 
+        $processes = $this->loadProcesses();
         $this->assertSame(
             array_merge(self::LOCAL_PROCESSES, self::DASHBOARD_ONLY_PROCESSES),
-            array_keys($this->loadProcesses())
+            array_keys($processes)
         );
+        // Drainer antrean SSL: satu worker (tidak boleh paralel — certbot lock global).
+        $this->assertSame(\app\process\SslQueueProcess::class, $processes['ssl-queue']['handler']);
+        $this->assertSame(1, $processes['ssl-queue']['count']);
+        $this->assertTrue($processes['ssl-queue']['reloadable']);
     }
 
     public function testAgentModeRunsLocalProcessesOnly(): void

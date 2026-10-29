@@ -5,6 +5,8 @@ namespace Tests;
 
 use app\library\Deploy\ServerResolver;
 use app\library\SSL\SslDomainRows;
+use app\library\SSL\SslQueue;
+use app\library\Storage\SqliteDatabase;
 use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
 use Webman\Config;
@@ -32,7 +34,9 @@ if (!function_exists('app_subdomain_of')) {
  *    `custom_ssl`) lalu subdomain (`redirect`, `ssl`) — keduanya status dari
  *    slot yang berbeda;
  *  - baris domain parkir `kind='parked'`, tanpa app, `ssl_status` default
- *    `disabled`.
+ *    `disabled`;
+ *  - setiap baris memuat `ssl_queue_position`/`ssl_queue_size` (null kecuali
+ *    baris `pending` yang punya job aktif di antrean SSL).
  */
 class SslDomainRowsTest extends TestCase
 {
@@ -45,11 +49,13 @@ class SslDomainRowsTest extends TestCase
     {
         $this->configState = $this->snapshotConfigState();
         ServerResolver::forgetMemo();
+        SqliteDatabase::reset();
         $this->useConfig();
     }
 
     protected function tearDown(): void
     {
+        SqliteDatabase::reset();
         ServerResolver::forgetMemo();
         $this->restoreConfigState($this->configState);
         $this->removeTree($this->tmp);
@@ -176,6 +182,52 @@ class SslDomainRowsTest extends TestCase
         $this->assertNull($second['ssl_message']);
         $this->assertNull($second['ssl_error']);
         $this->assertNull($second['ssl_expires_at']);
+    }
+
+    public function testEveryRowCarriesQueueFieldsAsNullWithoutActiveJob(): void
+    {
+        $rows = SslDomainRows::appRows([[
+            'id' => 'app_tanpa_antre',
+            'name' => 'tanpa-antre',
+            'containers' => [['host_port' => 30010, 'internal_port' => 80]],
+            'ssl_status' => 'pending',
+        ]]);
+
+        $this->assertNull($rows[0]['ssl_queue_position'], 'pending tanpa job aktif = tanpa posisi');
+        $this->assertNull($rows[0]['ssl_queue_size']);
+    }
+
+    public function testPendingRowWithActiveJobCarriesQueuePosition(): void
+    {
+        $app = [
+            'id' => 'app_antre',
+            'name' => 'antre',
+            'containers' => [['host_port' => 30011, 'internal_port' => 80]],
+            'ssl_status' => 'pending',
+        ];
+        (new SslQueue(new SqliteDatabase($this->tmp . '/rames.sqlite')))
+            ->enqueueApp($app, 'antre.example.org', 'ssl');
+
+        $rows = SslDomainRows::appRows([$app]);
+
+        $this->assertSame(1, $rows[0]['ssl_queue_position']);
+        $this->assertSame(1, $rows[0]['ssl_queue_size']);
+    }
+
+    public function testParkedPendingRowIsDecoratedFromItsOwnDedupeKey(): void
+    {
+        (new SslQueue(new SqliteDatabase($this->tmp . '/rames.sqlite')))
+            ->enqueueParked(['id' => 'pd_aaaaaaaaaaaa', 'domain' => 'parkir-queued.example.com']);
+
+        $rows = SslDomainRows::parkedRows([[
+            'id' => 'pd_aaaaaaaaaaaa',
+            'domain' => 'parkir-queued.example.com',
+            'mode' => 'html',
+            'ssl_status' => 'pending',
+        ]]);
+
+        $this->assertSame(1, $rows[0]['ssl_queue_position']);
+        $this->assertSame(1, $rows[0]['ssl_queue_size']);
     }
 
     // ==================================================================

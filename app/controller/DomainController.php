@@ -14,6 +14,7 @@ use app\library\SSL\ParkedSslEnabler;
 use app\library\SSL\SslDomainRows;
 use app\library\SSL\SslErrorSummary;
 use app\library\SSL\SslIssuer;
+use app\library\SSL\SslQueue;
 use app\library\Storage\AppStore;
 use app\library\Storage\ParkedDomainStore;
 use support\Request;
@@ -57,12 +58,12 @@ use Webman\Http\UploadFile;
  */
 class DomainController
 {
-    /** @var (\Closure(string):bool)|null seam uji: (parkedId) => spawn berhasil? */
-    private ?\Closure $spawn;
+    /** Seam uji: antrean SSL domain parkir (null ⇒ store produksi). */
+    private ?SslQueue $queue;
 
-    public function __construct(?\Closure $spawn = null)
+    public function __construct(?SslQueue $queue = null)
     {
-        $this->spawn = $spawn;
+        $this->queue = $queue;
     }
 
     // ==================================================================
@@ -307,8 +308,8 @@ class DomainController
      * `POST /domains/parked/{id}/ssl` — aktifkan SSL satu domain parkir.
      *
      * Admin-only (non-admin ⇒ 404 **sebelum** membaca store). Inti validasi &
-     * spawn worker ada di {@see ParkedSslEnabler}; controller hanya memetakan
-     * hasil ke flash + redirect kembali ke tab parkir.
+     * enqueue antrean SSL ada di {@see ParkedSslEnabler}; controller hanya
+     * memetakan hasil ke flash + redirect kembali ke tab parkir.
      */
     public function enableParked(Request $request, string $id): Response
     {
@@ -724,10 +725,10 @@ class DomainController
         return new AppStore();
     }
 
-    /** Pengaktif SSL domain parkir (seam pengujian: store + spawn temp). */
+    /** Pengaktif SSL domain parkir (seam pengujian: store + antrean temp). */
     protected function parkedSslEnabler(): ParkedSslEnabler
     {
-        return new ParkedSslEnabler($this->spawn, $this->store());
+        return new ParkedSslEnabler($this->queue, $this->store());
     }
 
     /** Manager domain parkir (seam pengujian: dependensi berpath temp). */

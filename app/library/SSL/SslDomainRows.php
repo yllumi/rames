@@ -22,7 +22,12 @@ use app\library\Docker\AppPorts;
  *  - `id`       — id app (untuk app; id domain parkir pada baris parkir);
  *  - `role`     — `serve` (melayani app) | `redirect` (subdomain dialihkan ke
  *                 custom domain) | `parkir`;
- *  - `ssl_slot` — awalan field status di `apps.json` (`ssl` | `custom_ssl`).
+ *  - `ssl_slot` — awalan field status di `apps.json` (`ssl` | `custom_ssl`);
+ *  - `ssl_queue_position` / `ssl_queue_size` — posisi antrean aktivasi SSL
+ *    (hanya terisi saat baris `pending`; lihat {@see SslQueue::decorate()}).
+ *    Dekorasi dilakukan **di sini saja** supaya `/domains` & `/ssl` menerima
+ *    bentuk baris yang sama tanpa duplikasi logika di controller. Fail-safe:
+ *    store antrean rusak ⇒ nilainya null, halaman tetap dirender.
  *
  * Aturan baris app:
  *  - app tanpa port host terpublish tidak dilayani Nginx ⇒ **tidak** punya baris
@@ -71,7 +76,7 @@ final class SslDomainRows
             $rows[] = self::appRow($app, $appId, $appName, $subdomain, false, 'serve', 'ssl');
         }
 
-        return $rows;
+        return (new SslQueue())->decorate($rows);
     }
 
     /**
@@ -111,7 +116,7 @@ final class SslDomainRows
             ];
         }
 
-        return $rows;
+        return (new SslQueue())->decorate($rows);
     }
 
     /**

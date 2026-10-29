@@ -6,6 +6,7 @@ namespace Tests;
 use app\controller\SslController;
 use app\library\Auth\AppAccessDenied;
 use app\library\Deploy\ServerResolver;
+use app\library\SSL\SslQueue;
 use app\library\Storage\AppStore;
 use app\library\Storage\SqliteDatabase;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
@@ -30,8 +31,8 @@ if (!defined('BASE_PATH')) {
  *  1. `apiEnable` menjalankan inti yang **sama** dengan `enable()` — validasi
  *     identik (server pemilik app, port host, domain milik app, domain publik,
  *     status sudah active/pending), efek samping identik (slot `*_status`
- *     `pending`/`failed`, `*_stage`, `*_message`, `*_error`, `needs_ssl`),
- *     worker diploncat dengan domain yang sama;
+ *     `pending`/`failed`, `*_stage`, `*_message`, `*_error`, `needs_ssl`) dan
+ *     **job masuk antrean** `ssl_jobs` (bukan spawn worker paralel);
  *  2. sukses ⇒ HTTP 200 `{code:0,ok:true,status:"pending",domain,message}`;
  *     penolakan bisnis ⇒ HTTP **200** `{code:1,ok:false,error}` (bukan 4xx/5xx)
  *     dan state tersimpan tidak berubah (kecuali jalur gagal-spawn ⇒ `failed`);
@@ -44,7 +45,8 @@ if (!defined('BASE_PATH')) {
  *
  * Seluruh data & config di `sys_get_temp_dir()`: `database/`, `apps/`,
  * `nginx-status/`, Docker, certbot, dan sesi nyata **tidak pernah** disentuh.
- * Spawn worker SSL selalu lewat seam `$spawn` (tidak pernah menjalankan certbot).
+ * Antrean SSL diarahkan ke basis data temp lewat seam `SslQueue` (tidak pernah
+ * menjalankan certbot).
  */
 class SslControllerApiTest extends TestCase
 {
@@ -111,9 +113,6 @@ class SslControllerApiTest extends TestCase
     /** @var array<string,mixed> */
     private array $configState = [];
 
-    /** @var array<int,array{0:string,1:string}> daftar (appId, domain) yang diploncat */
-    private array $spawned = [];
-
     protected function setUp(): void
     {
         $this->tmp = sys_get_temp_dir() . '/rames-ssl-api-' . bin2hex(random_bytes(5));
@@ -121,7 +120,6 @@ class SslControllerApiTest extends TestCase
             mkdir($this->tmp . '/' . $dir, 0777, true);
         }
 
-        $this->spawned = [];
         $GLOBALS['RAMES_FLASH'] = [];
 
         SqliteDatabase::reset();
@@ -146,7 +144,7 @@ class SslControllerApiTest extends TestCase
 
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
-    public function testApiEnableSpawnsWorkerAndReturnsPendingEnvelope(): void
+    public function testApiEnableEnqueuesJobAndReturnsPendingEnvelope(): void
     {
         $this->installStubs(self::OWNER);
         $app = $this->app('api-app', ['owner_id' => self::OWNER['id']]);
@@ -160,18 +158,42 @@ class SslControllerApiTest extends TestCase
             'ok' => true,
             'status' => 'pending',
             'domain' => 'api-app.example.org',
-            'message' => 'Penerbitan SSL untuk api-app.example.org dijalankan.',
+            'message' => 'SSL untuk api-app.example.org masuk antrean (posisi 1 dari 1).',
         ], $this->envelope($response));
 
-        $this->assertSame([[$app['id'], 'api-app.example.org']], $this->spawned, 'worker diploncat dengan domain app');
+        $job = $this->queue()->findActive('app:' . $app['id'] . ':api-app.example.org:ssl');
+        $this->assertIsArray($job, 'permintaan harus menjadi job antrean (bukan spawn paralel)');
+        $this->assertSame('queued', $job['status']);
+        $this->assertSame(0, (int) $job['attempts']);
+        $this->assertSame(self::OWNER['id'], $job['actor_id'], 'audit trail: id user peminta');
         $this->assertSame([], $GLOBALS['RAMES_FLASH'] ?? [], 'jalur JSON tidak menulis flash (itu milik jalur halaman)');
 
         $saved = (new AppStore())->find($app['id']);
         $this->assertSame('pending', $saved['ssl_status']);
         $this->assertSame('queued', $saved['ssl_stage']);
-        $this->assertSame('Menunggu worker SSL ...', $saved['ssl_message']);
+        $this->assertSame('Menunggu antrean SSL ...', $saved['ssl_message']);
         $this->assertNull($saved['ssl_error']);
         $this->assertTrue($saved['needs_ssl']);
+    }
+
+    /**
+     * Dua permintaan untuk domain yang sama tidak boleh membuat dua job:
+     * dedupe key menjaga satu job aktif (posisi terkini dikembalikan).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testApiEnableTwiceKeepsASingleActiveJob(): void
+    {
+        $this->installStubs(self::OWNER);
+        $app = $this->app('api-dedupe', ['owner_id' => self::OWNER['id']]);
+
+        $this->controller(true)->apiEnable($this->enableRequest($app['id']), $app['id']);
+        // Status sudah `pending` ⇒ jalur kedua ditolak lebih awal (tanpa job baru).
+        $second = $this->envelope($this->controller(true)->apiEnable($this->enableRequest($app['id']), $app['id']));
+
+        $this->assertSame(1, $second['code']);
+        $this->assertSame('SSL untuk api-dedupe.example.org sudah pending.', $second['error']);
+        $this->assertSame(1, $this->queue()->queueSize(), 'tetap satu job aktif');
     }
 
     /**
@@ -192,7 +214,9 @@ class SslControllerApiTest extends TestCase
 
         $this->assertSame(0, $this->envelope($response)['code']);
         $this->assertSame('app.example.net', $this->envelope($response)['domain']);
-        $this->assertSame([[$app['id'], 'app.example.net']], $this->spawned);
+        $job = $this->queue()->findActive('app:' . $app['id'] . ':app.example.net:custom_ssl');
+        $this->assertIsArray($job, 'slot custom memakai dedupe key custom_ssl');
+        $this->assertSame('custom_ssl', $job['slot']);
 
         $saved = (new AppStore())->find($app['id']);
         $this->assertSame('pending', $saved['custom_ssl_status']);
@@ -219,7 +243,7 @@ class SslControllerApiTest extends TestCase
         $this->assertFalse($body['ok']);
         $this->assertStringContainsString('tidak mem-publish port host', (string) $body['error']);
         $this->assertStringContainsString('Deploy Ulang', (string) $body['error']);
-        $this->assertSame([], $this->spawned, 'tidak ada worker untuk app tanpa vhost');
+        $this->assertSame(0, $this->queue()->queueSize(), 'tidak ada job untuk app tanpa vhost');
         $this->assertArrayNotHasKey('ssl_status', (new AppStore())->find($app['id']), 'store tidak boleh tersentuh');
     }
 
@@ -240,7 +264,7 @@ class SslControllerApiTest extends TestCase
         $this->assertSame(1, $body['code']);
         $this->assertFalse($body['ok']);
         $this->assertSame('Domain api-local.local bukan domain publik — SSL otomatis tidak didukung (mis. TLD .local).', $body['error']);
-        $this->assertSame([], $this->spawned);
+        $this->assertSame(0, $this->queue()->queueSize(), 'tidak ada job untuk domain yang ditolak');
 
         // Domain yang bukan milik app (subdomain maupun custom domain lain).
         $other = $this->app('api-other', ['owner_id' => self::OWNER['id']]);
@@ -249,7 +273,7 @@ class SslControllerApiTest extends TestCase
         $body = $this->envelope($response);
         $this->assertSame(1, $body['code']);
         $this->assertSame('Domain domain-orang-lain.example.com bukan milik app ini.', $body['error']);
-        $this->assertSame([], $this->spawned, 'tidak ada spawn untuk domain non-publik/milik orang lain');
+        $this->assertSame(0, $this->queue()->queueSize(), 'tidak ada job untuk domain non-publik/milik orang lain');
         $this->assertArrayNotHasKey('ssl_status', (new AppStore())->find($other['id']));
     }
 
@@ -276,16 +300,16 @@ class SslControllerApiTest extends TestCase
             $this->assertSame($status, (string) $store->find($app['id'])['ssl_status'], 'status tersimpan tidak berubah');
         }
 
-        $this->assertSame([], $this->spawned, 'tidak ada penerbitan ulang');
+        $this->assertSame(0, $this->queue()->queueSize(), 'tidak ada penerbitan ulang');
     }
 
     // ==================================================================
-    // (4) apiEnable — spawn gagal
+    // (4) apiEnable — enqueue gagal
     // ==================================================================
 
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
-    public function testApiEnableSpawnFailureMarksTheSlotFailed(): void
+    public function testApiEnableEnqueueFailureMarksTheSlotFailed(): void
     {
         $this->installStubs(self::OWNER);
         $app = $this->app('api-gagal', ['owner_id' => self::OWNER['id']]);
@@ -294,13 +318,13 @@ class SslControllerApiTest extends TestCase
 
         $body = $this->envelope($response);
         $this->assertSame(1, $body['code']);
-        $this->assertSame('Gagal menjalankan worker SSL.', $body['error']);
+        $this->assertSame('Gagal memasukkan permintaan SSL ke antrean.', $body['error']);
 
         $saved = (new AppStore())->find($app['id']);
         $this->assertSame('failed', $saved['ssl_status']);
         $this->assertNull($saved['ssl_stage']);
         $this->assertNull($saved['ssl_message']);
-        $this->assertStringContainsString('Gagal spawn worker SSL', (string) $saved['ssl_error']);
+        $this->assertStringContainsString('Gagal memasukkan permintaan SSL ke antrean', (string) $saved['ssl_error']);
     }
 
     // ==================================================================
@@ -331,7 +355,7 @@ class SslControllerApiTest extends TestCase
             }
         }
 
-        $this->assertSame([], $this->spawned);
+        $this->assertSame(0, $this->queue()->queueSize(), 'tidak ada job untuk domain yang ditolak');
         $this->assertArrayNotHasKey('ssl_status', (new AppStore())->find($foreign['id']));
     }
 
@@ -362,7 +386,7 @@ class SslControllerApiTest extends TestCase
             'owner_id' => self::OWNER['id'],
             'ssl_status' => 'pending',
             'ssl_stage' => 'queued',
-            'ssl_message' => 'Menunggu worker SSL ...',
+            'ssl_message' => 'Menunggu antrean SSL ...',
         ]);
         $custom = $this->app('status-custom', [
             'owner_id' => self::OWNER['id'],
@@ -396,7 +420,7 @@ class SslControllerApiTest extends TestCase
             'domain' => 'status-biasa.example.org',
             'is_custom' => false,
             'status' => 'pending',
-            'message' => 'Menunggu worker SSL ...',
+            'message' => 'Menunggu antrean SSL ...',
             'expires_at' => null,
             'error' => null,
             // Ringkasan pendek untuk kolom Aksi (`/domains`); `error` tetap utuh.
@@ -404,6 +428,8 @@ class SslControllerApiTest extends TestCase
             'can_ssl' => true,
             'kind' => 'app',
             'role' => 'serve',
+            'ssl_queue_position' => null,
+            'ssl_queue_size' => null,
         ], $body['rows'][0]);
 
         $this->assertSame([
@@ -419,6 +445,8 @@ class SslControllerApiTest extends TestCase
             'can_ssl' => true,
             'kind' => 'app',
             'role' => 'serve',
+            'ssl_queue_position' => null,
+            'ssl_queue_size' => null,
         ], $body['rows'][1]);
 
         $this->assertSame('status-custom.example.org', $body['rows'][2]['domain']);
@@ -505,13 +533,25 @@ class SslControllerApiTest extends TestCase
     // Helper
     // ==================================================================
 
-    private function controller(bool $spawnOk): SslController
+    /**
+     * Controller dengan antrean SSL ber-basis data temp.
+     *
+     * `$queueOk = false` menyuntikkan antrean yang **tidak bisa** membuka basis
+     * data (`/dev/null/...`) untuk membuktikan jalur gagal-enqueue.
+     */
+    private function controller(bool $queueOk): SslController
     {
-        return new SslController(function (string $appId, string $domain) use ($spawnOk): bool {
-            $this->spawned[] = [$appId, $domain];
+        return new SslController($queueOk ? $this->queue() : $this->brokenQueue());
+    }
 
-            return $spawnOk;
-        });
+    private function queue(): SslQueue
+    {
+        return new SslQueue(new SqliteDatabase($this->tmp . '/rames.sqlite'));
+    }
+
+    private function brokenQueue(): SslQueue
+    {
+        return new SslQueue(new SqliteDatabase('/dev/null/rames-ssl/rames.sqlite'));
     }
 
     /** @param array<string,mixed> $extra */

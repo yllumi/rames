@@ -42,7 +42,7 @@ if (!defined('BASE_PATH')) {
  *  3. mode `dashboard` (default) → tabel route identik dengan sebelum gerbang
  *     mode ditambahkan (jumlah route + route penting tetap ada, `/healthz`
  *     masih milik HealthController);
- *  4. mode `agent` → timer khusus dashboard (update-check/billing/db-backup)
+ *  4. mode `agent` → timer khusus dashboard (update-check/billing/db-backup/ssl-queue)
  *     tidak dipasang; timer lokal (webman/monitor) tetap;
  *  5. route agent tidak memasang middleware sesi/CSRF apa pun;
  *  6. middleware GLOBAL (`config/middleware.php`): `dashboard` tetap
@@ -598,6 +598,7 @@ class AgentModeTest extends TestCase
         $this->assertArrayNotHasKey('update-check', $processes, 'cek update dashboard tidak boleh start di agent');
         $this->assertArrayNotHasKey('billing', $processes, 'meteran/penagihan tidak boleh start di agent');
         $this->assertArrayNotHasKey('db-backup', $processes, 'backup DB dashboard tidak boleh start di agent');
+        $this->assertArrayNotHasKey('ssl-queue', $processes, 'drainer antrean SSL tidak boleh start di agent');
         // Timer lokal (worker + pemantau berkas Workerman) tetap ada.
         $this->assertArrayHasKey('webman', $processes);
         $this->assertArrayHasKey('monitor', $processes);
@@ -608,7 +609,7 @@ class AgentModeTest extends TestCase
         $processes = $this->loadProcesses('dashboard');
 
         $this->assertSame(
-            ['webman', 'monitor', 'update-check', 'billing', 'db-backup'],
+            ['webman', 'monitor', 'update-check', 'billing', 'db-backup', 'ssl-queue'],
             array_keys($processes)
         );
     }
@@ -620,6 +621,7 @@ class AgentModeTest extends TestCase
         $this->assertArrayHasKey('billing', $processes);
         $this->assertArrayHasKey('db-backup', $processes);
         $this->assertArrayHasKey('update-check', $processes);
+        $this->assertArrayHasKey('ssl-queue', $processes);
     }
 
     // ------------------------------------------------------------------

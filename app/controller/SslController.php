@@ -11,6 +11,7 @@ use app\library\Docker\AppPorts;
 use app\library\SSL\SslDomainRows;
 use app\library\SSL\SslErrorSummary;
 use app\library\SSL\SslIssuer;
+use app\library\SSL\SslQueue;
 use app\library\Storage\AppStore;
 use support\Request;
 use Webman\Http\Response;
@@ -20,8 +21,10 @@ use Webman\Http\Response;
  *
  * Menampilkan daftar domain (subdomain bawaan app, atau custom domain bila
  * di-set — subdomain hanya redirect saat custom domain aktif) beserta status
- * SSL dan tombol "Aktifkan SSL" / "Retry". Penerbitan dijalankan asinkron oleh
- * worker cli/ssl.php (detached). Controller hanya mediator — tidak ada logika.
+ * SSL dan tombol "Aktifkan SSL" / "Retry". Penerbitan **tidak** dijalankan
+ * langsung: permintaan masuk antrean global ({@see SslQueue}) dan dieksekusi
+ * satu per satu oleh proses `ssl-queue` (worker `cli/ssl.php`). Controller
+ * hanya mediator — tidak ada logika.
  *
  * **Server-aware (multi-server F2):** sertifikat diterbitkan **di server pemilik
  * app**. `enable()` menolak lebih awal bila server `kind=agent` belum mengisi
@@ -30,8 +33,8 @@ use Webman\Http\Response;
  * server agent worker itu mengirim job `ssl_issue` ke server tersebut (certbot +
  * `/etc/letsencrypt` server itu), sedangkan app lokal tetap certbot di host ini.
  *
- * Seam uji `$spawn` (nullable, pola `AgentJobController`): menggantikan
- * peluncuran worker SSL supaya uji tidak pernah menjalankan certbot nyata.
+ * Seam uji `$queue` (nullable): menggantikan antrean nyata (basis data temp)
+ * supaya uji tidak pernah menjalankan certbot maupun menyentuh store nyata.
  *
  * **Mode AJAX (JSON, tanpa reload halaman):** `apiEnable()` menjalankan inti
  * yang sama dengan `enable()` (`enableDomain()`) lalu merespons envelope JSON,
@@ -41,12 +44,12 @@ use Webman\Http\Response;
  */
 class SslController
 {
-    /** @var \Closure(string,string):bool|null seam uji: (appId, domain) => berhasil? */
-    private ?\Closure $spawn;
+    /** Seam uji: antrean SSL (null ⇒ store produksi via `config`). */
+    private ?SslQueue $queue;
 
-    public function __construct(?\Closure $spawn = null)
+    public function __construct(?SslQueue $queue = null)
     {
-        $this->spawn = $spawn;
+        $this->queue = $queue;
     }
 
     public function index(Request $request)
@@ -109,10 +112,10 @@ class SslController
      * Aktifkan SSL untuk sebuah domain milik app.
      *
      * Domain target dikirim via body (`domain`); bila kosong, default ke custom
-     * domain bila ada, selain itu subdomain bawaan. Penerbitan dijalankan
-     * asinkron oleh worker cli/ssl.php (detached) — worker itu yang memutuskan
-     * **server mana** yang menjalankan certbot (app di server agent ⇒ job
-     * `ssl_issue` di server itu).
+     * domain bila ada, selain itu subdomain bawaan. Permintaan masuk **antrean
+     * SSL global** dan dieksekusi satu per satu oleh proses `ssl-queue` (worker
+     * `cli/ssl.php`) — worker itu yang memutuskan **server mana** yang
+     * menjalankan certbot (app di server agent ⇒ job `ssl_issue` di server itu).
      */
     public function enable(Request $request, string $id)
     {
@@ -189,6 +192,10 @@ class SslController
                 // `kind` = app|parked, `role` = serve|redirect|parkir.
                 'kind' => (string) ($row['kind'] ?? 'app'),
                 'role' => (string) ($row['role'] ?? 'serve'),
+                // Posisi antrean SSL (hanya saat `pending`; null selain itu).
+                // Field ini dibaca `public/js/ssl.js` untuk catatan baris.
+                'ssl_queue_position' => isset($row['ssl_queue_position']) ? (int) $row['ssl_queue_position'] : null,
+                'ssl_queue_size' => isset($row['ssl_queue_size']) ? (int) $row['ssl_queue_size'] : null,
             ];
         }
 
@@ -202,20 +209,20 @@ class SslController
 
     /**
      * Inti `enable()` / `apiEnable()`: validasi → efek samping (status store +
-     * spawn worker) → hasil terstruktur. Satu implementasi untuk dua respons
+     * enqueue job SSL) → hasil terstruktur. Satu implementasi untuk dua respons
      * (halaman & JSON) supaya validasinya tidak bisa menyimpang.
      *
      * Hasil:
-     *   ok      — permintaan diterima & worker diluncurkan
+     *   ok      — permintaan diterima & job masuk antrean SSL
      *   error   — pesan penolakan untuk user (= `message`, null saat diterima)
      *   status  — `pending` (diterima) | `rejected` | `already` | `failed`
      *   domain  — domain target; `''` bila belum sempat dihitung (ditolak karena
      *             port host/domain server)
-     *   message — teks flash, persis seperti jalur halaman lama
+     *   message — teks flash, termasuk posisi antrean
      *   flash   — tipe flash: `success` | `info` | `error`
      *
-     * Efek samping hanya pada jalur diterima / gagal-spawn, sama seperti sebelum
-     * refactor (fail-fast lain tidak menyentuh store).
+     * Efek samping hanya pada jalur diterima / gagal-enqueue, sama seperti
+     * sebelum antrean (fail-fast lain tidak menyentuh store).
      *
      * @return array{ok:bool,error:?string,status:string,domain:string,message:string,flash:string}
      * @throws AppAccessDenied app tidak ada / user tanpa ability `ssl`
@@ -275,30 +282,71 @@ class SslController
         $store->update($id, function (array &$s) use ($slot): void {
             $s[$slot . '_status'] = 'pending';
             $s[$slot . '_stage'] = 'queued';
-            $s[$slot . '_message'] = 'Menunggu worker SSL ...';
+            $s[$slot . '_message'] = 'Menunggu antrean SSL ...';
             $s[$slot . '_error'] = null;
             $s[$slot === 'custom_ssl' ? 'custom_needs_ssl' : 'needs_ssl'] = true;
         });
 
-        if (!$this->spawnWorker($id, $domain)) {
-            $store->update($id, function (array &$s) use ($slot): void {
-                $s[$slot . '_status'] = 'failed';
-                $s[$slot . '_stage'] = null;
-                $s[$slot . '_message'] = null;
-                $s[$slot . '_error'] = 'Gagal spawn worker SSL. Cek log runtime/logs/ssl/{id}.log.';
-            });
+        try {
+            // Satu antrean global: certbot memakai lock global + rate limit
+            // Let's Encrypt, jadi penerbitan dijalankan satu per satu.
+            $enqueued = $this->queue()->enqueueApp($app, $domain, $slot, $this->actorId());
+        } catch (\Throwable $e) {
+            $this->markFailed($store, $id, $slot, 'Gagal memasukkan permintaan SSL ke antrean: ' . $e->getMessage());
 
-            return $this->rejected('Gagal menjalankan worker SSL.', 'failed', $domain);
+            return $this->rejected('Gagal memasukkan permintaan SSL ke antrean.', 'failed', $domain);
         }
+
+        $position = (int) ($enqueued['position'] ?? 0);
+        $size = (int) ($enqueued['size'] ?? 0);
 
         return [
             'ok' => true,
             'error' => null,
             'status' => 'pending',
             'domain' => $domain,
-            'message' => "Penerbitan SSL untuk {$domain} dijalankan.",
+            'message' => "SSL untuk {$domain} masuk antrean (posisi {$position} dari {$size}).",
             'flash' => 'success',
         ];
+    }
+
+    /**
+     * Antrean SSL (seam uji: basis data temp).
+     */
+    private function queue(): SslQueue
+    {
+        return $this->queue ?? new SslQueue();
+    }
+
+    /**
+     * Id user yang meminta (audit trail) — null bila di luar sesi HTTP.
+     */
+    private function actorId(): ?string
+    {
+        if (!function_exists('current_user')) {
+            return null;
+        }
+        $user = current_user();
+
+        return is_array($user) ? (string) ($user['id'] ?? '') : null;
+    }
+
+    /**
+     * Tandai slot `failed` + alasan saat permintaan tidak bisa masuk antrean.
+     */
+    private function markFailed(AppStore $store, string $id, string $slot, string $message): void
+    {
+        try {
+            $store->update($id, function (array &$s) use ($slot, $message): void {
+                $s[$slot . '_status'] = 'failed';
+                $s[$slot . '_stage'] = null;
+                $s[$slot . '_message'] = null;
+                $s[$slot . '_error'] = $message;
+            });
+        } catch (\Throwable) {
+            // Status `pending` tanpa job bukan kegagalan yang bisa diperbaiki di
+            // sini; pesan penolakan tetap dikembalikan ke user.
+        }
     }
 
     /**
@@ -316,41 +364,5 @@ class SslController
             'message' => $message,
             'flash' => $flash,
         ];
-    }
-
-    /**
-     * Spawn background worker SSL (detached), stdout/stderr -> log file.
-     *
-     * Seam uji (`$this->spawn`) menggantikan peluncuran proses nyata — uji tidak
-     * pernah menjalankan certbot. Jalur produksi tetap `proc_open` +
-     * `bypass_shell` (array argumen, tanpa shell), bentuk yang sama seperti
-     * sebelum multi-server.
-     */
-    private function spawnWorker(string $appId, string $domain): bool
-    {
-        if ($this->spawn !== null) {
-            return (bool) ($this->spawn)($appId, $domain);
-        }
-
-        $logDir = runtime_path('logs/ssl');
-        if (!is_dir($logDir)) {
-            @mkdir($logDir, 0775, true);
-        }
-        $logFile = $logDir . '/' . $appId . '.log';
-
-        $command = [PHP_BINARY, base_path('cli/ssl.php'), $appId, $domain];
-        $descriptors = [
-            0 => ['file', '/dev/null', 'r'],
-            1 => ['file', $logFile, 'a'],
-            2 => ['file', $logFile, 'a'],
-        ];
-
-        $proc = @proc_open($command, $descriptors, $pipes, base_path(), null, ['bypass_shell' => true]);
-        if (!is_resource($proc)) {
-            return false;
-        }
-        // proc_close langsung (tanpa pipe interaktif) => proses berjalan detached
-        @proc_close($proc);
-        return true;
     }
 }
