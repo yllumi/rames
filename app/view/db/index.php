@@ -4,9 +4,11 @@ $active = 'database';
 ?>
 <?php include app_path() . '/view/partials/header.php'; ?>
 
-<div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
-  <h1 class="h3 mb-0">Database</h1>
-  <span class="text-muted small">Kelola MySQL/MariaDB di dalam container lewat <strong>Adminer</strong></span>
+<div class="page-head mb-4">
+  <div>
+    <h1 class="h3 mb-1">Database</h1>
+    <p class="text-muted mb-0">Kelola MySQL/MariaDB di dalam container lewat <strong>Adminer</strong>.</p>
+  </div>
 </div>
 
 <?php if (!($isAdmin ?? false)): ?>

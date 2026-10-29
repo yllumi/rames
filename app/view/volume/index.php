@@ -30,16 +30,22 @@ $__serverCount = count($__serverNames);
 
 <div class="page-head mb-4">
   <div>
-    <h1 class="h3 mb-1">Volumes</h1>
-    <p class="text-muted mb-0">
-      Volume ber-label <span class="mono">docker compose</span> dari <strong>setiap server</strong>
-      yang berhak Anda lihat. Volume <strong>yatim</strong> ditinggalkan app yang dihapus dengan mode
-      "pertahankan volume" — bisa dibersihkan di sini (server lokal).
-      Kolom <strong>Ukuran</strong> menampilkan storage terpakai tiap volume server lokal (dihitung
-      Docker Engine dan dimuat setelah tabel tampil).
-    </p>
+    <h1 class="h3 mb-1">Volumes<?php $__infoTarget = 'volumes-info'; include app_path() . '/view/partials/page-info-button.php'; ?></h1>
+    <p class="text-muted mb-0">Volume compose dari setiap server yang berhak Anda lihat; volume yatim dapat dibersihkan di server lokal.</p>
   </div>
 </div>
+
+<?php // Penjelasan panjang dipindah ke modal "Tentang halaman ini" (judul cukup satu baris). ?>
+<?php ob_start(); ?>
+  <p class="text-muted mb-0">
+    Volume ber-label <span class="mono">docker compose</span> dari <strong>setiap server</strong>
+    yang berhak Anda lihat. Volume <strong>yatim</strong> ditinggalkan app yang dihapus dengan mode
+    "pertahankan volume" — bisa dibersihkan di sini (server lokal).
+    Kolom <strong>Ukuran</strong> menampilkan storage terpakai tiap volume server lokal (dihitung
+    Docker Engine dan dimuat setelah tabel tampil).
+  </p>
+<?php $__infoHtml = (string) ob_get_clean(); $__infoId = 'volumes-info'; $__infoTitle = 'Tentang Volumes'; ?>
+<?php include app_path() . '/view/partials/page-info-modal.php'; ?>
 
 <?php if ($engineError): ?>
   <div class="alert alert-warning" role="alert"><?= e($engineError) ?></div>

@@ -52,19 +52,25 @@ $breadcrumbs = [
 
 <div class="page-head d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
   <div>
-    <h1 class="h3 mb-1">Servers</h1>
-    <p class="text-muted mb-0">
-      Server yang dikendalikan dashboard ini. <strong>Server lokal</strong> adalah dashboard ini sendiri
-      (dikelola dari <span class="mono">.env</span>/config), sedangkan <strong>server agent</strong> dihubungi
-      lewat HTTPS dengan <strong>pinning sertifikat</strong> (URL + token + PEM).
-      Hanya admin yang bisa mengelola daftar ini.
-      <br><span class="small">Versi agen &amp; kompatibilitasnya dengan dashboard ini tampil di kolom
-      <strong>Versi &amp; kompatibilitas</strong>; agen yang tertinggal bisa diperbarui dari baris server itu
-      (<strong>Perbarui agen</strong> — agen akan restart).</span>
-    </p>
+    <h1 class="h3 mb-1">Servers<?php $__infoTarget = 'servers-info'; include app_path() . '/view/partials/page-info-button.php'; ?></h1>
+    <p class="text-muted mb-0">Kelola server lokal dan server agent (HTTPS + pinning sertifikat).</p>
   </div>
   <a class="btn btn-primary" href="/servers/create">+ Tambah Server</a>
 </div>
+
+<?php // Penjelasan panjang (termasuk catatan versi & kompatibilitas agen) dipindah ke modal "Tentang halaman ini". ?>
+<?php ob_start(); ?>
+  <p class="text-muted mb-0">
+    Server yang dikendalikan dashboard ini. <strong>Server lokal</strong> adalah dashboard ini sendiri
+    (dikelola dari <span class="mono">.env</span>/config), sedangkan <strong>server agent</strong> dihubungi
+    lewat HTTPS dengan <strong>pinning sertifikat</strong> (URL + token + PEM).
+    Hanya admin yang bisa mengelola daftar ini.
+    <br><span class="small">Versi agen &amp; kompatibilitasnya dengan dashboard ini tampil di kolom
+    <strong>Versi &amp; kompatibilitas</strong>; agen yang tertinggal bisa diperbarui dari baris server itu
+    (<strong>Perbarui agen</strong> — agen akan restart).</span>
+  </p>
+<?php $__infoHtml = (string) ob_get_clean(); $__infoId = 'servers-info'; $__infoTitle = 'Tentang Servers'; ?>
+<?php include app_path() . '/view/partials/page-info-modal.php'; ?>
 
 <?php if ($agentCount === 0): ?>
 <section class="card mb-4">

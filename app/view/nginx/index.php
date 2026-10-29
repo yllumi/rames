@@ -34,20 +34,26 @@ $phpVersion = trim((string) ($php_version ?? PHP_VERSION));
   <div>
     <h1 class="h3 mb-1">Config
       <span class="badge text-bg-light border mono fw-normal align-middle"
-            title="Versi PHP yang menjalankan dashboard ini (PHP_VERSION pada worker Webman)">PHP <?= e($phpVersion) ?></span>
+            title="Versi PHP yang menjalankan dashboard ini (PHP_VERSION pada worker Webman)">PHP <?= e($phpVersion) ?></span><?php $__infoTarget = 'config-info'; include app_path() . '/view/partials/page-info-button.php'; ?>
     </h1>
-    <p class="text-muted mb-0">
-      Konfigurasi host &amp; katalog app dalam empat tab:
-      <strong>Update Rames</strong> — self-update dashboard,
-      <strong>Nginx</strong> — status &amp; reload <strong>Nginx host</strong> (berlaku global untuk semua
-      app; reload dijalankan lewat helper container via Docker socket — validasi
-      <span class="mono">nginx -t</span> lalu reload tanpa downtime),
-      <strong>Template</strong> — katalog template app siap-pakai beserta tombol tarik image
-      (<span class="mono">docker pull</span>), dan
-      <strong>Branding</strong> — nama &amp; logo dashboard (default <strong>Rames</strong>).
-    </p>
+    <p class="text-muted mb-0">Update dashboard, Nginx host, katalog template, dan branding.</p>
   </div>
 </div>
+
+<?php // Penjelasan panjang dipindah ke modal "Tentang halaman ini" (judul cukup satu baris). ?>
+<?php ob_start(); ?>
+  <p class="text-muted mb-0">
+    Konfigurasi host &amp; katalog app dalam empat tab:
+    <strong>Update Rames</strong> — self-update dashboard,
+    <strong>Nginx</strong> — status &amp; reload <strong>Nginx host</strong> (berlaku global untuk semua
+    app; reload dijalankan lewat helper container via Docker socket — validasi
+    <span class="mono">nginx -t</span> lalu reload tanpa downtime),
+    <strong>Template</strong> — katalog template app siap-pakai beserta tombol tarik image
+    (<span class="mono">docker pull</span>), dan
+    <strong>Branding</strong> — nama &amp; logo dashboard (default <strong>Rames</strong>).
+  </p>
+<?php $__infoHtml = (string) ob_get_clean(); $__infoId = 'config-info'; $__infoTitle = 'Tentang Config'; ?>
+<?php include app_path() . '/view/partials/page-info-modal.php'; ?>
 
 <ul class="nav nav-tabs mb-3" id="config-tabs" role="tablist">
   <li class="nav-item" role="presentation">

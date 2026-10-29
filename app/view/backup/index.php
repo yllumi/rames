@@ -31,17 +31,8 @@ $breadcrumbs = [
 
 <div class="page-head d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
   <div>
-    <h1 class="h3 mb-1">Backup Volume</h1>
-    <p class="text-muted mb-0">
-      Backup <strong>harian</strong> volume app ke object storage (S3) via <span class="mono">restic</span>
-      — inkremental, dedup, terenkripsi. Volume container <strong>database</strong> di-backup dengan
-      <strong>dump logis</strong> (container tetap hidup); volume lain di-<strong>snapshot</strong> dari
-      filesystem (container dihentikan sementara). Status tiap volume dimuat otomatis di tabel di bawah.
-    </p>
-    <p class="form-text small text-muted mb-0 mt-2">
-      Kolom <strong>Berkala</strong>: volume yang belum pernah dibackup nonaktif secara default —
-      aktifkan untuk ikut backup harian (volume app yang Anda kelola; ada biaya kreditnya, lihat di bawah).
-    </p>
+    <h1 class="h3 mb-1">Backup Volume<?php $__infoTarget = 'backup-info'; include app_path() . '/view/partials/page-info-button.php'; ?></h1>
+    <p class="text-muted mb-0">Backup harian volume app ke S3 (restic) — dump logis untuk database, snapshot untuk volume lain.</p>
   </div>
   <div class="d-flex flex-wrap gap-2 align-items-center">
     <span id="backup-running" class="badge text-bg-warning d-none">
@@ -54,6 +45,21 @@ $breadcrumbs = [
     <a class="btn btn-outline-secondary btn-sm" href="/volumes">Volumes</a>
   </div>
 </div>
+
+<?php // Penjelasan panjang (deskripsi + catatan kolom "Berkala") dipindah ke modal "Tentang halaman ini". ?>
+<?php ob_start(); ?>
+  <p class="text-muted mb-0">
+    Backup <strong>harian</strong> volume app ke object storage (S3) via <span class="mono">restic</span>
+    — inkremental, dedup, terenkripsi. Volume container <strong>database</strong> di-backup dengan
+    <strong>dump logis</strong> (container tetap hidup); volume lain di-<strong>snapshot</strong> dari
+    filesystem (container dihentikan sementara). Status tiap volume dimuat otomatis di tabel di bawah.
+  </p>
+  <p class="form-text small text-muted mb-0 mt-2">
+    Kolom <strong>Berkala</strong>: volume yang belum pernah dibackup nonaktif secara default —
+    aktifkan untuk ikut backup harian (volume app yang Anda kelola; ada biaya kreditnya, lihat di bawah).
+  </p>
+<?php $__infoHtml = (string) ob_get_clean(); $__infoId = 'backup-info'; $__infoTitle = 'Tentang Backup Volume'; ?>
+<?php include app_path() . '/view/partials/page-info-modal.php'; ?>
 
 <?php if (!$enabled): ?>
   <div class="alert alert-warning" role="alert">
