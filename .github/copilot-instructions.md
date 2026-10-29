@@ -98,6 +98,13 @@ Baca `docs/SPECS.md` (kebutuhan produk) dan `docs/ARCHITECTURE.md` (struktur kod
 - Polling/interval dijalankan di browser: dijeda saat `document.hidden`, dibersihkan saat `pagehide`/`beforeunload`.
 - Jangan menambah framework/bundler/CDN baru tanpa persetujuan user.
 
+### Gaya Komunikasi
+
+- **Laporan default = seringkas mungkin**: langsung ke inti (apa yang berubah, file utama, hasil verifikasi, risiko). Tanpa narasi proses, tanpa mengulang isi diff, tanpa penjelasan teori.
+- **Penjelasan detail hanya bila diminta** (mis. "jelaskan", "kenapa", "detail") atau saat tugasnya memang audit/analisis. Jangan menambah latar belakang, alternatif, atau tutorial tanpa permintaan.
+- Tetap wajib ada meski ringkas: bukti perintah verifikasi, risiko/peringatan keamanan, dan langkah lanjutan yang perlu user lakukan.
+- Saat gagal/blocker: 1–3 kalimat berisi sebab + tindakan berikutnya; stack/log lengkap hanya bila relevan atau diminta.
+
 ---
 
 ## Verifikasi (definisi "selesai")
