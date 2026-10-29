@@ -189,6 +189,7 @@ Hanya app **git**: `deploy_history` menyimpan checkpoint deploy sukses; rollback
 - **Keluarga field wajib meniru base compose** (legacy `cpus`/`mem_limit` vs modern `deploy.resources.limits`); mencampur nilai berbeda ditolak. Gaya dideteksi ulang setiap `sync()`.
 - Mengosongkan seluruh batas menghapus override tanpa mem-parse base (tetap berhasil walau base rusak); menetapkan batas aktif fail-fast bila base tak terbaca.
 - **Urutan kanonik `compose_files`** dimiliki `ComposeSource::orderFiles()`: base → `docker-compose.override.yml` → `.override.ports.yml` → `.override.names.yml` → `.override.limits.yml` → `.override.networks.yml` → `.override.env.yml` (env selalu terakhir agar menang).
+- **App di server agent**: control plane tidak menyimpan base compose app remote, sehingga daftar service + nilai base dibaca dari server itu (`GET /apps/{id}/services`); `limits` disimpan sebagai **metadata** (tanpa berkas override di control plane) lalu diterapkan job `apply_limits` di agent (`up -d` tanpa build). Agent lama yang belum punya endpoint ⇒ simpan **ditolak** dengan pesan "Perbarui agent …", tab Sumber Daya memakai service dari metadata + peringatan (bukan galat halaman). Kontrak form/view sama dengan app lokal.
 - Batasan: tanpa reservation; limit bukan kuota host; belum ada `!reset` untuk menghapus limit bawaan repo; `--compatibility` dilarang (merusak penamaan); nama service numerik murni belum didukung (fail-fast).
 
 ### 7.6c Entitlement Build `network.host` (BuildKit)
@@ -326,6 +327,8 @@ Dashboard dapat memicu reload lewat helper yang memakai Docker socket di network
 ## 8a. SSL Otomatis (Let's Encrypt)
 
 Certbot dijalankan di **dashboard/agent** (root) oleh worker; dashboard tetap satu-satunya penulis config Nginx (blok 443 dirender sendiri). Status per slot: `disabled|pending|active|failed`. Bila `custom_domain` ada, app tampil sebagai **dua baris**: custom domain (serve, slot `custom_ssl`) dan subdomain (redirect, slot `ssl`). Challenge `http` (webroot HTTP-01, default) atau `dns-cloudflare`; `SSL_CA_SERVER=staging` untuk uji. Sukses ⇒ `active` + expiry + regenerate + reload; gagal ⇒ `failed` + pesan `Detail:` certbot (bukan hanya ringkasan stderr), app tetap HTTP. Renewal `certbot renew` 2×/hari via systemd timer host, reload hanya bila sertifikat benar-benar diperbarui.
+
+**Antrean aktivasi (satu job pada satu waktu).** Permintaan SSL (app & domain parkir) tidak dijalankan langsung: ia masuk antrean global (tabel `ssl_jobs`) yang dieksekusi **satu per satu** lintas domain — sebab certbot memakai lock global dan Let's Encrypt punya rate limit. Permintaan ganda untuk domain/slot yang sama tidak menduplikasi job; baris domain menampilkan posisi antrean ("antrean #N dari M") selama status `pending`. Galat **transien** (lock, timeout, jaringan, 5xx) diulang otomatis maksimal 3 percobaan dengan jeda 30 dtk lalu 120 dtk; galat permanen (rate limit, `Invalid response`, DNS/NXDOMAIN, webroot, `ADMIN_EMAIL` belum diisi) langsung `failed` + pesan certbot. Antrean dijalankan proses timer **dashboard-only** — deploy pertama yang memuat proses baru ini membutuhkan **restart** dashboard, bukan reload. Riwayat job `done`/`failed` disimpan 7 hari.
 
 **Prasyarat**: DNS mengarah ke server; port 80 & 443 terbuka **untuk semua sumber** (validasi HTTP-01 dari IP acak); `ADMIN_EMAIL` wajib di **setiap** server yang menerbitkan; `LETSENCRYPT_PATH` ter-mount; watcher Nginx aktif. Domain non-publik (`.local`, IP) tidak bisa di-SSL; app tanpa port terpublish tidak muncul di daftar domain. UI `/domains` memakai AJAX (`GET /api/domains/status`, `POST /api/ssl/{id}/enable`) + polling hanya saat ada `pending`, dijeda saat tab tidak terlihat; fallback form POST tetap ada. Ringkasan galat ≤80 karakter; teks penuh di modal Log (`textContent`). Webroot tak traversable ditolak sebelum certbot (hemat rate limit).
 
@@ -502,7 +505,7 @@ Satu entri = satu berkas `_parked_{id}.conf` + symlink enabled, ditulis atomik; 
 
 ### 8j.6a SSL domain parkir (Let's Encrypt)
 
-Status per entri `ssl_status/stage/message/error/expires_at` di dokumen JSON (tanpa migrasi). Aktivasi admin-only; validasi entri/domain publik; status `active`/`pending` ditolak sebagai info. Tulis `pending` + `queued` **sebelum** spawn worker `cli/parked-ssl.php`; gagal spawn ⇒ `failed` + Retry. Worker: validasi ulang → certbot (dilewati bila `active` & cert ada) → `active` + expiry → tulis config 443 → reload.
+Status per entri `ssl_status/stage/message/error/expires_at` di dokumen JSON (tanpa migrasi). Aktivasi admin-only; validasi entri/domain publik; status `active`/`pending` ditolak sebagai info. Tulis `pending` + `queued` **sebelum** enqueue ke antrean SSL global (`ssl_jobs`, SPECS §8a); gagal enqueue ⇒ `failed` + Retry. Worker (`cli/parked-ssl.php`, dijalankan antrean satu per satu): validasi ulang → certbot (dilewati bila `active` & cert ada) → `active` + expiry → tulis config 443 → reload.
 
 Cert hilang saat status `active` ⇒ render **HTTP-only** (tidak menggagalkan `nginx -t` host); status tetap, pulihkan dengan worker/cert; tombol Retry UI hanya untuk `failed`. Gagal terbit ⇒ `failed` + expiry `null`. Gagal tulis/reload **setelah** cert terbit ⇒ tetap `failed` tetapi expiry **dipertahankan**. Worker idempoten/reconcile: `active` + cert ada ⇒ tulis ulang config + reload tanpa certbot; `failed` + cert ada ⇒ `--keep-until-expiring` lalu tulis ulang. Rename/delete me-reset `ssl_*` dan me-revoke cert lama best-effort; kegagalan revoke hanya peringatan.
 
@@ -520,7 +523,7 @@ Snapshot SQLite hanya memuat **metadata** parkir; konten `database/parked/{id}/i
 
 ### 8j.10 Kriteria uji
 
-Cakupan minimum: validasi domain/redirect/ukuran/kode, keunikan dua arah dengan app & entri lain, transaksi create/update/delete + rollback, render Nginx (html/redirect/SSL/ACME/fallback cert hilang/path berbahaya), SSL parkir (pending sebelum spawn, gagal spawn, reconcile, expiry dipertahankan), guard admin-only 404, filter tanpa menambah baris tak berhak, dan route `GET /ssl` redirect.
+Cakupan minimum: validasi domain/redirect/ukuran/kode, keunikan dua arah dengan app & entri lain, transaksi create/update/delete + rollback, render Nginx (html/redirect/SSL/ACME/fallback cert hilang/path berbahaya), SSL parkir (pending sebelum enqueue, gagal enqueue, reconcile, expiry dipertahankan), guard admin-only 404, filter tanpa menambah baris tak berhak, dan route `GET /ssl` redirect.
 
 ### 8j.11 Future work
 

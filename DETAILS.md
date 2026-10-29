@@ -409,6 +409,10 @@ Tarif billing default global (`.env`: `BILLING_RATE_CPU_PER_CORE_HOUR`, `BILLING
 | `LETSENCRYPT_PATH` | `/etc/letsencrypt` | Direktori sertifikat (di-mount dari host) |
 | `CLOUDFLARE_CREDS` | — | File kredensial DNS Cloudflare (saat `SSL_CHALLENGE=dns-cloudflare`) |
 | `CERTBOT_WORK_DIR` / `CERTBOT_LOGS_DIR` | `/var/lib/letsencrypt` / `/var/log/letsencrypt` | Direktori kerja & log debug certbot. Arahkan `CERTBOT_LOGS_DIR` ke path yang di-bind (mis. `{proyek}/runtime/logs/letsencrypt`) agar log diagnosa challenge tidak hilang saat container di-recreate; nilai tak masuk akal (kosong/relatif/ber-NUL) dinormalkan ke default. Ubah env ⇒ **recreate** container (`docker compose … up -d`), bukan `restart` |
+| `SSL_QUEUE_TIMEOUT` | `900` | Batas waktu satu worker SSL (`cli/ssl.php`/`cli/parked-ssl.php`) yang dijalankan antrean (detik; `0` = tanpa batas) |
+| `SSL_QUEUE_STALE_SECONDS` | `900` | Job `running` yang lebih tua dari ini dianggap macet ⇒ `failed` sebelum klaim berikutnya |
+| `SSL_QUEUE_MAX_ATTEMPTS` | `3` | Maksimum percobaan untuk galat **transien** (backoff tetap 30 dtk lalu 120 dtk) |
+| `SSL_QUEUE_PRUNE_DAYS` | `7` | Retensi job `done`/`failed` di tabel `ssl_jobs` (hari) |
 | `VOLUME_BACKUP_ENABLED` | `true` | Aktifkan backup volume harian ke S3 (SPECS §8h) |
 | `VOLUME_BACKUP_DB_DUMP_ENABLED` | `true` | Strategi A: dump logis untuk container DB (container tetap hidup) |
 | `VOLUME_BACKUP_SNAPSHOT_POLICY` | `stop` | `stop` = volume non-DB di-backup harian via stop→snapshot→start; `skip` = manual saja |
@@ -544,6 +548,7 @@ runtime/                         # state runtime (gitignored): logs/, db-backup/
 - **Tombol `📁 Files` tidak muncul / operasi file manager menolak `409`** — file manager hanya untuk container app yang **berjalan** dan user ber-ability `files` (operator ke atas). Jalankan app lebih dulu; periksa role user bila tombol tidak tampil.
 - **Setelah restore DB, data masih terlihat lama** — worker Webman memegang koneksi PDO ke inode lama. Jalankan `docker exec rames-webman php start.php reload` (tombol Restore di UI tidak me-reload otomatis). Lihat [Basis data dashboard (SQLite)](#basis-data-dashboard-sqlite).
 - **Backup DB harian tidak pernah jalan** — proses `db-backup` adalah proses **baru**: butuh `docker exec rames-webman php start.php restart -d` (bukan `reload`) sekali setelah deploy; pastikan `DB_BACKUP_ENABLED=true`.
+- **Aktivasi SSL "tidak bereaksi" setelah update (baris tetap `pending`)** — proses `ssl-queue` adalah proses **baru** (timer dashboard-only, SPECS §8a): butuh `docker exec rames-webman php start.php restart -d` (bukan `reload`) sekali setelah deploy. Cek juga `runtime/logs/ssl/queue.log` dan isi tabel `ssl_jobs` pada berkas SQLite (`config('deploy.sqlite_file')`). Bila job `failed`, pesan certbot tampil lewat tombol **Log** di baris domain.
 - **`database/*.json` lama tidak terpakai** — impor ke SQLite hanya berjalan **sekali** (flag `kv.legacy_imported_at`, `DB_IMPORT_LEGACY_JSON=true`). Bila perlu impor ulang: `docker exec rames-webman php cli/db.php import-json --force` (store yang sudah berisi baris tidak ditimpa).
 
 ## Roadmap (Iterasi Berikutnya)
