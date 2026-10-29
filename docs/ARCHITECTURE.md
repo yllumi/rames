@@ -26,7 +26,7 @@ Dokumen dipecah per bagian di folder [`ARCHITECTURE/`](./ARCHITECTURE/): setiap 
 | 5.13–5.15 | Monitoring (host & per-app), self-update dashboard, backup volume | [`05-06-monitoring-update-backup.md`](./ARCHITECTURE/05-06-monitoring-update-backup.md) |
 | 5.16–5.20 | File manager, Adminer, billing, SQLite, tarik image template | [`05-07-files-database-billing-sqlite-template.md`](./ARCHITECTURE/05-07-files-database-billing-sqlite-template.md) |
 | 5.21–5.26 | Multi-server inti: onboarding, create di agent, job async, artefak, registry | [`05-08-multiserver-core.md`](./ARCHITECTURE/05-08-multiserver-core.md) |
-| 5.27–5.35 | Multi-server operasional: Nginx/SSL, log/terminal, file, monitor, DB/network/volume, backup, versi agen | [`05-09-multiserver-operasional.md`](./ARCHITECTURE/05-09-multiserver-operasional.md) |
+| 5.27–5.35 | Multi-server operasional: Nginx/SSL, log/terminal, file, monitor, DB/network/volume, backup, versi agen & status job update agen | [`05-09-multiserver-operasional.md`](./ARCHITECTURE/05-09-multiserver-operasional.md) |
 | 5.36–5.44 | SSL AJAX, env per app, domain parking, installer, branding, tema, rekam error, antrean aktivasi SSL | [`05-10-fitur-lain.md`](./ARCHITECTURE/05-10-fitur-lain.md) |
 | 6 | Keputusan teknis penting | [`06-keputusan-teknis.md`](./ARCHITECTURE/06-keputusan-teknis.md) |
 | 7 | Keamanan | [`07-keamanan.md`](./ARCHITECTURE/07-keamanan.md) |
