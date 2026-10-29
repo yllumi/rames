@@ -14,12 +14,15 @@
  *   GET {data-ssl-status-url pada <table>} (default `/api/ssl/status`) →
  *     {code:0, ssl_supported:bool, pending:bool,
  *      rows:[{app_id,app_name,domain,is_custom,status,message,expires_at,error,
- *             error_summary,can_ssl,kind,role}]}
+ *             error_summary,can_ssl,kind,role,ssl_queue_position,ssl_queue_size}]}
  *     `/api/domains/status` mengirim baris terdekorasi (`ssl_status`,
  *     `ssl_message`, `ssl_error`, `ssl_error_summary`, `ssl_expires_at`);
  *     keduanya diterima. `error_summary` = ringkasan pendek yang dihitung
  *     server (`SslErrorSummary`); bila tidak ada, teks galat dipakai apa adanya
  *     (galat jalur POST memang sudah pendek).
+ *     `ssl_queue_position` (1-based) + `ssl_queue_size` (queued+running) hanya
+ *     terisi saat baris `pending`; keduanya opsional → catatan jatuh ke
+ *     `proses ...`.
  *     `status` ∈ disabled|pending|active|failed|expired; hanya baris yang boleh
  *     dilihat user yang dikembalikan (penolakan tetap 404).
  *
@@ -211,14 +214,31 @@
     return form !== null && form.getAttribute('data-ssl-busy') === '1';
   }
 
+  /** Nota baris `pending`: posisi antrean bila kedua angka > 0, selain itu `proses ...`. */
+  var NOTE_PENDING = 'proses ...';
+
+  /** Angka dari payload (int) → number, selain itu `null`. */
+  function queueNumber(value) {
+    return typeof value === 'number' && isFinite(value) ? value : null;
+  }
+
+  function pendingNote(position, size) {
+    var pos = typeof position === 'number' ? position : 0;
+    var total = typeof size === 'number' ? size : 0;
+
+    return pos > 0 && total > 0 ? 'antrean #' + pos + ' dari ' + total : NOTE_PENDING;
+  }
+
   /**
    * Terapkan status satu baris: badge, pesan, kedaluwarsa, galat, lalu state
    * form/catatan.
    *
-   * `opts` = {message, error, expires, canSsl, sslSupported}; `canSsl`/
-   * `sslSupported` boleh `undefined` ⇒ pakai nilai yang sudah ada di DOM
-   * (dipakai saat transisi optimistis ke `pending` setelah POST sukses).
-   * Field `message`/`error`/`expires` hanya disentuh bila dikirim sebagai string.
+   * `opts` = {message, error, expires, canSsl, sslSupported, queuePosition,
+   * queueSize}; `canSsl`/`sslSupported` boleh `undefined` ⇒ pakai nilai yang
+   * sudah ada di DOM (dipakai saat transisi optimistis ke `pending` setelah POST
+   * sukses). Field `message`/`error`/`expires` hanya disentuh bila dikirim
+   * sebagai string; `queuePosition`/`queueSize` (number|null) hanya dipakai
+   * untuk teks catatan `pending` — selalu `textContent`, tanpa HTML.
    */
   function setRow(row, status, opts) {
     opts = opts || {};
@@ -263,7 +283,12 @@
     // Catatan status non-form (teks tetap dari view). Catatan menang atas
     // form/penanda — sama dengan urutan cabang render awal view.
     var noteState = status === 'pending' || status === 'active';
-    show(row.querySelector('[data-ssl-note="pending"]'), status === 'pending');
+    var notePending = row.querySelector('[data-ssl-note="pending"]');
+    if (notePending && status === 'pending') {
+      // Posisi antrean (bila ada) menggantikan teks `proses ...`; tetap textContent.
+      notePending.textContent = pendingNote(opts.queuePosition, opts.queueSize);
+    }
+    show(notePending, status === 'pending');
     show(row.querySelector('[data-ssl-note="active"]'), status === 'active');
 
     // Form: hanya bila boleh (`can_ssl`) & didukung, dan status bukan pending/active.
@@ -386,8 +411,10 @@
    *    `app_id` (perilaku lama dipertahankan).
    *
    * Payload `/api/domains/status` memuat baris terdekorasi (`ssl_status`,
-   * `ssl_message`, `ssl_error`, `ssl_expires_at`), sedangkan `/api/ssl/status`
-   * memakai `status`/`message`/`error`/`expires_at` — keduanya diterima.
+   * `ssl_message`, `ssl_error`, `ssl_expires_at`, `ssl_queue_position`,
+   * `ssl_queue_size`), sedangkan `/api/ssl/status` memakai
+   * `status`/`message`/`error`/`expires_at` — keduanya diterima. Field antrean
+   * memakai nama yang sama di kedua endpoint.
    */
   function applyStatus(payload) {
     var supported = payload.ssl_supported === true;
@@ -433,6 +460,9 @@
       var expires = typeof data.expires_at === 'string'
         ? data.expires_at
         : (typeof data.ssl_expires_at === 'string' ? data.ssl_expires_at : '');
+      // Posisi antrean SSL (field sama di `/api/domains/status` & `/api/ssl/status`).
+      var queuePosition = queueNumber(data.ssl_queue_position);
+      var queueSize = queueNumber(data.ssl_queue_size);
 
       setRow(row, status !== '' ? status : 'disabled', {
         message: message,
@@ -440,7 +470,9 @@
         errorSummary: errorSummary,
         expires: expires,
         canSsl: data.can_ssl === true,
-        sslSupported: supported
+        sslSupported: supported,
+        queuePosition: queuePosition,
+        queueSize: queueSize
       });
     });
   }

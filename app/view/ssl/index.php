@@ -70,6 +70,14 @@ foreach ($rows as $row) {
           $message = (string) ($r['ssl_message'] ?? '');
           $error = (string) ($r['ssl_error'] ?? '');
           $expires = (string) ($r['ssl_expires_at'] ?? '');
+          // Posisi antrean SSL (opsional, hanya saat `pending`). Field BEKU dari
+          // controller: `ssl_queue_position` (1-based) & `ssl_queue_size`
+          // (queued+running). Tanpa keduanya, catatan tetap `proses ...`.
+          $queuePosition = (int) ($r['ssl_queue_position'] ?? 0);
+          $queueSize = (int) ($r['ssl_queue_size'] ?? 0);
+          $pendingNote = $st === 'pending' && $queuePosition > 0 && $queueSize > 0
+              ? 'antrean #' . $queuePosition . ' dari ' . $queueSize
+              : 'proses ...';
           $noteState = $st === 'pending' || $st === 'active';
           $formVisible = $canSsl && $sslSupported && !$noteState;
           $dashVisible = $canSsl && !$sslSupported && !$noteState;
@@ -100,7 +108,7 @@ foreach ($rows as $row) {
             <?php /* Catatan & penanda non-form — default tersembunyi, JS yang menampilkan. */ ?>
             <span class="text-muted small<?= $nohakVisible ? '' : ' d-none' ?>" data-ssl-nohak="ability">tanpa hak</span>
             <span class="text-muted small<?= $dashVisible ? '' : ' d-none' ?>" data-ssl-nohak="unsupported">&mdash;</span>
-            <span class="text-muted small<?= $st === 'pending' ? '' : ' d-none' ?>" data-ssl-note="pending">proses ...</span>
+            <span class="text-muted small<?= $st === 'pending' ? '' : ' d-none' ?>" data-ssl-note="pending"><?= e($pendingNote) ?></span>
             <span class="text-muted small<?= $st === 'active' ? '' : ' d-none' ?>" data-ssl-note="active">aktif</span>
             <?php if ($canSsl): ?>
               <?php /* Fallback tanpa JS: form POST biasa. JS mencegat `submit` dan memakai `data-ssl-url`. */ ?>
@@ -122,5 +130,5 @@ foreach ($rows as $row) {
 </div>
 
 <?php /* Status baris disegarkan lewat polling JSON `/api/ssl/status` (public/js/ssl.js). */ ?>
-<script src="/js/ssl.js?v=2"></script>
+<script src="/js/ssl.js?v=3"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

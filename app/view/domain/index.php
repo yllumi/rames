@@ -256,6 +256,14 @@ $breadcrumbs = [
                 if ($__st === '') {
                     $__st = 'disabled';
                 }
+                // Posisi antrean SSL (opsional, hanya saat `pending`). Field BEKU
+                // dari controller: `ssl_queue_position` (1-based) & `ssl_queue_size`
+                // (queued+running). Tanpa keduanya, catatan tetap `proses ...`.
+                $__queuePosition = (int) ($__row['ssl_queue_position'] ?? 0);
+                $__queueSize = (int) ($__row['ssl_queue_size'] ?? 0);
+                $__pendingNote = $__st === 'pending' && $__queuePosition > 0 && $__queueSize > 0
+                    ? 'antrean #' . $__queuePosition . ' dari ' . $__queueSize
+                    : 'proses ...';
                 $__message = trim($__text($__row['ssl_message'] ?? ''));
                 $__error = trim($__text($__row['ssl_error'] ?? ''));
                 // Kolom Aksi hanya memuat ringkasan; teks utuh dibuka lewat modal Log.
@@ -309,7 +317,7 @@ $breadcrumbs = [
                   <?php /* Catatan & penanda non-form — default tersembunyi, JS yang menampilkan. */ ?>
                   <span class="text-muted small<?= $__noHakVisible ? '' : ' d-none' ?>" data-ssl-nohak="ability">tanpa hak</span>
                   <span class="text-muted small<?= $__dashVisible ? '' : ' d-none' ?>" data-ssl-nohak="unsupported">&mdash;</span>
-                  <span class="text-muted small<?= $__st === 'pending' ? '' : ' d-none' ?>" data-ssl-note="pending">proses ...</span>
+                  <span class="text-muted small<?= $__st === 'pending' ? '' : ' d-none' ?>" data-ssl-note="pending"><?= e($__pendingNote) ?></span>
                   <span class="text-muted small<?= $__st === 'active' ? '' : ' d-none' ?>" data-ssl-note="active">aktif</span>
                   <?php if ($__canSsl && $__formUrl !== '' && $__ajaxUrl !== ''): ?>
                     <?php /* Fallback tanpa JS: form POST biasa; JS memakai `data-ssl-url`. */ ?>
@@ -361,7 +369,7 @@ $breadcrumbs = [
         </div>
       </div>
     </div>
-    <script src="/js/ssl.js?v=3"></script>
+    <script src="/js/ssl.js?v=4"></script>
   <?php endif; ?>
 </section>
 <?php else: ?>
