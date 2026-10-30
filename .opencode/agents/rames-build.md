@@ -58,7 +58,7 @@ Kontrak arsitektur:
 
 Jebakan terbukti: SSE wajib `Webman\Http\Response` + chunked (`new Chunk(...)` lalu `return`); jangan tutup sesi terminal saat SSE drop; `pcntl_signal(SIGCHLD, SIG_IGN)` bocor lewat fork+exec; argumen ke-2 `json()` = options; entri `files[]` kosong tetap terkirim (`getUploadName() === ''` → `continue`); query `type` Docker API harus parameter berulang.
 
-**Verifikasi peran ini:** `php -l` tiap file yang diubah; `composer test` bila mengubah logika teruji; unit test baru di `tests/` (PHPUnit 10, `declare(strict_types=1)`, namespace `Tests`). Jangan sentuh data runtime — pakai path temp + `AppStore($path)`/`UserStore($path)`.
+**Verifikasi peran ini:** `php -l` tiap file yang diubah; `composer test` penuh bila mengubah logika teruji (wilayah ini umumnya **V3**); unit test baru di `tests/` (PHPUnit 10, `declare(strict_types=1)`, namespace `Tests`). Jangan sentuh data runtime — pakai path temp + `AppStore($path)`/`UserStore($path)`.
 
 ---
 
@@ -108,7 +108,7 @@ Invarian yang wajib dijaga:
 13. **Secret tak pernah ke repo/log/UI** (bcrypt, deploy key `0600`, env app `0600`).
 14. **`GET /healthz` publik** hanya `{ok, service, sha, branch, time}`.
 
-**Verifikasi peran ini:** matriks role di `tests/AppAccessTest.php` (sertakan role `stranger`); test visibilitas; `php -l`; `composer test`. Laporkan temuan berurut **Kritis → Tinggi → Sedang → Rendah**.
+**Verifikasi peran ini:** matriks role di `tests/AppAccessTest.php` (sertakan role `stranger`); test visibilitas; `php -l`; `composer test` penuh (otorisasi = **V3**). Laporkan temuan berurut **Kritis → Tinggi → Sedang → Rendah**.
 
 ---
 
@@ -130,9 +130,26 @@ Aturan view:
 
 Terminal xterm.js + SSE: `EventSource` ke `GET /api/apps/{id}/terminal/stream?token=...`; **jangan tutup sesi saat koneksi SSE drop** (reconnect `EventSource` akan menerima 404 permanen); tangani **semua** event (`output` base64, `close`, `cycle`, `gone`), bukan hanya `output`; input via `POST .../input`; resize kirim `stty cols X rows Y`.
 
-**Verifikasi peran ini:** smoke render view tanpa HTTP (`php /tmp/rames-view-smoke.php`, `rames-nginx-view-smoke.php`, `rames-template-view-smoke.php`; bila belum ada, buat versi setara di temp dan **jangan** commit); `php -l` pada template; `node --check` untuk JS; jelaskan langkah uji manual di browser.
+**Verifikasi peran ini:** cakupan ini umumnya **V1** → `composer test` penuh tidak wajib, cukup `php -l` + `node --check` + smoke render view + `--filter` test view terkait; naik ke V3 bila view ikut mengubah perilaku/kontrak. Smoke render view tanpa HTTP (`php /tmp/rames-view-smoke.php`, `rames-nginx-view-smoke.php`, `rames-template-view-smoke.php`; bila belum ada, buat versi setara di temp dan **jangan** commit); `php -l` pada template; `node --check` untuk JS; jelaskan langkah uji manual di browser.
 
 ---
+
+## Tingkat Verifikasi (semua peran)
+
+Tingkat dipilih dari **cakupan perubahan**, bukan dari keinginan mempercepat; rujukan lengkap: `.github/copilot-instructions.md` §Tingkat Verifikasi.
+
+| Tingkat | Cakupan perubahan | Wajib dijalankan | Boleh dilewati |
+|---|---|---|---|
+| **V1 — Tampilan** | **hanya** `app/view/**` (markup/visual/class CSS), `public/css/**`, `public/js/**`, `public/images/**`; tanpa perubahan perilaku | `php -l` tiap file PHP yang berubah · `node --check` tiap JS yang berubah · smoke render view halaman terkait (`php /tmp/rames-*-view-smoke.php`) · test view terkait bila ada (`vendor/bin/phpunit --filter <NamaTest>`) | `composer test` penuh · uji compose tiri · reload worker |
+| **V2 — Terarah** | satu kelas `app/library/**` atau satu action controller yang sudah punya test, tanpa mengubah kontrak bersama | `php -l` · `vendor/bin/phpunit --filter <NamaTest>` (+ smoke render view bila view ikut berubah) | uji compose tiri · reload worker |
+| **V3 — Penuh** | `app/controller/**`, `app/library/**`, `app/model/**`, `app/functions.php`, `config/*.php`, `config/route.php`, `cli/*.php`, `templates/**`, otorisasi/ability, skema `apps.json`, atau perubahan lintas lapisan | `php -l` semua file yang berubah · `composer test` penuh (0 failure; warning/risky menggagalkan) · uji compose tiri + `docker compose … config --quiet` bila menyentuh compose/deploy · reload worker bila menyentuh kelas runtime | — |
+
+1. **Ragu = naik satu tingkat.** Satu file saja di luar cakupan V1 → minimal V2; menyentuh logika, otorisasi, data, atau kontrak → V3.
+2. **DILARANG** menurunkan tingkat demi kecepatan. Larangan keras #1–#18 dan aturan keamanan tetap berlaku di semua tingkat.
+3. **Perubahan tampilan yang ikut mengubah perilaku bukan V1**: gating tombol + cek server, form/CSRF, helper baru, bentuk data dari controller, endpoint/kontrak JS baru → V3.
+4. Menyentuh `app/view/components/**`, layout bersama, atau `app/functions.php` → hampir selalu V3 (dipakai banyak halaman).
+5. Permintaan user "verifikasi penuh"/"cek regresi" dan commit/PR yang mencampur beberapa tingkat memakai **tingkat tertinggi**.
+6. Laporan **wajib** menyebut: tingkat yang dipakai, perintah yang dijalankan + hasil, dan perintah yang sengaja **tidak** dijalankan + alasannya.
 
 ## Batas Keras (semua peran)
 - **DILARANG** menambah properti publik/privat sebagai cache lintas-request.
@@ -159,7 +176,8 @@ Terminal xterm.js + SSE: `EventSource` ke `GET /api/apps/{id}/terminal/stream?to
 
 ## Verifikasi
 - `php -l ...` → hasil
-- `composer test` → hasil (jumlah test/failure)
+- tingkat verifikasi (V1/V2/V3) + perintah yang dijalankan → hasil
+- (composer test penuh → hanya bila V3)
 - (smoke test / uji compose tiri bila relevan)
 
 ## Serah Terima ke rames-assure

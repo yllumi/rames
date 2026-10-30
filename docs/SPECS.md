@@ -56,7 +56,7 @@ Di luar cakupan saat ini (beberapa menjadi target §12): permission granular per
 | YAML | `symfony/yaml` | Membaca/menulis compose & override |
 | Test | PHPUnit 10 (`failOnWarning`, `failOnRisky`) | Warning menggagalkan build |
 
-**Konvensi teknis & kualitas (WAJIB).** Semua file PHP memakai `declare(strict_types=1)`. View memakai template native dengan escape output (`e()`) dan token CSRF pada setiap form mutasi. **DILARANG** menambah framework frontend/CDN baru; aset produk dibundel lokal. Test wajib `composer test` (PHPUnit 10, warning = gagal), smoke render view untuk template yang berubah, dan uji Compose pada direktori temp dengan `docker compose … config --quiet` (jangan mencetak secret). Setelah mengubah kode/proses, reload worker (`php start.php reload`) agar kelas baru termuat pada worker persistent.
+**Konvensi teknis & kualitas (WAJIB).** Semua file PHP memakai `declare(strict_types=1)`. View memakai template native dengan escape output (`e()`) dan token CSRF pada setiap form mutasi. **DILARANG** menambah framework frontend/CDN baru; aset produk dibundel lokal. Test proporsional dengan cakupan (Tingkat Verifikasi V1/V2/V3 — lihat `.github/copilot-instructions.md`): `composer test` penuh (PHPUnit 10, warning = gagal) wajib untuk perubahan logika/otorisasi/kontrak; perubahan **tampilan murni** cukup `php -l`, `node --check`, smoke render view, dan test view terkait. Smoke render view wajib untuk template yang berubah, dan uji Compose pada direktori temp dengan `docker compose … config --quiet` (jangan mencetak secret). Setelah mengubah kode/proses, reload worker (`php start.php reload`) agar kelas baru termuat pada worker persistent.
 
 ## 5. Arsitektur
 

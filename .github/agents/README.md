@@ -82,6 +82,7 @@ Dokumen di `.opencode/` tidak bisa dipakai apa adanya oleh Copilot; inilah terje
 - **Eksekusi proses = satu jalur** (`ProcessRunner` + `SigchldGuard`).
 - **Kontrak endpoint** ditentukan Backend PHP; Frontend UI tidak mengubah bentuk respons.
 - **Verifikasi bukan oleh penulis perubahan** — gunakan *Rames Assure*.
+- **Verifikasi proporsional** — V1 tampilan murni (`php -l`, `node --check`, smoke render view, `--filter` test view) tanpa `composer test` penuh; V3 logika/otorisasi/kontrak wajib `composer test` penuh. Rujukan: `.github/copilot-instructions.md` §Verifikasi.
 - **Dokumentasi** (`docs/SPECS.md`, `docs/ARCHITECTURE.md`, customization agent) dikelola *Rames Assure* · Peran: Docs Architect.
 - **Sinkron dua sisi**: setiap perubahan peran/wilayah harus tercermin di `.github/agents/` **dan** `.opencode/agents/`.
 
@@ -89,7 +90,7 @@ Dokumen di `.opencode/` tidak bisa dipakai apa adanya oleh Copilot; inilah terje
 
 Dilarang menyimpan state di properti controller (worker Webman persistent); dilarang `die()`, `exit()`, `dd()`, `var_dump()`, `echo`, `print` di kode produksi; dilarang query tanpa parameter binding; dilarang `session()`/`request()` di konstruktor controller; dilarang mengubah `controller_reuse` menjadi `true`; dilarang menaruh logika bisnis di controller (wajib di `app/library/`); dilarang menambah HTTP client tanpa timeout; dilarang hard-code kredensial/secret; dilarang menyentuh data runtime nyata (`database/apps.json`, `database/auth.json`, `apps/`, `nginx-status/`) saat menguji. Daftar lengkap per peran ada di body masing-masing agent.
 
-> **Sumber resmi aturan lintas-fitur: `.github/copilot-instructions.md`** (instruksi selalu-aktif, memuat Hard Prohibitions #1–#16, peta lapisan, konvensi penamaan, dan definisi "selesai"). Ringkasan di README ini dan body tiap agent hanya meringkas — bila ada perbedaan, ikuti `copilot-instructions.md` lalu perbaiki ringkasannya (*Rames Assure* · Peran: Docs Architect).
+> **Sumber resmi aturan lintas-fitur: `.github/copilot-instructions.md`** (instruksi selalu-aktif, memuat Hard Prohibitions #1–#18, peta lapisan, konvensi penamaan, Tingkat Verifikasi V1/V2/V3, dan definisi "selesai"). Ringkasan di README ini dan body tiap agent hanya meringkas — bila ada perbedaan, ikuti `copilot-instructions.md` lalu perbaiki ringkasannya (*Rames Assure* · Peran: Docs Architect).
 
 ## Merawat Agent
 

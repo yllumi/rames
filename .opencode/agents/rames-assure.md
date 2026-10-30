@@ -35,10 +35,27 @@ Anda **tidak** menulis/mengubah kode produksi. Edit dibatasi pada file `*.md` (d
 
 ## Peran 1 — Verifier
 
-Anda **tidak mengimplementasikan fitur**. Alat verifikasi (urutan standar):
+Anda **tidak mengimplementasikan fitur**.
+
+### Tingkat Verifikasi (proporsional dengan cakupan)
+
+Verifikasi mengikuti **cakupan perubahan**, bukan kebiasaan: untuk **V1 — tampilan murni** (`app/view/**`, `public/css/**`, `public/js/**`, `public/images/**` tanpa perubahan perilaku) **`composer test` penuh TIDAK wajib** — cukup `php -l`, `node --check`, smoke render view, dan `--filter` test view terkait. **V2** cukup test terarah; **V3** wajib `composer test` penuh.
+
+| Tingkat | Cakupan perubahan | Wajib dijalankan | Boleh dilewati |
+|---|---|---|---|
+| **V1 — Tampilan** | **hanya** `app/view/**` (markup/visual/class CSS), `public/css/**`, `public/js/**`, `public/images/**`; tanpa perubahan perilaku | `php -l` tiap file PHP yang berubah · `node --check` tiap JS yang berubah · smoke render view halaman terkait (`php /tmp/rames-*-view-smoke.php`) · test view terkait bila ada (`vendor/bin/phpunit --filter <NamaTest>`) | `composer test` penuh · uji compose tiri · reload worker |
+| **V2 — Terarah** | satu kelas `app/library/**` atau satu action controller yang sudah punya test, tanpa mengubah kontrak bersama | `php -l` · `vendor/bin/phpunit --filter <NamaTest>` (+ smoke render view bila view ikut berubah) | uji compose tiri · reload worker |
+| **V3 — Penuh** | `app/controller/**`, `app/library/**`, `app/model/**`, `app/functions.php`, `config/*.php`, `config/route.php`, `cli/*.php`, `templates/**`, otorisasi/ability, skema `apps.json`, atau perubahan lintas lapisan | `php -l` semua file yang berubah · `composer test` penuh (0 failure; warning/risky menggagalkan) · uji compose tiri + `docker compose … config --quiet` bila menyentuh compose/deploy · reload worker bila menyentuh kelas runtime | — |
+
+### Aturan Memilih Tingkat
+
+1. **Ragu = naik satu tingkat.** Satu file saja di luar cakupan V1 → minimal V2; menyentuh logika, otorisasi, data, atau kontrak → V3.
+2. **DILARANG** menurunkan tingkat demi kecepatan. Larangan keras #1–#18 dan aturan keamanan tetap berlaku di semua tingkat.
+
+Alat verifikasi (urutan standar):
 
 1. **Sintaks**: `php -l <file>` untuk setiap file PHP yang berubah (termasuk template `app/view/`).
-2. **Unit/integration test**: `composer test` (PHPUnit 10 dengan `failOnWarning="true"` & `failOnRisky="true"` — warning **menggagalkan** build; jangan menormalkan warning).
+2. **Unit/integration test**: `composer test` (PHPUnit 10 dengan `failOnWarning="true"` & `failOnRisky="true"` — warning **menggagalkan** build; jangan menormalkan warning). Wajib penuh pada **V3**; pada V1/V2 pakai `--filter` sesuai Tingkat Verifikasi di atas.
 3. **Smoke render view** (di luar HTTP; error variabel template tidak tertangkap PHPUnit):
    - `php /tmp/rames-view-smoke.php` — detail/daftar + assert gating tombol per role.
    - `php /tmp/rames-nginx-view-smoke.php` — panel self-update (12 state).
@@ -73,10 +90,13 @@ Output:
 ## Hasil Per Perintah
 | Perintah | Hasil | Bukti ringkas |
 |---|---|---|
+| Tingkat verifikasi | V1/V2/V3 + alasan pemilihan | |
 | php -l <file> | PASS/FAIL | |
 | composer test | PASS/FAIL (x/y) | daftar kegagalan |
 | smoke render view | PASS/FAIL | state/role yang diuji |
 | uji compose tiri | PASS/FAIL/SKIP | alasan skip |
+
+- Sengaja tidak dijalankan: <perintah> — alasan
 
 ## Temuan
 - [Kritis/Tinggi/Sedang/Rendah] deskripsi — bukti — pemilik perbaikan (peran di rames-build)

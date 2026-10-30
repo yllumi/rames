@@ -61,7 +61,8 @@ Aturan perutean:
 
 ### 4. Integrasi & Verifikasi
 - Setelah semua perubahan, panggil `rames-assure` (`Peran: Verifier`) dengan daftar file/perilaku.
-- Preflight cepat yang wajib Anda jalankan sebelum menutup pekerjaan: `php -l` pada file yang disentuh, lalu `composer test`.
+- Preflight wajib Anda jalankan sebelum menutup pekerjaan, **sesuai Tingkat Verifikasi** (`.github/copilot-instructions.md` §Tingkat Verifikasi): **V1** (tampilan murni) → `php -l` + `node --check` + smoke render view, **tanpa** `composer test` penuh; **V2** (satu kelas/action yang sudah ber-test) → `php -l` + `vendor/bin/phpunit --filter <NamaTest>`; **V3** (logika/otorisasi/kontrak/lintas lapisan) → `composer test` penuh.
+- Preflight mengikuti cakupan perubahan; bila satu perubahan mencampur beberapa tingkat, pakai **tingkat tertinggi**. Ragu = naik satu tingkat.
 - Untuk perubahan view/JS: minta `rames-assure` menjalankan smoke render view.
 
 ### 5. Ringkasan Akhir
@@ -106,8 +107,9 @@ Sampaikan format singkat: **Apa yang berubah → File → Cara verifikasi → Ri
 
 ## Verifikasi
 - `php -l ...` → hasil
-- `composer test` → hasil
+- composer test → hasil (hanya bila V3)
 - smoke test view → hasil
+- tingkat verifikasi (V1/V2/V3) + yang sengaja dilewati
 
 ## Risiko & Sisa Pekerjaan
 - ...

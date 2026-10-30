@@ -14,7 +14,7 @@ Kamu adalah AI senior engineer pada **Rames** — **deploy dashboard** berbasis 
 - **View:** native PHP (mesin `Raw`), ekstensi `.php` di `app/view/` — tanpa build step, tanpa bundler.
 - **Data dashboard:** berkas JSON di `database/` (`apps.json`, `auth.json`) lewat `JsonStore` — **bukan** RDBMS. Database milik app diakses lewat **Adminer** (reverse proxy ke helper, `app/library/Adminer/`) atau CLI dump (`DbDump`, fitur backup/restore) — **tidak ada** klien PDO di dalam dashboard (`DbClient` dihapus).
 - **Docker:** CLI `docker compose` untuk orkestrasi (`DockerComposeRunner`) + Engine API via unix socket untuk operasi baca (`DockerClient`, Guzzle).
-- **Test:** PHPUnit 10 (`composer test`).
+- **Test:** PHPUnit 10 (`composer test`) — penuh hanya wajib pada Tingkat Verifikasi V3 (lihat §Verifikasi).
 
 Baca `docs/SPECS.md` (kebutuhan produk) dan `docs/ARCHITECTURE.md` (struktur kode, keputusan §6, jebakan §4.4/§5.x) sebelum mengubah perilaku — **jangan mengarang perilaku**.
 
@@ -109,8 +109,29 @@ Baca `docs/SPECS.md` (kebutuhan produk) dan `docs/ARCHITECTURE.md` (struktur kod
 
 ## Verifikasi (definisi "selesai")
 
+### Tingkat Verifikasi
+
+| Tingkat | Cakupan perubahan | Wajib dijalankan | Boleh dilewati |
+|---|---|---|---|
+| **V1 — Tampilan** | **hanya** `app/view/**` (markup/visual/class CSS), `public/css/**`, `public/js/**`, `public/images/**`; tanpa perubahan perilaku | `php -l` tiap file PHP yang berubah · `node --check` tiap JS yang berubah · smoke render view halaman terkait (`php /tmp/rames-*-view-smoke.php`) · test view terkait bila ada (`vendor/bin/phpunit --filter <NamaTest>`) | `composer test` penuh · uji compose tiri · reload worker |
+| **V2 — Terarah** | satu kelas `app/library/**` atau satu action controller yang sudah punya test, tanpa mengubah kontrak bersama | `php -l` · `vendor/bin/phpunit --filter <NamaTest>` (+ smoke render view bila view ikut berubah) | uji compose tiri · reload worker |
+| **V3 — Penuh** | `app/controller/**`, `app/library/**`, `app/model/**`, `app/functions.php`, `config/*.php`, `config/route.php`, `cli/*.php`, `templates/**`, otorisasi/ability, skema `apps.json`, atau perubahan lintas lapisan | `php -l` semua file yang berubah · `composer test` penuh (0 failure; warning/risky menggagalkan) · uji compose tiri + `docker compose … config --quiet` bila menyentuh compose/deploy · reload worker bila menyentuh kelas runtime | — |
+
+### Aturan Memilih Tingkat
+
+1. **Ragu = naik satu tingkat.** Satu file saja di luar cakupan V1 → minimal V2; menyentuh logika, otorisasi, data, atau kontrak → V3.
+2. **DILARANG** menurunkan tingkat demi kecepatan. Larangan keras #1–#18 dan aturan keamanan tetap berlaku di semua tingkat.
+3. **Perubahan tampilan yang ikut mengubah perilaku bukan V1**: gating tombol + cek server, form/CSRF, helper baru, bentuk data dari controller, endpoint/kontrak JS baru → V3.
+4. Menyentuh `app/view/components/**`, layout bersama, atau `app/functions.php` → hampir selalu V3 (dipakai banyak halaman).
+5. Permintaan user "verifikasi penuh"/"cek regresi" dan commit/PR yang mencampur beberapa tingkat memakai **tingkat tertinggi**.
+6. Laporan **wajib** menyebut: tingkat yang dipakai, perintah yang dijalankan + hasil, dan perintah yang sengaja **tidak** dijalankan + alasannya.
+
+### Perintah Rujukan
+
+Perintah rujukan tiap tingkat di atas; detailnya tetap berlaku.
+
 1. `php -l <file>` untuk setiap file PHP yang diubah (termasuk template view).
-2. `composer test` — PHPUnit 10 dengan `failOnWarning`/`failOnRisky` = `true`; **warning menggagalkan build**, jangan dinormalkan.
+2. `composer test` — PHPUnit 10 dengan `failOnWarning`/`failOnRisky` = `true`; **warning menggagalkan build**, jangan dinormalkan. Wajib **penuh** pada V3; pada V1/V2 pakai `--filter` sesuai tingkat.
 3. Smoke render view di luar HTTP (`php /tmp/rames-view-smoke.php`, `rames-nginx-view-smoke.php`, `rames-template-view-smoke.php`) — error variabel template tidak tertangkap PHPUnit. Skrip ini di `/tmp`, **jangan di-commit**.
 4. Uji compose tiruan di direktori temp + project palsu; **selalu** akhiri `docker compose down -v`.
 5. Validasi compose: `docker compose ... config --quiet` — **jangan** `config` tanpa `--quiet` (ia mencetak nilai secret/env ke terminal).

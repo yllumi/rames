@@ -62,6 +62,7 @@ Pemisahan **Build vs Assurance** sengaja dipilih agar aturan lama **"verifikasi 
 - **Eksekusi proses = satu jalur** (`ProcessRunner` + `SigchldGuard`).
 - **Kontrak endpoint** ditentukan Backend PHP; Frontend UI tidak mengubah bentuk respons.
 - **Verifikasi bukan oleh penulis perubahan** — gunakan `rames-assure`.
+- **Verifikasi proporsional** — V1 tampilan murni (`php -l`, `node --check`, smoke render view, `--filter` test view) tanpa `composer test` penuh; V3 logika/otorisasi/kontrak wajib `composer test` penuh. Rujukan: `.github/copilot-instructions.md` §Verifikasi.
 - **Dokumentasi** (`docs/SPECS.md`, `docs/ARCHITECTURE.md`, customization agent) dikelola `rames-assure` · Peran: Docs Architect.
 
 ## Merawat Agent
