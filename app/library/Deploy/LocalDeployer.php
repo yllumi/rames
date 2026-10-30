@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\Deploy;
 
+use app\library\Docker\AppContainers;
 use app\library\Docker\AppPorts;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
@@ -33,6 +34,10 @@ class LocalDeployer implements DeployerInterface
 
     public function deploy(array $app, callable $logger): array
     {
+        // App impor dikelola di terminal proyek aslinya: Rames tidak boleh
+        // menjalankan compose (lihat ImportedApp).
+        ImportedApp::assertManageable($app, 'Deploy');
+
         $project = $app['name'];
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
@@ -64,6 +69,8 @@ class LocalDeployer implements DeployerInterface
 
     public function rebuild(array $app, callable $logger): array
     {
+        ImportedApp::assertManageable($app, 'Rebuild');
+
         // Mode compose (tanpa repo Git): tidak ada source untuk di-pull —
         // cukup ciptakan ulang container dari file compose & image yang ada.
         if (ComposeSource::isCompose($app)) {
@@ -100,6 +107,8 @@ class LocalDeployer implements DeployerInterface
 
     public function rollback(array $app, string $ref, callable $logger): array
     {
+        ImportedApp::assertManageable($app, 'Rollback');
+
         if (ComposeSource::isCompose($app)) {
             throw new RuntimeException('Rollback hanya tersedia untuk app yang dibuat dari repo Git.');
         }
@@ -157,6 +166,14 @@ class LocalDeployer implements DeployerInterface
 
     public function stop(array $app): void
     {
+        // App impor: compose dijalankan dari terminal user, bukan Rames. Cukup
+        // hentikan container lewat Engine API — tanpa menyentuh filesystem.
+        if (ImportedApp::isImported($app)) {
+            $this->stopImportedContainers((string) ($app['name'] ?? ''));
+
+            return;
+        }
+
         $dir = $this->appDir($app);
         $this->compose->stop($app['name'], $dir, $this->resolveComposeFiles($app, $dir), $this->appEnvFile($app));
     }
@@ -168,12 +185,92 @@ class LocalDeployer implements DeployerInterface
 
     public function start(array $app): void
     {
+        if (ImportedApp::isImported($app)) {
+            $this->startImportedContainers((string) ($app['name'] ?? ''));
+
+            return;
+        }
+
         $dir = $this->appDir($app);
         $this->compose->start($app['name'], $dir, $this->resolveComposeFiles($app, $dir), $this->appEnvFile($app));
     }
 
+    /**
+     * Hentikan container project impor yang sedang berjalan (Engine API).
+     * Container yang tidak `running` dilewati.
+     *
+     * Container sekali-jalan (`com.docker.compose.oneoff` = True/true) juga
+     * dilewati: itu hasil `docker compose run` milik user, bukan service project.
+     */
+    private function stopImportedContainers(string $project): void
+    {
+        foreach ($this->dockerClient->listContainersForProject($project) as $container) {
+            if (!is_array($container) || self::isOneOffContainer($container)) {
+                continue;
+            }
+            if (strtolower((string) ($container['State'] ?? '')) !== 'running') {
+                continue;
+            }
+            $id = $this->containerRef($container);
+            if ($id !== '') {
+                $this->dockerClient->stopContainer($id);
+            }
+        }
+    }
+
+    /**
+     * Nyalakan seluruh container project impor (Engine API) — termasuk yang
+     * sebelumnya berhenti. Container yang sudah berjalan tidak bermasalah
+     * (Engine membalas 304, dianggap sukses oleh `startContainer()`).
+     *
+     * Container sekali-jalan dilewati (lihat `stopImportedContainers()`).
+     */
+    private function startImportedContainers(string $project): void
+    {
+        foreach ($this->dockerClient->listContainersForProject($project) as $container) {
+            if (!is_array($container) || self::isOneOffContainer($container)) {
+                continue;
+            }
+            $id = $this->containerRef($container);
+            if ($id !== '') {
+                $this->dockerClient->startContainer($id);
+            }
+        }
+    }
+
+    /**
+     * Container hasil `docker compose run` (sekali-jalan) — tidak ikut stop/start.
+     * Docker menulis label sebagai string `True`; terima juga `true` (defensif).
+     */
+    private static function isOneOffContainer(array $container): bool
+    {
+        $labels = is_array($container['Labels'] ?? null) ? $container['Labels'] : [];
+        $value = strtolower(trim((string) ($labels['com.docker.compose.oneoff'] ?? '')));
+
+        return $value === 'true';
+    }
+
+    /**
+     * Id container dari baris Engine; fallback ke nama container (Engine API
+     * menerima id maupun nama).
+     */
+    private function containerRef(array $container): string
+    {
+        $id = trim((string) ($container['Id'] ?? ''));
+        if ($id !== '') {
+            return $id;
+        }
+
+        $names = $container['Names'] ?? [];
+        $first = is_array($names) ? ($names[0] ?? '') : '';
+
+        return trim((string) $first, '/');
+    }
+
     public function apply(array $app, callable $logger): array
     {
+        ImportedApp::assertManageable($app, 'Apply compose');
+
         if (!ComposeSource::isCompose($app)) {
             throw new RuntimeException('Aksi apply hanya untuk app yang dibuat dari file compose (mode Compose).');
         }
@@ -220,6 +317,8 @@ class LocalDeployer implements DeployerInterface
      */
     public function applyEnv(array $app, callable $logger): array
     {
+        ImportedApp::assertManageable($app, 'Terapkan environment');
+
         $project = $app['name'];
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
@@ -253,6 +352,8 @@ class LocalDeployer implements DeployerInterface
      */
     public function applyLimits(array $app, callable $logger): array
     {
+        ImportedApp::assertManageable($app, 'Terapkan batas resource');
+
         $project = (string) $app['name'];
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
@@ -278,6 +379,8 @@ class LocalDeployer implements DeployerInterface
      */
     public function teardown(array $app, ?array $preserveVolumes = null, ?callable $logger = null): void
     {
+        ImportedApp::assertManageable($app, 'Hapus app lewat compose');
+
         $project = $app['name'];
         $dir = $this->appDir($app);
         $files = $this->resolveComposeFiles($app, $dir);
@@ -758,35 +861,9 @@ class LocalDeployer implements DeployerInterface
 
     public function getContainers(string $project): array
     {
-        $raw = $this->dockerClient->listContainersForProject($project);
-        $containers = [];
-        foreach ($raw as $c) {
-            $labels = $c['Labels'] ?? [];
-            $rawPorts = [];
-            foreach ($c['Ports'] ?? [] as $p) {
-                if (isset($p['PublicPort'], $p['PrivatePort'])) {
-                    $rawPorts[] = ['host' => (int) $p['PublicPort'], 'container' => (int) $p['PrivatePort']];
-                }
-            }
-            // Dedupe: Engine mengembalikan satu entri per IP (IPv4 + IPv6) untuk
-            // publish dual-stack dengan host/container port yang sama.
-            $ports = AppPorts::forContainer(['ports' => $rawPorts]);
-            $names = $c['Names'] ?? [];
-            $first = is_array($names) ? ($names[0] ?? '') : (string) $c['Id'];
-            $containers[] = [
-                'service_name' => (string) ($labels['com.docker.compose.service'] ?? 'unknown'),
-                'container_name' => (string) trim($first, '/'),
-                'image' => (string) ($c['Image'] ?? ''),
-                'internal_port' => $ports[0]['container'] ?? null,
-                'host_port' => $ports[0]['host'] ?? null,
-                // Semua port yang di-publish (service dengan >1 port, mis. web +
-                // gateway API) — dipakai untuk memilih port yang di-proxy Nginx
-                // (primary_port) dan ditampilkan di detail app.
-                'ports' => $ports,
-                'status' => (string) ($c['State'] ?? 'unknown'),
-            ];
-        }
-        return $containers;
+        // Bentuk container dipetakan di satu tempat (`AppContainers`) supaya app
+        // impor & app terkelola tampil identik.
+        return AppContainers::fromEngineRows($this->dockerClient->listContainersForProject($project));
     }
 
     public function renderNginxConfig(array $app): string

@@ -18,6 +18,7 @@ use app\library\Billing\ServerRates;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\AppNginxReloader;
 use app\library\Deploy\AppSslRevoker;
+use app\library\Deploy\ComposeImporter;
 use app\library\Deploy\ComposeSource;
 use app\library\Deploy\ContainerNames;
 use app\library\Deploy\DeployCanceller;
@@ -25,12 +26,14 @@ use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\EnvTemplate;
+use app\library\Deploy\ImportedApp;
 use app\library\Deploy\NetworkManager;
 use app\library\Deploy\ResourceLimits;
 use app\library\Deploy\ServerResolver;
 use app\library\Deploy\SubdomainManager;
 use app\library\Db\DbContainerDetector;
 use app\library\Docker\AppPorts;
+use app\library\Docker\ComposeDiscovery;
 use app\library\Docker\ComposeParser;
 use app\library\Docker\DockerClient;
 use app\library\Docker\PortManager;
@@ -192,7 +195,97 @@ class AppController
             'serverFilter' => $serverFilter,
             'filters' => $filters,
             'filterActive' => AppFilter::isActive($filters),
+            // Tombol "Impor project compose" hanya untuk admin global (daftar
+            // project terdeteksi juga admin-only). Halaman daftar TIDAK memanggil
+            // Engine — discovery baru dijalankan di halaman impor.
+            'canImport' => $isAdmin,
         ]);
+    }
+
+    // ==================================================================
+    // Impor project docker compose yang sudah berjalan (admin-only)
+    // ==================================================================
+
+    /**
+     * Form impor project compose terdeteksi (GET /apps/import).
+     *
+     * Admin-only (kebijakan "container eksternal hanya admin"): non-admin
+     * mendapat **404** lewat {@see AppAccessDenied}, bukan 403.
+     *
+     * Kegagalan Engine tidak menggagalkan halaman: pesannya dikirim sebagai
+     * `engineError` dan halaman tetap 200.
+     */
+    public function importForm(Request $request)
+    {
+        if (!is_admin(current_user())) {
+            throw new AppAccessDenied();
+        }
+
+        $projects = [];
+        $primaryChoices = [];
+        $engineError = null;
+
+        try {
+            $discovery = new ComposeDiscovery(
+                new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock'))
+            );
+            $projects = $discovery->projects((new AppStore())->all());
+            foreach ($projects as $project) {
+                $primaryChoices[(string) $project['project']] = $discovery->primaryChoices($project);
+            }
+        } catch (\Throwable $e) {
+            $engineError = $e->getMessage();
+        }
+
+        return $this->renderView('app/import', [
+            'projects' => $projects,
+            'primaryChoices' => $primaryChoices,
+            'isAdmin' => true,
+            'engineError' => $engineError,
+        ]);
+    }
+
+    /**
+     * Proses impor project compose (POST /apps/import).
+     *
+     * Admin-only (404). Seluruh keputusan (discovery ulang, validasi primary,
+     * keunikan nama, penyusunan record) ada di {@see ComposeImporter} —
+     * controller hanya mediator. Tidak ada deploy/worker yang dijalankan.
+     */
+    public function importStore(Request $request)
+    {
+        $user = current_user();
+        if (!is_admin($user)) {
+            throw new AppAccessDenied();
+        }
+
+        $project = trim((string) $request->post('project', ''));
+        $primary = trim((string) $request->post('primary', ''));
+
+        try {
+            $importer = new ComposeImporter(
+                new DockerClient((string) config('deploy.docker_socket', '/var/run/docker.sock')),
+                new AppStore()
+            );
+            $app = $importer->import($project, $primary, (string) ($user['id'] ?? ''));
+
+            $message = 'Project "' . $app['name'] . '" diimpor. Rames hanya memantau — deploy/rebuild tetap di terminal proyek itu.';
+            if ($request->expectsJson()) {
+                return json(['code' => 0, 'id' => $app['id'], 'message' => $message]);
+            }
+
+            flash_set('success', $message);
+
+            return redirect('/apps/' . $app['id']);
+        } catch (\Throwable $e) {
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $e->getMessage()]);
+            }
+
+            flash_set('error', $e->getMessage());
+
+            return redirect('/apps/import');
+        }
     }
 
     /**
@@ -389,6 +482,10 @@ class AppController
         // base compose di disk (perilaku lama); server **agent** meminta daftar
         // service + nilai base ke agent — control plane tidak punya salinan
         // compose app remote. Satu panggilan HTTP per render detail.
+        //
+        // App impor TIDAK punya base compose lokal (berkasnya di direktori
+        // proyek user): daftar service diambil dari container yang nyata dan
+        // form tidak bisa dikelola (canManage=false).
         $limitsDir = (string) config('deploy.apps_path') . '/' . $app['name'];
         $savedLimits = [];
         try {
@@ -396,14 +493,19 @@ class AppController
         } catch (\Throwable $e) {
             // data limits di apps.json tidak valid → form tampil tanpa nilai tersimpan
         }
-        $resourceLimits = ($appServer === null || ServerResolver::isLocal($appServer))
-            ? $this->limitsContext(
-                $limitsDir,
-                (array) ($app['compose_files'] ?? ['docker-compose.yml']),
-                app_can('limits', $app),
-                $savedLimits
-            )
-            : $this->agentLimitsContext($app, app_can('limits', $app), $savedLimits);
+        $imported = ImportedApp::context($app);
+        if ($imported['imported']) {
+            $resourceLimits = $this->importedLimitsContext($app, $savedLimits);
+        } else {
+            $resourceLimits = ($appServer === null || ServerResolver::isLocal($appServer))
+                ? $this->limitsContext(
+                    $limitsDir,
+                    (array) ($app['compose_files'] ?? ['docker-compose.yml']),
+                    app_can('limits', $app),
+                    $savedLimits
+                )
+                : $this->agentLimitsContext($app, app_can('limits', $app), $savedLimits);
+        }
 
         // Presentasi subdomain: view memakai `$app['subdomain']` sebagai FQDN.
         // Field tersimpan menyimpan label → kirim FQDN efektif, plus label & flag
@@ -432,6 +534,7 @@ class AppController
             'dbContainers' => $dbContainers,
             'access' => $this->accessContext($app),
             'compose' => $this->composeContext($app),
+            'imported' => $imported,
             'resourceLimits' => $resourceLimits,
             'billingEstimate' => $this->billingEstimateFor(
                 $savedLimits,
@@ -480,6 +583,12 @@ class AppController
      */
     private function composeContext(array $app): ?array
     {
+        // App impor tidak punya editor compose di Rames: berkas aslinya hidup di
+        // direktori proyek user (di luar dashboard) — jangan menyajikan editor.
+        if (ImportedApp::isImported($app)) {
+            return null;
+        }
+
         if (!ComposeSource::isCompose($app)) {
             return null;
         }
@@ -1961,6 +2070,19 @@ class AppController
         $store = new AppStore();
         $app = $this->findApp($id, 'deploy');
 
+        // App impor dikelola `docker compose` di terminal user — Rames tidak
+        // menulis override & tidak menciptakan ulang container.
+        try {
+            ImportedApp::assertManageable($app, 'Rebuild');
+        } catch (RuntimeException $e) {
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $e->getMessage()]);
+            }
+            flash_set('error', $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
+
         // Tolak rebuild ganda saat app sedang diproses worker lain.
         if (($app['status'] ?? '') === 'deploying') {
             $msg = 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.';
@@ -2126,6 +2248,15 @@ class AppController
     {
         $store = new AppStore();
         $app = $this->findApp($id, 'deploy');
+
+        try {
+            ImportedApp::assertManageable($app, 'Rollback');
+        } catch (RuntimeException $e) {
+            flash_set('error', $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
+
         if (ComposeSource::isCompose($app)) {
             flash_set('error', 'App ini dibuat dari file compose (tanpa repo Git) — rollback versi tidak tersedia. Gunakan tab Compose untuk mengubah compose lalu Deploy Ulang.');
             return redirect('/apps/' . $id);
@@ -2240,6 +2371,26 @@ class AppController
     {
         $store = new AppStore();
         $app = $this->findApp($id, 'delete');
+
+        // App impor = project compose milik user di terminal. "Hapus" berarti
+        // MELEPAS record dari dashboard saja: container/volume/berkas proyek
+        // TIDAK disentuh (tanpa teardown, tanpa cleanupDir, tanpa volume).
+        if (ImportedApp::isImported($app)) {
+            try {
+                $server = (new ServerResolver())->findForApp($app);
+                if ($server !== null) {
+                    // Buang vhost app bila pernah dibuat lewat domain/SSL.
+                    DeployerFactory::createFor($server)->removeNginxConfig($app);
+                }
+                (new EnvManager())->remove((string) $app['name']);
+                $store->delete($id);
+                flash_set('success', 'App "' . $app['name'] . '" dilepas dari dashboard. Container TIDAK dihentikan/dihapus — kelola project compose di terminal proyek itu.');
+            } catch (\Throwable $e) {
+                flash_set('error', 'Gagal menghapus: ' . $this->appErrorText($app, $e));
+            }
+
+            return redirect('/apps');
+        }
 
         // mode: preserve (default, aman — volume tercentang dipertahankan) atau
         // purge (hapus total termasuk semua volume).
@@ -2881,6 +3032,14 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
+        try {
+            ImportedApp::assertManageable($app, 'Environment variable');
+        } catch (RuntimeException $e) {
+            flash_set('error', $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
+
         // Server pemilik app (fail-fast bila `server_id` menunjuk server hilang):
         // jangan pernah menulis artefak app agent di host control plane.
         try {
@@ -3034,6 +3193,14 @@ class AppController
         }
 
         try {
+            ImportedApp::assertManageable($app, 'Environment variable');
+        } catch (RuntimeException $e) {
+            flash_set('error', $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
+
+        try {
             $local = ServerResolver::isLocal($this->serverForApp($app));
         } catch (\Throwable $e) {
             flash_set('error', 'Environment variable tidak bisa dijalankan: ' . $e->getMessage());
@@ -3111,6 +3278,14 @@ class AppController
         $app = $this->findApp($id, 'env');
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
+        }
+
+        try {
+            ImportedApp::assertManageable($app, 'Environment variable');
+        } catch (RuntimeException $e) {
+            flash_set('error', $e->getMessage());
+
             return redirect('/apps/' . $id);
         }
 
@@ -3313,6 +3488,14 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
+        try {
+            ImportedApp::assertManageable($app, 'Jaringan eksternal');
+        } catch (RuntimeException $e) {
+            flash_set('error', $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
+
         $dir = $this->appArtifactDirOrFail($app, 'Jaringan eksternal');
         if ($dir === null) {
             return redirect('/apps/' . $id);
@@ -3434,6 +3617,14 @@ class AppController
             return redirect('/apps/' . $id);
         }
 
+        try {
+            ImportedApp::assertManageable($app, 'Nama container');
+        } catch (RuntimeException $e) {
+            flash_set('error', $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
+
         $dir = $this->appArtifactDirOrFail($app, 'Nama container');
         if ($dir === null) {
             return redirect('/apps/' . $id);
@@ -3527,6 +3718,16 @@ class AppController
         $app = $this->findApp($id, 'limits');
         if (($app['status'] ?? '') === 'deploying') {
             flash_set('error', 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.');
+            return redirect('/apps/' . $id);
+        }
+
+        // App impor tidak punya base compose di host ini: Rames tidak menulis
+        // override limits dan tidak menciptakan ulang container.
+        try {
+            ImportedApp::assertManageable($app, 'Batas CPU/memori');
+        } catch (RuntimeException $e) {
+            flash_set('error', $e->getMessage());
+
             return redirect('/apps/' . $id);
         }
 
@@ -3757,6 +3958,44 @@ class AppController
         } catch (\Throwable $e) {
             return ContainerNames::usedFromApps((new AppStore())->all(), $ownProject, $scope);
         }
+    }
+
+    /**
+     * Konteks `resourceLimits` app **impor**: daftar service diambil dari
+     * container nyata (bukan base compose lokal yang memang tidak ada) dan form
+     * selalu read-only — Rames tidak menulis override untuk app impor.
+     *
+     * `limitsContext()` tetap satu-satunya perakit bentuk data; `error` sengaja
+     * dikosongkan karena "base compose tidak ditemukan" di host ini adalah
+     * kondisi normal untuk app impor, bukan kesalahan yang perlu ditampilkan.
+     *
+     * @param array<string,mixed>                              $app
+     * @param array<string,array{cpus:?float,memory_mb:?int}>  $saved
+     * @return array{canManage:bool,services:array<int,string>,saved:array<string,array{cpus:?float,memory_mb:?int}>,repo:array<string,array{cpus:?float,memory_mb:?int}>,hasSaved:bool,error:?string}
+     */
+    private function importedLimitsContext(array $app, array $saved): array
+    {
+        $services = [];
+        foreach ((array) ($app['containers'] ?? []) as $container) {
+            if (!is_array($container)) {
+                continue;
+            }
+            $service = (string) ($container['service_name'] ?? '');
+            if ($service !== '' && $service !== 'unknown' && !in_array($service, $services, true)) {
+                $services[] = $service;
+            }
+        }
+
+        $context = $this->limitsContext(
+            '',
+            (array) ($app['compose_files'] ?? []),
+            false,
+            $saved,
+            $services
+        );
+        $context['error'] = null;
+
+        return $context;
     }
 
     /**
@@ -4013,6 +4252,14 @@ class AppController
     {
         $store = new AppStore();
         $app = $this->findApp($id, 'compose');
+
+        try {
+            ImportedApp::assertManageable($app, 'Editor compose');
+        } catch (RuntimeException $e) {
+            flash_set('error', $e->getMessage());
+
+            return redirect('/apps/' . $id);
+        }
 
         if (ComposeSource::isGit($app)) {
             flash_set('error', 'App ini dibuat dari repo Git — perbarui source lewat Rebuild (git pull).');

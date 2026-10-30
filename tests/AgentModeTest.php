@@ -130,19 +130,25 @@ class AgentModeTest extends TestCase
      * +1 (polling status job update agen): `GET /servers/{id}/agent-update/status`
      * — admin-only (non-admin ⇒ 404), dashboard-only: rekaman job `self_update`
      * hanya ada di agen dan statusnya dibaca control plane untuk UI `/servers`.
+     *
+     * +2 (impor project compose yang sudah berjalan): `GET /apps/import` &
+     * `POST /apps/import` — admin-only, dashboard-only (agent tidak punya daftar
+     * project Engine host ini).
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 143;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 145;
 
-    /** Definisi di atas menghasilkan 149 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 149;
+    /** Definisi di atas menghasilkan 151 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 151;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
         'GET /login',
         'POST /login',
         'GET /apps',
-        'POST /nginx/reload',
-        'GET /monitor',
+        // Impor project compose yang sudah berjalan: admin-only & dashboard-only.
+        'GET /apps/import',
+        'POST /apps/import',
+        'POST /nginx/reload',        'GET /monitor',
         'GET /database',
         'GET /ssl',
         'GET /backups',

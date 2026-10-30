@@ -1,3 +1,10 @@
+<?php
+// Konteks app impor berasal dari detail-setup.php. Derivasi lokal membuat partial
+// ini tetap aman dirender mandiri (test/smoke): tanpa `$imported` = app biasa.
+$isImported = (bool) ($isImported ?? false);
+$imported = is_array($imported ?? null) ? $imported : [];
+$importedDir = (string) ($importedDir ?? '');
+?>
   <!-- ============ Tab: Info ============ -->
   <div class="tab-pane fade show active" id="tab-info" role="tabpanel" aria-labelledby="tab-info-btn">
     <div class="card mb-4">
@@ -7,7 +14,15 @@
         <dt class="k">Subdomain</dt>
         <dd class="v mb-0">
           <?php if ($hasHostPort): ?>
+          <?php if ($isImported): ?>
+          <?php // App impor tidak menulis vhost saat diimpor (nol efek samping). Tautan
+          // baru bermakna setelah admin mengatur Subdomain/Custom domain di tab
+          // Domain & SSL — karena itu ditampilkan sebagai teks, bukan tautan. ?>
+          <span class="mono"><?= e($app['subdomain']) ?></span>
+          <span class="text-muted small"> &middot; vhost belum tentu aktif — atur/pastikan di tab <strong>Domain &amp; SSL</strong></span>
+          <?php else: ?>
           <a href="http://<?= e($app['subdomain']) ?>" target="_blank" rel="noopener"><?= e($app['subdomain']) ?></a><?php if ($customDomain): ?> <span class="text-muted small">(redirect → <?= e($customDomain) ?>)</span><?php endif; ?>
+          <?php endif; ?>
           <?php else: ?>
           <span class="text-muted">tidak dipakai</span>
           <span class="text-muted small"> &middot; app tidak mem-publish port — Nginx tidak di-proxy ke app ini</span>
@@ -26,7 +41,41 @@
           <?php endif; ?>
         </dd>
       </div>
-      <?php if ($isCompose): ?>
+<?php if ($isImported): ?>
+      <?php
+      // Path host = informasi topologi. Admin & owner proyek sendiri boleh
+      // melihatnya (mereka yang menjalankan compose di terminal); member lain
+      // (operator/viewer) cukup tahu bahwa proyek dikelola di luar Rames.
+      $__role = (string) ($role ?? '');
+      $__canSeeHostPath = $__role === 'admin' || $__role === 'owner';
+      ?>
+      <div class="app-info-item">
+        <dt class="k">Asal</dt>
+        <dd class="v mb-0">Diimpor dari project compose eksternal</dd>
+      </div>
+      <div class="app-info-item">
+        <dt class="k">Direktori proyek</dt>
+        <dd class="v mb-0 small">
+          <?php if ($__canSeeHostPath): ?>
+            <?= e($importedDir !== '' ? $importedDir : 'tidak diketahui') ?>
+          <?php else: ?>
+            <span class="text-muted">disembunyikan (hanya admin &amp; owner app)</span>
+          <?php endif; ?>
+        </dd>
+      </div>
+      <?php $__composePaths = is_array($imported['compose_paths'] ?? null) ? $imported['compose_paths'] : []; ?>
+      <?php if ($__composePaths !== [] && $__canSeeHostPath): ?>
+      <div class="app-info-item">
+        <dt class="k">Berkas compose</dt>
+        <dd class="v mb-0 small">
+          <?php foreach ($__composePaths as $__composePath): ?>
+            <div class="mono text-break"><?= e((string) $__composePath) ?></div>
+          <?php endforeach; ?>
+        </dd>
+      </div>
+      <?php endif; ?>
+<?php endif; ?>
+      <?php if ($isCompose && !$isImported): ?>
       <?php $tplTitle = is_array($app['template'] ?? null) ? (string) ($app['template']['title'] ?? $app['template']['slug'] ?? '') : ''; ?>
       <div class="app-info-item">
         <dt class="k">Sumber</dt>
@@ -87,10 +136,12 @@
         <dt class="k">Lokasi</dt>
         <dd class="v mb-0 small"><?= e($app['local_path'] ?? '') ?></dd>
       </div>
+<?php if (!$isImported): ?>
       <div class="app-info-item">
         <dt class="k">Compose Files</dt>
         <dd class="v mb-0 small"><?= e(implode(', ', $app['compose_files'] ?? ['docker-compose.yml'])) ?></dd>
       </div>
+<?php endif; ?>
     </dl>
   </div>
 </div>

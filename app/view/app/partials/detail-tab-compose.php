@@ -1,4 +1,4 @@
-  <?php if ($isCompose && $canCompose): ?>
+  <?php if ($isCompose && $canCompose && !(bool) ($isImported ?? false)): ?>
   <!-- ============ Tab: Compose (app mode compose — edit sumber tanpa Git) ============ -->
   <div class="tab-pane fade" id="tab-compose" role="tabpanel" aria-labelledby="tab-compose-btn">
     <section class="card mb-4">

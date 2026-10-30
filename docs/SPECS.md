@@ -118,6 +118,8 @@ Field yang mengikat: `name` (slug; nama project compose, direktori `apps/{name}`
 
 **App tanpa port terpublish** (mis. server database) tidak dibuatkan vhost/subdomain; `primary` sengaja kosong, bukan template rusak.
 
+**App hasil impor project compose eksternal** (§7.2c) memakai field tambahan: `origin: "imported"`, `imported_at`, `imported_by`, `compose_dir` (`working_dir` label Engine), `compose_paths` (config_files **absolut**), dan `compose_files` yang hanya berisi **basename** (metadata; bukan untuk I/O). Field lain mengikuti kontrak app compose: `source: "compose"`, `local_path` = `compose_dir`, `env: []`, `limits: null`, `container_prefix: null`.
+
 ### 7.2 Alur "Create App"
 
 Tiga mode di `/apps/create`, berurutan **Template**, **Clone repo Git** (default), **Compose (paste/upload)**. Template memakai `templates/<slug>/`; Git meng-clone repo ber-`docker-compose.yml`; Compose menerima file prebuilt tanpa repo.
@@ -146,6 +148,16 @@ Template adalah aset repo (dikelola lewat git, bukan UI): `templates/<slug>/` be
 
 **Alur deploy**: galeri → modal (Detail | Panduan) → form nama + env + batas resource + server → `POST /apps/create/template/{slug}` → materialisasi `apps/{name}` → jalur compose biasa (§7.2a). Hasilnya app compose normal (stop/start/deploy ulang/domain/SSL/env/network/terminal/log/database), **tanpa rollback**.
 
+### 7.2c Mode "Impor project compose yang sudah berjalan"
+
+Memasukkan project `docker compose` yang **sudah dijalankan manual di host** menjadi app Rames tanpa deploy ulang. Halaman `GET /apps/import` hanya untuk **admin global** (non-admin ⇒ **404**); `POST /apps/import` menerima `project` + `primary` (`"<service>:<portContainer>"`).
+
+- **Batasan**: hanya project **berlabel compose** (`com.docker.compose.project`) di **server lokal**; container hasil `docker run` tanpa label compose **tidak terdeteksi**; project dashboard (`rames`, `rames-agent`) selalu dikecualikan. Discovery bersifat **read-only** — tidak memanggil CLI `docker compose` dan tidak memutasi Engine. Nama project harus lolos pola slug; nama yang sudah dipakai app lokal ditandai bentrok dan tidak bisa diimpor.
+- **Perilaku impor**: discovery **diulang** di server (nilai POST tidak dipercaya) → validasi `primary` (fallback pilihan pertama; tanpa port ⇒ service/port kosong) → keunikan nama per server fail-fast → simpan record (field §7.1) dengan `containers[]` dari `AppContainers::fromEngineRows()`. **Nol efek samping**: tidak ada worker/deploy, override compose, managed env, limits, atau vhost Nginx yang dibuat; status `running`/`stopped` diambil dari container.
+- **Aksi didukung**: detail & polling status, log container/deploy, terminal, file manager, database/Adminer, domain & SSL, stop/start, delete.
+- **Aksi ditolak** dengan pesan jelas (butuh `docker compose` atas direktori yang tidak dimiliki Rames): deploy/rebuild, rollback, editor compose, simpan/upload env, batas resource, external network, dan prefix nama container. `stop`/`start` memakai **Docker Engine API** dan menyaring container one-off (`com.docker.compose.oneoff`). Backup/restore volume app impor juga memakai Engine, bukan compose.
+- **Delete = lepas record**: hapus config Nginx app (bila pernah dibuat lewat domain/SSL) + managed env, lalu hapus record. **Container, volume, dan berkas proyek TIDAK disentuh**; modal delete tidak menampilkan pilihan volume.
+
 ### 7.3 Halaman Detail App
 
 Menampilkan identitas app, server, subdomain/link, sumber (repo/compose), daftar port (badge `di-proxy` pada `primary_port`), container + status, badge role, dan aksi sesuai ability.
@@ -155,12 +167,15 @@ Menampilkan identitas app, server, subdomain/link, sumber (repo/compose), daftar
 - **Log container** (viewer+): modal, jumlah baris, auto-refresh; polling berhenti saat modal ditutup. **Log deploy** (viewer+): tahap worker + output build live, on-demand.
 - **Batalkan build** (operator+): menghentikan worker + grup prosesnya dan memulihkan status; untuk app agent, job agent dibatalkan lebih dulu.
 - **File manager** (operator+, §7.9) hanya untuk container berjalan.
+- **App impor** (§7.2c): badge `diimpor`; tombol Deploy/Rebuild tidak dirender; tab **Compose/Environment/Sumber Daya/Network** disembunyikan; `compose_dir`/`compose_paths` (path host) hanya dirender untuk **admin & owner**, role lain melihat keterangan "disembunyikan".
 
 ### 7.4 Delete App
 
 Dua mode: **pertahankan volume** (default; `docker compose down` tanpa `-v`, volume terpilih dapat dihapus terpisah, volume dipakai ulang bila app dibuat lagi dengan nama sama) dan **hapus total** (`down -v`, semua named/anonymous volume).
 
 Urutan: lepaskan container asing dari network project (tanpa menghentikan/menghapus) → down sesuai mode → hapus config Nginx + reload → hapus direktori app → hapus record. Kegagalan pelepasan network dicatat sebagai peringatan, tidak menggagalkan delete. `/volumes` (admin) boleh mem-purge volume yatim; volume app aktif ditolak.
+
+**App impor project compose eksternal** (§7.2c) **tidak** memakai kedua mode di atas: delete hanya **melepas record** (config Nginx app + managed env dibuang); container, volume, dan berkas proyek tidak dihentikan/dihapus.
 
 ### 7.5 Rollback App ke Versi Sebelumnya
 

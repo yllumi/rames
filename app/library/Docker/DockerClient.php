@@ -284,6 +284,15 @@ class DockerClient
     }
 
     /**
+     * Start container. 304 (sudah berjalan) & 404 (container sudah hilang)
+     * dianggap sukses — start bersifat idempoten untuk pemanggil.
+     */
+    public function startContainer(string $id): void
+    {
+        $this->requestIgnore404('POST', '/containers/' . rawurlencode($id) . '/start', [], true);
+    }
+
+    /**
      * Hapus container (force). 404 dianggap sukses (container sudah hilang).
      */
     public function removeContainer(string $id, bool $force = true, bool $removeVolumes = true): void
@@ -422,9 +431,9 @@ class DockerClient
 
     /**
      * Request API yang toleran 404 (resource sudah tidak ada = sukses).
-     * Status >= 300 selain 404 dianggap error.
+     * Status >= 300 selain 404 (dan 304 bila `$ignore304`) dianggap error.
      */
-    private function requestIgnore404(string $method, string $path, array $query = []): void
+    private function requestIgnore404(string $method, string $path, array $query = [], bool $ignore304 = false): void
     {
         try {
             $resp = $this->client->request(strtoupper($method), $path, ['query' => $query]);
@@ -432,7 +441,7 @@ class DockerClient
             throw new RuntimeException('Gagal terhubung ke Docker Engine: ' . $e->getMessage(), 0, $e);
         }
         $code = $resp->getStatusCode();
-        if ($code >= 300 && $code !== 404) {
+        if ($code >= 300 && $code !== 404 && !($ignore304 && $code === 304)) {
             throw new RuntimeException("Operasi Docker gagal: HTTP {$code} {$resp->getReasonPhrase()}");
         }
     }

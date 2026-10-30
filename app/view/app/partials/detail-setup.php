@@ -26,6 +26,12 @@ $canFiles = (bool) ($abilities['files'] ?? false);
 // App mode compose = dibuat dari file docker-compose.yml (tanpa repo Git),
 // sumbernya bisa diedit lewat tab Compose (tanpa rollback/checkpoint Git).
 $isCompose = \app\library\Deploy\ComposeSource::isCompose($app);
+// App hasil impor project compose eksternal: Rames hanya memantau (tanpa
+// deploy/rebuild/compose/env/limits/network). Default defensif bila controller
+// tidak mengirim `$imported`.
+$imported = is_array($imported ?? null) ? $imported : ['imported' => false, 'compose_dir' => '', 'compose_paths' => [], 'imported_at' => ''];
+$isImported = (bool) ($imported['imported'] ?? false);
+$importedDir = trim((string) ($imported['compose_dir'] ?? ''));
 $compose = $compose ?? null;
 
 // custom domain + status SSL-nya

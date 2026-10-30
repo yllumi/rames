@@ -101,6 +101,37 @@ flowchart TD
 >
 > **DILARANG menambahkan `e()` di sekitar `guide_html`/`guideHtml`.** Output `Markdown::toHtml()` **sudah tersanitasi** (`html_input=escape` + tolak tautan tidak aman); membungkusnya dengan `e()` akan menampilkan HTML sebagai teks mentah. Sebaliknya, penulis `guide.md` **tidak** boleh mengandalkan HTML mentah (`<script>`, `<img onerror>`, dst.) — semuanya di-escape, bukan dirender. Jaga `Markdown::toHtml()` sebagai satu-satunya pintu render (duplikasi konverter tanpa `escape`/`allow_unsafe_links=false` = jalur XSS).
 
+## 5.1d Impor project compose yang sudah berjalan
+
+Cara keempat mendapatkan app (SPECS §7.2c) — project sudah hidup, Rames **hanya memantau** dan tidak pernah menjalankan `docker compose` untuknya.
+
+```mermaid
+flowchart TD
+    A[Admin buka /apps/import] --> B[ComposeDiscovery::projects<br/>label com.docker.compose.project]
+    B --> C{name_valid & !conflict & ada container?}
+    C -- tidak --> D[Baris tetap tampil + alasan<br/>name_valid/conflict/importable=false]
+    C -- ya --> E[POST project + primary service:port]
+    E --> F[ComposeImporter::import:<br/>discovery ulang + validasi primary + nama unik per server]
+    F --> G[AppStore.create origin=imported<br/>containers = AppContainers::fromEngineRows]
+    G --> H[Detail app: badge diimpor<br/>deploy/rebuild/env/limits tidak tersedia]
+```
+
+1. `GET /apps/import` (**admin-only → 404** non-admin) — `ComposeDiscovery::projects()` membaca Engine `listContainers(['label' => ['com.docker.compose.project']])`, mengelompokkan per project, mengecualikan `rames`/`rames-agent`, dan **tidak** membuang project yang namanya bentrok — barisnya ditandai `conflict: true` + `importable: false` agar UI bisa menjelaskan sebabnya.
+2. Form memilih `primary` dari `ComposeDiscovery::primaryChoices()` (`"<service>:<portContainer>"`, dari `Ports[]` container).
+3. `POST /apps/import` → `ComposeImporter::import($project, $primary, $ownerId)`: discovery **diulang** (POST tidak dipercaya), validasi `name_valid`/`conflict`/`importable`, cek keunikan nama per server fail-fast, resolve primary (fallback pilihan pertama), lalu `AppStore::create()` dengan `origin: "imported"`, `imported_at`/`imported_by`, `compose_dir` (`working_dir` label), `compose_paths` (config_files absolut), `compose_files` (basename), `local_path` = `compose_dir`, `env: []`, `limits: null`, `container_prefix: null`.
+4. **Nol efek samping**: tidak ada worker/deploy, override compose, managed env, limits, atau vhost Nginx yang ditulis. Status app (`running`/`stopped`) diambil dari `State` container.
+5. Sesudahnya `ImportedApp` menjadi satu pintu: fitur ber-compose ditolak (`assertManageable()`), stop/start & backup/restore volume memakai Docker Engine API, delete = lepas record (container/volume/berkas proyek tidak disentuh).
+
+> **GOTCHA — app impor tidak punya `apps/{name}`.** **Gejala**: menjalankan deploy/rebuild, `EnvManager::sync()`, atau editor compose untuk app impor gagal (`direktori tidak ada`/compose tak terbaca) atau — lebih buruk — menulis override ke direktori app kosong yang tidak dipakai project nyata. **Sebab**: berkas compose & environment hidup di direktori proyek user (di luar Rames); tidak ada artefak yang dimaterialisasi saat impor. **Penangkal**: `ImportedApp::assertManageable()` adalah satu-satunya pintu — panggil di setiap action/metode deployer yang butuh orkestrasi compose; **jangan** menambahkan jalur "coba compose dulu, gagal baru Engine".
+>
+> **GOTCHA — `config_files` absolut vs `compose_files` basename.** **Gejala**: `docker compose -f compose_files…` dijalankan dari direktori kerja dashboard (atau path relatif salah) sehingga compose membaca berkas lain/tidak ada. **Sebab**: label `com.docker.compose.project.config_files` berisi **path absolut host** dipisah koma, sedangkan `apps.compose_files` app impor sengaja hanya **basename** (metadata, sama bentuknya dengan app biasa). **Penangkal**: untuk I/O gunakan `compose_dir` + `compose_paths`; **DILARANG** memakai `compose_files` sebagai path untuk menjalankan compose.
+>
+> **GOTCHA — `POST /docker/containers/{id}/start` membalas 304.** **Gejala**: start app impor dianggap gagal padahal container sudah berjalan. **Sebab**: Docker Engine membalas **304 Not Modified** untuk container yang sudah running, bukan 200. **Penangkal**: `DockerClient::startContainer()` memperlakukan 304 (dan 404 = container hilang) sebagai sukses; jangan menambah pemeriksaan status ketat di pemanggil.
+>
+> **WAJIB — route `/apps/import` didaftarkan SEBELUM `/apps/{id}`.** Bila urutannya terbalik, `import` tertangkap sebagai id app dan halaman impor menjadi 404. Alasan yang sama berlaku untuk `/apps/create*`.
+>
+> **WAJIB — backup/restore volume app impor memakai Engine, bukan compose.** `VolumeStateGuard::stopProject()/startProject()` bercabang ke **Docker Engine API** untuk app impor (dan menyaring container `com.docker.compose.oneoff`), karena direktori proyek milik user dan `docker compose stop` akan berjalan di direktori yang salah. Jangan menambahkan jalur compose untuk app impor.
+
 ## 5.2 Rebuild / Deploy Ulang
 
 `AppController::rebuild` → spawn worker mode `rebuild` → `LocalDeployer::rebuild`:
@@ -112,6 +143,8 @@ Perubahan compose untuk app mode compose lewat tab **Compose** di detail app: `A
 ## 5.3 Stop / Start
 
 Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di `apps.json`.
+
+**App impor** (§5.1d): `LocalDeployer`/`VolumeStateGuard` **tidak** memanggil compose — container `running` dihentikan (`stopContainer`) dan container `exited`/`created` dinyalakan (`startContainer`) satu per satu lewat Docker Engine API, menyaring container one-off `com.docker.compose.oneoff`.
 
 ## 5.4 Delete
 

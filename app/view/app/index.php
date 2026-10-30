@@ -11,6 +11,8 @@ $__serverFilter = (string) ($serverFilter ?? '');
 // bergrant `server_select`). View tidak menambah gate sendiri.
 $__serverOptions = $serverOptions ?? [];
 $__isAdmin = (bool) ($isAdmin ?? false);
+// Tombol "Impor dari Docker" hanya untuk admin (controller mengirim `canImport`).
+$__canImport = (bool) ($canImport ?? false);
 
 // Filter daftar app (docs/SPECS.md §8e / §7.7). Nilai sudah **efektif** dari
 // controller (trim; `name`/`domain` lowercase) — kosong = filter tidak aktif.
@@ -64,10 +66,20 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
   ?>
   <?php if (!empty($apps)): ?>
     <div class="d-flex align-items-center gap-2">
+<?php if ($__canImport): ?>
+      <a class="btn btn-outline-secondary" href="/apps/import">Impor dari Docker</a>
+<?php endif; ?>
       <a class="btn btn-primary" href="/apps/create">+ Create App</a>
     </div>
   <?php else: ?>
+<?php if ($__canImport): ?>
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-outline-secondary" href="/apps/import">Impor dari Docker</a>
+      <a class="btn btn-primary" href="/apps/create">+ Create App</a>
+    </div>
+<?php else: ?>
     <a class="btn btn-primary" href="/apps/create">+ Create App</a>
+<?php endif; ?>
   <?php endif; ?>
 </div>
 

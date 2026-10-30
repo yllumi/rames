@@ -31,6 +31,18 @@ final class ComposeSource
     /** App dibuat dari file compose yang di-paste/di-upload. */
     public const SOURCE_COMPOSE = 'compose';
 
+    /** Origin app terkelola normal (dibuat & di-deploy oleh Rames). */
+    public const ORIGIN_MANAGED = 'managed';
+
+    /**
+     * Origin app hasil impor project compose yang sudah berjalan di luar Rames.
+     *
+     * App seperti ini TIDAK dikelola `docker compose` oleh Rames (tidak ada
+     * override/env yang ditulis, tidak ada up/down/build) — Rames hanya
+     * memantau container serta mengelola domain/SSL/log/terminal/file/database.
+     */
+    public const ORIGIN_IMPORTED = 'imported';
+
     /** Nama file compose utama yang dikenali (urutan prioritas). */
     public const MAIN_FILES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
 
@@ -78,6 +90,16 @@ final class ComposeSource
     public static function isGit(array $app): bool
     {
         return self::source($app) === self::SOURCE_GIT;
+    }
+
+    /**
+     * Apakah app hasil impor project compose eksternal (bukan dikelola Rames).
+     *
+     * Field `origin` absen/bernilai lain = app terkelola biasa.
+     */
+    public static function isImported(array $app): bool
+    {
+        return (string) ($app['origin'] ?? '') === self::ORIGIN_IMPORTED;
     }
 
     // ==================================================================

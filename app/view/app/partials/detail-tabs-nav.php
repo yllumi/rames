@@ -3,12 +3,14 @@
   <li class="nav-item" role="presentation"><button class="nav-link active" id="tab-info-btn" data-bs-toggle="tab" data-bs-target="#tab-info" type="button" role="tab" aria-controls="tab-info" aria-selected="true">Info</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-containers-btn" data-bs-toggle="tab" data-bs-target="#tab-containers" type="button" role="tab" aria-controls="tab-containers" aria-selected="false">Container</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-deploy-btn" data-bs-toggle="tab" data-bs-target="#tab-deploy" type="button" role="tab" aria-controls="tab-deploy" aria-selected="false">Deployment</button></li>
-  <?php if ($isCompose && $canCompose): ?>
+  <?php if ($isCompose && $canCompose && !(bool) ($isImported ?? false)): ?>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-compose-btn" data-bs-toggle="tab" data-bs-target="#tab-compose" type="button" role="tab" aria-controls="tab-compose" aria-selected="false">Compose</button></li>
   <?php endif; ?>
+<?php if (!(bool) ($isImported ?? false)): ?>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-env-btn" data-bs-toggle="tab" data-bs-target="#tab-env" type="button" role="tab" aria-controls="tab-env" aria-selected="false">Environment</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-limits-btn" data-bs-toggle="tab" data-bs-target="#tab-limits" type="button" role="tab" aria-controls="tab-limits" aria-selected="false">Sumber Daya</button></li>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-network-btn" data-bs-toggle="tab" data-bs-target="#tab-network" type="button" role="tab" aria-controls="tab-network" aria-selected="false">Network</button></li>
+<?php endif; ?>
   <?php if (!empty($dbContainers)): ?>
   <li class="nav-item" role="presentation"><button class="nav-link" id="tab-db-btn" data-bs-toggle="tab" data-bs-target="#tab-db" type="button" role="tab" aria-controls="tab-db" aria-selected="false">Database</button></li>
   <?php endif; ?>

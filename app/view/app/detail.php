@@ -41,6 +41,9 @@ include app_path() . '/view/app/partials/detail-setup.php'; ?>
   <div class="d-flex align-items-center gap-3 flex-wrap">
     <h1 class="h3 mb-0 mono"><?= e($app['name']) ?></h1>
     <span class="badge badge-<?= e($status) ?>" id="app-status"><?= e($status) ?></span>
+<?php if ($isImported): ?>
+    <span class="badge text-bg-secondary" title="App hasil impor project compose eksternal — Rames hanya memantau, tidak menjalankan docker compose">diimpor</span>
+<?php endif; ?>
     <?php if ($role !== null): ?>
       <span class="badge text-bg-<?= $isOwner || $role === 'admin' ? 'primary' : 'secondary' ?>"
             title="Hak akses Anda pada app ini"><?= e(app_role_label($role)) ?></span>
@@ -113,14 +116,19 @@ include app_path() . '/view/app/partials/detail-setup.php'; ?>
 <?php endif; ?>
 
 <?php if (!$isBusy && $canOperate): ?>
-<div class="d-flex flex-wrap gap-2 mb-4" id="app-actions">
+<div class="d-flex flex-wrap gap-2 mb-4<?= $isImported ? ' align-items-center' : '' ?>" id="app-actions">
+<?php if (!$isImported): ?>
   <form method="post" action="/apps/<?= e($app['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm"<?= $isCompose ? ' title="Ciptakan ulang container dari file compose & image lokal (tanpa build)"' : '' ?>>↻ <?= $isCompose ? 'Deploy Ulang' : 'Rebuild' ?></button></form>
+<?php endif; ?>
 
   <?php if ($status === 'running'): ?>
     <form method="post" action="/apps/<?= e($app['id']) ?>/stop"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm">■ Stop</button></form>
   <?php elseif ($status === 'stopped'): ?>
     <form method="post" action="/apps/<?= e($app['id']) ?>/start"><?= csrf_field() ?><button class="btn btn-success btn-sm">▶ Start</button></form>
   <?php endif; ?>
+<?php if ($isImported): ?>
+  <p class="text-muted small mb-0">Deploy, rebuild, environment, dan batas resource dikelola di terminal host (direktori proyek) — Rames tidak menjalankan <code>docker compose</code> untuk app ini.</p>
+<?php endif; ?>
 </div>
 <?php endif; ?>
 
@@ -161,7 +169,7 @@ include app_path() . '/view/app/partials/detail-tab-containers.php'; ?>
 include app_path() . '/view/app/partials/detail-tab-deploy.php'; ?>
 
 <?php
-// Partial: Tab Compose (app mode compose, hanya bila $isCompose && $canCompose)
+// Partial: Tab Compose (app mode compose, hanya bila $isCompose && $canCompose && !$isImported)
 include app_path() . '/view/app/partials/detail-tab-compose.php'; ?>
 
 <?php

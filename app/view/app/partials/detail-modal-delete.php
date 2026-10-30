@@ -1,3 +1,7 @@
+<?php
+// Derivasi lokal agar partial aman dirender mandiri (tanpa detail-setup.php).
+$isImported = (bool) ($isImported ?? false);
+?>
 <?php if (!$isBusy && $canDelete): ?>
 <!-- Modal konfirmasi delete: pilih volume yang dipertahankan -->
 <div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
@@ -5,10 +9,17 @@
     <form method="post" action="/apps/<?= e($app['id']) ?>/delete" class="modal-content">
       <?= csrf_field() ?>
       <div class="modal-header">
-        <h5 class="modal-title" id="deleteModalLabel">Hapus app <?= e($app['name']) ?></h5>
+        <h5 class="modal-title" id="deleteModalLabel"><?= $isImported ? 'Lepas' : 'Hapus' ?> app <?= e($app['name']) ?></h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
       </div>
       <div class="modal-body">
+<?php if ($isImported): ?>
+        <p class="text-muted small mb-0">
+          App dilepas dari dashboard — record-nya dihapus, tetapi
+          <strong>container, volume, dan berkas proyek TIDAK dihapus</strong>.
+          Hentikan/hapus sendiri project compose itu di terminal direktori proyeknya.
+        </p>
+<?php else: ?>
         <p class="text-muted small mb-3">
           Container, config Nginx, dan direktori lokal akan dihapus.
           <strong>Volume yang dicentang dipertahankan</strong> dan akan dipakai
@@ -30,12 +41,17 @@
           </div>
           <p class="text-muted small mb-0">Volume yang <strong>tidak</strong> dicentang ikut dihapus.</p>
         <?php endif; ?>
+<?php endif; ?>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Batal</button>
+<?php if ($isImported): ?>
+        <button type="submit" class="btn btn-danger btn-sm">Lepas dari dashboard</button>
+<?php else: ?>
         <button type="submit" name="mode" value="preserve" class="btn btn-danger btn-sm">Hapus &amp; pertahankan volume</button>
         <button type="submit" name="mode" value="purge" class="btn btn-outline-danger btn-sm"
                 onclick="return confirm('Hapus TOTAL app <?= e($app['name']) ?> termasuk SEMUA volume (data database dll. ikut terhapus permanen)? Tindakan ini tidak bisa dibatalkan.');">Hapus total (semua volume)</button>
+<?php endif; ?>
       </div>
     </form>
   </div>

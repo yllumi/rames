@@ -265,6 +265,11 @@ Route::post('/apps/create/template/{slug}', [AppController::class, 'templateDepl
 Route::get('/apps/create/confirm', [AppController::class, 'confirmForm']);
 Route::post('/apps/create/confirm', [AppController::class, 'confirmCreate']);
 
+// Impor project docker compose yang SUDAH berjalan (admin-only). WAJIB
+// didaftarkan SEBELUM pola `/apps/{id}` agar tidak tertangkap sebagai id app.
+Route::get('/apps/import', [AppController::class, 'importForm']);
+Route::post('/apps/import', [AppController::class, 'importStore']);
+
 // Detail & polling
 Route::get('/apps/{id}', [AppController::class, 'detail']);
 Route::get('/apps/{id}/versions', [AppController::class, 'versions']);

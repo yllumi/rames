@@ -6,6 +6,7 @@ namespace app\library\Backup;
 use app\library\Db\DbContainerDetector;
 use app\library\Deploy\ComposeSource;
 use app\library\Deploy\EnvManager;
+use app\library\Deploy\ImportedApp;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
 use app\library\Storage\AppStore;
@@ -25,6 +26,13 @@ use RuntimeException;
  * `-v`** (volume tidak pernah dihapus) dan melengkapi argumen (`dir`,
  * compose_files yang masih ada, `--env-file` managed) dengan konvensi yang sama
  * seperti `LocalDeployer` — project = field `name` app, dir = `apps_path/{name}`.
+ *
+ * **Pengecualian wajib — app impor** (`origin='imported'`): Rames tidak pernah
+ * menjalankan `docker compose` untuk app itu (berkas compose + environment hidup
+ * di direktori proyek user, di luar Rames; lihat {@see ImportedApp}), sehingga
+ * stop/start dikerjakan lewat Docker Engine API dengan menyaring container
+ * sekali-jalan (`com.docker.compose.oneoff`) agar `docker compose run` milik
+ * user tidak ikut dinyalakan/dimatikan.
  *
  * Instance (menerima `DockerClient`), bukan statik: operasi menyentuh Engine &
  * filesystem, tetapi semua dependensi dapat di-inject agar teruji.
@@ -130,11 +138,22 @@ class VolumeStateGuard
     /**
      * Hentikan seluruh container project (`docker compose stop`, tanpa `-v`).
      *
+     * App impor: **tidak** memanggil compose (tidak ada direktori artefak lokal —
+     * berkas compose milik proyek user); container `running` dihentikan satu per
+     * satu lewat Engine API, container once-off (`docker compose run`) dilewati.
+     *
      * @throws RuntimeException bila project tidak ada di apps.json atau stop gagal
      */
     public function stopProject(string $project): void
     {
         $app = $this->requireApp($project);
+
+        if (ImportedApp::isImported($app)) {
+            $this->stopImportedContainers($project);
+
+            return;
+        }
+
         $dir = $this->appDir($project);
         $this->compose->stop($project, $dir, $this->composeFiles($app, $dir), $this->envFile($project));
     }
@@ -145,11 +164,22 @@ class VolumeStateGuard
      * Pemanggil **wajib** memanggil ini dari blok `finally` (termasuk saat
      * snapshot/upload gagal) agar app tidak tertinggal mati.
      *
+     * App impor: **tidak** memanggil compose — container `exited`/`created`
+     * dinyalakan lewat Engine API; container once-off (`docker compose run`)
+     * tidak dihidupkan paksa.
+     *
      * @throws RuntimeException bila project tidak ada di apps.json atau start gagal
      */
     public function startProject(string $project): void
     {
         $app = $this->requireApp($project);
+
+        if (ImportedApp::isImported($app)) {
+            $this->startImportedContainers($project);
+
+            return;
+        }
+
         $dir = $this->appDir($project);
         $this->compose->start($project, $dir, $this->composeFiles($app, $dir), $this->envFile($project));
     }
@@ -174,6 +204,62 @@ class VolumeStateGuard
     private function appDir(string $project): string
     {
         return rtrim($this->appsPath, '/') . '/' . $project;
+    }
+
+    /**
+     * Hentikan container project impor yang `running` (Engine API).
+     *
+     * Container sekali-jalan (`com.docker.compose.oneoff` = True/true) dilewati:
+     * ia bukan bagian dari service project dan boleh saja sedang dipakai user
+     * sebagai job sekali pakai di terminalnya.
+     */
+    private function stopImportedContainers(string $project): void
+    {
+        foreach ($this->docker->listContainersForProject($project) as $container) {
+            if (!is_array($container) || self::isOneOff($container)) {
+                continue;
+            }
+            if (strtolower((string) ($container['State'] ?? '')) !== 'running') {
+                continue;
+            }
+            $id = trim((string) ($container['Id'] ?? ''));
+            if ($id !== '') {
+                $this->docker->stopContainer($id);
+            }
+        }
+    }
+
+    /**
+     * Nyalakan container project impor yang `exited`/`created` (Engine API).
+     * Container sekali-jalan & yang sudah berjalan dilewati.
+     */
+    private function startImportedContainers(string $project): void
+    {
+        foreach ($this->docker->listContainersForProject($project) as $container) {
+            if (!is_array($container) || self::isOneOff($container)) {
+                continue;
+            }
+            $state = strtolower((string) ($container['State'] ?? ''));
+            if ($state !== 'exited' && $state !== 'created') {
+                continue;
+            }
+            $id = trim((string) ($container['Id'] ?? ''));
+            if ($id !== '') {
+                $this->docker->startContainer($id);
+            }
+        }
+    }
+
+    /**
+     * Container hasil `docker compose run` (sekali-jalan) — tidak ikut stop/start.
+     * Docker menulis label sebagai string `True`; terima juga `true` (defensif).
+     */
+    private static function isOneOff(array $container): bool
+    {
+        $labels = is_array($container['Labels'] ?? null) ? $container['Labels'] : [];
+        $value = strtolower(trim((string) ($labels['com.docker.compose.oneoff'] ?? '')));
+
+        return $value === 'true';
     }
 
     /**

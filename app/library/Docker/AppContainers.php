@@ -43,6 +43,58 @@ final class AppContainers
     }
 
     /**
+     * Petakan baris mentah Docker Engine (`GET /containers/json`) ke bentuk
+     * container yang disimpan di dokumen app.
+     *
+     * Satu sumber kebenaran untuk bentuk `containers` — dipakai
+     * `LocalDeployer::getContainers()` (app terkelola) dan impor project
+     * compose (`ComposeImporter`), sehingga app impor tampil identik dengan app
+     * yang di-deploy Rames.
+     *
+     * Dedupe port lewat {@see AppPorts::forContainer()} (Engine mengembalikan
+     * entri per alamat IP untuk publish dual-stack).
+     *
+     * @param array<int,array> $raw
+     * @return array<int,array{service_name:string,container_name:string,image:string,internal_port:?int,host_port:?int,ports:array<int,array{host:int,container:int}>,status:string}>
+     */
+    public static function fromEngineRows(array $raw): array
+    {
+        $containers = [];
+        foreach ($raw as $c) {
+            if (!is_array($c)) {
+                continue;
+            }
+
+            $labels = is_array($c['Labels'] ?? null) ? $c['Labels'] : [];
+            $rawPorts = [];
+            foreach ((array) ($c['Ports'] ?? []) as $p) {
+                if (is_array($p) && isset($p['PublicPort'], $p['PrivatePort'])) {
+                    $rawPorts[] = ['host' => (int) $p['PublicPort'], 'container' => (int) $p['PrivatePort']];
+                }
+            }
+            $ports = AppPorts::forContainer(['ports' => $rawPorts]);
+
+            $names = $c['Names'] ?? [];
+            $first = is_array($names) ? ($names[0] ?? '') : (string) ($c['Id'] ?? '');
+
+            $containers[] = [
+                'service_name' => (string) ($labels['com.docker.compose.service'] ?? 'unknown'),
+                'container_name' => (string) trim((string) $first, '/'),
+                'image' => (string) ($c['Image'] ?? ''),
+                'internal_port' => $ports[0]['container'] ?? null,
+                'host_port' => $ports[0]['host'] ?? null,
+                // Semua port yang di-publish (service dengan >1 port, mis. web +
+                // gateway API) — dipakai untuk memilih port yang di-proxy Nginx
+                // (primary_port) dan ditampilkan di detail app.
+                'ports' => $ports,
+                'status' => (string) ($c['State'] ?? 'unknown'),
+            ];
+        }
+
+        return $containers;
+    }
+
+    /**
      * Container default app: container service `primary_service`, atau yang
      * pertama bila primary tidak ketemu/tidak diset.
      */
