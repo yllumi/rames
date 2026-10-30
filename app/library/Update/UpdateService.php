@@ -42,6 +42,16 @@ use RuntimeException;
  * container dashboard hasil recreate berada (health-check lewat nama container).
  * Network dipilih lewat `chooseHelperNetwork()` — TIDAK boleh diambil sembarang
  * dari `NetworkSettings.Networks` (lihat method tersebut).
+ *
+ * Dua kebenaran lagi yang WAJIB diteruskan ke helper (kalau tidak, update di
+ * server agent merusak dirinya sendiri):
+ *  - **berkas compose** container ini (`resolveComposeFiles()` →
+ *    `COMPOSE_FILE`/`COMPOSE_PROJECT_NAME`): tanpa `-f`, `docker compose` memilih
+ *    `docker-compose.yml` default di `--project-directory` — di server agent itu
+ *    template DASHBOARD, sehingga container agent diganti container dashboard;
+ *  - **skema health check** (`healthUrl()`): mode agent menyalakan TLS lewat
+ *    `process.webman.transport = ssl`, jadi `/healthz` hanya dilayani HTTPS
+ *    (helper memakai `curl -k` untuk sertifikat self-signed).
  */
 final class UpdateService implements UpdateRunner
 {
@@ -56,6 +66,50 @@ final class UpdateService implements UpdateRunner
 
     /** Penulis status dari helper (PHP mandiri, tanpa dependensi aplikasi). */
     public const REPORT_SCRIPT = 'cli/update-report.php';
+
+    /**
+     * Env interpolasi compose yang boleh diteruskan ke helper (`-e NAME=value`).
+     *
+     * Helper menjalankan `docker compose -p … --project-directory … up` dengan
+     * environment-nya SENDIRI, sehingga setiap `${VAR:-default}` di compose
+     * kembali ke default bila variabelnya tidak ada. Untuk agent itu berarti
+     * `AGENT_PORT_PUBLISH` kembali ke `8443` walau instalasi memakai port lain
+     * (`--bind`, dipandu `agent/install.sh`) — container hasil recreate pindah
+     * port dan control plane menembak port lama (timeout). Hal yang sama berlaku
+     * untuk wiring host yang dikustomisasi (`NGINX_*`, `DOCKER_*`, `RAMES_DB_DIR`,
+     * `DNS_*`).
+     *
+     * Allowlist ini **eksplisit**: rahasia/identitas (`AGENT_TOKEN`,
+     * `AGENT_TLS_*`, `ADMIN_*`, `APP_DOMAIN`, `PORT_RANGE_*`, kunci apa pun)
+     * TIDAK PERNAH diteruskan. Nilai itu memang dibaca `docker compose` dari
+     * `env_file` di dalam project — bukan dari environment helper.
+     */
+    private const COMPOSE_ENV_ALLOWLIST = [
+        'NGINX_CONF_PATH',
+        'NGINX_ENABLED_PATH',
+        'NGINX_HTTP_CONF',
+        'NGINX_BIN',
+        'NGINX_RELOAD_IMAGE',
+        'DOCKER_SOCKET',
+        'DOCKER_BINARY',
+        'RAMES_DB_DIR',
+        'DNS_1',
+        'DNS_2',
+    ];
+
+    /** Port container agent yang dipublikasikan lewat `AGENT_PORT_PUBLISH`. */
+    private const AGENT_CONTAINER_PORT = '8443';
+
+    /**
+     * Nama project compose container agent (`docker compose -f docker-compose.agent.yml
+     * -p rames-agent`, ditulis `agent/install.sh`). Dipakai HANYA di fallback
+     * pemilihan berkas compose saat label `com.docker.compose.project.config_files`
+     * tidak ada — bukan tebakan dari nama container.
+     */
+    private const AGENT_COMPOSE_PROJECT = 'rames-agent';
+
+    /** Nama berkas compose agent (selain template dashboard `docker-compose.yml`). */
+    private const AGENT_COMPOSE_FILE = 'docker-compose.agent.yml';
 
     private ProcessRunner $runner;
     private DockerClient $docker;
@@ -346,6 +400,9 @@ final class UpdateService implements UpdateRunner
             'branch' => (string) $preflight['branch'],
             'project' => (string) $context['project'],
             'service' => (string) $context['service'],
+            // Berkas compose yang dipakai (diagnosis: tanpa `-f` yang benar helper
+            // bisa me-recreate service template dashboard di server agent).
+            'compose_files' => array_values((array) ($context['compose_files'] ?? [])),
             // Dicatat di plan supaya helper bisa menuliskannya ke log: kegagalan
             // jaringan (DNS/egress) tanpa jejak network hampir mustahil didiagnosis.
             'network' => (string) $context['network'],
@@ -389,6 +446,11 @@ final class UpdateService implements UpdateRunner
             'uid' => $uid,
             'gid' => $gid,
             'group_add' => $this->socketGid(),
+            // Interpolasi compose yang efektif (AGENT_PORT_PUBLISH, NGINX_*, …)
+            // + berkas compose container ini (COMPOSE_FILE/COMPOSE_PROJECT_NAME)
+            // diteruskan sebagai env helper supaya recreate tidak kembali ke
+            // default installer dan tidak memakai template compose yang salah.
+            'env' => self::helperEnv($context),
             'root' => $this->repo->root(),
             'script' => $this->repo->root() . '/' . self::HELPER_SCRIPT,
             'report' => $this->repo->root() . '/' . self::REPORT_SCRIPT,
@@ -421,6 +483,11 @@ final class UpdateService implements UpdateRunner
      * ke /tmp SEBELUM dijalankan: `git pull` di dalam repo akan mengganti berkas
      * skrip di tengah eksekusi, dan shell membaca skrip secara bertahap —
      * menjalankannya dari /tmp membuat eksekusi stabil.
+     *
+     * `$spec['env']` (nama⇒nilai, hasil {@see helperEnv()}) diteruskan sebagai
+     * pasangan `-e NAME=value` SETELAH env bawaan — nilainya sudah disaring
+     * allowlist (`composeEnvFromInspect()`) + `COMPOSE_FILE`/`COMPOSE_PROJECT_NAME`,
+     * jadi tanpa rahasia dan tetap satu elemen argv per variabel.
      *
      * @param array<string,mixed> $spec
      * @return array<int,string>
@@ -467,6 +534,22 @@ final class UpdateService implements UpdateRunner
             $command[] = $env;
         }
 
+        // Nilai interpolasi compose yang EFEKTIF di container dashboard (mis.
+        // `AGENT_PORT_PUBLISH` hasil `--bind` installer, `NGINX_*`/`DNS_*` kustom).
+        // Tanpa ini `docker compose up` di helper memakai `${VAR:-default}` sehingga
+        // container hasil recreate bisa pindah port/path. Nilainya sudah disaring
+        // allowlist di `composeEnvFromInspect()` — tanpa rahasia, tanpa shell
+        // (`NAME=value` tetap SATU elemen argv).
+        foreach ((array) ($spec['env'] ?? []) as $name => $value) {
+            $name = (string) $name;
+            $value = (string) $value;
+            if ($name === '' || $value === '') {
+                continue;
+            }
+            $command[] = '-e';
+            $command[] = $name . '=' . $value;
+        }
+
         $socket = (string) ($spec['socket'] ?? '/var/run/docker.sock');
         $command[] = '-v';
         $command[] = $socket . ':' . $socket;
@@ -495,7 +578,7 @@ final class UpdateService implements UpdateRunner
      * meng-inspect dirinya sendiri) — dipakai helper untuk me-recreate dirinya
      * tanpa nama project/service yang di-hardcode.
      *
-     * @return array{ok:bool,error:?string,id:string,name:string,image:string,project:string,service:string,network:string,dns:array<int,string>}
+     * @return array{ok:bool,error:?string,id:string,name:string,image:string,project:string,service:string,network:string,dns:array<int,string>,env:array<string,string>,compose_files:array<int,string>}
      */
     public function selfContext(): array
     {
@@ -509,6 +592,8 @@ final class UpdateService implements UpdateRunner
             'service' => '',
             'network' => '',
             'dns' => [],
+            'env' => [],
+            'compose_files' => [],
         ];
 
         $id = (string) (gethostname() ?: '');
@@ -528,6 +613,12 @@ final class UpdateService implements UpdateRunner
         $networks = is_array($inspect['NetworkSettings']['Networks'] ?? null) ? $inspect['NetworkSettings']['Networks'] : [];
         $attached = array_values(array_map('strval', array_keys($networks)));
         $project = (string) ($labels['com.docker.compose.project'] ?? '');
+        $composeFiles = self::resolveComposeFiles(
+            (string) ($labels['com.docker.compose.project.config_files'] ?? ''),
+            (string) ($labels['com.docker.compose.project.working_dir'] ?? ''),
+            $this->repo->root(),
+            $project
+        );
         $network = self::chooseHelperNetwork($attached, $this->internalNetworkFlags($attached), $project);
 
         $context = [
@@ -540,7 +631,28 @@ final class UpdateService implements UpdateRunner
             'service' => (string) ($labels['com.docker.compose.service'] ?? ''),
             'network' => $network,
             'dns' => array_values(array_filter(array_map('strval', (array) ($inspect['HostConfig']['Dns'] ?? [])))),
+            // Nilai interpolasi compose yang saat ini efektif — diteruskan helper
+            // sebagai `-e NAME=value` supaya recreate tidak kembali ke default
+            // (lihat COMPOSE_ENV_ALLOWLIST).
+            'env' => self::composeEnvFromInspect($inspect),
+            // Berkas compose yang SAMA dengan yang dipakai container ini. Helper
+            // WAJIB memakai daftar ini (`COMPOSE_FILE`): tanpa `-f`, `docker
+            // compose` di `--project-directory` memilih `docker-compose.yml`
+            // default — di server agent itu template DASHBOARD, sehingga helper
+            // mengganti container agent (`rames-agent`) dengan container
+            // dashboard (`rames-webman`) dan agent hilang.
+            'compose_files' => $composeFiles,
         ];
+
+        // Fail-fast paling awal: berkas compose yang salah/tidak ada bersifat
+        // DESTRUKTIF (service yang di-recreate bukan milik instalasi ini).
+        $composeError = self::composeFilesError($composeFiles);
+        if ($composeError !== null) {
+            $context['error'] = $composeError;
+            $context['ok'] = false;
+
+            return $context;
+        }
 
         if ($context['image'] === '') {
             $context['image'] = (string) config('deploy.update_image', '');
@@ -571,6 +683,187 @@ final class UpdateService implements UpdateRunner
         }
 
         return $context;
+    }
+
+    /**
+     * Berkas compose yang dipakai container ini — sumber kebenaran untuk helper.
+     *
+     * Sumber utama: label `com.docker.compose.project.config_files` (daftar path
+     * dipisah koma yang ditulis Docker Compose saat container dibuat). Label itu
+     * WAJIB dihormati: agent dibuat dengan `-f docker-compose.agent.yml`
+     * (`-p rames-agent`), sedangkan berkas default di direktori project adalah
+     * `docker-compose.yml` milik DASHBOARD. Menjalankan compose tanpa `-f`
+     * membuat helper "memperbarui" service `webman` project agent memakai
+     * template dashboard: container `rames-agent` diganti `rames-webman`
+     * (RAMES_MODE dashboard, port 8787) dan agent hilang ⇒ control plane
+     * timeout (`cURL error 28`).
+     *
+     * Fallback hanya bila label tidak ada (container dibuat di luar compose atau
+     * Compose versi lama): project `rames-agent` + `<root>/docker-compose.agent.yml`
+     * ada ⇒ berkas itu; selain itu `<root>/docker-compose.yml` (perilaku lama).
+     * Jangan menebak dari nama container.
+     *
+     * @param string $labelFiles nilai label `com.docker.compose.project.config_files`
+     * @param string $workingDir nilai label `com.docker.compose.project.working_dir` (basis path relatif)
+     * @param string $root       akar repo (fallback bila label kosong)
+     * @param string $project    nama project compose (label `com.docker.compose.project`)
+     * @return array<int,string> path absolut berkas compose (urutan dipertahankan)
+     */
+    public static function resolveComposeFiles(string $labelFiles, string $workingDir, string $root, string $project): array
+    {
+        $root = rtrim($root, '/');
+        $base = $workingDir !== '' ? rtrim($workingDir, '/') : $root;
+
+        $files = [];
+        foreach (explode(',', $labelFiles) as $file) {
+            $file = trim($file);
+            if ($file === '') {
+                continue;
+            }
+            if (!str_starts_with($file, '/') && $base !== '') {
+                $file = $base . '/' . $file;
+            }
+            $files[] = $file;
+        }
+        if ($files !== []) {
+            return $files;
+        }
+
+        $agent = ($root !== '' ? $root : '.') . '/' . self::AGENT_COMPOSE_FILE;
+        if ($project === self::AGENT_COMPOSE_PROJECT && is_file($agent)) {
+            return [$agent];
+        }
+
+        return [($root !== '' ? $root : '.') . '/docker-compose.yml'];
+    }
+
+    /**
+     * Pesan galat bila berkas compose tidak bisa dipakai (tidak ada / kosong) —
+     * `null` = aman. Diperiksa SEBELUM helper di-spawn: compose tanpa berkas
+     * yang benar me-recreate service yang salah (lihat `resolveComposeFiles()`).
+     *
+     * @param array<int,string> $files
+     */
+    private static function composeFilesError(array $files): ?string
+    {
+        if ($files === []) {
+            return 'Berkas compose tidak diketahui — update dibatalkan agar tidak me-recreate service yang salah.';
+        }
+        foreach ($files as $file) {
+            if (!is_file($file)) {
+                return 'Berkas compose ' . $file . ' tidak ditemukan — update dibatalkan agar tidak me-recreate service yang salah.';
+            }
+            if ((int) @filesize($file) <= 0) {
+                return 'Berkas compose ' . $file . ' kosong — update dibatalkan agar tidak me-recreate service yang salah.';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Env lengkap untuk helper (`-e NAME=value`), fungsi murni:
+     *
+     *  - interpolasi compose efektif hasil {@see composeEnvFromInspect()}
+     *    (`AGENT_PORT_PUBLISH`, `NGINX_*`, `DOCKER_*`, `RAMES_DB_DIR`, `DNS_*`);
+     *  - `COMPOSE_FILE` = berkas compose container ini (pemisah `:`, format
+     *    Docker Compose) — TANPA ini helper memakai `docker-compose.yml` default
+     *    dan me-recreate service yang salah (bug production agent);
+     *  - `COMPOSE_PROJECT_NAME` = project compose container ini, berpasangan
+     *    dengan `COMPOSE_FILE` (project agent `rames-agent`, dashboard `rames`).
+     *
+     * @param array<string,mixed> $context hasil {@see selfContext()}
+     * @return array<string,string>
+     */
+    public static function helperEnv(array $context): array
+    {
+        $env = (array) ($context['env'] ?? []);
+
+        $files = array_values(array_filter(
+            array_map('strval', (array) ($context['compose_files'] ?? [])),
+            static fn (string $file): bool => $file !== ''
+        ));
+        if ($files !== []) {
+            $env['COMPOSE_FILE'] = implode(':', $files);
+        }
+
+        $project = (string) ($context['project'] ?? '');
+        if ($project !== '') {
+            $env['COMPOSE_PROJECT_NAME'] = $project;
+        }
+
+        return $env;
+    }
+
+    /**
+     * Nilai interpolasi compose yang EFEKTIF di container dashboard, dibaca dari
+     * hasil `inspectContainer()`:
+     *
+     *  - `NGINX_*`, `DOCKER_*`, `RAMES_DB_DIR`, `DNS_*` dari `Config.Env` (env
+     *    nyata yang dipakai container — sudah termasuk nilai dari `env_file` &
+     *    hasil interpolasi compose saat container dibuat);
+     *  - `AGENT_PORT_PUBLISH` dari `HostConfig.PortBindings`: port host yang
+     *    dipublikasikan untuk port container agent `8443` (HostPort numerik
+     *    pertama). Ini SATU-SATUNYA sumber port publish agent — nilainya tidak
+     *    ada di `Config.Env` karena hanya dipakai saat compose membuat container.
+     *
+     * Hanya nama di {@see COMPOSE_ENV_ALLOWLIST} yang lolos; nama lain (termasuk
+     * rahasia) diabaikan. Nilai kosong dilewati — lebih baik compose memakai
+     * default-nya sendiri daripada helper mengirim `-e NAME=` (mengosongkan
+     * variabel yang justru punya default berguna).
+     *
+     * @param array<string,mixed> $inspect hasil `DockerClient::inspectContainer()`
+     * @return array<string,string>
+     */
+    private static function composeEnvFromInspect(array $inspect): array
+    {
+        $env = [];
+        foreach ((array) ($inspect['Config']['Env'] ?? []) as $entry) {
+            if (!is_string($entry) || !str_contains($entry, '=')) {
+                continue;
+            }
+            [$name, $value] = explode('=', $entry, 2);
+            if (!in_array($name, self::COMPOSE_ENV_ALLOWLIST, true) || $value === '') {
+                continue;
+            }
+            $env[$name] = $value;
+        }
+
+        $hostPort = self::publishedHostPort(
+            is_array($inspect['HostConfig']['PortBindings'] ?? null) ? $inspect['HostConfig']['PortBindings'] : [],
+            self::AGENT_CONTAINER_PORT
+        );
+        if ($hostPort !== '') {
+            $env['AGENT_PORT_PUBLISH'] = $hostPort;
+        }
+
+        return $env;
+    }
+
+    /**
+     * Port host numerik pertama yang dipublikasikan untuk satu port container
+     * (`PortBindings` berbentuk `"8443/tcp" => [{"HostIp":…,"HostPort":"9443"}]`).
+     *
+     * Rentang (`"8000-8010"`) diabaikan: itu bukan nilai `AGENT_PORT_PUBLISH`
+     * yang sah dan tidak boleh diteruskan apa adanya.
+     *
+     * @param array<string,mixed> $bindings
+     */
+    private static function publishedHostPort(array $bindings, string $containerPort): string
+    {
+        foreach ($bindings as $key => $entries) {
+            if (explode('/', (string) $key, 2)[0] !== $containerPort) {
+                continue;
+            }
+            foreach ((array) $entries as $entry) {
+                $hostPort = is_array($entry) ? (string) ($entry['HostPort'] ?? '') : '';
+                if ($hostPort !== '' && ctype_digit($hostPort)) {
+                    return $hostPort;
+                }
+            }
+        }
+
+        return '';
     }
 
     /**
@@ -671,11 +964,24 @@ final class UpdateService implements UpdateRunner
      * URL /healthz versi baru, diakses helper lewat nama container di network yang
      * sama (bukan lewat port publik host — tidak bergantung pada APP_PORT).
      *
+     * Skema WAJIB mengikuti protokol listener, bukan ditebak dari nama container:
+     * mode agent menyalakan TLS lewat `process.webman.transport => 'ssl'` (TLS
+     * diterminasi Workerman), sehingga `/healthz` agent HANYA dilayani HTTPS.
+     * Dengan `http://…` helper selalu menganggap versi baru tidak sehat →
+     * update dianggap gagal/rollback walau agent sehat. Dashboard tidak menyetel
+     * `transport` ⇒ tetap `http`.
+     *
      * @param array<string,mixed> $context
      */
     public function healthUrl(array $context): string
     {
-        return 'http://' . (string) $context['name'] . ':' . $this->listenPort() . '/healthz';
+        return $this->healthScheme() . '://' . (string) $context['name'] . ':' . $this->listenPort() . '/healthz';
+    }
+
+    /** Skema HTTP untuk health check internal (satu sumber: config listener). */
+    private function healthScheme(): string
+    {
+        return strtolower(trim((string) config('process.webman.transport', ''))) === 'ssl' ? 'https' : 'http';
     }
 
     private function listenPort(): int

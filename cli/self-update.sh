@@ -36,6 +36,23 @@ cfg() { php "$REPORT" get "$PLAN" "$1" "${2:-}"; }
 rep() { php "$REPORT" set "$PLAN" "$1" "$2" "${3:-}" >/dev/null 2>&1 || true; }
 st()  { php "$REPORT" state "$PLAN" "$1" "$2" >/dev/null 2>&1 || true; }
 
+# Nama berkas pertama (dari daftar `$COMPOSE_FILE` dipisah ':') yang tidak ada
+# atau kosong; tanpa keluaran bila semuanya valid.
+first_missing_compose_file() {
+  rest="${1:-}"
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *:*) file="${rest%%:*}"; rest="${rest#*:}" ;;
+      *)   file="$rest"; rest="" ;;
+    esac
+    if [ -z "$file" ] || [ ! -f "$file" ] || [ ! -s "$file" ]; then
+      printf '%s' "$file"
+      return 0
+    fi
+  done
+  return 1
+}
+
 ROOT=$(cfg root)
 PROJECT=$(cfg project)
 SERVICE=$(cfg service)
@@ -55,6 +72,20 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 
 log() {
   printf '[%s] %s\n' "$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')" "$1" >>"$LOG" 2>/dev/null || true
+}
+
+# Health check INTERNAL (`/healthz` lewat nama container di network project).
+#
+# `-k` (insecure) HANYA untuk permintaan ini dan BUKAN pengecekan keamanan:
+# agent melayani /healthz lewat TLS self-signed (`transport => 'ssl'` di
+# config/process.php, sertifikat dibuat installer, dipin dari control plane),
+# sedangkan helper menghubunginya lewat NAMA container di network internal —
+# nama pada sertifikat tidak akan pernah cocok dengan alamat itu. Tanpa `-k`
+# health check agent selalu gagal (cURL exit 60) ⇒ self-update berakhir
+# rollback padahal agent sehat. Dashboard tetap http (tanpa TLS) — `-k` tidak
+# berpengaruh pada permintaan non-TLS.
+health_probe() {
+  curl -fsS -k --max-time 5 "$HEALTH_URL" 2>/dev/null || true
 }
 
 # Tulis jejak keluaran git ke log. Stdout helper TIDAK boleh dipakai untuk ini —
@@ -118,6 +149,39 @@ trap on_exit EXIT
 
 log "=== mulai: id=$RUN_ID mode=$MODE root=$ROOT branch=$BRANCH uid=$(id -u):$(id -g) network=$NETWORK dns=$DNS ==="
 rep preflight running "Memeriksa prasyarat helper…"
+
+# ----------------------------------------------------------------------
+# 0) Berkas compose WAJIB eksplisit & ADA.
+#
+# Dashboard mengirim `COMPOSE_FILE` (label `com.docker.compose.project.config_files`)
+# + `COMPOSE_PROJECT_NAME`, selaras dengan `--project-directory "$ROOT"`. Tanpa
+# itu `docker compose` memilih `docker-compose.yml` default di `--project-directory`:
+# di server agent berkas itu template DASHBOARD (`container_name: rames-webman`,
+# port 8787), sehingga helper MENGGANTI container agent (`rames-agent`) dengan
+# container dashboard dan agent hilang (control plane: cURL error 28). Berhenti
+# sekarang — bukan me-recreate service yang salah.
+# ----------------------------------------------------------------------
+COMPOSE_FILES="${COMPOSE_FILE:-}"
+if [ -z "$COMPOSE_FILES" ]; then
+  log "COMPOSE_FILE kosong — update dibatalkan (berkas compose tidak boleh ditebak)"
+  rep preflight error "Berkas compose tidak diketahui — update dibatalkan agar tidak me-recreate service yang salah."
+  DONE=1
+  exit 1
+fi
+MISSING_COMPOSE=$(first_missing_compose_file "$COMPOSE_FILES" || true)
+if [ -n "$MISSING_COMPOSE" ]; then
+  log "berkas compose tidak ada/kosong: $MISSING_COMPOSE (COMPOSE_FILE=$COMPOSE_FILES)"
+  rep preflight error "Berkas compose $MISSING_COMPOSE tidak ditemukan — update dibatalkan agar tidak me-recreate service yang salah."
+  DONE=1
+  exit 1
+fi
+if [ -z "$PROJECT" ] || [ -z "$SERVICE" ]; then
+  log "project/service kosong (project=$PROJECT service=$SERVICE) — update dibatalkan"
+  rep preflight error "Identitas compose container tidak lengkap (project/service) — update dibatalkan agar tidak me-recreate service yang salah."
+  DONE=1
+  exit 1
+fi
+log "compose files: $COMPOSE_FILES (project=$PROJECT service=$SERVICE)"
 
 # ----------------------------------------------------------------------
 # 1) Preflight: Docker socket harus bisa dipakai SEBELUM menyentuh git.
@@ -241,7 +305,10 @@ fi
 HEALTHY=0
 if [ -z "$PRE_ERROR" ]; then
   rep build running "Membangun image & menciptakan ulang container dashboard…"
-  log "docker compose up -d --build --force-recreate $SERVICE"
+  # `COMPOSE_FILE` (env dari dashboard) WAJIB dipakai — tanpa `-f` compose memilih
+  # `docker-compose.yml` default dan bisa me-recreate service template dashboard
+  # di server agent (lihat pemeriksaan di awal skrip).
+  log "docker compose up -d --build --force-recreate $SERVICE (COMPOSE_FILE=$COMPOSE_FILES)"
   if docker compose -p "$PROJECT" --project-directory "$ROOT" up -d --build --force-recreate "$SERVICE" >>"$LOG" 2>&1; then
     BUILD_OK=1
   else
@@ -258,7 +325,7 @@ if [ -z "$PRE_ERROR" ]; then
     rep health running "Menunggu dashboard melayani request…"
     waited=0
     while [ "$waited" -lt "$HEALTH_TIMEOUT" ]; do
-      body=$(curl -fsS --max-time 5 "$HEALTH_URL" 2>/dev/null || true)
+      body=$(health_probe)
       case "$body" in
         *'"ok":true'*)
           HEALTHY=1
@@ -315,7 +382,7 @@ fi
 
 waited=0
 while [ "$waited" -lt "$ROLLBACK_TIMEOUT" ]; do
-  body=$(curl -fsS --max-time 5 "$HEALTH_URL" 2>/dev/null || true)
+  body=$(health_probe)
   case "$body" in
     *'"ok":true'*)
       log "rollback sehat kembali setelah ${waited}s"

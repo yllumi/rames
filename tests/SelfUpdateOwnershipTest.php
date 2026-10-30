@@ -475,6 +475,7 @@ class SelfUpdateOwnershipTest extends TestCase
                 'FAKE_GIT_MARKER' => $marker,
                 'FAKE_GIT_TRACE' => $trace,
                 'HOME' => '/tmp',
+                'COMPOSE_FILE' => $this->composeFixture(),
             ]
         );
 
@@ -489,6 +490,40 @@ class SelfUpdateOwnershipTest extends TestCase
         $this->assertStringContainsString('uid=33:33', $error);
         $this->assertStringContainsString('sudo chown -R 33:33 ' . $root, $error);
         $this->assertStringNotContainsString('jaringan', $error);
+    }
+
+    public function testHelperStopsBeforeComposeWhenComposeFileIsMissing(): void
+    {
+        // Berkas compose yang hilang = bahaya destruktif: `docker compose` akan
+        // memakai default `docker-compose.yml` di `--project-directory` (template
+        // dashboard di server agent) dan me-recreate service yang salah. Helper
+        // harus berhenti SEBELUM git/compose disentuh.
+        $bin = $this->fakeBin();
+        $marker = $this->tmp . '/git-invoked';
+        $root = $this->fixtureRepo();
+        $plan = $this->writePlan($root);
+        $missing = $this->tmp . '/tidak-ada-compose.yml';
+
+        $result = $this->runHelper($this->scriptUnderTest(), $plan, [
+            'PATH' => $bin . ':' . (string) getenv('PATH'),
+            'FAKE_GIT_MARKER' => $marker,
+            'FAKE_GIT_TRACE' => $this->traceFile('tidak dipakai'),
+            'COMPOSE_FILE' => $missing,
+        ]);
+
+        $this->assertSame(1, $result['code']);
+        $this->assertFileDoesNotExist($marker, 'git tidak boleh dijalankan');
+
+        $run = $this->runFile();
+        $this->assertSame('error', $run['result']);
+        $this->assertSame('preflight', $run['stage']);
+        $error = (string) $run['error'];
+        $this->assertStringContainsString($missing, $error);
+        $this->assertStringContainsString('tidak ditemukan', $error);
+        $this->assertStringContainsString('me-recreate service yang salah', $error);
+
+        $log = (string) file_get_contents($this->tmp . '/runs/run.log');
+        $this->assertStringContainsString('berkas compose tidak ada/kosong: ' . $missing, $log);
     }
 
     public function testHelperClassifiesDubiousOwnershipAsOwnershipNotNetwork(): void
@@ -775,7 +810,25 @@ SH);
      */
     private function runHelper(string $script, string $plan, array $env): array
     {
+        // Helper fail-fast tanpa `COMPOSE_FILE` yang menunjuk berkas ada (mencegah
+        // me-recreate service salah). Uji ini tidak menguji compose, jadi pakai
+        // berkas fixture valid bersama.
+        $env += ['COMPOSE_FILE' => $this->composeFixture()];
+
         return (new ProcessRunner())->run(['sh', $script, $plan], $this->tmp, 60, $env);
+    }
+
+    /**
+     * Berkas compose fixture valid (dipakai env `COMPOSE_FILE` helper).
+     */
+    private function composeFixture(): string
+    {
+        $path = $this->tmp . '/fixture-docker-compose.yml';
+        if (!is_file($path)) {
+            file_put_contents($path, "services: {}\n");
+        }
+
+        return $path;
     }
 
     /**

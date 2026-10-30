@@ -474,6 +474,8 @@ PHP);
         file_put_contents($root . '/.git/HEAD', "ref: refs/heads/main\n");
         file_put_contents($root . '/cli/self-update.sh', "# helper\n");
         file_put_contents($root . '/cli/update-report.php', "<?php\n");
+        // `selfContext()` memvalidasi berkas compose yang dipakai helper.
+        file_put_contents($root . '/docker-compose.yml', "services: {}\n");
         chmod($root . '/.git', 0755);
 
         return $root;
