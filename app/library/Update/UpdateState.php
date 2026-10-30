@@ -266,10 +266,18 @@ final class UpdateState
      * Serahkan kepemilikan berkas/direktori status ke uid pemilik repo supaya
      * helper (yang berjalan sebagai user itu) bisa menulis. No-op bila dashboard
      * tidak berjalan sebagai root atau uid tidak diketahui.
+     *
+     * uid 0 SAH (UPDATE_ALLOW_ROOT — instalasi yang seluruhnya root): dashboard
+     * dan helper sama-sama root, jadi berkas sudah berada di tangan yang tepat
+     * dan tidak ada yang perlu diserahkan. `$repoUid` negatif (uid tak diketahui)
+     * juga diabaikan — jangan mengubah kepemilikan berdasarkan uid karangan.
      */
     private function handOverToHelper(int $repoUid, int $repoGid): void
     {
-        if ($repoUid <= 0 || !function_exists('posix_getuid') || posix_getuid() !== 0) {
+        if ($repoUid === 0) {
+            return;
+        }
+        if ($repoUid < 0 || !function_exists('posix_getuid') || posix_getuid() !== 0) {
             return;
         }
         $dir = rtrim($this->runDir, '/');

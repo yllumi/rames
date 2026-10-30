@@ -283,6 +283,11 @@ return [
     'update_image' => getenv('UPDATE_IMAGE') ?: '',                            // kosong = image container dashboard
     'update_check_file' => getenv('UPDATE_CHECK_FILE') ?: (base_path() . '/runtime/update/check.json'),
     'update_run_dir' => getenv('UPDATE_RUN_DIR') ?: (base_path() . '/runtime/logs/update'),
+    // Opt-in EKSPLISIT untuk instalasi yang seluruhnya dijalankan sebagai root
+    // (mis. server agent yang di-login sebagai root). Default false = repo milik
+    // root tetap ditolak; bila true, self-update hanya diloloskan untuk repo yang
+    // kepemilikannya KONSISTEN (direktori repo dan `.git` sama-sama milik root).
+    'update_allow_root' => (getenv('UPDATE_ALLOW_ROOT') ?: 'false') !== 'false',
 
     // ---------------------------------------------------------------------
     // Tarik image template (docs/SPECS.md §7.13 / halaman /nginx tab Template)

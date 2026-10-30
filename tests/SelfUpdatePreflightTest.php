@@ -9,7 +9,9 @@ use app\library\Update\UpdateService;
 use app\library\Update\UpdateState;
 use Closure;
 use PHPUnit\Framework\TestCase;
+use ReflectionProperty;
 use RuntimeException;
+use Webman\Config;
 
 /**
  * Preflight self-update untuk **pemilik direktori repo yang tidak bisa dipakai**
@@ -37,6 +39,9 @@ class SelfUpdatePreflightTest extends TestCase
 {
     private string $tmp;
 
+    /** @var array<string,mixed>|null state Config yang dipulihkan di tearDown */
+    private ?array $configState = null;
+
     protected function setUp(): void
     {
         $this->tmp = sys_get_temp_dir() . '/rames-preflight-' . bin2hex(random_bytes(4));
@@ -45,6 +50,14 @@ class SelfUpdatePreflightTest extends TestCase
 
     protected function tearDown(): void
     {
+        if ($this->configState !== null) {
+            foreach ($this->configState as $name => $value) {
+                $prop = new ReflectionProperty(Config::class, $name);
+                $prop->setAccessible(true);
+                $prop->setValue(null, $value);
+            }
+            $this->configState = null;
+        }
         GitTestFixture::removeDir($this->tmp);
     }
 
@@ -245,8 +258,209 @@ class SelfUpdatePreflightTest extends TestCase
     }
 
     // ==================================================================
-    // Helper
+    // UPDATE_ALLOW_ROOT: opt-in eksplisit untuk instalasi root
     // ==================================================================
+
+    /**
+     * Regresi A: default aman. Repo milik root tetap ditolak, dan pesannya
+     * memberi tahu cara meng-opt-in (plus `chown` untuk instalasi user-owned
+     * yang repo-nya tak sengaja jadi root).
+     */
+    public function testDefaultRootOwnedMessageExplainsUpdateAllowRootOptIn(): void
+    {
+        $root = $this->fixtureRepo();
+        $service = $this->service($root, static fn (string $path): array => [0, 0]);
+
+        $pf = $service->preflight();
+
+        $this->assertFalse($pf['ok'], 'tanpa opt-in, repo milik root tetap ditolak');
+        $message = $this->ownerError($pf['errors'], 'dimiliki root');
+        $this->assertStringContainsString('sudo chown -R ', $message);
+        $this->assertStringContainsString('UPDATE_ALLOW_ROOT=true', $message);
+        $this->assertStringContainsString('dashboard: .env', $message);
+        $this->assertStringContainsString('agent: secrets/agent.env', $message);
+        $this->assertStringContainsString('konsisten', $message);
+        $this->assertStringContainsString($root, $message);
+        $this->assertStringNotContainsString("\n", $message, 'pesan job tetap satu baris');
+    }
+
+    /**
+     * Opt-in + kepemilikan konsisten (repo dan `.git` sama-sama root): preflight
+     * lolos dan `start()` tidak melempar galat kepemilikan — helper berjalan
+     * `--user 0:0` dan run tercatat.
+     */
+    public function testAllowRootOptInPassesPreflightAndStartForConsistentRootRepo(): void
+    {
+        $root = $this->fixtureRepo();
+        $this->useUpdateConfig(['update_allow_root' => true]);
+        $runner = (new FakeCommandRunner())->reply('run', 'helper-container-id');
+        $service = $this->service(
+            $root,
+            // Seam: repo DAN `.git` milik root — uji bebas uid nyata mesin.
+            static fn (string $path): array => [0, 0],
+            new UpdateState($this->tmp . '/check.json', $this->tmp . '/runs'),
+            $runner
+        );
+
+        $pf = $service->preflight();
+        $this->assertTrue($pf['ok'], 'opt-in + konsisten harus lolos: ' . implode(' | ', $pf['errors']));
+        foreach ($pf['errors'] as $error) {
+            $this->assertStringNotContainsString('dimiliki root', $error, $error);
+            $this->assertStringNotContainsString('kepemilikan campuran', $error, $error);
+        }
+
+        $started = $service->start('update', 'tester');
+
+        $this->assertSame('update', $started['mode']);
+        $this->assertStringStartsWith(UpdateService::HELPER_PREFIX, $started['container']);
+        $this->assertStringContainsString('--user 0:0', implode(' ', $runner->calls), 'helper root memakai --user 0:0');
+        $this->assertFileExists($this->tmp . '/runs/run.json');
+        $this->assertNotSame([], glob($this->tmp . '/runs/*.plan.json') ?: [], 'plan ditulis sebelum spawn');
+    }
+
+    /**
+     * Opt-in TAPI `.git` bukan milik root = kepemilikan campuran ⇒ ditolak dengan
+     * perintah `chown -R 0:0` (bukan diloloskan diam-diam).
+     */
+    public function testAllowRootOptInRejectsMixedOwnershipWithChownRootHint(): void
+    {
+        $root = $this->fixtureRepo();
+        $this->useUpdateConfig(['update_allow_root' => true]);
+        $service = $this->service(
+            $root,
+            static fn (string $path): array => str_ends_with($path, '/.git') ? [1000, 1000] : [0, 0]
+        );
+
+        $pf = $service->preflight();
+
+        $this->assertFalse($pf['ok'], 'kepemilikan campuran tidak boleh diloloskan');
+        $message = $this->ownerError($pf['errors'], 'kepemilikan campuran');
+        $this->assertStringContainsString($root . '/.git', $message);
+        $this->assertStringContainsString('dimiliki uid 1000', $message);
+        $this->assertStringContainsString('sudo chown -R 0:0 ' . $root, $message);
+        $this->assertStringContainsString('UPDATE_ALLOW_ROOT', $message);
+        $this->assertStringNotContainsString("\n", $message);
+
+        // start() juga fail-closed dengan pesan yang sama, sebelum efek samping.
+        try {
+            $service->start('update', 'tester');
+            $this->fail('start() harus menolak kepemilikan campuran');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('kepemilikan campuran', $e->getMessage());
+        }
+        $this->assertSame([], glob($this->tmp . '/runs/*.plan.json') ?: []);
+    }
+
+    /**
+     * Sebab (a) — stat gagal — TIDAK berubah oleh opt-in: itu masalah bind-mount,
+     * bukan kepemilikan root.
+     */
+    public function testAllowRootOptInKeepsUnreadableStatMessageUnchanged(): void
+    {
+        $root = $this->fixtureRepo();
+        $statFail = UpdateService::repoOwnerUnusableError($root, false, false, false);
+        $statFailOptIn = UpdateService::repoOwnerUnusableError($root, false, false, true);
+
+        $this->assertNotNull($statFail);
+        $this->assertSame($statFail, $statFailOptIn, 'pesan stat gagal tidak boleh berubah');
+        $this->assertStringContainsString('fileowner()', (string) $statFailOptIn);
+        $this->assertStringContainsString('${PWD}:${PWD}', (string) $statFailOptIn);
+        $this->assertStringNotContainsString('UPDATE_ALLOW_ROOT', (string) $statFailOptIn);
+
+        $this->useUpdateConfig(['update_allow_root' => true]);
+        $pf = $this->service($root, static fn (string $path): array => [false, false])->preflight();
+        $this->assertFalse($pf['ok']);
+        $this->assertStringContainsString('tidak bisa dibaca', $this->ownerError($pf['errors'], 'tidak bisa dibaca'));
+    }
+
+    /**
+     * uid > 0: perilaku lama tidak berubah pada kedua nilai opt-in.
+     */
+    public function testNonRootOwnerBehavesTheSameForBothAllowRootValues(): void
+    {
+        $root = $this->fixtureRepo();
+        $this->assertNull(UpdateService::repoOwnerUnusableError($root, 1000, 1000, false));
+        $this->assertNull(UpdateService::repoOwnerUnusableError($root, 1000, 1000, true));
+        $this->assertNull(UpdateService::repoOwnerUnusableError($root, 33, 33, true, 0));
+
+        $this->useUpdateConfig(['update_allow_root' => true]);
+        // Direktori dibuka lebar supaya cek "bisa ditulis uid:gid helper" lolos
+        // untuk uid 33 (uji tidak bergantung uid pemilik nyata).
+        foreach ([$root, $root . '/.git', $root . '/.git/objects', $root . '/.git/refs'] as $dir) {
+            chmod($dir, 0777);
+        }
+        $pf = $this->service($root, static fn (string $path): array => [33, 33])->preflight();
+        foreach ($pf['errors'] as $error) {
+            $this->assertStringNotContainsString('dimiliki root', $error, $error);
+            $this->assertStringNotContainsString('kepemilikan campuran', $error, $error);
+        }
+    }
+
+    /**
+     * `.git` tidak ada ⇒ helper mengembalikan null (pemeriksaan "bukan repo Git"
+     * yang melaporkan sebabnya), bukan pesan kepemilikan campuran.
+     */
+    public function testAllowRootOptInWithoutGitDirDefersToNotARepoCheck(): void
+    {
+        $root = $this->tmp . '/tanpa-git';
+        mkdir($root, 0777, true);
+
+        $this->assertNull(UpdateService::repoOwnerUnusableError($root, 0, 0, true));
+
+        // `.git` boleh berupa FILE (worktree/submodule) — konsistensi tetap
+        // diperiksa (`.git` root = lolos, `.git` uid lain = campuran). Layout
+        // non-direktori tetap ditolak `gitDirOwnershipError()` di preflight.
+        $worktree = $this->tmp . '/worktree-root';
+        mkdir($worktree, 0777, true);
+        file_put_contents($worktree . '/.git', "gitdir: /srv/git/worktrees/x\n");
+        $this->assertNull(UpdateService::repoOwnerUnusableError($worktree, 0, 0, true, 0));
+        $this->assertStringContainsString(
+            'kepemilikan campuran',
+            (string) UpdateService::repoOwnerUnusableError($worktree, 0, 0, true, 1000)
+        );
+
+        $this->useUpdateConfig(['update_allow_root' => true]);
+        $pf = $this->service($root, static fn (string $path): array => [0, 0])->preflight();
+        $this->assertFalse($pf['ok']);
+        $this->assertCount(1, array_filter(
+            $pf['errors'],
+            static fn (string $e): bool => str_contains($e, 'bukan repo Git')
+        ), 'sebab yang dilaporkan: bukan repo Git: ' . implode(' | ', $pf['errors']));
+    }
+
+    /**
+     * Env `UPDATE_ALLOW_ROOT` dibaca dengan pola yang sama seperti knob update
+     * lain (`(getenv(...) ?: 'false') !== 'false'`) — diuji lewat config asli di
+     * subproses supaya nilai yang diuji benar-benar hasil parsing env.
+     */
+    public function testUpdateAllowRootEnvParsingMatchesOtherUpdateKnobs(): void
+    {
+        $path = $this->tmp . '/read-allow-root.php';
+        file_put_contents($path, <<<'PHP'
+<?php
+define('BASE_PATH', $argv[1]);
+require $argv[2];
+$config = require $argv[3];
+echo json_encode($config['update_allow_root'] ?? null);
+PHP);
+        $runner = new \app\library\Support\ProcessRunner();
+
+        $cases = ['true' => true, '1' => true, 'false' => false, '' => false];
+        foreach ($cases as $env => $expected) {
+            $result = $runner->run(
+                [PHP_BINARY, $path, dirname(__DIR__), dirname(__DIR__) . '/vendor/autoload.php', dirname(__DIR__) . '/config/deploy.php'],
+                $this->tmp,
+                30,
+                ['UPDATE_ALLOW_ROOT' => (string) $env]
+            );
+            $this->assertSame(0, $result['code'], 'subproses gagal: ' . $result['stderr']);
+            $this->assertSame(
+                $expected,
+                json_decode($result['stdout'], true),
+                'UPDATE_ALLOW_ROOT=' . var_export($env, true)
+            );
+        }
+    }
 
     /**
      * Fixture repo minimal (`.git` direktori + berkas helper + HEAD).
@@ -268,16 +482,56 @@ class SelfUpdatePreflightTest extends TestCase
     /**
      * @param Closure(string):array{0:int|false,1:int|false}|null $ownerStat
      */
-    private function service(string $root, ?Closure $ownerStat = null, ?UpdateState $state = null): UpdateService
-    {
+    private function service(
+        string $root,
+        ?Closure $ownerStat = null,
+        ?UpdateState $state = null,
+        ?\app\library\Support\ProcessRunner $runner = null,
+    ): UpdateService {
         return new UpdateService(
             new RepoInfo($root),
             $state ?? new UpdateState($this->tmp . '/check.json', $this->tmp . '/runs'),
             self::fakeDocker(),
-            null,
+            $runner,
             '',
             $ownerStat,
         );
+    }
+
+    /**
+     * Muat config temp (app.php + deploy.php) seperti runtime, supaya
+     * `config('deploy.update_allow_root')`/`update_run_dir` diuji lewat jalur
+     * produksi (bukan parameter uji). State Config dipulihkan di tearDown.
+     *
+     * @param array<string,mixed> $deploy
+     */
+    private function useUpdateConfig(array $deploy = []): void
+    {
+        $this->configState ??= $this->snapshotConfigState();
+        $dir = $this->tmp . '/config';
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+        file_put_contents($dir . '/app.php', "<?php return [];\n");
+        file_put_contents($dir . '/deploy.php', '<?php return ' . var_export(array_merge([
+            'update_enabled' => true,
+            'update_run_dir' => $this->tmp . '/runs',
+        ], $deploy), true) . ';' . PHP_EOL);
+        Config::clear();
+        Config::load($dir);
+    }
+
+    /** @return array<string,mixed> */
+    private function snapshotConfigState(): array
+    {
+        $state = [];
+        foreach (['config', 'configPath', 'loaded', 'flatCache'] as $name) {
+            $prop = new ReflectionProperty(Config::class, $name);
+            $prop->setAccessible(true);
+            $state[$name] = $prop->getValue();
+        }
+
+        return $state;
     }
 
     /**

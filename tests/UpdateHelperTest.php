@@ -104,6 +104,24 @@ class UpdateHelperTest extends TestCase
         $this->assertNotContains('--dns', $command);
     }
 
+    /**
+     * UPDATE_ALLOW_ROOT (opt-in instalasi root): helper berjalan `--user 0:0`.
+     * Tidak ada jalur yang memaksa uid > 0 saat uid sah = 0 (`--group-add` hanya
+     * untuk gid socket yang diketahui).
+     */
+    public function testBuildHelperCommandSupportsRootHelperUserWhenOptedIn(): void
+    {
+        $spec = $this->spec();
+        $spec['uid'] = 0;
+        $spec['gid'] = 0;
+
+        $command = UpdateService::buildHelperCommand($spec);
+
+        $userIndex = array_search('--user', $command, true);
+        $this->assertNotFalse($userIndex);
+        $this->assertSame('0:0', $command[$userIndex + 1], 'uid/gid helper dipakai apa adanya (0 sah)');
+    }
+
     public function testValuesAreNeverInterpolatedIntoTheShellString(): void
     {
         // Nilai "jahat" pada path & nama: harus tetap jadi SATU elemen argv dan

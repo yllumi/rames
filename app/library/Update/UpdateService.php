@@ -23,6 +23,11 @@ use RuntimeException;
  *    (`git pull` berikutnya dari SSH jadi gagal), dan
  *  - git sendiri menolak repo ber-owner lain saat berjalan sebagai root
  *    (`detected dubious ownership`).
+ *
+ * Instalasi yang SELURUHNYA dijalankan sebagai root (mis. server agent yang
+ * di-login sebagai root) adalah satu-satunya pengecualian, dan hanya lewat
+ * opt-in eksplisit `UPDATE_ALLOW_ROOT=true` — helper lalu berjalan `--user 0:0`
+ * setelah kepemilikan repo terbukti konsisten (repo + `.git` sama-sama root).
  * Akses Docker socket diberikan lewat `--group-add <gid socket>` (angka, sesuai
  * gid host yang terlihat dari dalam container).
  *
@@ -57,11 +62,13 @@ final class UpdateService implements UpdateRunner
 
     /**
      * @param string        $branchOverride branch paksa (UPDATE_BRANCH), '' = dari HEAD
-     * @param Closure|null  $ownerStat      seam uji: `(string $root): array{0:int|false,1:int|false}`
+     * @param Closure|null  $ownerStat      seam uji: `(string $path): array{0:int|false,1:int|false}`
      *                                      pengganti `fileowner()`/`filegroup()` direktori repo
      *                                      (default: stat sungguhan). Dipakai uji untuk
      *                                      mensimulasikan repo milik root / stat gagal tanpa
-     *                                      bergantung pada uid proses uji.
+     *                                      bergantung pada uid proses uji. Seam yang sama dipanggil
+     *                                      dengan `<root>/.git` saat memeriksa konsistensi
+     *                                      kepemilikan root (UPDATE_ALLOW_ROOT).
      */
     public function __construct(
         private readonly RepoInfo $repo,
@@ -220,17 +227,28 @@ final class UpdateService implements UpdateRunner
         //    = root), itu ditolak lebih dulu dengan pesan yang menyebut sebab +
         //    jalan keluar — dulu kasus ini hanya muncul sebagai kegagalan job
         //    ("Tidak bisa menentukan pemilik direktori repo (uid)") di `start()`.
+        //    uid 0 hanya diloloskan bila UPDATE_ALLOW_ROOT=true (opt-in eksplisit)
+        //    DAN kepemilikan konsisten (repo + `.git` sama-sama root).
+        $allowRoot = $this->allowRootEnabled();
         $owner = $this->repoOwnerStat();
         $repoUid = $owner['uid'] === false ? 0 : (int) $owner['uid'];
+        $repoGid = $owner['gid'] === false ? 0 : (int) $owner['gid'];
         $ownerError = $this->repo->isRepo()
-            ? self::repoOwnerUnusableError($this->repo->root(), $owner['uid'], $owner['gid'])
+            ? self::repoOwnerUnusableError(
+                $this->repo->root(),
+                $owner['uid'],
+                $owner['gid'],
+                $allowRoot,
+                $allowRoot && $repoUid === 0 ? $this->gitDirOwnerUid() : null
+            )
             : null;
         if ($ownerError !== null) {
             $errors[] = $ownerError;
         }
 
-        if ($this->repo->isRepo() && $ownerError === null) {
-            $repoGid = $owner['gid'] === false ? 0 : (int) $owner['gid'];
+        // Cek izin tulis hanya relevan untuk helper NON-root: uid 0 boleh menulis
+        // apa pun, jadi daftar "path yang tidak bisa ditulis" tidak bermakna.
+        if ($this->repo->isRepo() && $ownerError === null && $repoUid > 0) {
             $offenders = self::unwritableHelperPaths($this->repo->root(), $repoUid, $repoGid);
             if ($offenders !== []) {
                 $errors[] = 'Repo tidak bisa ditulis oleh helper update (uid:gid '
@@ -293,12 +311,22 @@ final class UpdateService implements UpdateRunner
 
         // Sabuk pengaman terakhir (preflight sudah menolak lebih dulu dengan pesan
         // yang sama): pastikan TIDAK ADA efek samping sebelum uid:gid helper jelas.
+        // uid 0 = root SAH hanya bila UPDATE_ALLOW_ROOT=true dan kepemilikan repo
+        // konsisten (repo + `.git` sama-sama root) — helper lalu berjalan `--user 0:0`.
+        $allowRoot = $this->allowRootEnabled();
         $owner = $this->repoOwnerStat();
         $uid = $owner['uid'] === false ? 0 : (int) $owner['uid'];
         $gid = $owner['gid'] === false ? 0 : (int) $owner['gid'];
-        if ($uid <= 0) {
+        $ownerError = self::repoOwnerUnusableError(
+            $this->repo->root(),
+            $owner['uid'],
+            $owner['gid'],
+            $allowRoot,
+            $allowRoot && $uid === 0 ? $this->gitDirOwnerUid() : null
+        );
+        if ($uid <= 0 && ($ownerError !== null || !$allowRoot)) {
             throw new RuntimeException(
-                self::repoOwnerUnusableError($this->repo->root(), $owner['uid'], $owner['gid'])
+                $ownerError
                     ?? 'Tidak bisa menentukan pemilik direktori repo ' . $this->repo->root()
                         . ' (uid:gid ' . self::ownerLabel($owner['uid'], $owner['gid'])
                         . ') — update dibatalkan agar kepemilikan berkas tidak rusak.'
@@ -730,6 +758,33 @@ final class UpdateService implements UpdateRunner
     }
 
     /**
+     * `deploy.update_allow_root` (UPDATE_ALLOW_ROOT) — opt-in eksplisit untuk
+     * instalasi yang seluruhnya dijalankan sebagai root. Default false: repo
+     * milik root tetap ditolak seperti sebelumnya.
+     */
+    private function allowRootEnabled(): bool
+    {
+        return (bool) config('deploy.update_allow_root', false);
+    }
+
+    /**
+     * Pemilik `<root>/.git` untuk pemeriksaan konsistensi kepemilikan root
+     * (UPDATE_ALLOW_ROOT). Melewati seam `$ownerStat` bila ada (uji tidak boleh
+     * bergantung uid nyata mesin), selain itu `fileowner()` sungguhan.
+     */
+    private function gitDirOwnerUid(): int|false
+    {
+        $path = rtrim($this->repo->root(), '/') . '/.git';
+        if ($this->ownerStat !== null) {
+            $stat = ($this->ownerStat)($path);
+
+            return $stat[0] ?? false;
+        }
+
+        return @fileowner($path);
+    }
+
+    /**
      * GID socket Docker (agar helper bisa memakai `docker`/`docker compose`
      * dengan user non-root).
      */
@@ -813,24 +868,39 @@ final class UpdateService implements UpdateRunner
      * (stat gagal atau pemiliknya root/uid 0) — `null` bila kepemilikannya wajar
      * (uid > 0, baik tertulis maupun tidak).
      *
-     * Dua sebab yang dulu memunculkan pesan yang sama di `start()`
+     * Tiga sebab yang dulu memunculkan pesan yang sama di `start()`
      * ("Tidak bisa menentukan pemilik direktori repo (uid)") dibedakan di sini:
      *
      *  a. `fileowner()` gagal ⇒ direktori repo tidak terbaca dari dalam container
      *     (path tidak ada / bind-mount `${PWD}:${PWD}` hilang).
-     *  b. pemilik = root (uid 0) ⇒ helper SENGAJA tidak dijalankan sebagai root
-     *     (berkas hasil `git pull`/build akan jadi milik root dan repo milik user
-     *     host rusak), jadi checkout hasil `sudo git clone`/`sudo ./agent/install.sh`
-     *     tidak didukung — pesannya menyertakan perintah `chown` konkret.
+     *  b. pemilik = root (uid 0) dan dukungan root TIDAK di-opt-in ⇒ helper
+     *     SENGAJA tidak dijalankan sebagai root (berkas hasil `git pull`/build akan
+     *     jadi milik root dan repo milik user host rusak), jadi checkout hasil
+     *     `sudo git clone`/`sudo ./agent/install.sh` tidak didukung — pesannya
+     *     menyertakan perintah `chown` konkret + cara meng-opt-in root.
+     *  c. pemilik = root dan `UPDATE_ALLOW_ROOT=true` ⇒ diloloskan HANYA bila
+     *     kepemilikan konsisten (`.git` ada dan juga milik root). `.git` bukan
+     *     milik root = kepemilikan campuran ⇒ ditolak dengan jalan keluar
+     *     `sudo chown -R 0:0 <root>` (atau matikan opt-in).
      *
-     * Aturan keamanannya **tidak dilonggarkan**: uid 0 tetap ditolak.
+     * Aturan default **tidak dilonggarkan**: tanpa opt-in eksplisit, uid 0 tetap
+     * ditolak. Statik-murni: tidak membaca `config()` — flag datang sebagai
+     * parameter. `$gitUid` adalah seam uji (pemilik `.git`); `null` = `fileowner()`
+     * sungguhan, sehingga uji tidak bergantung pada uid nyata mesin.
      *
-     * @param int|false $uid hasil `fileowner()` direktori repo (false = stat gagal)
-     * @param int|false $gid hasil `filegroup()` direktori repo
+     * @param int|false      $uid      hasil `fileowner()` direktori repo (false = stat gagal)
+     * @param int|false      $gid      hasil `filegroup()` direktori repo
+     * @param bool           $allowRoot UPDATE_ALLOW_ROOT (opt-in dukungan instalasi root)
+     * @param int|false|null $gitUid   seam uji pemilik `<root>/.git` (null = stat sungguhan)
      * @return string|null pesan galat satu baris (path + sebab + jalan keluar)
      */
-    public static function repoOwnerUnusableError(string $root, int|false $uid, int|false $gid): ?string
-    {
+    public static function repoOwnerUnusableError(
+        string $root,
+        int|false $uid,
+        int|false $gid,
+        bool $allowRoot = false,
+        int|false|null $gitUid = null,
+    ): ?string {
         $root = rtrim($root, '/');
         if ($root === '') {
             $root = '/';
@@ -847,16 +917,39 @@ final class UpdateService implements UpdateRunner
             return null;
         }
 
-        $fix = self::ownershipFixHint($root);
+        if (!$allowRoot) {
+            $fix = self::ownershipFixHint($root);
 
-        return 'Direktori repo dimiliki root (uid:gid ' . self::ownerLabel($uid, $gid) . '): ' . $root
-            . ' — self-update tidak dijalankan karena helper update berjalan `--user <uid>:<gid>` sebagai pemilik direktori repo; '
-            . 'helper sebagai root akan meninggalkan berkas hasil `git pull`/build milik root di repo milik user host '
-            . '(pull berikutnya dari SSH user itu gagal) — jadi checkout milik root memang tidak didukung. '
-            . 'Perbaiki di host: sudo chown -R ' . $fix['owner'] . ' ' . $root
-            . ($fix['concrete'] ? '' : ' (<uid>:<gid> = pemilik direktori induk repo, biasanya user yang menjalankan instalasi)')
-            . ', lalu jalankan ulang update. Alternatif aman: ulangi instalasi sebagai user itu — sudo -u ' . $fix['user']
-            . ' ./agent/install.sh … — jangan menjalankan helper sebagai root.';
+            return 'Direktori repo dimiliki root (uid:gid ' . self::ownerLabel($uid, $gid) . '): ' . $root
+                . ' — self-update tidak dijalankan karena helper update berjalan `--user <uid>:<gid>` sebagai pemilik direktori repo; '
+                . 'helper sebagai root akan meninggalkan berkas hasil `git pull`/build milik root di repo milik user host '
+                . '(pull berikutnya dari SSH user itu gagal) — jadi checkout milik root memang tidak didukung. '
+                . 'Perbaiki di host: sudo chown -R ' . $fix['owner'] . ' ' . $root
+                . ($fix['concrete'] ? '' : ' (<uid>:<gid> = pemilik direktori induk repo, biasanya user yang menjalankan instalasi)')
+                . ', lalu jalankan ulang update. Alternatif aman: ulangi instalasi sebagai user itu — sudo -u ' . $fix['user']
+                . ' ./agent/install.sh … — jangan menjalankan helper sebagai root. '
+                . 'Bila seluruh instalasi ini memang dijalankan sebagai root, set UPDATE_ALLOW_ROOT=true di environment '
+                . '(dashboard: .env, agent: secrets/agent.env) lalu jalankan ulang update — dukungan root hanya aktif untuk '
+                . 'repo yang kepemilikannya konsisten (direktori repo dan .git sama-sama root).';
+        }
+
+        // Opt-in root: loloskan hanya bila `.git` juga milik root (kepemilikan
+        // konsisten). `.git` tidak ada = bukan repo Git ⇒ biarkan pemeriksaan
+        // "bukan repo Git"/layout yang melaporkan sebabnya.
+        $gitDir = $root . '/.git';
+        if (!is_dir($gitDir) && !is_file($gitDir)) {
+            return null;
+        }
+
+        $gitOwnerUid = $gitUid ?? @fileowner($gitDir);
+        if ($gitOwnerUid === false || (int) $gitOwnerUid !== 0) {
+            return 'Repo milik root tetapi ' . $gitDir . ' dimiliki uid '
+                . ($gitOwnerUid === false ? '?' : (string) (int) $gitOwnerUid)
+                . ' (kepemilikan campuran) — self-update dibatalkan; jalankan sudo chown -R 0:0 ' . $root
+                . ' di host, atau matikan UPDATE_ALLOW_ROOT.';
+        }
+
+        return null;
     }
 
     /**

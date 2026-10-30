@@ -118,6 +118,44 @@ class UpdateStateTest extends TestCase
         $this->assertTrue($this->state->isRunning($run));
     }
 
+    /**
+     * UPDATE_ALLOW_ROOT: helper berjalan sebagai `0:0`. uid 0 adalah nilai SAH
+     * saat opt-in — `prepareRunDir()`/`startRun()`/`finalize()` tidak boleh
+     * menolaknya, dan berkas status tetap tertulis (hand-over kepemilikan hanya
+     * no-op karena dashboard root sudah pemiliknya).
+     */
+    public function testRootHelperUidIsAcceptedForRunStateWhenOptedIn(): void
+    {
+        $this->state->prepareRunDir(0, 0);
+        $this->assertDirectoryExists($this->runDir);
+
+        $this->state->startRun([
+            'id' => '20260923-120000-root01',
+            'mode' => 'update',
+            'stage' => 'starting',
+            'message' => 'Menjalankan helper update…',
+            'result' => null,
+            'error' => null,
+            'started_at' => '2026-09-23T12:00:00+07:00',
+            'finished_at' => null,
+            'old_sha' => 'aaaa',
+            'target_sha' => null,
+            'actor' => 'admin',
+            'log' => '20260923-120000-root01.log',
+            'health_url' => null,
+            'rollback_from' => 'aaaa',
+        ], 0, 0);
+
+        $run = $this->state->run();
+        $this->assertSame('20260923-120000-root01', $run['id']);
+        $this->assertFileExists($this->runDir . '/' . UpdateState::RUN_FILE);
+
+        $this->state->finalize('success', 'Selesai', 0, 0);
+        $finished = $this->state->run();
+        $this->assertSame('success', $finished['result']);
+        $this->assertNotNull($finished['finished_at']);
+    }
+
     public function testRunningDetection(): void
     {
         $this->assertFalse($this->state->isRunning($this->state->run()));
