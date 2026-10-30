@@ -210,6 +210,8 @@ Panel di **Config → tab Update Rames** (`/nginx`), **admin-only** (non-admin 4
 
 UI memantau status + ekor log via polling; run yang ditinggalkan helper ditutup `error`. Cek pembaruan memakai `git ls-remote` (tidak menulis `.git`) dan cache; Cek Pembaruan untuk semua user, update/rollback admin-only. Update ditolak bila ada perubahan belum di-commit; rollback manual hanya tepat setelah update sukses. `GET /healthz` publik tanpa session, hanya `{ok, service, sha, branch, time}`. Self-update **agen** dari `/servers` (admin-only 404) memakai gerbang versi yang sama; hanya `RAMES_MODE=agent` yang boleh menerima op `self_update`.
 
+**Instalasi yang seluruhnya dijalankan sebagai root**: default **menolak** repo milik root, karena helper update berjalan `--user <uid>:<gid>` sebagai pemilik direktori repo. Opt-in eksplisit `UPDATE_ALLOW_ROOT=true` (dashboard `.env`, agent `secrets/agent.env`; env dibaca saat container dibuat ⇒ **recreate**) mengizinkan helper berjalan `--user 0:0`, tetapi **hanya** bila direktori repo **dan** `.git` sama-sama milik root — kepemilikan campuran (`.git` uid lain) tetap ditolak dengan jalan keluar `sudo chown -R 0:0 <root>` atau mematikan opt-in. `preflight()` dan `start()` sama-sama fail-closed **sebelum** efek samping; tidak ada jalur yang memaksa uid > 0.
+
 ### 7.9 File Manager Container
 
 Tujuan: jelajah, unggah multi-file, unduh, edit teks, buat file/folder, rename, pindah, hapus, ekstrak arsip — pada **container app yang berjalan**, bukan volume Docker langsung. Ability `files` = **operator+** (penolakan 404); tombol hanya untuk container `running`, endpoint tetap menolak (409 bila berhenti).
