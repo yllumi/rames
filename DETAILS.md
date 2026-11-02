@@ -487,7 +487,7 @@ app/
 │   ├── Git/GitService.php
 │   ├── Domain/                  # ParkedDomainValidator, ParkedDomainContent, ParkedDomainManager
 │   ├── Nginx/                   # NginxConfigGenerator, ParkedNginxConfig, NginxStatusReader, NginxReloader
-│   ├── SSL/                     # SslIssuer, SslDomainRows, ParkedSslIssuer, ParkedSslEnabler
+│   ├── SSL/                     # SslIssuer, SslChallengeVhost, SslDomainRows, ParkedSslIssuer, ParkedSslEnabler
 │   ├── Storage/                 # SqliteDatabase, SqliteStore, SchemaMigrations, JsonImporter, DbBackup,
 │   │                            #   JsonStore (cache runtime, flock), AppStore, ParkedDomainStore, BrandingStore
 │   └── Support/ProcessRunner.php

@@ -166,6 +166,11 @@ class SslIssuer
         // Encrypt): kelas kegagalan `403` — webroot tidak bisa ditembus/dibaca
         // user non-root milik nginx host — sudah bisa dipastikan di sini.
         $this->assertChallengePathServable($domain);
+        // Preflight `404`: webroot yang ditulis certbot (dari DALAM container)
+        // harus benar-benar terlihat di sisi HOST — nginx host-lah yang
+        // menyajikan berkas challenge. Best-effort: hanya memblokir bila Docker
+        // membuktikan berkas probe TIDAK ada di host.
+        $this->assertChallengeVisibleOnHost();
         $command = $this->buildCommand($domain);
         $result = $this->runner->run($command, null, $this->timeout);
 
@@ -227,7 +232,13 @@ class SslIssuer
      */
     private function issueFailureText(array $result): string
     {
+        // `403` menang bila keduanya cocok: izin webroot adalah sebab yang lebih
+        // spesifik (berkas ADA tetapi ditolak), `404` bisa jadi akibat dari setup
+        // yang lebih luas.
         $hint = $this->challengeForbiddenHint($result);
+        if ($hint === '') {
+            $hint = $this->challengeMissingHint($result);
+        }
         if ($hint === '') {
             return self::failureText($result);
         }
@@ -268,6 +279,34 @@ class SslIssuer
             . 'di DUA sisi: certbot menulis berkas dari DALAM container, nginx host menyajikannya dari '
             . 'luar container (path di luar repo butuh bind mount tambahan; `${PWD}:${PWD}` hanya menutup '
             . 'path di dalam repo).';
+    }
+
+    /**
+     * Paragraf hint tindakan untuk kegagalan HTTP-01 ber-`404`: certbot berhasil
+     * menulis berkas challenge, tetapi nginx host tidak menemukannya — artinya
+     * `root` blok acme pada vhost yang **sedang dimuat** menunjuk webroot lain
+     * (vhost basi), atau webroot itu tidak terlihat dari sisi host.
+     *
+     * Heuristik pemantik (sengaja konservatif): keluaran certbot memuat
+     * `Invalid response` **dan** token `404`. `Timeout during connect`,
+     * `DNS problem`, dan `Connection refused` tidak memicunya.
+     *
+     * @param array{code:int,stdout:string,stderr:string,timedOut?:bool} $result
+     */
+    private function challengeMissingHint(array $result): string
+    {
+        $text = (string) ($result['stdout'] ?? '') . "\n" . (string) ($result['stderr'] ?? '');
+        if (preg_match('/invalid\s+response/i', $text) !== 1 || preg_match('/\b404\b/', $text) !== 1) {
+            return '';
+        }
+
+        return 'Hint 404: berkas challenge TIDAK DITEMUKAN nginx host — certbot menulisnya ke '
+            . $this->challengeDir() . ', tetapi vhost yang dimuat memakai root lain (basi) atau webroot '
+            . 'tidak terlihat di host. Kerjakan: (1) Deploy Ulang / `nginx_write` agar root acme menunjuk '
+            . 'webroot sekarang; (2) webroot wajib terlihat di HOST (bind mount; `${PWD}:${PWD}` hanya path '
+            . 'repo); (3) `curl -o /dev/null -w \'%{http_code}\' '
+            . 'http://<domain>/.well-known/acme-challenge/` → 403 = direktori ada (root salah), '
+            . '404 = root tidak ada; (4) pastikan DNS A menunjuk server ini, tanpa vhost lain/Cloudflare menang.';
     }
 
     /**
@@ -422,6 +461,110 @@ class SslIssuer
         if ($offenders !== []) {
             throw new RuntimeException($this->webrootNotServableMessage($domain, $offenders));
         }
+    }
+
+    /**
+     * Preflight `404` HTTP-01: buktikan direktori challenge benar-benar terlihat
+     * di sisi **HOST**.
+     *
+     * Certbot menulis berkas challenge dari DALAM container dashboard, sedangkan
+     * yang menyajikannya adalah Nginx **host** (lewat `root` blok
+     * `location ^~ /.well-known/acme-challenge/`). Bila webroot hanya ada di
+     * filesystem container (path tidak di-bind ke host dengan path yang sama),
+     * berkasnya ada untuk certbot tetapi tidak ada untuk nginx host ⇒ Let's
+     * Encrypt menerima `Invalid response … 404`; sementara preflight izin di atas
+     * lolos dan direktori `/.well-known/acme-challenge/` dijawab `403` (direktori
+     * ada, isinya tidak).
+     *
+     * Bukti diambil dengan helper container sekali pakai yang me-mount root host
+     * read-only (`-v /:/host:ro`), lalu **shell busybox** mencetak penanda eksplisit
+     * ke stdout (`PRESENT`/`MISSING`). Exit code helper sengaja TIDAK dipakai
+     * sebagai bukti: pada host SELinux enforcing, atau bila
+     * `NGINX_RELOAD_IMAGE` diganti image yang entrypoint-nya tidak meneruskan
+     * argumen, `test -f` bisa keluar `1` walau webroot sehat — menjadikannya
+     * bukti definitif akan memblokir SEMUA penerbitan HTTP-01. Hanya penanda
+     * yang dicetak skrip kita sendiri yang dianggap bukti:
+     * - stdout memuat `MISSING` ⇒ **definitif** tidak terlihat → RuntimeException
+     *   (jangan buang jatah rate limit Let's Encrypt);
+     * - stdout memuat `PRESENT` ⇒ lolos;
+     * - selain itu (tanpa penanda: image/entrypoint bermasalah, Docker/socket tak
+     *   tersedia, exit code apa pun) ⇒ dilewati: preflight ini best-effort,
+     *   tidak boleh memblokir jalur yang sehat.
+     *
+     * Helper dijalankan dalam `try/catch (\Throwable)`: galat spawn/proc_open
+     * juga best-effort (bukan galat penerbitan), jadi tidak boleh menghentikan
+     * jalur SSL dengan pesan docker yang tidak tersanitasi.
+     *
+     * Mode DNS-01 tidak menyajikan berkas challenge lewat nginx host ⇒ dilewati.
+     * Berkas probe selalu dihapus (termasuk saat melempar galat).
+     *
+     * @throws RuntimeException bila helper membuktikan webroot tidak terlihat di host
+     */
+    private function assertChallengeVisibleOnHost(): void
+    {
+        if ($this->challenge === 'dns-cloudflare') {
+            return;
+        }
+
+        $image = trim((string) config('deploy.nginx_reload_image', 'alpine'));
+        if ($image === '') {
+            return;
+        }
+
+        $challengeDir = $this->challengeDir();
+        $probe = $challengeDir . '/rames-preflight-' . bin2hex(random_bytes(8));
+        if (@file_put_contents($probe, 'ok') === false) {
+            return; // probe tidak bisa ditulis ⇒ lewati (jangan memblokir)
+        }
+
+        try {
+            try {
+                $result = $this->runner->run(
+                    [
+                        'docker', 'run', '--rm', '-v', '/:/host:ro', $image,
+                        'sh', '-c',
+                        'if [ -f "$1" ]; then echo PRESENT; else echo MISSING; fi',
+                        'sh', '/host' . $probe,
+                    ],
+                    null,
+                    30
+                );
+            } catch (\Throwable) {
+                return; // galat spawn/docker ⇒ preflight best-effort: lewati
+            }
+        } finally {
+            @unlink($probe);
+        }
+
+        if (!self::probeSaysMissing($result)) {
+            return;
+        }
+
+        throw new RuntimeException(
+            'Gagal menerbitkan sertifikat SSL: webroot HTTP-01 tidak terlihat di sisi HOST — webroot '
+            . $this->webroot . ' (direktori challenge ' . $challengeDir . ') ada di filesystem container ini '
+            . '(di situlah certbot menulis berkas challenge), tetapi Nginx host menyajikannya dari sisi HOST '
+            . 'dan berkas probe uji tidak ditemukan di sana, sehingga permintaan berkas challenge akan dijawab '
+            . '404. Jalan keluar: (1) `SSL_WEBROOT` wajib berada di path yang di-bind dengan path SAMA ke host '
+            . '— `${PWD}:${PWD}` hanya menutup path di dalam repo, path lain butuh bind mount tambahan di '
+            . 'compose dashboard; (2) setelah webroot dibetulkan, tulis ulang vhost (Deploy Ulang) lalu '
+            . 'terbitkan SSL lagi.'
+        );
+    }
+
+    /**
+     * Apakah helper preflight **membuktikan** berkas probe tidak ada di host?
+     *
+     * Bukti = penanda `MISSING` yang dicetak skrip kita sendiri di dalam
+     * container, bukan exit code: `test -f` bisa keluar `1` karena sebab lain
+     * (SELinux, entrypoint image yang menelan argumen) walau webroot sehat.
+     * Tanpa penanda ⇒ tak konklusif ⇒ jangan memblokir (best-effort).
+     *
+     * @param array{code?:int,stdout?:string,stderr?:string,timedOut?:bool} $result
+     */
+    private static function probeSaysMissing(array $result): bool
+    {
+        return str_contains((string) ($result['stdout'] ?? ''), 'MISSING');
     }
 
     /**

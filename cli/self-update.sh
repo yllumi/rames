@@ -67,6 +67,7 @@ LOG=$(cfg log_file)
 RUN_ID=$(cfg id)
 NETWORK=$(cfg network -)
 DNS=$(cfg dns -)
+IMAGE=$(cfg image -)
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 
@@ -291,7 +292,24 @@ case "$CHANGED" in
 esac
 
 if [ "$NEED_COMPOSER" -eq 1 ]; then
-  rep composer running "Memasang dependensi Composer…"
+  # `vendor/` bisa saja dibuat bootstrap container dashboard yang berjalan sebagai
+  # root, sedangkan helper berjalan `--user <pemilik repo>` — composer lalu gagal
+  # menghapus/menimpa berkas root ("Could not delete .../vendor/..."). Perbaiki
+  # kepemilikan lewat container root berbasis image dashboard yang sama (tanpa
+  # network: chown tidak butuh jaringan), lalu lanjutkan composer sebagai helper.
+  if [ "$(cfg vendor_owner_repair false)" = "true" ] && [ -n "$IMAGE" ] && [ "$IMAGE" != "-" ]; then
+    rep composer running "Memperbaiki kepemilikan vendor…"
+    OWNER_UID=$(id -u)
+    OWNER_GID=$(id -g)
+    log "vendor tidak bisa ditulis uid:gid $OWNER_UID:$OWNER_GID — chown -R lewat container root ($IMAGE)"
+    if docker run --rm --user 0:0 -v "$ROOT:$ROOT" -w "$ROOT" "$IMAGE" \
+        chown -R "$OWNER_UID:$OWNER_GID" vendor >>"$LOG" 2>&1; then
+      log "kepemilikan vendor diperbaiki ke $OWNER_UID:$OWNER_GID"
+    else
+      log "PERINGATAN: gagal memperbaiki kepemilikan vendor (lanjut; composer akan melaporkan galatnya)"
+    fi
+    rep composer running "Memasang dependensi Composer…"
+  fi
   log "composer install dijalankan"
   if ! composer install --no-dev --optimize-autoloader --no-interaction --no-progress >>"$LOG" 2>&1; then
     log "composer install GAGAL"

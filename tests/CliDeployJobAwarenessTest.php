@@ -416,6 +416,56 @@ class CliDeployJobAwarenessTest extends TestCase
         $this->assertSame([], $this->notes(), 'certbot tidak boleh sampai berjalan');
     }
 
+    /**
+     * `ssl_issue` untuk app ber-host-port: config Nginx ditulis ulang + reload
+     * Nginx harus terjadi SEBELUM certbot (blok `/.well-known/acme-challenge/`
+     * wajib dimuat dari webroot sekarang — vhost basi ⇒ `Invalid response … 404`).
+     *
+     * Di uji, image helper reload sengaja tidak ada (`NGINX_RELOAD_IMAGE`),
+     * sehingga reload pasti gagal: job WAJIB berhenti di pesan fatal itu dan
+     * jejak deployer membuktikan vhost sudah ditulis lebih dulu (certbot tidak
+     * pernah dipanggil, jadi tidak ada jatah rate limit Let's Encrypt yang
+     * terbuang untuk blok acme yang salah).
+     */
+    public function testSslIssueWritesVhostAndReloadsBeforeCertbot(): void
+    {
+        // Fixture terpisah: app dengan `containers[].ports` (host port 18080) —
+        // hanya app seperti ini yang punya vhost/target `proxy_pass`.
+        $app = $this->storedApp();
+        $app['subdomain'] = 'ssl-job.example.com';
+        $app['containers'] = [[
+            'service_name' => 'web',
+            'container_name' => 'jobapp-web-1',
+            'image' => 'nginx:alpine',
+            'internal_port' => 80,
+            'host_port' => 18080,
+            'status' => 'running',
+            'ports' => [['host' => 18080, 'container' => 80]],
+        ]];
+        SqliteFixture::apps($this->db(), [$app]);
+
+        $record = $this->jobStore()->create('ssl_issue', self::APP_ID, [
+            'app_id' => self::APP_ID,
+            'domain' => 'ssl-job.example.com',
+        ]);
+
+        $result = $this->worker('ssl_issue', self::APP_ID, '', ['RAMES_JOB_ID' => (string) $record['id']]);
+
+        $job = (array) $this->jobStore()->find((string) $record['id']);
+        $this->assertSame(1, $result['code'], 'stderr: ' . $result['stderr']);
+        $this->assertSame('error', (string) $job['status']);
+        $this->assertStringContainsString(
+            'Reload Nginx sebelum penerbitan SSL GAGAL',
+            (string) $job['error'],
+            'reload gagal pada jalur SSL fatal (bukan best-effort)'
+        );
+        $this->assertSame(
+            ['nginx-write'],
+            $this->notes(),
+            'config Nginx ditulis di server ini SEBELUM certbot (jejak vhost tunggal, tanpa certbot)'
+        );
+    }
+
     // ==================================================================
     // Helper
     // ==================================================================

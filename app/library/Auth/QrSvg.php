@@ -15,14 +15,30 @@ use BaconQrCode\Writer;
  * data URI/base64) sehingga tidak butuh berkas sementara maupun GD/Imagick.
  * Statik murni tanpa state; kegagalan library dibiarkan melempar exception
  * (pemanggil memperlakukannya sebagai kegagalan setup, bukan halaman rusak).
+ *
+ * **Degradasi aman:** bila paket Composer belum terpasang (mis. update lama
+ * tanpa `composer install`), `render()` mengembalikan string kosong dan view
+ * menampilkan kunci manual — 2FA tetap bisa diaktifkan, bukan HTTP 500.
  */
 final class QrSvg
 {
     /**
-     * Render teks menjadi dokumen SVG.
+     * Apakah pustaka QR tersedia (paket Composer terpasang).
+     */
+    public static function isAvailable(): bool
+    {
+        return class_exists(Writer::class);
+    }
+
+    /**
+     * Render teks menjadi dokumen SVG (string kosong bila pustaka tidak ada).
      */
     public static function render(string $text, int $size = 320): string
     {
+        if (!self::isAvailable()) {
+            return '';
+        }
+
         if ($size < 64) {
             $size = 320;
         }

@@ -60,6 +60,7 @@ use app\library\Billing\BillingGate;
 use app\library\Billing\InsufficientCredits;
 use app\library\Deploy\DeployerFactory;
 use app\library\Nginx\NginxReloader;
+use app\library\SSL\SslChallengeVhost;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use app\library\Support\ProcessRunner;
@@ -407,6 +408,13 @@ if (in_array($mode, ['nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue',
                     throw new RuntimeException("Domain {$jobDomain} bukan domain publik — SSL otomatis tidak didukung (mis. TLD .local).");
                 }
                 $logOp('issue', "Menerbitkan sertifikat untuk {$jobDomain} ...");
+                // Vhost ditulis ulang + Nginx di-reload SEBELUM certbot: blok
+                // `location ^~ /.well-known/acme-challenge/` harus dimuat dari
+                // webroot yang dipakai certbot SEKARANG. Vhost basi membuat
+                // nginx menyajikan path itu dari `root` lama ⇒ Let's Encrypt
+                // menerima 404 walau berkasnya ada. Kegagalan reload di sini
+                // sengaja FATAL (beda dengan mode `nginx_write`).
+                (new SslChallengeVhost())->ensure($app, $deployer, $logOp);
                 $issuer->issue($jobDomain);
                 $expires = $issuer->certExpiry($jobDomain);
                 $store->update($appId, function (array &$s) use ($slot, $expires): void {

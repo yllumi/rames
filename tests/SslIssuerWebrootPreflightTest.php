@@ -40,6 +40,7 @@ class SslIssuerWebrootPreflightTest extends TestCase
     private const MARKER = "\n…(keluaran certbot dipotong)";
     private const HINT_PREFIX = 'Hint 403: permintaan berkas challenge DITOLAK SAAT DISAJIKAN';
     private const HINT_TAIL = 'path di dalam repo).';
+    private const HINT404_PREFIX = 'Hint 404: berkas challenge TIDAK DITEMUKAN nginx host';
     private const FAIL_PREFIX = 'Gagal menerbitkan sertifikat SSL untuk ' . self::DOMAIN . ': ';
 
     private string $tmp;
@@ -287,7 +288,9 @@ class SslIssuerWebrootPreflightTest extends TestCase
         $this->assertStringNotContainsString('--webroot', $calls[0]);
     }
 
-    /** `prepareDirs()` membuat direktori challenge 0755 (traversable Nginx non-root). */
+    /**
+     * `prepareDirs()` membuat direktori challenge 0755 (traversable Nginx non-root).
+     */
     public function testPrepareDirsMembuatDirChallenge0755(): void
     {
         $this->assertDirectoryDoesNotExist($this->webroot);
@@ -299,6 +302,142 @@ class SslIssuerWebrootPreflightTest extends TestCase
         $this->assertDirectoryExists($challenge);
         $this->assertSame(0755, fileperms($challenge) & 0777, 'challenge dir wajib traversable non-root');
         $this->assertDirectoryExists($this->webroot . '/.well-known');
+    }
+
+    // ------------------------------------------------- preflight host (404)
+    /**
+     * Probe host dijalankan lewat helper container sekali pakai (`-v /:/host:ro`
+     * lalu shell busybox yang mencetak `PRESENT`/`MISSING`) SETELAH preflight
+     * izin lolos dan SEBELUM certbot. Bukti = **penanda stdout**, bukan exit code.
+     */
+    public function testPreflightHostMenjalankanProbeSebelumCertbot(): void
+    {
+        [$msg, $runner] = $this->issueFailsWithProbe($this->probePresent());
+
+        $this->assertCount(1, $runner->probes, 'probe host dijalankan tepat sekali');
+        $this->assertStringContainsString('docker run --rm -v /:/host:ro', $runner->probes[0]);
+        $this->assertStringContainsString(
+            'echo PRESENT; else echo MISSING',
+            $runner->probes[0],
+            'bukti diambil dari penanda yang dicetak skrip kita sendiri, bukan exit code helper'
+        );
+        $this->assertStringContainsString(
+            'sh /host' . $this->webroot . '/.well-known/acme-challenge/rames-preflight-',
+            $runner->probes[0],
+            'probe memeriksa jalur challenge di sisi HOST yang sama'
+        );
+        $this->assertCount(1, $runner->calls, 'probe lolos ⇒ certbot dipanggil sekali');
+        $this->assertStringStartsWith(self::FAIL_PREFIX, $msg, 'kegagalan yang dilaporkan adalah kegagalan certbot');
+    }
+
+    /** stdout memuat `MISSING` ⇒ definitif tidak terlihat: jangan buang rate limit LE. */
+    public function testPreflightHostMelemparSaatProbeMelaporkanMissing(): void
+    {
+        [$msg, $runner] = $this->issueFailsWithProbe($this->probeMissing());
+
+        $this->assertStringContainsString('tidak terlihat di sisi HOST', $msg);
+        $this->assertStringContainsString($this->webroot . '/.well-known/acme-challenge', $msg);
+        $this->assertStringContainsString('SSL_WEBROOT', $msg, 'jalan keluar operator disebut');
+        $this->assertStringContainsString('bind mount', $msg);
+        $this->assertSame([], $runner->calls, 'webroot tak terlihat ⇒ certbot TIDAK boleh dipanggil');
+    }
+
+    /** stdout `PRESENT` ⇒ lolos (certbot tetap dipanggil). */
+    public function testPreflightHostLolosSaatProbeMelaporkanPresent(): void
+    {
+        [$msg, $runner] = $this->issueFailsWithProbe($this->probePresent());
+
+        $this->assertCount(1, $runner->probes);
+        $this->assertCount(1, $runner->calls);
+        $this->assertStringStartsWith(self::FAIL_PREFIX, $msg);
+        $this->assertStringNotContainsString('tidak terlihat di sisi HOST', $msg);
+    }
+
+    /**
+     * Exit code `1` TANPA penanda bukan bukti apa pun: SELinux enforcing atau
+     * entrypoint image yang menelan argumen juga menghasilkan kode itu walau
+     * webroot sehat ⇒ preflight wajib LEWAT (jangan memblokir jalur sehat).
+     */
+    public function testPreflightHostKodeSatuTanpaPenandaTetapLolos(): void
+    {
+        [$msg, $runner] = $this->issueFailsWithProbe([
+            'code' => 1,
+            'stdout' => "docker: Error response from daemon: something opaque\n",
+            'stderr' => 'permission denied while trying to connect to the Docker daemon socket',
+        ]);
+
+        $this->assertCount(1, $runner->probes);
+        $this->assertCount(1, $runner->calls, 'kode 1 tanpa penanda MISSING tidak boleh memblokir');
+        $this->assertStringStartsWith(self::FAIL_PREFIX, $msg);
+        $this->assertStringNotContainsString('tidak terlihat di sisi HOST', $msg);
+    }
+
+    /** Docker/socket tak tersedia (125) ⇒ preflight best-effort dilewati. */
+    public function testPreflightHostDilewatiSaatDockerTidakTersedia(): void
+    {
+        [$msg, $runner] = $this->issueFailsWithProbe([
+            'code' => 125,
+            'stdout' => '',
+            'stderr' => 'docker: cannot connect to the Docker daemon',
+        ]);
+
+        $this->assertCount(1, $runner->probes);
+        $this->assertCount(1, $runner->calls, 'probe tak konklusif tidak boleh memblokir jalur sehat');
+        $this->assertStringStartsWith(self::FAIL_PREFIX, $msg);
+        $this->assertStringNotContainsString('tidak terlihat di sisi HOST', $msg);
+    }
+
+    /**
+     * `ProcessRunner::run()` melempar (mis. `proc_open` gagal): galat docker
+     * tidak boleh bocor sebagai galat penerbitan — preflight best-effort, dan
+     * berkas probe tetap dihapus.
+     */
+    public function testPreflightHostTidakMelemparSaatRunnerGagalSpawn(): void
+    {
+        [$msg, $runner] = $this->issueFailsWithProbe($this->probePresent(), true);
+
+        $this->assertCount(1, $runner->probes, 'helper tetap dicoba sekali');
+        $this->assertCount(1, $runner->calls, 'galat spawn helper tidak menghentikan certbot');
+        $this->assertStringStartsWith(self::FAIL_PREFIX, $msg, 'yang dilaporkan tetap kegagalan certbot');
+        $this->assertStringNotContainsString('proc_open gagal', $msg);
+        $this->assertSame(
+            [],
+            glob($this->webroot . '/.well-known/acme-challenge/rames-preflight-*') ?: [],
+            'berkas probe wajib dihapus walau runner melempar'
+        );
+    }
+
+    /** Berkas probe tidak boleh tertinggal (jalur lolos, gagal, maupun dilewati). */
+    public function testPreflightHostSelaluMenghapusBerkasProbe(): void
+    {
+        /** @var array<string,array{0:array,1:bool}> $cases */
+        $cases = [
+            'PRESENT' => [$this->probePresent(), false],
+            'MISSING' => [$this->probeMissing(), false],
+            'docker tak tersedia' => [['code' => 125, 'stdout' => '', 'stderr' => ''], false],
+            'runner melempar' => [$this->probePresent(), true],
+        ];
+        foreach ($cases as $label => [$probe, $throws]) {
+            $this->issueFailsWithProbe($probe, $throws);
+            $this->assertSame(
+                [],
+                glob($this->webroot . '/.well-known/acme-challenge/rames-preflight-*') ?: [],
+                'berkas probe wajib dihapus (' . $label . ')'
+            );
+        }
+    }
+
+    /** DNS-01 tidak menyajikan berkas challenge lewat nginx host ⇒ probe dilewati. */
+    public function testPreflightHostDilewatiUntukDnsCloudflare(): void
+    {
+        $creds = $this->tmp . '/cloudflare.ini';
+        file_put_contents($creds, "dns_cloudflare_api_token = xxx\n");
+        $this->loadDeploy(['ssl_challenge' => 'dns-cloudflare', 'cloudflare_creds' => $creds]);
+
+        [, $runner] = $this->issueFailsWithProbe($this->probeMissing());
+
+        $this->assertSame([], $runner->probes, 'DNS-01: probe webroot tidak relevan');
+        $this->assertCount(1, $runner->calls);
     }
 
     // ---------------------------------------------------------------- hint 403
@@ -316,11 +455,60 @@ class SslIssuerWebrootPreflightTest extends TestCase
         $this->assertStringEndsWith(self::HINT_TAIL, $msg, 'hint utuh di ekor pesan');
     }
 
+    // ---------------------------------------------------------------- hint 404
+    /**
+     * Kegagalan `404` = berkas challenge tidak ditemukan nginx host: vhost basi
+     * (root lama) atau webroot tidak terlihat dari host. Hint wajib memuat
+     * tindakan yang bisa langsung dikerjakan operator.
+     */
+    public function testHint404MunculUntukInvalidResponse404(): void
+    {
+        [$msg] = $this->issueFails($this->certbotFailure(
+            "Certbot failed to authenticate some domains (authenticator: webroot).\n"
+            . 'Detail: Invalid response from http://' . self::DOMAIN . '/.well-known/acme-challenge/AbC:'
+            . "\n<html><head><title>404 Not Found</title></head></html>"
+        ));
+
+        $this->assertStringContainsString(self::HINT404_PREFIX, $msg);
+        $this->assertStringContainsString($this->webroot . '/.well-known/acme-challenge', $msg, 'webroot certbot disebut');
+        $this->assertStringContainsString('Deploy Ulang', $msg, 'jalan keluar: tulis ulang vhost');
+        $this->assertStringContainsString('bind mount', $msg);
+        $this->assertStringContainsString("curl -o /dev/null", $msg, 'langkah diagnosa 403 vs 404');
+        $this->assertStringContainsString('DNS A', $msg);
+        $this->assertStringNotContainsString('Hint 403', $msg);
+    }
+
+    /** `403` tetap prioritas bila keluaran memuat keduanya (berkas ada tapi ditolak). */
+    public function testHint403MenangBila404JugaCocok(): void
+    {
+        [$msg] = $this->issueFails($this->certbotFailure(
+            'Detail: Invalid response from http://x/.well-known/acme-challenge/a: 404'
+            . "\n<html><head><title>403 Forbidden</title></head></html>"
+        ));
+
+        $this->assertStringContainsString(self::HINT_PREFIX, $msg);
+        $this->assertStringNotContainsString('Hint 404', $msg);
+    }
+
+    /** Hint 404 utuh di ekor & total badan tetap ≤ 2000 byte walau keluaran 4 KB. */
+    public function testHint404UtuhDanBadanMaks2000(): void
+    {
+        $long = str_repeat("noise line from certbot\n", 200)
+            . 'Detail: Invalid response from http://' . self::DOMAIN . '/.well-known/acme-challenge/AbC: 404';
+
+        [$msg] = $this->issueFails(['code' => 1, 'stdout' => $long, 'stderr' => 'Some challenges have failed.']);
+
+        $body = substr($msg, strlen(self::FAIL_PREFIX));
+        $this->assertLessThanOrEqual(2000, strlen($body), 'badan pesan wajib ≤ 2000 byte');
+        $this->assertStringContainsString(self::MARKER, $body, 'keluaran panjang ditandai terpotong');
+        $this->assertStringContainsString(self::HINT404_PREFIX, $body);
+        $this->assertStringEndsWith('Cloudflare menang.', $body, 'hint tidak boleh terpotong');
+    }
+
     /** @return array<string,array{0:string}> keluaran certbot yang TIDAK boleh memicu hint */
     public static function noHintProvider(): array
     {
         return [
-            '404' => ["Detail: Invalid response from http://x/.well-known/acme-challenge/a: 404"],
             '403 tanpa Invalid response' => ["Saving debug log …\n<html>403 Forbidden</html>"],
             'DNS problem' => ['DNS problem: NXDOMAIN looking up A for x.example.com — check that a DNS record exists'],
             'timeout' => ['Timeout during connect (likely firewall problem)'],
@@ -344,6 +532,7 @@ class SslIssuerWebrootPreflightTest extends TestCase
         $this->assertStringStartsWith(self::FAIL_PREFIX, $msg, 'jalur kegagalan certbot yang diuji, bukan galat lain');
         $this->assertStringNotContainsString(self::HINT_PREFIX, $msg);
         $this->assertStringNotContainsString('Hint 403', $msg);
+        $this->assertStringNotContainsString('Hint 404', $msg);
     }
 
     /**
@@ -437,6 +626,45 @@ class SslIssuerWebrootPreflightTest extends TestCase
         }
 
         $this->fail('issue() harus melempar RuntimeException (runner palsu selalu exit != 0)');
+    }
+
+    /**
+     * Jalankan `issue()` dengan hasil helper probe host tertentu.
+     *
+     * @param array{code?:int,stdout?:string,stderr?:string} $probe hasil helper preflight
+     * @param bool $probeThrows simulasi `proc_open` gagal (runner melempar)
+     * @return array{0:string,1:SslIssuerPreflightRunner} [pesan galat, runner]
+     */
+    private function issueFailsWithProbe(array $probe, bool $probeThrows = false): array
+    {
+        $runner = new SslIssuerPreflightRunner($this->certbotFailure(), $probe, $probeThrows);
+        try {
+            (new SslIssuer($runner))->issue(self::DOMAIN);
+        } catch (RuntimeException $e) {
+            return [$e->getMessage(), $runner];
+        }
+
+        $this->fail('issue() harus melempar RuntimeException (runner palsu selalu exit != 0)');
+    }
+
+    /**
+     * Helper preflight melaporkan berkas probe ADA di host.
+     *
+     * @return array{code:int,stdout:string,stderr:string}
+     */
+    private function probePresent(): array
+    {
+        return ['code' => 0, 'stdout' => "PRESENT\n", 'stderr' => ''];
+    }
+
+    /**
+     * Helper preflight melaporkan berkas probe TIDAK ADA di host.
+     *
+     * @return array{code:int,stdout:string,stderr:string}
+     */
+    private function probeMissing(): array
+    {
+        return ['code' => 0, 'stdout' => "MISSING\n", 'stderr' => ''];
     }
 
     /** @return array{code:int,stdout:string,stderr:string,timedOut:bool} */
@@ -549,15 +777,29 @@ class SslIssuerWebrootPreflightTest extends TestCase
     }
 }
 
-/** ProcessRunner palsu: hasil tetap + merekam argv (tanpa certbot/proses nyata). */
+/**
+ * ProcessRunner palsu: hasil certbot tetap + merekam argv (tanpa certbot/proses
+ * nyata). Perintah probe host (`docker run …`) dipisahkan ke `$probes` supaya
+ * assert lama pada `$calls` tetap berarti "argv certbot".
+ */
 final class SslIssuerPreflightRunner extends ProcessRunner
 {
     /** @var array<int,string> */
     public array $calls = [];
 
-    /** @param array{code:int,stdout:string,stderr:string,timedOut?:bool} $result */
-    public function __construct(private array $result)
-    {
+    /** @var array<int,string> argv probe host (`docker run … sh -c …`) */
+    public array $probes = [];
+
+    /**
+     * @param array{code:int,stdout:string,stderr:string,timedOut?:bool} $result hasil perintah certbot
+     * @param array{code?:int,stdout?:string,stderr?:string,timedOut?:bool} $probe hasil helper preflight host
+     * @param bool $probeThrows simulasi `proc_open` gagal (ProcessRunner melempar RuntimeException)
+     */
+    public function __construct(
+        private array $result,
+        private array $probe = ['code' => 0, 'stdout' => "PRESENT\n", 'stderr' => ''],
+        private bool $probeThrows = false
+    ) {
     }
 
     /**
@@ -567,7 +809,22 @@ final class SslIssuerPreflightRunner extends ProcessRunner
      */
     public function run(array $command, ?string $cwd = null, int $timeout = 300, array $env = [], ?string $stdin = null): array
     {
-        $this->calls[] = implode(' ', $command);
+        $line = implode(' ', $command);
+        if (($command[0] ?? '') === 'docker') {
+            $this->probes[] = $line;
+            if ($this->probeThrows) {
+                throw new RuntimeException('proc_open gagal: docker tidak tersedia');
+            }
+
+            return [
+                'code' => (int) ($this->probe['code'] ?? 0),
+                'stdout' => (string) ($this->probe['stdout'] ?? ''),
+                'stderr' => (string) ($this->probe['stderr'] ?? ''),
+                'timedOut' => (bool) ($this->probe['timedOut'] ?? false),
+            ];
+        }
+
+        $this->calls[] = $line;
 
         return [
             'code' => (int) $this->result['code'],

@@ -34,6 +34,7 @@ use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\ServerResolver;
 use app\library\Nginx\NginxReloader;
+use app\library\SSL\SslChallengeVhost;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 
@@ -156,6 +157,13 @@ try {
     }
 
     $logger('issue', "Menerbitkan sertifikat untuk {$domain} ...");
+    // Vhost ditulis ulang + Nginx host di-reload SEBELUM certbot: blok
+    // `location ^~ /.well-known/acme-challenge/` harus dimuat dari webroot yang
+    // dipakai certbot SEKARANG. Vhost basi (webroot lama) membuat nginx
+    // menyajikan path challenge dari `root` lain ⇒ Let's Encrypt menerima 404
+    // walau berkasnya ada. Reload gagal di sini sengaja FATAL.
+    $deployer = DeployerFactory::createForApp($app);
+    (new SslChallengeVhost())->ensure($app, $deployer, $logger);
     (new SslIssuer())->issue($domain);
 
     $expires = (new SslIssuer())->certExpiry($domain);

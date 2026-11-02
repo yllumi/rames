@@ -409,6 +409,13 @@ final class UpdateService implements UpdateRunner
             'dns' => array_values((array) $context['dns']),
             'old_sha' => $oldSha,
             'target_sha' => $targetSha,
+            // Image dashboard saat ini (dipakai helper untuk `docker run --user 0`
+            // saat memperbaiki kepemilikan `vendor/` yang dibuat bootstrap root).
+            'image' => (string) ($context['image'] ?? ''),
+            // `true` bila `vendor/` ada tetapi tidak bisa ditulis uid:gid helper
+            // (mis. dibuat `composer install` di container dashboard yang berjalan
+            // sebagai root). Helper akan chown lewat container root sebelum composer.
+            'vendor_owner_repair' => self::needsVendorOwnerRepair($this->repo->root(), $uid, $gid),
             'health_url' => (string) $this->healthUrl($context),
             'health_timeout' => (int) config('deploy.update_health_timeout', 180),
             'rollback_timeout' => (int) config('deploy.update_rollback_timeout', 180),
@@ -1293,6 +1300,44 @@ final class UpdateService implements UpdateRunner
     private static function ownerLabel(int|false $uid, int|false $gid): string
     {
         return ($uid === false ? '?' : (string) $uid) . ':' . ($gid === false ? '?' : (string) $gid);
+    }
+
+    /**
+     * Apakah `vendor/` perlu diperbaiki kepemilikannya sebelum `composer install`.
+     *
+     * `composer install` di helper berjalan sebagai **uid:gid pemilik repo**,
+     * sedangkan bootstrap container dashboard berjalan sebagai **root** dan
+     * membuat `vendor/` milik root pada instalasi baru. Akibatnya update pertama
+     * yang menyentuh `composer.*` gagal di tengah jalan ("Could not delete
+     * .../vendor/..." / "Permission denied"). Helper memperbaikinya dengan
+     * `docker run --user 0 … chown -R`.
+     *
+     * `false` bila: uid helper sudah root, `vendor/` belum ada (composer membuat
+     * sendiri sebagai helper), atau direktori memang bisa ditulis uid:gid itu.
+     */
+    public static function needsVendorOwnerRepair(string $root, int $uid, int $gid): bool
+    {
+        if ($uid === 0) {
+            return false;
+        }
+
+        $vendor = rtrim($root, '/') . '/vendor';
+        if (!is_dir($vendor)) {
+            return false;
+        }
+
+        $paths = [$vendor];
+        if (is_dir($vendor . '/composer')) {
+            $paths[] = $vendor . '/composer';
+        }
+
+        foreach ($paths as $path) {
+            if (!self::canUidWritePath($path, $uid, $gid)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

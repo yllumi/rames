@@ -122,7 +122,11 @@ services:
     # server start. Tanpa `|| true`: bila salah satu langkah gagal, && menghentikan
     # rantai dan kontainer exit non-zero (fail-fast) — server TIDAK pernah start
     # dengan skema/DB yang belum siap.
-    command: ["sh", "-c", "if [ ! -f vendor/autoload.php ]; then composer install --no-dev --optimize-autoloader; fi && php cli/db.php migrate && php cli/db.php import-json && php start.php start"]
+    # `chown vendor` → pemilik repo (bind mount): bootstrap berjalan sebagai root,
+    # sedangkan self-update helper berjalan `--user <pemilik repo>`; tanpa ini
+    # update pertama yang menyentuh `composer.*` gagal "Could not delete
+    # …/vendor/…". `|| true` agar distro dengan userns/ACL tidak menggagalkan boot.
+    command: ["sh", "-c", "if [ ! -f vendor/autoload.php ]; then composer install --no-dev --optimize-autoloader && { chown -R \"$$(stat -c '%u:%g' .)\" vendor 2>/dev/null || true; }; fi && php cli/db.php migrate && php cli/db.php import-json && php start.php start"]
 
 # Named volume database dashboard (SQLite + snapshot backup).
 # `name: rames` → nama nyata di host = `rames` (bukan rames_rames-data), sehingga
