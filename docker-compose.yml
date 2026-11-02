@@ -122,11 +122,16 @@ services:
     # server start. Tanpa `|| true`: bila salah satu langkah gagal, && menghentikan
     # rantai dan kontainer exit non-zero (fail-fast) — server TIDAK pernah start
     # dengan skema/DB yang belum siap.
-    # `chown vendor` → pemilik repo (bind mount): bootstrap berjalan sebagai root,
-    # sedangkan self-update helper berjalan `--user <pemilik repo>`; tanpa ini
-    # update pertama yang menyentuh `composer.*` gagal "Could not delete
-    # …/vendor/…". `|| true` agar distro dengan userns/ACL tidak menggagalkan boot.
-    command: ["sh", "-c", "if [ ! -f vendor/autoload.php ]; then composer install --no-dev --optimize-autoloader && { chown -R \"$$(stat -c '%u:%g' .)\" vendor 2>/dev/null || true; }; fi && php cli/db.php migrate && php cli/db.php import-json && php start.php start"]
+    # Probe `php -r 'require vendor/autoload.php'` = self-heal vendor RUSAK
+    # SEBAGIAN (composer berhenti saat menghapus paket dev; `autoload_files.php`
+    # menunjuk berkas yang sudah hilang). Tanpa probe ini kontainer crash-loop
+    # walau `vendor/autoload.php` ada.
+    # Composer dijalankan sebagai **pemilik repo** (setpriv), bukan root: bootstrap
+    # berjalan root sedangkan vendor/ bisa milik user host — root + git checkout
+    # vendor memicu `detected dubious ownership`, dan berkas hasil install jadi
+    # milik root sehingga self-update helper (--user pemilik repo) gagal. `chown`
+    # lebih dulu memulihkan vendor yang terlanjur root-owned.
+    command: ["sh", "-c", "if [ ! -f vendor/autoload.php ] || ! php -r 'require \"vendor/autoload.php\";' >/dev/null 2>&1; then OWNER=$$(stat -c '%u:%g' . 2>/dev/null || echo 0:0); chown -R \"$$OWNER\" vendor 2>/dev/null || true; setpriv --reuid=\"$${OWNER%%:*}\" --regid=\"$${OWNER##*:}\" --clear-groups env HOME=/tmp COMPOSER_HOME=/tmp/composer composer install --no-dev --optimize-autoloader; fi && php cli/db.php migrate && php cli/db.php import-json && php start.php start"]
 
 # Named volume database dashboard (SQLite + snapshot backup).
 # `name: rames` → nama nyata di host = `rames` (bukan rames_rames-data), sehingga

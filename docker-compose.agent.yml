@@ -100,9 +100,9 @@ services:
     # SENGAJA TANPA `cli/db.php import-json`: impor data lama milik DASHBOARD
     # (auth_users/apps) ke DB agent akan melanggar §4.3 (kredensial user tidak
     # pernah ada di server agent).
-    # `chown vendor` → pemilik repo (bootstrap root vs helper update non-root),
-    # sama seperti docker-compose.yml; `|| true` agar userns/ACL tidak memblokir boot.
-    command: ["sh", "-c", "if [ ! -f vendor/autoload.php ]; then composer install --no-dev --optimize-autoloader && { chown -R \"$$(stat -c '%u:%g' .)\" vendor 2>/dev/null || true; }; fi && php cli/db.php migrate && php start.php start"]
+    # Probe autoload + composer sebagai pemilik repo (setpriv) = self-heal vendor
+    # rusak sebagian & cegah vendor root-owned; sama seperti docker-compose.yml.
+    command: ["sh", "-c", "if [ ! -f vendor/autoload.php ] || ! php -r 'require \"vendor/autoload.php\";' >/dev/null 2>&1; then OWNER=$$(stat -c '%u:%g' . 2>/dev/null || echo 0:0); chown -R \"$$OWNER\" vendor 2>/dev/null || true; setpriv --reuid=\"$${OWNER%%:*}\" --regid=\"$${OWNER##*:}\" --clear-groups env HOME=/tmp COMPOSER_HOME=/tmp/composer composer install --no-dev --optimize-autoloader; fi && php cli/db.php migrate && php start.php start"]
 
 # Named volume SQLite proyeksi agent. `name: rames-agent-data` → nama nyata di
 # host = `rames-agent-data` (stabil lintas `docker compose down`).

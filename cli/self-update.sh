@@ -317,6 +317,18 @@ if [ "$NEED_COMPOSER" -eq 1 ]; then
   fi
 fi
 
+# Vendor yang "setengah jadi" lebih berbahaya daripada tidak ada: bila composer
+# dihentikan saat menghapus paket dev, `vendor/autoload.php` tetap ada tetapi
+# `autoload_files.php` menunjuk berkas yang sudah hilang → container berikutnya
+# crash-loop (`Failed opening required '.../deep_copy.php'`). Periksa bisa-dimuat
+# SEBELUM build; rollback akan memicu bootstrap yang meng-install ulang.
+if [ -z "$PRE_ERROR" ] && [ -f vendor/autoload.php ]; then
+  if ! php -r 'require "vendor/autoload.php";' >/dev/null 2>&1; then
+    log "vendor/autoload.php TIDAK bisa dimuat setelah composer (vendor tidak sehat)"
+    PRE_ERROR="vendor tidak sehat setelah composer install"
+  fi
+fi
+
 # ----------------------------------------------------------------------
 # 4) Build + recreate container dashboard
 # ----------------------------------------------------------------------
