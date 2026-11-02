@@ -3,10 +3,12 @@ declare(strict_types=1);
 
 namespace app\controller;
 
+use app\library\Auth\TwoFactorService;
 use app\library\Auth\UserStore;
 use support\Request;
 use Throwable;
 use Webman\Http\Response;
+use Workerman\Protocols\Http\Session;
 
 /**
  * Halaman **Profil** self-service user login (`GET /profile`) dan aksi
@@ -41,9 +43,16 @@ class ProfileController
      */
     private ?UserStore $users;
 
-    public function __construct(?UserStore $users = null)
+    /**
+     * Seam 2FA (pola sama dengan `$users`): `null` ⇒ service bawaan dibangun
+     * per-request memakai store seam.
+     */
+    private ?TwoFactorService $twoFactor;
+
+    public function __construct(?UserStore $users = null, ?TwoFactorService $twoFactor = null)
     {
         $this->users = $users;
+        $this->twoFactor = $twoFactor;
     }
 
     // ==================================================================
@@ -54,9 +63,19 @@ class ProfileController
      * `GET /profile` — kirim user login + email terkini ke view.
      *
      * Payload minimal yang dijamin untuk view:
-     * `['user' => array, 'email' => string]` (email selalu string, `''` bila
-     * belum diatur). View `profile/index.php` mengatur `$pageTitle`/`$active`
-     * sendiri.
+     * `['user' => array, 'email' => string, 'twoFactor' => array]` (email
+     * selalu string, `''` bila belum diatur). `twoFactor` berbentuk:
+     * ```
+     * [
+     *   'enabled' => bool,
+     *   'recovery_remaining' => int,
+     *   'setup' => null|['secret'=>string,'uri'=>string,'qr_svg'=>string],
+     *   'recovery_codes' => null|array<int,string>,
+     * ]
+     * ```
+     * `setup` berasal dari session setup yang belum kedaluwarsa; `recovery_codes`
+     * diambil sekali dari session lalu dihapus (sekali tampil).
+     * View `profile/index.php` mengatur `$pageTitle`/`$active` sendiri.
      */
     public function index(Request $request): Response
     {
@@ -70,6 +89,7 @@ class ProfileController
         return $this->renderView('profile/index', [
             'user' => $user,
             'email' => (string) ($user['email'] ?? ''),
+            'twoFactor' => $this->twoFactorPayload($user, $this->session($request)),
         ]);
     }
 
@@ -180,6 +200,162 @@ class ProfileController
     }
 
     // ==================================================================
+    // Aksi 2FA TOTP (self-service, hanya untuk user login sendiri)
+    // ==================================================================
+
+    /**
+     * `POST /profile/2fa/setup` — mulai setup 2FA.
+     *
+     * Field: `current_password`. Sukses ⇒ secret + QR disimpan di **session**
+     * (`2fa_setup`, bukan respons/payload) dan halaman profil menampilkannya
+     * sampai dikonfirmasi. Gagal apa pun ⇒ flash error + redirect, tanpa 500.
+     */
+    public function startTotpSetup(Request $request): Response
+    {
+        $user = $this->currentUser();
+        if ($user === null) {
+            return $this->unauthenticated($request);
+        }
+
+        $password = $request->post('current_password', '');
+        if (!is_scalar($password)) {
+            $this->flash('error', 'Password tidak valid.');
+
+            return redirect('/profile');
+        }
+
+        $session = $this->session($request);
+
+        try {
+            // Anti-IDOR: id SELALU dari sesi, tak pernah dari request.
+            $result = $this->twoFactor()->beginSetup((string) $user['id'], (string) $password);
+            $session?->set(TwoFactorService::SESSION_SETUP, [
+                'secret' => $result['secret'],
+                'created_at' => time(),
+            ]);
+            $session?->delete(TwoFactorService::SESSION_RECOVERY);
+            $this->flash('success', 'Pindai QR lalu masukkan kode dari aplikasi authenticator.');
+        } catch (Throwable $e) {
+            $this->flash('error', $e->getMessage());
+        }
+
+        return redirect('/profile');
+    }
+
+    /**
+     * `POST /profile/2fa/enable` — konfirmasi kode dari authenticator.
+     *
+     * Secret diambil dari **session** setup (bukan dari request), wajib belum
+     * kedaluwarsa. Sukses ⇒ 2FA aktif, kode pemulihan plaintext disimpan ke
+     * session sekali tampil. Gagal ⇒ flash error tanpa menghapus session setup
+     * (user boleh mengulang sampai TTL habis).
+     */
+    public function enableTotp(Request $request): Response
+    {
+        $user = $this->currentUser();
+        if ($user === null) {
+            return $this->unauthenticated($request);
+        }
+
+        $rawCode = $request->post('code', '');
+        if (!is_scalar($rawCode)) {
+            $this->flash('error', 'Kode verifikasi tidak valid.');
+
+            return redirect('/profile');
+        }
+
+        $session = $this->session($request);
+        $setup = $session?->get(TwoFactorService::SESSION_SETUP);
+        $secret = is_array($setup) && is_string($setup['secret'] ?? null) ? trim($setup['secret']) : '';
+        $createdAt = is_array($setup) && is_int($setup['created_at'] ?? null) ? $setup['created_at'] : 0;
+
+        if ($secret === '' || TwoFactorService::isExpired($createdAt, TwoFactorService::SETUP_TTL)) {
+            if (is_array($setup)) {
+                $session?->delete(TwoFactorService::SESSION_SETUP);
+            }
+            $this->flash('error', 'Sesi pengaturan 2FA sudah berakhir. Silakan mulai ulang.');
+
+            return redirect('/profile');
+        }
+
+        try {
+            // Anti-IDOR: id SELALU dari sesi, tak pernah dari request.
+            $codes = $this->twoFactor()->completeSetup((string) $user['id'], $secret, (string) $rawCode);
+            $session?->delete(TwoFactorService::SESSION_SETUP);
+            $session?->set(TwoFactorService::SESSION_RECOVERY, $codes);
+            $this->flash('success', '2FA aktif. Simpan kode pemulihan berikut.');
+        } catch (Throwable $e) {
+            $this->flash('error', $e->getMessage());
+        }
+
+        return redirect('/profile');
+    }
+
+    /**
+     * `POST /profile/2fa/disable` — matikan 2FA (password + kode TOTP/recovery).
+     */
+    public function disableTotp(Request $request): Response
+    {
+        $user = $this->currentUser();
+        if ($user === null) {
+            return $this->unauthenticated($request);
+        }
+
+        $fields = $this->twoFactorFields($request);
+        if ($fields === null) {
+            return redirect('/profile');
+        }
+
+        $session = $this->session($request);
+
+        try {
+            // Anti-IDOR: id SELALU dari sesi, tak pernah dari request.
+            $this->twoFactor()->disable((string) $user['id'], $fields['password'], $fields['code']);
+            $session?->delete(TwoFactorService::SESSION_SETUP);
+            $session?->delete(TwoFactorService::SESSION_RECOVERY);
+            $this->flash('success', '2FA dinonaktifkan.');
+        } catch (Throwable $e) {
+            $this->flash('error', $e->getMessage());
+        }
+
+        return redirect('/profile');
+    }
+
+    /**
+     * `POST /profile/2fa/recovery` — buat ulang kode pemulihan
+     * (password + kode TOTP/recovery, sama seperti penonaktifan).
+     */
+    public function regenerateTotpRecovery(Request $request): Response
+    {
+        $user = $this->currentUser();
+        if ($user === null) {
+            return $this->unauthenticated($request);
+        }
+
+        $fields = $this->twoFactorFields($request);
+        if ($fields === null) {
+            return redirect('/profile');
+        }
+
+        $session = $this->session($request);
+
+        try {
+            // Anti-IDOR: id SELALU dari sesi, tak pernah dari request.
+            $codes = $this->twoFactor()->regenerateRecoveryCodes(
+                (string) $user['id'],
+                $fields['password'],
+                $fields['code']
+            );
+            $session?->set(TwoFactorService::SESSION_RECOVERY, $codes);
+            $this->flash('success', 'Kode pemulihan baru dibuat.');
+        } catch (Throwable $e) {
+            $this->flash('error', $e->getMessage());
+        }
+
+        return redirect('/profile');
+    }
+
+    // ==================================================================
     // Seam & dependensi
     // ==================================================================
 
@@ -208,6 +384,105 @@ class ProfileController
     }
 
     /**
+     * Session request (seam: `Request::session()` butuh koneksi HTTP).
+     *
+     * `null` hanya terjadi saat mediator dipanggil **tanpa** konteks HTTP
+     * (CLI/unit test tanpa seam); pada request nyata Webman selalu ada.
+     */
+    protected function session(Request $request): ?Session
+    {
+        if (!request()) {
+            return null;
+        }
+
+        return $request->session();
+    }
+
+    /**
+     * Payload kartu 2FA untuk view profil.
+     *
+     * `setup` dihitung dari session (`2fa_setup`) selama belum kedaluwarsa dan
+     * 2FA belum aktif; secret hanya dikirim lewat payload halaman ini (bukan
+     * flash). `recovery_codes` diambil sekali lalu dihapus dari session.
+     *
+     * @return array{enabled:bool,recovery_remaining:int,setup:null|array{secret:string,uri:string,qr_svg:string},recovery_codes:null|array<int,string>}
+     */
+    private function twoFactorPayload(array $user, ?Session $session): array
+    {
+        $enabled = UserStore::totpEnabled($user);
+
+        $setup = null;
+        $rawSetup = $session?->get(TwoFactorService::SESSION_SETUP);
+        if (is_array($rawSetup)) {
+            $secret = is_string($rawSetup['secret'] ?? null) ? trim($rawSetup['secret']) : '';
+            $createdAt = is_int($rawSetup['created_at'] ?? null) ? $rawSetup['created_at'] : 0;
+            if ($enabled || $secret === ''
+                || TwoFactorService::isExpired($createdAt, TwoFactorService::SETUP_TTL)) {
+                $session?->delete(TwoFactorService::SESSION_SETUP);
+            } else {
+                $uri = TwoFactorService::provisioningUri($secret, (string) ($user['username'] ?? ''));
+                try {
+                    $setup = [
+                        'secret' => $secret,
+                        'uri' => $uri,
+                        'qr_svg' => $this->renderQr($uri),
+                    ];
+                } catch (Throwable) {
+                    // Jangan biarkan halaman Profil 500 terus selama TTL setup:
+                    // buang sesi setup agar user bisa memulai ulang.
+                    $session?->delete(TwoFactorService::SESSION_SETUP);
+                    $this->flash('error', 'Gagal membuat QR 2FA. Silakan coba aktifkan lagi.');
+                }
+            }
+        }
+
+        $recovery = $session?->pull(TwoFactorService::SESSION_RECOVERY);
+        $recoveryCodes = null;
+        if (is_array($recovery)) {
+            $recoveryCodes = [];
+            foreach ($recovery as $code) {
+                if (is_scalar($code)) {
+                    $recoveryCodes[] = (string) $code;
+                }
+            }
+        }
+
+        return [
+            'enabled' => $enabled,
+            'recovery_remaining' => $this->twoFactor()->recoveryRemaining($user),
+            'setup' => $setup,
+            'recovery_codes' => $recoveryCodes,
+        ];
+    }
+
+    /**
+     * Ambil & validasi field `current_password`+`code` untuk aksi 2FA.
+     *
+     * Input array (`code[]=…`) ditolak sebagai "Kode verifikasi tidak valid."
+     * tanpa memanggil service (tanpa mutasi).
+     *
+     * @return array{password:string,code:string}|null
+     */
+    private function twoFactorFields(Request $request): ?array
+    {
+        $password = $request->post('current_password', '');
+        $code = $request->post('code', '');
+
+        if (!is_scalar($password)) {
+            $this->flash('error', 'Password tidak valid.');
+
+            return null;
+        }
+        if (!is_scalar($code)) {
+            $this->flash('error', 'Kode verifikasi tidak valid.');
+
+            return null;
+        }
+
+        return ['password' => (string) $password, 'code' => (string) $code];
+    }
+
+    /**
      * Respons "belum login": 401 JSON untuk klien API, redirect `/login` untuk
      * browser — sejalan dengan `AuthMiddleware::unauthenticated()`.
      */
@@ -223,5 +498,18 @@ class ProfileController
     private function users(): UserStore
     {
         return $this->users ?? new UserStore();
+    }
+
+    /**
+     * Render QR SVG (seam pengujian: kegagalan library harus tertangkap).
+     */
+    protected function renderQr(string $uri): string
+    {
+        return TwoFactorService::qrSvg($uri);
+    }
+
+    private function twoFactor(): TwoFactorService
+    {
+        return $this->twoFactor ?? new TwoFactorService($this->users());
     }
 }

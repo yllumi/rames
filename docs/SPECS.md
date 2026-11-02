@@ -84,14 +84,14 @@ Gerbang kredit (`BillingGate`) adalah **lapisan biaya**, bukan otorisasi. Setiap
 
 ### 6.1 Sumber data
 
-Store `auth` di SQLite (`auth_users`; dahulu `database/auth.json`), satu baris per user: `id`, `username`, `password_hash` (bcrypt `password_hash()`, bukan plaintext), `role`, `email` opsional, grant server.
+Store `auth` di SQLite (`auth_users`; dahulu `database/auth.json`), satu baris per user: `id`, `username`, `password_hash` (bcrypt `password_hash()`, bukan plaintext), `role`, `email` opsional, grant server, serta field 2FA opsional (`totp_secret`, `totp_enabled_at`, `totp_last_step`, `totp_recovery_codes` — §6.4).
 
 - **Role global**: `admin` melihat semua app + mengelola user; `member` hanya app miliknya dan yang dibagikan. Dokumen lama tanpa `role`: user pertama admin, sisanya member (tanpa migrasi tulis).
 - **Satu pintu otorisasi app**: `AppAccess` (`roleFor`, `can`, `require`, `visible`); tidak ada pengecekan `owner_id` yang ditulis ulang.
 - **Role app**: `owner > operator > viewer`; admin global menang. **Ability** (minimum role): `view`, `logs` = viewer; `operate`, `deploy`, `stop`, `env`, `compose`, `network`, `domain`, `routes`, `ssl`, `terminal`, `files`, `database`, `backup` = operator; `restore`, `delete`, `sharing` = owner; `limits` = **admin-only**.
 - **Akses tidak sah = 404**, bukan 403. UI boleh menyembunyikan tombol; server tetap menolak.
 - **Grant pemilihan server** (`server_select` + `server_ids`) disetel admin di `/users` lewat `POST /users/{id}/servers` (atomik). Grant hanya menambah pemilihan/visibilitas server — **bukan** ability app/backup, **bukan** metrik host server tanpa app terlihat. `server_ids` kosong = semua; `local` selalu boleh dipilih. Allowlist yang seluruhnya id tak dikenal ⇒ perubahan **ditolak** (tidak boleh melebar); id asing dicampur id valid ⇒ id asing dibuang; registry tak terbaca ⇒ fail-closed. Kelola registry tetap admin-only.
-- **Self-service**: ganti password sendiri (minimal 6 karakter, verifikasi password lama) dan ubah email sendiri (prasyarat top-up Duitku). Target selalu user sesi; `id`/`user_id` request diabaikan (anti-IDOR).
+- **Self-service**: ganti password sendiri (minimal 6 karakter, verifikasi password lama), ubah email sendiri (prasyarat top-up Duitku), dan **2FA TOTP opt-in** (§6.4). Target selalu user sesi; `id`/`user_id` request diabaikan (anti-IDOR).
 - `/users` admin-only: tambah/hapus user, ubah role, atur grant. Menghapus user mengalihkan app miliknya ke admin penghapus; admin terakhir tidak bisa dihapus/diturunkan.
 
 ### 6.2 Alur
@@ -99,7 +99,7 @@ Store `auth` di SQLite (`auth_users`; dahulu `database/auth.json`), satu baris p
 1. `GET /login` → kirim username/password.
 2. Verifikasi bcrypt terhadap store `auth`; gagal ⇒ pesan generik.
 3. Sukses ⇒ session Webman; middleware auth menyinkronkan role terbaru dari store pada request berikutnya.
-4. Semua route dashboard selain path publik eksak (`/login`, `/healthz`, `/branding/logo`, callback pembayaran) dilindungi auth.
+4. Semua route dashboard selain path publik eksak (`/`, `/login`, `/login/2fa`, `/healthz`, `/branding/logo`, callback pembayaran) dilindungi auth. `/login/2fa` publik karena langkah kedua login terjadi **sebelum** sesi `user` ada (§6.4).
 5. Logout menghapus session.
 
 ### 6.3 Provisioning awal
@@ -107,6 +107,21 @@ Store `auth` di SQLite (`auth_users`; dahulu `database/auth.json`), satu baris p
 - Entry pertama dibuat `php webman make:admin [username] [password]` (password kosong dibuat acak & dicetak sekali); user pertama otomatis admin.
 - Jalur host memakai `host/create-admin.sh`, yang **menunggu readiness** `GET /healthz` dari dalam container sebelum `make:admin` (bootstrap compose bisa `running` sebelum vendor/skema siap).
 - `php webman app:assign-owner` menugaskan app lama tanpa owner ke admin pertama (idempoten).
+
+### 6.4 Verifikasi dua langkah (2FA TOTP)
+
+**Status: diterapkan** — opt-in per user, dikelola sendiri dari halaman **Profil** (`/profile`).
+
+- **Opt-in, bukan kewajiban.** 2FA nonaktif secara default dan tidak ada kebijakan global/admin yang memaksanya; user mengaktifkan/menonaktifkan sendiri. Status hanya diekspos sebagai boolean (`totp_enabled`) — secret TOTP dan hash kode pemulihan **tidak** ikut ke session/view di luar kartu setup.
+- **Faktor kedua = TOTP** (RFC 6238, HMAC-SHA1, 6 digit, langkah 30 detik) dengan toleransi ±1 langkah untuk drift jam. Secret 160-bit base32; QR `otpauth://` dirender **lokal** sebagai SVG (tanpa layanan QR pihak ketiga — secret tidak boleh keluar server).
+- **Aktivasi (setup)** di `/profile`: `POST /profile/2fa/setup` dengan **password saat ini** → server membuat secret baru dan menampilkan QR + teks secret selama **15 menit** → `POST /profile/2fa/enable` dengan kode dari authenticator mengaktifkan 2FA. Setup yang tidak dikonfirmasi kedaluwarsa sendiri; user yang sudah ber-2FA tidak bisa memulai setup ulang (harus nonaktifkan dulu).
+- **Kode pemulihan**: 10 kode format `XXXX-XXXX` (alfabet tanpa karakter ambigu 0/O/1/I/L), disimpan sebagai hash bcrypt, **sekali pakai**, dan hanya dihabiskan pada alur login. Kode plaintext ditampilkan **sekali** setelah aktivasi/regenerasi untuk disimpan pengguna; sisa kode terlihat di `/profile`.
+- **Alur login dua langkah**: (1) `POST /login` username+password; bila 2FA aktif sesi hanya memuat penanda *menunggu kode* — **tanpa** user login — lalu diarahkan ke `/login/2fa`; status 2FA tidak pernah dibocorkan sebelum password valid. (2) `POST /login/2fa` menerima kode TOTP **atau** kode pemulihan; sukses ⇒ sesi diperbarui, user login, redirect ke tujuan awal (hanya path internal).
+- **Batas percobaan & kedaluwarsa**: maksimal **5** percobaan kode per sesi pending — percobaan ke-5 mengakhiri sesi pending sehingga user harus login ulang. Sesi pending kedaluwarsa **10 menit** sejak password benar; percobaan gagal tidak memperpanjangnya.
+- **Password saat ini wajib** untuk setup, penonaktifan, dan pembuatan ulang kode pemulihan. Penonaktifan/pembuatan ulang juga menuntut kode TOTP **atau** kode pemulihan yang valid, tetapi **tidak** menghabiskan kode pemulihan (konsumsi hanya di alur login). Target selalu user sesi — id dari request diabaikan (anti-IDOR).
+- **Anti-replay**: kode TOTP yang sudah diterima tidak bisa dipakai lagi (langkah waktu yang cocok harus lebih baru dari langkah terakhir yang diterima per user).
+- **Tidak ada reset mandiri via email/UI** — Rames tidak punya SMTP/pengiriman email dan belum ada tombol "reset 2FA" di `/users`. **Jalur darurat host tersedia**: `php webman 2fa:reset <username>` (`app/command/ResetTwoFactor`, dijalankan operator host di container dashboard, §5.5b) menonaktifkan 2FA user — hanya field 2FA yang dihapus, **password dan role tidak berubah**; user yang memang tidak ber-2FA = no-op (sukses), username tak dikenal = gagal (exit code non-nol). Setelah reset, user login satu langkah lalu **wajib mengaktifkan ulang 2FA dari `/profile`**. Command ini **bukan** route HTTP — jangan mengeksposnya sebagai endpoint atau tombol UI.
+- **2FA bukan pengganti rate limiting**: proteksi brute-force login §8f **masih belum diterapkan**, sedangkan 2FA hanya membatasi tebakan kode (5 percobaan) setelah password benar. Jangan mengekspos dashboard ke internet publik dengan alasan "sudah ada 2FA".
 
 ## 7. App Management
 
@@ -566,7 +581,7 @@ Struktur rinci ada di `./ARCHITECTURE.md` dan `../DETAILS.md#struktur-direktori-
 - **Spawn worker**: gunakan `DetachedWorker` (`pcntl_fork` + `pcntl_exec`, tanpa shell) karena `proc_open` + `proc_close` memblokir request sampai worker selesai. `proc_open` hanya untuk proses yang memang ditunggu.
 - **SQL** hanya lewat `SqliteStore`/klien internal dengan parameter binding; tidak ada string SQL dari input.
 - **Path traversal**: semua path dinormalisasi (`PathGuard`, `realpath`); nama entri bebas `/` dan awalan `-`; id parkir regex ketat; ekstrak arsip anti zip-slip.
-- **Secret**: tidak ada di repo, log, UI, payload job, argv, atau respons JSON; berkas kredensial 0600; respons/temp Adminer 0600.
+- **Secret**: tidak ada di repo, log, UI, payload job, argv, atau respons JSON; berkas kredensial 0600; respons/temp Adminer 0600. **Satu pengecualian disengaja**: secret TOTP setup 2FA tampil sekali di kartu setup `/profile` (dan kode pemulihan plaintext sekali setelah aktivasi/regenerasi) karena user harus memindainya — di luar itu rahasia 2FA tidak pernah dirender (§6.4).
 - **File manager** berjalan `docker exec -u 0` (konsekuensi diterima; batas ability `files` + audit); hanya container berjalan; bukan akses volume langsung.
 - **Nginx**: dashboard hanya menulis direktori config terbatas; config invalid memblokir reload host ⇒ alur transaksional + rollback wajib; Nginx mentah dari user dilarang.
 - **Domain parking**: konten HTML tepercaya admin; CRUD/SSL admin-only; validasi ulang saat render; id aman sebelum filesystem.

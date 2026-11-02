@@ -12,7 +12,7 @@
 
 ## Fitur
 
-- **Autentikasi** — login/logout berbasis session, password bcrypt, multi-user dengan role global (admin/member) + kepemilikan & sharing app per user (viewer/operator/owner; SPECS §7.7). Setiap user dapat **mengubah password sendiri** di halaman **Profil** (`/profile`): wajib memasukkan password saat ini dan password baru minimal 6 karakter.
+- **Autentikasi** — login/logout berbasis session, password bcrypt, multi-user dengan role global (admin/member) + kepemilikan & sharing app per user (viewer/operator/owner; SPECS §7.7). Setiap user dapat **mengubah password sendiri** di halaman **Profil** (`/profile`): wajib memasukkan password saat ini dan password baru minimal 6 karakter. Setiap user juga dapat **mengaktifkan verifikasi dua langkah (2FA TOTP)** dari halaman yang sama — opt-in, memakai aplikasi authenticator, dilengkapi 10 kode pemulihan sekali pakai; jalur darurat host `php webman 2fa:reset <username>` (SPECS §6.4).
 - **Manage Users** — tambah/hapus user, ganti password user lain dari `/users` (password sendiri lewat halaman **Profil**).
 - **App Management** — buat app dari URL repo Git, deteksi & edit host port, deteksi konflik port dengan saran port otomatis. Daftar `/apps` punya **filter Nama / Domain / Owner** lewat query string (filter **Owner** admin-only); filter digabung AND dengan tab scope (`Semua`/`Milik Saya`/`Dibagikan`) & filter server (SPECS §8e); semua kontrol filter berada dalam **satu toolbar** di bawah tab scope, sedangkan aksi utama **Create App** tetap di header.
 - **Deploy otomatis** — clone repo → parse `docker-compose.yml` → tulis override port → `docker compose up -d --build` → kumpulkan info container → generate config Nginx.

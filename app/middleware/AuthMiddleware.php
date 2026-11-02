@@ -37,8 +37,14 @@ class AuthMiddleware implements MiddlewareInterface
      * butuh logo brand **sebelum** sesi ada. Responsnya hanya byte gambar brand
      * dari store logo (tanpa parameter path/nama dari request) — tanpa data
      * sensitif; `Cache-Control: no-cache` + ETag membuat revalidasi murah.
+     *
+     * `/login/2fa` publik & **path eksak**: langkah kedua login 2FA TOTP.
+     * Session `user` **belum** diisi sebelum kode verifikasi lolos; state
+     * sementara ada di session `2fa_pending` yang divalidasi controller
+     * (kedaluwarsa TTL + batas percobaan). Route `/profile/2fa/*` tetap
+     * terlindungi karena hanya bermakna bagi user yang sudah login.
      */
-    private const PUBLIC_PATHS = ['/', '/login', '/healthz', '/payments/duitku/callback', '/branding/logo'];
+    private const PUBLIC_PATHS = ['/', '/login', '/login/2fa', '/healthz', '/payments/duitku/callback', '/branding/logo'];
 
     private const STATIC_EXTENSIONS = [
         'css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp',

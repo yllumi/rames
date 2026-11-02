@@ -13,6 +13,36 @@ $isAdminUser = is_admin($user);
 // dapat null juga bila fitur billing dimatikan — keduanya ditangani di bawah.
 $balance = $balance ?? current_credit_balance();
 
+// Kartu 2FA. ProfileController::index() selalu mengirim `twoFactor`, tetapi
+// view ini harus tetap bisa di-smoke-render tanpa controller sehingga tiap key
+// dinormalisasi dengan fallback aman (tanpa efek samping / tanpa mutasi).
+$twoFactor = is_array($twoFactor ?? null) ? $twoFactor : [];
+$totpEnabled = is_bool($twoFactor['enabled'] ?? null) ? $twoFactor['enabled'] : false;
+$totpRemaining = is_numeric($twoFactor['recovery_remaining'] ?? null) ? max(0, (int) $twoFactor['recovery_remaining']) : 0;
+
+$totpSetup = null;
+$rawSetup = $twoFactor['setup'] ?? null;
+if (is_array($rawSetup)) {
+    $totpSecret = is_scalar($rawSetup['secret'] ?? null) ? (string) $rawSetup['secret'] : '';
+    $totpQrSvg = is_scalar($rawSetup['qr_svg'] ?? null) ? (string) $rawSetup['qr_svg'] : '';
+    if ($totpSecret !== '' || $totpQrSvg !== '') {
+        $totpSetup = ['secret' => $totpSecret, 'qr_svg' => $totpQrSvg];
+    }
+}
+
+$totpCodes = null;
+if (is_array($twoFactor['recovery_codes'] ?? null)) {
+    $totpCodes = [];
+    foreach ($twoFactor['recovery_codes'] as $rawTotpCode) {
+        if (is_scalar($rawTotpCode)) {
+            $totpCodes[] = (string) $rawTotpCode;
+        }
+    }
+    if ($totpCodes === []) {
+        $totpCodes = null;
+    }
+}
+
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
     ['label' => 'Profil', 'href' => null],
@@ -137,6 +167,149 @@ $breadcrumbs = [
           </div>
         </fieldset>
         <div class="form-text mt-2">Preferensi disimpan di browser ini, bukan di akun.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mt-1">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header bg-body py-2 fw-semibold d-flex flex-wrap align-items-center justify-content-between gap-2">
+        <span>Verifikasi dua langkah (2FA)</span>
+        <span class="badge <?= $totpEnabled ? 'text-bg-success' : 'text-bg-light border' ?>">
+          <?= e($totpEnabled ? 'Aktif' : 'Nonaktif') ?>
+        </span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Kode TOTP dari aplikasi authenticator (Google Authenticator, Aegis, Microsoft Authenticator, dsb.)
+          menjadi langkah kedua saat login, sehingga password saja tidak cukup.
+          <?php if ($totpEnabled): ?>
+            <span class="d-block mt-1">
+              Kode pemulihan tersisa: <strong><?= e((string) $totpRemaining) ?></strong>
+            </span>
+          <?php endif; ?>
+        </p>
+
+        <?php // Kode pemulihan hanya dikirim sekali lewat session lalu dihapus controller. ?>
+        <?php if ($totpCodes !== null): ?>
+          <div class="alert alert-warning" role="alert">
+            <p class="fw-semibold mb-1">Simpan kode pemulihan ini sekarang.</p>
+            <p class="small mb-2">
+              Kode hanya ditampilkan <strong>sekali</strong> dan tidak bisa dilihat lagi.
+              Simpan di tempat aman, misalnya password manager — tiap kode bisa dipakai sekali
+              bila aplikasi authenticator tidak tersedia.
+            </p>
+            <pre class="mb-0 border rounded-2 bg-body-tertiary p-3 mono" style="user-select: all;"><?= e(implode("\n", $totpCodes)) ?></pre>
+          </div>
+        <?php endif; ?>
+
+        <?php if ($totpEnabled): ?>
+          <div class="row g-4">
+            <div class="col-lg-6">
+              <h2 class="h6 mb-2">Nonaktifkan 2FA</h2>
+              <p class="text-danger small mb-2">
+                Setelah dinonaktifkan, akun hanya dilindungi password. Pastikan Anda yakin.
+              </p>
+              <form method="post" action="/profile/2fa/disable" class="row g-3">
+                <?= csrf_field() ?>
+                <div class="col-md-6">
+                  <label class="form-label" for="totp-disable-password">Password saat ini</label>
+                  <input type="password" class="form-control" name="current_password" id="totp-disable-password"
+                         required autocomplete="current-password">
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="totp-disable-code">Kode verifikasi</label>
+                  <input type="text" class="form-control" name="code" id="totp-disable-code"
+                         required autocomplete="one-time-code" maxlength="20"
+                         placeholder="123456">
+                </div>
+                <div class="col-12">
+                  <button type="submit" class="btn btn-outline-danger btn-sm">Nonaktifkan 2FA</button>
+                </div>
+              </form>
+            </div>
+            <div class="col-lg-6">
+              <h2 class="h6 mb-2">Kode pemulihan</h2>
+              <p class="text-muted small mb-2">
+                Buat ulang seluruh kode pemulihan? Kode lama langsung tidak berlaku dan kode baru
+                hanya ditampilkan sekali setelah dibuat.
+              </p>
+              <form method="post" action="/profile/2fa/recovery" class="row g-3">
+                <?= csrf_field() ?>
+                <div class="col-md-6">
+                  <label class="form-label" for="totp-recovery-password">Password saat ini</label>
+                  <input type="password" class="form-control" name="current_password" id="totp-recovery-password"
+                         required autocomplete="current-password">
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="totp-recovery-code">Kode verifikasi</label>
+                  <input type="text" class="form-control" name="code" id="totp-recovery-code"
+                         required autocomplete="one-time-code" maxlength="20"
+                         placeholder="123456">
+                </div>
+                <div class="col-12">
+                  <button type="submit" class="btn btn-outline-secondary btn-sm">Buat kode pemulihan baru</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        <?php elseif ($totpSetup !== null): ?>
+          <div class="row g-4">
+            <div class="col-md-5">
+              <?php if (($totpSetup['qr_svg'] ?? '') !== ''): ?>
+                <?php // Satu-satunya output tak di-escape: SVG QR tepercaya dari server (TwoFactorService::qrSvg). ?>
+                <div class="d-inline-block border rounded-3 bg-white p-2 mb-2" style="max-width: 260px;">
+                  <?= $totpSetup['qr_svg'] ?>
+                </div>
+                <div class="form-text">Pindai QR ini dengan aplikasi authenticator.</div>
+              <?php endif; ?>
+            </div>
+            <div class="col-md-7">
+              <div class="mb-3">
+                <div class="form-text mb-1">atau masukkan kunci manual</div>
+                <code class="d-block border rounded-2 bg-body-tertiary p-2 mono"
+                      style="user-select: all; word-break: break-all;"><?= e($totpSetup['secret']) ?></code>
+              </div>
+              <form method="post" action="/profile/2fa/enable" class="row g-3">
+                <?= csrf_field() ?>
+                <div class="col-sm-6">
+                  <label class="form-label" for="totp-enable-code">Kode verifikasi</label>
+                  <input type="text" class="form-control" name="code" id="totp-enable-code"
+                         required inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+                         autofocus placeholder="123456" aria-describedby="totp-enable-hint">
+                </div>
+                <div class="col-sm-6 d-flex align-items-end">
+                  <button type="submit" class="btn btn-primary btn-sm">Konfirmasi &amp; aktifkan</button>
+                </div>
+                <div class="col-12">
+                  <div class="form-text" id="totp-enable-hint">
+                    Masukkan 6 digit yang tampil di aplikasi authenticator setelah QR dipindai.
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        <?php else: ?>
+          <form method="post" action="/profile/2fa/setup" class="row g-3">
+            <?= csrf_field() ?>
+            <div class="col-md-6">
+              <label class="form-label" for="totp-setup-password">Password saat ini</label>
+              <input type="password" class="form-control" name="current_password" id="totp-setup-password"
+                     required autocomplete="current-password" aria-describedby="totp-setup-hint">
+            </div>
+            <div class="col-md-6 d-flex align-items-end">
+              <button type="submit" class="btn btn-primary btn-sm">Aktifkan 2FA</button>
+            </div>
+            <div class="col-12">
+              <div class="form-text" id="totp-setup-hint">
+                Password diminta untuk mengonfirmasi bahwa perubahan ini dilakukan oleh Anda sendiri.
+                Setelah itu Anda akan diminta memindai QR dan memasukkan 6 digit kode.
+              </div>
+            </div>
+          </form>
+        <?php endif; ?>
       </div>
     </div>
   </div>

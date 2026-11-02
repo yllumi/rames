@@ -421,13 +421,342 @@ class UserStore
         });
     }
 
+    // ==================================================================
+    // Two-factor authentication (TOTP) — field tambahan pada dokumen user,
+    // tanpa migrasi skema (kolom `data` SqliteStore = sumber kebenaran).
+    // ==================================================================
+
+    /**
+     * Apakah 2FA TOTP aktif untuk user.
+     *
+     * Statik murni (tanpa store) sehingga aman dipakai di luar store — mis.
+     * `AuthController::login()` yang menerima user hasil `verify()` (bentuk
+     * publik, tanpa secret). Aktif = secret base32 terisi **dan**
+     * `totp_enabled_at` terisi; dokumen publik membawa flag `totp_enabled`
+     * yang ekuivalen.
+     */
+    public static function totpEnabled(array $user): bool
+    {
+        if (($user['totp_enabled'] ?? false) === true) {
+            return true;
+        }
+
+        $secret = $user['totp_secret'] ?? '';
+        $enabledAt = $user['totp_enabled_at'] ?? '';
+
+        return is_string($secret) && trim($secret) !== ''
+            && is_string($enabledAt) && trim($enabledAt) !== '';
+    }
+
+    /**
+     * Jumlah kode pemulihan tersisa pada dokumen user (statik murni).
+     */
+    public static function recoveryCodeCount(array $user): int
+    {
+        $hashes = $user['totp_recovery_codes'] ?? [];
+        if (!is_array($hashes)) {
+            return 0;
+        }
+
+        $count = 0;
+        foreach ($hashes as $hash) {
+            if (is_string($hash) && $hash !== '') {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Secret TOTP mentah user (base32) atau `''` bila belum diatur.
+     *
+     * Hanya dipakai internal alur 2FA; **tidak** boleh dikirim ke view/session
+     * selain saat setup.
+     */
+    public function totpSecret(string $id): string
+    {
+        $user = $this->findById($id);
+        $secret = $user['totp_secret'] ?? '';
+
+        return is_string($secret) ? trim($secret) : '';
+    }
+
+    /**
+     * Aktifkan 2FA: simpan secret + hash kode pemulihan dalam **satu** tulis
+     * atomik, reset anti-replay (`totp_last_step = 0`).
+     *
+     * Kode pemulihan dinormalisasi lewat {@see self::normalizeRecoveryCode()}
+     * lalu di-hash bcrypt — plaintext tidak pernah disimpan.
+     *
+     * @param array<int,string> $recoveryCodes kode plaintext (sekali tampil)
+     * @throws InvalidArgumentException secret kosong/tidak valid
+     * @throws RuntimeException user tidak ditemukan
+     */
+    public function enableTotp(string $id, string $secret, array $recoveryCodes): void
+    {
+        // Normalisasi ke bentuk kanonik base32 (toleran spasi/hyphen/padding
+        // saat disalin dari authenticator) dan tolak secret yang tak bisa
+        // didekode / kosong.
+        try {
+            $decoded = Totp::base32Decode(trim($secret));
+        } catch (InvalidArgumentException) {
+            throw new InvalidArgumentException('Secret 2FA tidak valid.');
+        }
+        if ($decoded === '') {
+            throw new InvalidArgumentException('Secret 2FA tidak valid.');
+        }
+        $secret = Totp::base32Encode($decoded);
+
+        $hashes = [];
+        foreach ($recoveryCodes as $code) {
+            if (!is_scalar($code)) {
+                continue;
+            }
+            $normalized = self::normalizeRecoveryCode((string) $code);
+            if ($normalized === '') {
+                continue;
+            }
+            $hashes[] = password_hash($normalized, PASSWORD_BCRYPT);
+        }
+
+        $this->store->update(function (array &$data) use ($id, $secret, $hashes): void {
+            foreach ($data as &$user) {
+                if (($user['id'] ?? '') !== $id) {
+                    continue;
+                }
+                $user['totp_secret'] = $secret;
+                $user['totp_enabled_at'] = date('c');
+                $user['totp_last_step'] = 0;
+                $user['totp_recovery_codes'] = $hashes;
+                unset($user);
+
+                return;
+            }
+            unset($user);
+
+            throw new RuntimeException('User tidak ditemukan.');
+        });
+    }
+
+    /**
+     * Nonaktifkan 2FA: hapus secret, waktu aktivasi, anti-replay, dan hash
+     * kode pemulihan sekaligus.
+     *
+     * @throws RuntimeException user tidak ditemukan
+     */
+    public function disableTotp(string $id): void
+    {
+        $this->store->update(function (array &$data) use ($id): void {
+            foreach ($data as &$user) {
+                if (($user['id'] ?? '') !== $id) {
+                    continue;
+                }
+                unset(
+                    $user['totp_secret'],
+                    $user['totp_enabled_at'],
+                    $user['totp_last_step'],
+                    $user['totp_recovery_codes']
+                );
+                unset($user);
+
+                return;
+            }
+            unset($user);
+
+            throw new RuntimeException('User tidak ditemukan.');
+        });
+    }
+
+    /**
+     * Verifikasi kode TOTP user dengan anti-replay.
+     *
+     * Langkah yang cocok **harus** lebih besar dari `totp_last_step` (kode yang
+     * sama tidak bisa dipakai dua kali). Sukses ⇒ langkah disimpan dalam satu
+     * `update()`; gagal ⇒ tanpa mutasi.
+     */
+    public function verifyTotp(string $id, string $code, ?int $timestamp = null, int $window = 1): bool
+    {
+        $user = $this->findById($id);
+        if ($user === null) {
+            return false;
+        }
+
+        $secret = $user['totp_secret'] ?? '';
+        if (!is_string($secret) || trim($secret) === '') {
+            return false;
+        }
+
+        $step = Totp::verify($secret, $code, $timestamp, $window);
+        if ($step === null) {
+            return false;
+        }
+
+        $lastStep = (int) ($user['totp_last_step'] ?? 0);
+        if ($step <= $lastStep) {
+            return false;
+        }
+
+        $accepted = false;
+        $this->store->update(function (array &$data) use ($id, $step, &$accepted): void {
+            foreach ($data as &$user) {
+                if (($user['id'] ?? '') !== $id) {
+                    continue;
+                }
+                // Periksa ulang di dalam transaksi: request paralel bisa sudah
+                // memakai langkah yang sama.
+                if ($step <= (int) ($user['totp_last_step'] ?? 0)) {
+                    unset($user);
+
+                    return;
+                }
+                $user['totp_last_step'] = $step;
+                $accepted = true;
+                unset($user);
+
+                return;
+            }
+            unset($user);
+        });
+
+        return $accepted;
+    }
+
+    /**
+     * Normalisasi kode pemulihan: uppercase, hanya A-Z0-9 (toleran spasi/tanda
+     * hubung saat disalin dari tampilan).
+     */
+    public static function normalizeRecoveryCode(string $code): string
+    {
+        return (string) preg_replace('/[^A-Z0-9]+/', '', strtoupper(trim($code)));
+    }
+
+    /**
+     * Pakai satu kode pemulihan (single-use).
+     *
+     * Cocok dengan `password_verify()` terhadap salah satu hash; bila cocok,
+     * entri tersebut dihapus dalam satu `update()`. Tidak cocok ⇒ `false` tanpa
+     * mutasi.
+     */
+    public function consumeRecoveryCode(string $id, string $code): bool
+    {
+        $normalized = self::normalizeRecoveryCode($code);
+        if ($normalized === '') {
+            return false;
+        }
+
+        $user = $this->findById($id);
+        if ($user === null) {
+            return false;
+        }
+        $hashes = $user['totp_recovery_codes'] ?? [];
+        if (!is_array($hashes) || $hashes === []) {
+            return false;
+        }
+
+        $match = null;
+        foreach ($hashes as $index => $hash) {
+            if (is_string($hash) && $hash !== '' && password_verify($normalized, $hash)) {
+                $match = $index;
+                break;
+            }
+        }
+        if ($match === null) {
+            return false;
+        }
+
+        $consumed = false;
+        $this->store->update(function (array &$data) use ($id, $normalized, &$consumed): void {
+            foreach ($data as &$user) {
+                if (($user['id'] ?? '') !== $id) {
+                    continue;
+                }
+                $hashes = $user['totp_recovery_codes'] ?? [];
+                if (!is_array($hashes)) {
+                    unset($user);
+
+                    return;
+                }
+                foreach ($hashes as $index => $hash) {
+                    if (is_string($hash) && $hash !== '' && password_verify($normalized, $hash)) {
+                        unset($hashes[$index]);
+                        $user['totp_recovery_codes'] = array_values($hashes);
+                        $consumed = true;
+                        break;
+                    }
+                }
+                unset($user);
+
+                return;
+            }
+            unset($user);
+        });
+
+        return $consumed;
+    }
+
+    /**
+     * Ganti seluruh kode pemulihan dengan kumpulan baru (hash bcrypt).
+     *
+     * @param array<int,string> $codes kode plaintext (sekali tampil)
+     * @throws RuntimeException user tidak ditemukan
+     */
+    public function replaceRecoveryCodes(string $id, array $codes): void
+    {
+        $hashes = [];
+        foreach ($codes as $code) {
+            if (!is_scalar($code)) {
+                continue;
+            }
+            $normalized = self::normalizeRecoveryCode((string) $code);
+            if ($normalized === '') {
+                continue;
+            }
+            $hashes[] = password_hash($normalized, PASSWORD_BCRYPT);
+        }
+
+        $this->store->update(function (array &$data) use ($id, $hashes): void {
+            foreach ($data as &$user) {
+                if (($user['id'] ?? '') !== $id) {
+                    continue;
+                }
+                $user['totp_recovery_codes'] = $hashes;
+                unset($user);
+
+                return;
+            }
+            unset($user);
+
+            throw new RuntimeException('User tidak ditemukan.');
+        });
+    }
+
+    /**
+     * Jumlah kode pemulihan tersisa milik user (0 bila user tak ada/2FA mati).
+     */
+    public function recoveryCodesRemaining(string $id): int
+    {
+        $user = $this->findById($id);
+
+        return $user === null ? 0 : self::recoveryCodeCount($user);
+    }
+
     /**
      * @param string|null $firstUserId id user pertama (untuk berkas legacy tanpa role)
-     * @return array{id:string, username:string, role:string, created_at:string, email:string, server_select:bool, server_ids:array<int,string>}
+     * @return array{id:string, username:string, role:string, created_at:string, email:string, server_select:bool, server_ids:array<int,string>, totp_enabled:bool}
      */
     private function publicUser(array $user, ?string $firstUserId = null): array
     {
-        unset($user['password_hash']);
+        // Evaluasi status 2FA SEBELUM rahasianya dibuang, lalu hanya ekspos flag
+        // boolean — secret/hash kode pemulihan tidak boleh masuk session/view.
+        $totpEnabled = self::totpEnabled($user);
+        unset(
+            $user['password_hash'],
+            $user['totp_secret'],
+            $user['totp_enabled_at'],
+            $user['totp_last_step'],
+            $user['totp_recovery_codes']
+        );
         $explicit = (string) ($user['role'] ?? '');
         $user['role'] = in_array($explicit, [self::ROLE_ADMIN, self::ROLE_MEMBER], true)
             ? $explicit
@@ -439,6 +768,8 @@ class UserStore
         // agar session, view, dan `ServerAccess` tidak perlu menebak bentuknya.
         $user['server_select'] = self::serverSelectOf($user);
         $user['server_ids'] = self::serverIdsOf($user);
+        // Tipe stabil: `totp_enabled` selalu bool pada bentuk publik.
+        $user['totp_enabled'] = $totpEnabled;
 
         return $user;
     }

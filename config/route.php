@@ -229,6 +229,10 @@ if ($ramesMode === 'agent') {
 */
 Route::get('/login', [AuthController::class, 'loginForm']);
 Route::post('/login', [AuthController::class, 'login']);
+// Langkah kedua login 2FA TOTP: session `user` belum diisi sebelum kode
+// verifikasi lolos, jadi kedua route ini publik (lihat AuthMiddleware).
+Route::get('/login/2fa', [AuthController::class, 'twoFactorForm']);
+Route::post('/login/2fa', [AuthController::class, 'twoFactorVerify']);
 Route::get('/logout', [AuthController::class, 'logout']);
 
 // Kesehatan dashboard (publik, lihat AuthMiddleware::PUBLIC_PATHS): dipakai helper
@@ -543,6 +547,12 @@ Route::post('/users/{id}/servers', [UserController::class, 'setServerAccess']);
 Route::get('/profile', [ProfileController::class, 'index']);
 Route::post('/profile/email', [ProfileController::class, 'setEmail']);
 Route::post('/profile/password', [ProfileController::class, 'changePassword']);
+// 2FA TOTP self-service (anti-IDOR: id user selalu dari session; password
+// saat ini + kode verifikasi wajib untuk aksi sensitif).
+Route::post('/profile/2fa/setup', [ProfileController::class, 'startTotpSetup']);
+Route::post('/profile/2fa/enable', [ProfileController::class, 'enableTotp']);
+Route::post('/profile/2fa/disable', [ProfileController::class, 'disableTotp']);
+Route::post('/profile/2fa/recovery', [ProfileController::class, 'regenerateTotpRecovery']);
 
 /*
 |--------------------------------------------------------------------------

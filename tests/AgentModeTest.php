@@ -135,15 +135,18 @@ class AgentModeTest extends TestCase
      * `POST /apps/import` — admin-only, dashboard-only (agent tidak punya daftar
      * project Engine host ini).
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 145;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 151;
 
-    /** Definisi di atas menghasilkan 151 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 151;
+    /** Definisi di atas menghasilkan 157 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 157;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
         'GET /login',
         'POST /login',
+        // Langkah kedua login 2FA TOTP (dashboard-only; agent tidak punya sesi).
+        'GET /login/2fa',
+        'POST /login/2fa',
         'GET /apps',
         // Impor project compose yang sudah berjalan: admin-only & dashboard-only.
         'GET /apps/import',
