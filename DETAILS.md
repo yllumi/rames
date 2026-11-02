@@ -189,7 +189,7 @@ Buka `http://{app}.{APP_DOMAIN}` di browser. Pastikan DNS subdomain mengarah ke 
 
 ### Langkah 6 — (Opsional) Custom domain & SSL
 
-1. Buka halaman detail app → kartu **Custom Domain** → isi domain (mis. `app.example.org`) → **Set**.
+1. Buka halaman detail app → kartu **Custom Domain** → isi domain (mis. `app.example.org`) → **Set**. Kartu lalu menyebut target DNS: arahkan **record A/AAAA** domain ke **alamat publik server tempat app berjalan** — untuk app di server agent, **bukan** IP server dashboard (kalau salah, Let's Encrypt HTTP-01 akan `404`). Alamat dibaca dari registry server (**tanpa resolusi DNS**, tanpa tebakan); bila tak bisa dipastikan, UI menampilkan arahan generik `A/AAAA` + tautan **Servers** (`/servers`, admin), dan alert disembunyikan bila SSL sudah aktif.
 2. Buka halaman **Domains** (`/domains`, tab **Semua Domain**). Bila custom domain di-set, app tampil sebagai **dua baris** (custom domain + subdomain redirect) — masing-masing bisa di-SSL-kan sendiri. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi). Klik ini berjalan **tanpa reload halaman** — baris tabel diperbarui di tempat dan status `pending` di-*poll* via JSON hingga selesai; tombol tetap berupa `<form>` biasa sehingga **fallback tanpa JS** tetap bekerja. Domain parkir (admin) juga bisa di-SSL-kan dari tabel yang sama. Untuk app yang berjalan di **server agent**, penerbitan dijalankan **di server itu** dan `ADMIN_EMAIL` diambil dari `secrets/agent.env` server itu — bukan `.env` dashboard ([detail](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
 
 ### Reload Nginx host (dari dashboard)

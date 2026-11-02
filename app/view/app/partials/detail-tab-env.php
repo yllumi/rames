@@ -69,7 +69,7 @@
       </div>
       <div class="p-3">
         <p class="text-muted small mb-3">
-          Nilai ter-mask; klik 👁 untuk melihat. Perubahan diterapkan dengan menciptakan
+          Nilai ter-mask; klik 👁 per baris atau tombol <strong>Tampilkan semua</strong>. Perubahan diterapkan dengan menciptakan
           ulang container yang env-nya berubah (tanpa rebuild source). Variabel tersedia
           untuk substitusi <code>${VAR}</code> di <span class="mono">docker-compose.yml</span>
           dan di-inject ke environment <strong>semua container</strong> app.
@@ -81,6 +81,7 @@
           <?php endif; ?>
         </p>
         <div class="d-flex flex-wrap gap-2 align-items-center">
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="env-toggle-all" aria-pressed="false" title="Tampilkan semua nilai variabel">👁 Tampilkan semua</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" id="env-add-row">＋ Tambah variabel</button>
           <button type="submit" class="btn btn-primary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>Simpan &amp; Terapkan</button>
           <?php if ($isBusy): ?>
@@ -98,7 +99,53 @@
   var table = document.getElementById('env-table');
   var addBtn = document.getElementById('env-add-row');
   if (!table || !addBtn) return;
+  var toggleAllBtn = document.getElementById('env-toggle-all');
+  // Status global "semua nilai sedang tampil" — dipakai baris baru agar ikut
+  // aturan yang sama, dan diselaraskan ulang setiap kali 👁 per baris diklik.
+  var revealedAll = false;
   var rowIndex = <?= (int) count($envVars) ?>;
+
+  function envValues() {
+    var tbody = table.querySelector('tbody');
+    if (!tbody) return [];
+    return Array.prototype.slice.call(tbody.querySelectorAll('.env-value'));
+  }
+
+  function isAllRevealed() {
+    var values = envValues();
+    if (!values.length) return false;
+    return values.every(function (input) { return input.type === 'text'; });
+  }
+
+  function syncToggleAll() {
+    if (!toggleAllBtn) return;
+    revealedAll = isAllRevealed();
+    toggleAllBtn.textContent = revealedAll ? '🙈 Sembunyikan semua' : '👁 Tampilkan semua';
+    toggleAllBtn.setAttribute('aria-pressed', revealedAll ? 'true' : 'false');
+    toggleAllBtn.title = revealedAll ? 'Sembunyikan semua nilai variabel' : 'Tampilkan semua nilai variabel';
+  }
+
+  function setRowRevealed(tr, reveal) {
+    var input = tr.querySelector('.env-value');
+    if (!input) return;
+    input.type = reveal ? 'text' : 'password';
+    var btn = tr.querySelector('.env-reveal');
+    if (btn) btn.textContent = reveal ? '🙈' : '👁';
+  }
+
+  if (toggleAllBtn) {
+    // Tampilkan/sembunyikan SEMUA nilai sekaligus (tidak submit, tidak ubah nilai).
+    toggleAllBtn.addEventListener('click', function () {
+      var reveal = !isAllRevealed();
+      var rows = table.querySelectorAll('tbody tr[data-env-row]');
+      for (var i = 0; i < rows.length; i++) setRowRevealed(rows[i], reveal);
+      syncToggleAll();
+    });
+
+    // Label awal selalu konsisten dengan kondisi DOM (mis. browser me-restore form).
+    syncToggleAll();
+  }
+
   addBtn.addEventListener('click', function () {
     var tr = document.createElement('tr');
     tr.setAttribute('data-env-row', '');
@@ -110,6 +157,8 @@
       '</div></td>' +
       '<td class="text-end"><input class="form-check-input" type="checkbox" name="env_delete[]" title="Hapus variabel ini"></td>';
     table.querySelector('tbody').appendChild(tr);
+    // Baris baru ikut status global: bila semua sedang tampil, langsung tampil.
+    setRowRevealed(tr, revealedAll);
     rowIndex++;
   });
 
@@ -121,6 +170,8 @@
     if (!input) return;
     input.type = input.type === 'password' ? 'text' : 'password';
     btn.textContent = input.type === 'password' ? '👁' : '🙈';
+    // Jangan biarkan label tombol global berbohong setelah toggle per baris.
+    syncToggleAll();
   });
 })();
 </script>

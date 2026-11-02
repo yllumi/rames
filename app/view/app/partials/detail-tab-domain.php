@@ -157,6 +157,34 @@
     <?php endif; ?>
   </div>
   <div class="card-body">
+  <?php
+  // Target DNS custom domain. `$serverAddress` (IP publik server pemilik app)
+  // dikirim controller dan boleh kosong bila alamatnya tak bisa dipastikan;
+  // nilai mentah apa pun tetap di-escape saat dirender. Label server memakai
+  // `$serverName` dari controller, fallback turunan `detail-setup.php`
+  // (`lokal` untuk server lokal, id server untuk app remote).
+  $domainServerAddress = trim((string) ($serverAddress ?? ''));
+  $domainServerLabel = trim((string) ($serverName ?? ''));
+  if ($domainServerLabel === '') {
+      $domainServerLabel = trim((string) ($appServerName ?? ''));
+  }
+  if ($domainServerLabel === '') {
+      $domainServerLabel = 'lokal';
+  }
+  // Jenis record DNS (`A` untuk IPv4/hostname, `AAAA` untuk IPv6) diturunkan
+  // dari alamat di atas lewat helper `ServerAddress::recordType()`. Alamat
+  // kosong = alamat belum pasti ⇒ teks generik `A/AAAA`. Helper bisa tak
+  // tersedia saat partial dirender di luar autoload penuh (smoke test), jadi
+  // `class_exists()` + fallback `A` menjaga partial tetap aman.
+  $domainRecordType = 'A';
+  if ($domainServerAddress !== '' && class_exists(\app\library\Deploy\ServerAddress::class)) {
+      try {
+          $domainRecordType = \app\library\Deploy\ServerAddress::recordType($domainServerAddress);
+      } catch (\Throwable) {
+          $domainRecordType = 'A';
+      }
+  }
+  ?>
     <?php if ($customDomain): ?>
       <dl class="app-info mb-3">
         <div class="app-info-item">
@@ -177,6 +205,15 @@
           <dd class="v mb-0 small"><span class="text-muted">redirect ke custom domain</span></dd>
         </div>
       </dl>
+      <?php if ($canDomain && !$customSslActive): ?>
+      <div class="alert alert-info py-2 small" role="alert">
+        <?php if ($domainServerAddress !== ''): ?>
+        Arahkan DNS <strong><?= e($domainRecordType) ?></strong> record <span class="mono"><?= e($customDomain) ?></span> ke <span class="mono"><?= e($domainServerAddress) ?></span> (server: <em><?= e($domainServerLabel) ?></em>) sebelum mengaktifkan SSL — Let's Encrypt memvalidasi domain pada IP itu.
+        <?php else: ?>
+        Arahkan DNS <strong>A/AAAA</strong> record <span class="mono"><?= e($customDomain) ?></span> ke IP publik server tempat app ini berjalan (server: <em><?= e($domainServerLabel) ?></em>) sebelum mengaktifkan SSL. Periksa alamat server di halaman <a href="/servers">Servers</a> (admin) bila tidak yakin.
+        <?php endif; ?>
+      </div>
+      <?php endif; ?>
       <?php if ($customSslError): ?>
         <div class="alert alert-danger py-2 small"><?= e($customSslError) ?></div>
       <?php endif; ?>
@@ -222,7 +259,14 @@
           <button class="btn btn-primary btn-sm">Set Custom Domain</button>
         </div>
       </form>
-      <p class="text-muted small mb-0 mt-2">Setelah diset, subdomain bawaan akan redirect (301) ke custom domain. Arahkan DNS domain ke server ini, lalu aktifkan SSL-nya.</p>
+      <p class="text-muted small mb-0 mt-2">
+        Setelah diset, subdomain bawaan akan redirect (301) ke custom domain.
+        <?php if ($domainServerAddress !== ''): ?>
+        Arahkan DNS <strong><?= e($domainRecordType) ?></strong> record domain tersebut ke <span class="mono"><?= e($domainServerAddress) ?></span> (server: <em><?= e($domainServerLabel) ?></em>), lalu aktifkan SSL-nya.
+        <?php else: ?>
+        Arahkan DNS <strong>A/AAAA</strong> record domain tersebut ke IP publik server tempat app ini berjalan, lalu aktifkan SSL-nya.
+        <?php endif; ?>
+      </p>
     <?php endif; ?>
   </div>
 </section>

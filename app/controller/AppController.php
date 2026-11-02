@@ -29,6 +29,7 @@ use app\library\Deploy\EnvTemplate;
 use app\library\Deploy\ImportedApp;
 use app\library\Deploy\NetworkManager;
 use app\library\Deploy\ResourceLimits;
+use app\library\Deploy\ServerAddress;
 use app\library\Deploy\ServerResolver;
 use app\library\Deploy\SubdomainManager;
 use app\library\Db\DbContainerDetector;
@@ -437,9 +438,14 @@ class AppController
         // dari **server tempat app berjalan** (F3c): network server lain BUKAN
         // kandidat — satu network hanya bermakna di satu server, jadi
         // menawarkannya adalah bug lintas-server.
+        //
+        // Satu instance resolver dipakai ulang untuk seluruh render
+        // (`resolveForApp()` + alamat publik server): snapshot registry di-memo
+        // per berkas store, jadi tidak ada pembacaan registry berulang.
+        $resolver = $this->serverResolver();
         $appServer = null;
         try {
-            $appServer = (new ServerResolver())->resolveForApp($app);
+            $appServer = $resolver->resolveForApp($app);
         } catch (\Throwable $e) {
             // server tak dikenal: biarkan daftar kosong (jalur operasi lain yang
             // melaporkan galatnya dengan pesan yang lebih tepat)
@@ -521,9 +527,19 @@ class AppController
         // server lokal supaya view tetap menampilkan "lokal" seperti sebelumnya).
         $serverName = $this->serverNameForApp($appServer);
 
+        // Alamat publik server pemilik app (target DNS record custom domain).
+        // Satu sumber: `ServerAddress` — murni dari registry, **tanpa DNS**
+        // (worker persistent tidak boleh menunggu resolver). Hanya pengguna
+        // ber-ability `domain` yang melihat tab Domain, jadi role `viewer` tidak
+        // perlu membayar pembacaan registry server sama sekali
+        // (GOTCHA no. 25: token, PEM, dan URL dasar server tidak pernah masuk
+        // konteks view).
+        $serverAddress = app_can('domain', $app) ? $this->serverAddressForApp($app, $resolver) : '';
+
         return $this->renderView('app/detail', [
             'app' => $viewApp,
             'serverName' => $serverName,
+            'serverAddress' => $serverAddress,
             'live' => $live,
             'volumes' => $volumes,
             'availableNetworks' => $availableNetworks,
@@ -568,6 +584,61 @@ class AppController
         $name = trim((string) ($server['name'] ?? ''));
 
         return $name !== '' ? $name : trim((string) ($server['id'] ?? ''));
+    }
+
+    /**
+     * Alamat publik server pemilik app — target DNS record yang boleh
+     * ditampilkan ke user saat custom domain disimpan/dilihat.
+     *
+     * Satu pintu: {@see ServerAddress} (GOTCHA no. 25 — hanya alamat; token/
+     * PEM/`base_url` utuh tidak pernah keluar) dan **tanpa resolusi DNS**
+     * (jalur render worker persistent). `protected` = seam uji: tes controller
+     * bisa menyuntik nilai tanpa menyentuh registry nyata.
+     *
+     * @param array<string,mixed> $app
+     */
+    protected function serverAddressForApp(array $app, ?ServerResolver $resolver = null): string
+    {
+        return ServerAddress::forApp($app, $resolver);
+    }
+
+    /**
+     * Kalimat penutup flash `setDomain()`: menyebut **target DNS konkret**
+     * (alamat publik server pemilik app) plus jenis record (A/AAAA) bila bisa
+     * dipastikan, selain itu kalimat generik "ke IP server tempat app ini
+     * berjalan". Tidak ada DNS di sini — {@see ServerAddress} hanya membaca
+     * registry.
+     *
+     * `$label` mengikuti badge header: server **lokal** selalu `lokal` (bukan
+     * `name` baris seed seperti `lokal-utama`), server agent memakai `name`
+     * (fallback `id`). Tidak ada rahasia registry yang ikut.
+     *
+     * @param array<string,mixed> $app
+     */
+    private function domainDnsHint(array $app, string $domain): string
+    {
+        $resolver = $this->serverResolver();
+
+        $label = 'lokal';
+        try {
+            $server = $resolver->findForApp($app);
+            if ($server !== null && !ServerResolver::isLocal($server)) {
+                $name = trim((string) ($server['name'] ?? ''));
+                $id = trim((string) ($server['id'] ?? ''));
+                $label = $name !== '' ? $name : ($id !== '' ? $id : 'lokal');
+            }
+        } catch (\Throwable) {
+            // registry tak terbaca: kalimat generik tetap benar & tidak menyesatkan
+        }
+
+        $address = $this->serverAddressForApp($app, $resolver);
+        if ($address === '') {
+            return 'Jangan lupa arahkan DNS A/AAAA record ' . $domain
+                . ' ke IP server tempat app ini berjalan, lalu aktifkan SSL-nya.';
+        }
+
+        return 'Jangan lupa arahkan DNS ' . ServerAddress::recordType($address) . ' record ' . $domain
+            . ' ke ' . $address . ' (server ' . $label . '), lalu aktifkan SSL-nya.';
     }
 
     /**
@@ -2627,7 +2698,7 @@ class AppController
 
             // Reload Nginx di server app agar reverse proxy custom domain aktif.
             $reloadNote = $this->reloadNginxNote($app, $localReloader, $agentClient);
-            flash_set('success', 'Custom domain ' . $domain . ' diset. Subdomain bawaan kini redirect ke domain tersebut.' . ($reloadNote !== '' ? ' ' . $reloadNote : '') . ' Jangan lupa arahkan DNS domain ke server, lalu aktifkan SSL-nya.');
+            flash_set('success', 'Custom domain ' . $domain . ' diset. Subdomain bawaan kini redirect ke domain tersebut.' . ($reloadNote !== '' ? ' ' . $reloadNote : '') . ' ' . $this->domainDnsHint($app, $domain));
         } catch (\Throwable $e) {
             flash_set('error', $this->appErrorText($app, $e));
         }

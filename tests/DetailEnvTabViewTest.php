@@ -31,7 +31,13 @@ if (!defined('BASE_PATH')) {
  *  4. `$canEnv = false` (Viewer) ⇒ tidak ada form simpan/upload/import sama
  *     sekali, hanya pesan hak Operator;
  *  5. nilai env dari store di-escape (`<b>"&'` ⇒ `&lt;b&gt;&quot;&amp;&#039;`);
- *  6. `$isBusy = true` ⇒ input file/select/tombol submit dinonaktifkan.
+ *  6. `$isBusy = true` ⇒ input file/select/tombol submit dinonaktifkan;
+ *  7. tombol global `#env-toggle-all` dirender **tepat sekali** di dalam
+ *     `#env-form`, `type="button"` + `aria-pressed="false"` + `title`
+ *     "Tampilkan semua nilai variabel", berada **sebelum** `#env-add-row` dan
+ *     **tidak** ikut dinonaktifkan saat `$isBusy` (kontrol murni klien);
+ *  8. teks bantuan menyebut `per baris` dan tombol `Tampilkan semua`;
+ *  9. nol variabel env ⇒ tombol global tetap dirender sekali tanpa warning PHP.
  *
  * Pola sama dengan `CreateEnvFormViewTest`: partial dirender **penuh** di proses
  * terpisah dengan helper global di-stub, dan warning/notice PHP diubah menjadi
@@ -179,6 +185,10 @@ final class DetailEnvTabViewTest extends TestCase
         self::assertStringNotContainsString('⇧ Upload .env', $html);
         self::assertStringNotContainsString('⇩ Import dari .env.example', $html);
         self::assertStringNotContainsString('type="submit"', $html);
+        // Tombol global hanya hidup di dalam form env, jadi tidak boleh bocor
+        // ke tampilan viewer (blok `<script>` bawah tetap menyebut id-nya,
+        // jadi cukup kunci atribut `id="…"` milik elemen tombol).
+        self::assertStringNotContainsString('id="env-toggle-all"', $html);
 
         self::assertStringContainsString('hak <strong>Operator</strong>', $html);
     }
@@ -208,6 +218,82 @@ final class DetailEnvTabViewTest extends TestCase
         self::assertMatchesRegularExpression('/type="submit"[^>]*\bdisabled\b/', $html);
         self::assertMatchesRegularExpression('/disabled>⇩ Import dari \.env\.example/', $html);
         self::assertStringContainsString('Dinonaktifkan sementara app sedang diproses.', $html);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testTombolGlobalTampilkanSemuaSekaliDanSebelumTambahVariabel(): void
+    {
+        $form = $this->envFormSection($this->render());
+
+        // Tepat satu tombol global, tepat satu tombol tambah baris, dan
+        // urutannya: tombol global dulu (baris aksi: tampilkan → tambah → simpan).
+        self::assertSame(1, substr_count($form, 'id="env-toggle-all"'), 'tombol global harus tepat satu di dalam form env');
+        self::assertSame(1, substr_count($form, 'id="env-add-row"'), 'tombol tambah baris harus tepat satu');
+
+        $togglePos = strpos($form, 'id="env-toggle-all"');
+        $addPos = strpos($form, 'id="env-add-row"');
+        self::assertNotFalse($togglePos);
+        self::assertNotFalse($addPos);
+        self::assertLessThan($addPos, $togglePos, 'tombol global harus dirender sebelum #env-add-row');
+
+        $tag = $this->envToggleAllTag($form);
+        self::assertStringContainsString('type="button"', $tag);
+        self::assertStringNotContainsString('type="submit"', $tag);
+        self::assertStringContainsString('aria-pressed="false"', $tag);
+        self::assertStringContainsString('title="Tampilkan semua nilai variabel"', $tag);
+        self::assertStringContainsString('Tampilkan semua', $this->envToggleAllLabel($form));
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testTeksBantuanMenyebutTampilkanSemuaDanPerBaris(): void
+    {
+        $form = $this->envFormSection($this->render());
+
+        // Frasa ini hanya ada di paragraf bantuan (bukan di blok `<script>`).
+        self::assertStringContainsString('per baris', $form);
+        self::assertStringContainsString('klik 👁 per baris atau tombol <strong>Tampilkan semua</strong>', $form);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testBusyTidakMenonaktifkanTombolGlobalTampilkanSemua(): void
+    {
+        $this->writeEnvExample('myapp');
+
+        $html = $this->render(['isBusy' => true]);
+        $form = $this->envFormSection($html);
+
+        // Toggle adalah kontrol klien (tidak men-submit) ⇒ tetap aktif.
+        $tag = $this->envToggleAllTag($form);
+        self::assertStringNotContainsString('disabled', $tag, 'tombol global tidak boleh dinonaktifkan saat app sibuk');
+        self::assertStringNotContainsString('aria-disabled', $tag);
+        self::assertStringContainsString('Tampilkan semua', $this->envToggleAllLabel($form));
+
+        // Submit tetap dinonaktifkan: lapisan server tidak dilonggarkan.
+        self::assertMatchesRegularExpression('/type="submit"[^>]*\bdisabled\b/', $html);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testTanpaVariabelEnvTetapMerenderTombolGlobalSekali(): void
+    {
+        // Warning/notice PHP sudah diubah menjadi exception oleh harness, jadi
+        // daftar env kosong (`$envVars = []`, `count($envVars)` untuk `rowIndex`,
+        // tabel tanpa `<tr data-env-row>`) ikut terjaga bebas notice/undefined.
+        $html = $this->render(['app' => [
+            'id' => 'app-1',
+            'name' => 'myapp',
+            'env' => [],
+        ]]);
+
+        self::assertStringContainsString('Belum ada environment variable', $html);
+
+        $form = $this->envFormSection($html);
+        self::assertSame(1, substr_count($form, 'id="env-toggle-all"'));
+        self::assertStringContainsString('aria-pressed="false"', $this->envToggleAllTag($form));
+        self::assertStringContainsString('Tampilkan semua', $this->envToggleAllLabel($form));
     }
 
     // ==================================================================
@@ -257,6 +343,54 @@ final class DetailEnvTabViewTest extends TestCase
         }
 
         return (string) ob_get_clean();
+    }
+
+    /**
+     * Potongan HTML `<form … id="env-form">` … `</form>` pertama (isi form env).
+     *
+     * Blok `<script>` di bawah form memakai id (`getElementById('env-add-row')`,
+     * `getElementById('env-toggle-all')`) dan literal label yang sama
+     * (`'Tampilkan semua nilai variabel'`), jadi klaim "di dalam form" serta
+     * urutan tombol diuji pada potongan ini agar tidak tertipu skrip tersebut.
+     */
+    private function envFormSection(string $html): string
+    {
+        $start = strpos($html, 'id="env-form"');
+        self::assertNotFalse($start, 'form env (`#env-form`) tidak ditemukan');
+
+        $end = strpos($html, '</form>', $start);
+        self::assertNotFalse($end, 'penutup form env tidak ditemukan');
+
+        return substr($html, $start, $end - $start);
+    }
+
+    /**
+     * Tag pembuka `<button … id="env-toggle-all" …>` apa adanya, untuk memeriksa
+     * atribut (`type`, `aria-pressed`, `title`, `disabled`) tanpa terganggu teks.
+     */
+    private function envToggleAllTag(string $html): string
+    {
+        self::assertMatchesRegularExpression(
+            '/<button\b[^>]*\bid="env-toggle-all"[^>]*>/',
+            $html,
+            'tombol global `#env-toggle-all` tidak ditemukan'
+        );
+        preg_match('/<button\b[^>]*\bid="env-toggle-all"[^>]*>/', $html, $matches);
+
+        return $matches[0];
+    }
+
+    /** Label (isi) tombol global `#env-toggle-all`, mis. `👁 Tampilkan semua`. */
+    private function envToggleAllLabel(string $html): string
+    {
+        self::assertMatchesRegularExpression(
+            '/<button\b[^>]*\bid="env-toggle-all"[^>]*>.*?<\/button>/s',
+            $html,
+            'label tombol global `#env-toggle-all` tidak ditemukan'
+        );
+        preg_match('/<button\b[^>]*\bid="env-toggle-all"[^>]*>(.*?)<\/button>/s', $html, $matches);
+
+        return $matches[1];
     }
 
     private function installStubs(): void
