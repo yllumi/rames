@@ -298,6 +298,56 @@ class BackupAgentScopeTest extends TestCase
     }
 
     /**
+     * Registri control plane mengisi kolom "Backup terakhir" untuk baris yang
+     * status server-nya belum memuat run itu (mis. setelah backup manual, sebelum
+     * sinkron TTL berikutnya, atau volume yang tidak ikut run terakhir server).
+     */
+    public function testRegistryFallbackFillsMissingLastBackup(): void
+    {
+        $rows = [
+            [
+                'name' => 'demo-a_data',
+                'server_id' => 'srv-a',
+                'last_run_at' => null,
+                'last_ok' => false,
+                'last_message' => null,
+                'snapshots' => 0,
+            ],
+            [
+                'name' => 'demo-b_data',
+                'server_id' => 'srv-b',
+                'last_run_at' => '2026-11-03T21:00:00+07:00',
+                'last_ok' => false,
+                'last_message' => 'restic gagal',
+                'snapshots' => 2,
+            ],
+        ];
+        $registry = [
+            'srv-a::demo-a_data' => [
+                'last_backed_up_at' => '2026-11-03T20:00:00+07:00',
+                'snapshots' => 1,
+            ],
+            'srv-b::demo-b_data' => [
+                'last_backed_up_at' => '2026-11-03T19:00:00+07:00',
+                'snapshots' => 9,
+            ],
+        ];
+
+        $out = BackupController::withRegistryFallback($rows, $registry);
+
+        $this->assertSame('2026-11-03T20:00:00+07:00', $out[0]['last_run_at']);
+        $this->assertTrue($out[0]['last_ok']);
+        $this->assertNull($out[0]['last_message']);
+        $this->assertSame(1, $out[0]['snapshots'], 'snapshot dari registri dipakai bila baris belum tahu');
+
+        // Status server yang lebih baru (kegagalan) TIDAK ditimpa riwayat sukses lama.
+        $this->assertSame('2026-11-03T21:00:00+07:00', $out[1]['last_run_at']);
+        $this->assertFalse($out[1]['last_ok']);
+        $this->assertSame('restic gagal', $out[1]['last_message']);
+        $this->assertSame(2, $out[1]['snapshots']);
+    }
+
+    /**
      * Status menyinkronkan baris volume server agent (TTL) sehingga volume app
      * agent terlihat & bisa di-backup tanpa menunggu admin "Segarkan status";
      * poll berikutnya dalam TTL tidak menghubungi agent lagi, dan run lokal

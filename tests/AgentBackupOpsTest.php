@@ -759,6 +759,51 @@ class AgentBackupOpsTest extends TestCase
     }
 
     /**
+     * `volumeRows()` (agent) WAJIB meneruskan status run terakhir server itu ke
+     * `overview()` — tanpa ini kolom "Backup terakhir" selalu "belum pernah"
+     * walau snapshot sudah ada.
+     */
+    public function testVolumeRowsCarryLastRunStatus(): void
+    {
+        $status = [
+            'run_id' => 'r1',
+            'status' => 'ok',
+            'volumes' => [[
+                'name' => 'demo_data',
+                'status' => 'ok',
+                'finished_at' => '2026-11-03T20:00:00+07:00',
+                'error' => null,
+            ]],
+        ];
+        $service = new AgentBackupOpsSpyService([['name' => 'demo_data']], $status);
+
+        $configDir = $this->tmp . '/volume-rows-config';
+        mkdir($configDir, 0777, true);
+        $configState = $this->snapshotConfigState();
+        Config::clear();
+        file_put_contents($configDir . '/app.php', "<?php return [];\n");
+        file_put_contents(
+            $configDir . '/deploy.php',
+            '<?php return ' . var_export(['sqlite_file' => $this->tmp . '/volume-rows.sqlite'], true) . ';' . PHP_EOL
+        );
+        Config::load($configDir);
+
+        try {
+            (new BackupJobRunner(
+                $service,
+                null,
+                null,
+                new AppStore($this->tmp . '/volume-rows.sqlite'),
+                new AgentBackupOpsFakeDocker()
+            ))->volumeRows();
+        } finally {
+            $this->restoreConfigState($configState);
+        }
+
+        $this->assertSame($status, $service->seenLastStatus, 'status run terakhir harus diteruskan');
+    }
+
+    /**
      * @return array{0:int,1:array<string,string>,2:array<string,mixed>,3:string}
      */
     private function decode(Response $response): array
@@ -782,6 +827,34 @@ class AgentBackupOpsTest extends TestCase
             $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
         }
         @rmdir($dir);
+    }
+}
+
+/** VolumeBackupService tiruan: merekam argumen `lastStatus` yang diteruskan. */
+final class AgentBackupOpsSpyService extends VolumeBackupService
+{
+    /** @var array<string,mixed>|null */
+    public ?array $seenLastStatus = null;
+
+    public function __construct(private array $targets, private array $status)
+    {
+    }
+
+    public function targets(): array
+    {
+        return $this->targets;
+    }
+
+    public function overview(array $targets, array $lastStatus = []): array
+    {
+        $this->seenLastStatus = $lastStatus;
+
+        return [];
+    }
+
+    public function lastStatus(): array
+    {
+        return $this->status;
     }
 }
 

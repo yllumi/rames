@@ -185,6 +185,12 @@ class BackupController
 
         $user = $this->currentUser();
         $visible = BackupAccess::visible($catalog['volumes'], $apps, $user);
+        // Registri control plane = riwayat **sukses** per server. Isi kolom
+        // "Backup terakhir" yang belum dilaporkan baris (mis. baris agent yang
+        // baru saja di-backup sebelum sinkron TTL berikutnya, atau volume lain
+        // pada run terakhir server itu) supaya tidak tampil "belum pernah"
+        // padahal snapshot-nya ada.
+        $visible = self::withRegistryFallback($visible, $this->registryEntries());
         $status = self::publicStatus((new BackupReport())->readStatus());
 
         // `container_state` LIVE: satu panggilan Engine read-only untuk seluruh
@@ -1440,6 +1446,66 @@ class BackupController
         }
 
         return $byId;
+    }
+
+    /**
+     * Isi `last_run_at`/`last_ok`/`snapshots` dari riwayat sukses control plane
+     * **hanya bila baris belum punya** nilai lebih baru dari status server.
+     *
+     * Dipakai `status()` untuk baris volume agent yang belum tersinkron ulang
+     * (TTL) setelah backup selesai, dan untuk volume yang tidak ikut run
+     * terakhir server itu. Murni (tanpa I/O) supaya mudah diuji.
+     *
+     * @param array<int,array<string,mixed>> $rows
+     * @param array<string,array<string,mixed>> $registry keluaran `BackupRegistry::read()`
+     * @return array<int,array<string,mixed>>
+     */
+    public static function withRegistryFallback(array $rows, array $registry): array
+    {
+        if ($rows === [] || $registry === []) {
+            return $rows;
+        }
+
+        foreach ($rows as $index => $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = (string) ($row['name'] ?? '');
+            if ($name === '') {
+                continue;
+            }
+            $entry = $registry[BackupRegistry::scopeKey(self::serverIdOf($row), $name)] ?? null;
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $lastAt = trim((string) ($entry['last_backed_up_at'] ?? ''));
+            if ($lastAt !== '' && trim((string) ($row['last_run_at'] ?? '')) === '') {
+                $row['last_run_at'] = $lastAt;
+                $row['last_ok'] = true;
+                $row['last_message'] = null;
+            }
+            if ((int) ($row['snapshots'] ?? 0) === 0 && (int) ($entry['snapshots'] ?? 0) > 0) {
+                $row['snapshots'] = (int) $entry['snapshots'];
+            }
+            $rows[$index] = $row;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Riwayat backup control plane (best-effort; kegagalan = tanpa fallback).
+     *
+     * @return array<string,array<string,mixed>>
+     */
+    protected function registryEntries(): array
+    {
+        try {
+            return (new BackupRegistry())->read();
+        } catch (\Throwable) {
+            return [];
+        }
     }
 
     /**

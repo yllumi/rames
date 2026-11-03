@@ -214,6 +214,21 @@ class VolumeBackupService
     }
 
     /**
+     * Status run terakhir **server ini** (`runtime/backup/status.json`).
+     *
+     * Dipakai `BackupJobRunner::volumeRows()` (agent) agar baris volume yang
+     * dilaporkan ke control plane membawa `last_run_at`/`last_ok`/`last_message`
+     * dari run terakhir server itu — tanpa ini kolom **Backup terakhir** selalu
+     * "belum pernah" meski snapshot sudah ada.
+     *
+     * @return array<string,mixed>
+     */
+    public function lastStatus(): array
+    {
+        return $this->report->readStatus();
+    }
+
+    /**
      * Cache ringkasan (seam baca/tulis). `BackupController::status()` memakainya
      * untuk menyinkronkan baris volume server agent (TTL) — instance yang sama
      * dengan service, sehingga tes yang menyuntikkan cache temp tidak menyentuh

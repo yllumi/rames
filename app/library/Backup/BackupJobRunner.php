@@ -317,7 +317,11 @@ final class BackupJobRunner
     {
         $targets = $this->backup->targets();
 
-        return $this->backup->overview($targets);
+        // Sertakan status run terakhir **server ini** supaya baris membawa
+        // `last_run_at`/`last_ok`/`last_message` (kolom "Backup terakhir").
+        // Tanpa ini control plane selalu menampilkan "belum pernah" untuk volume
+        // agent walau snapshot-nya sudah ada.
+        return $this->backup->overview($targets, $this->backup->lastStatus());
     }
 
     /**
