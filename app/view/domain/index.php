@@ -325,7 +325,7 @@ $breadcrumbs = [
                           data-ssl-form data-ssl-url="<?= e($__ajaxUrl) ?>">
                       <?= csrf_field() ?>
                       <input type="hidden" name="domain" value="<?= e($__domain) ?>">
-                      <button type="submit" class="btn btn-<?= $__st === 'failed' ? 'outline-danger' : 'primary' ?> btn-sm" data-ssl-submit><?= $__st === 'failed' ? '↻ Retry SSL' : 'Aktifkan SSL' ?></button>
+                      <button type="submit" class="btn btn-<?= $__st === 'failed' ? 'outline-danger' : 'primary' ?> btn-sm" data-ssl-submit><?= $__st === 'failed' ? svg_icon('refresh') . ' Retry SSL' : 'Aktifkan SSL' ?></button>
                     </form>
                   <?php endif; ?>
                   <?php if ($__canSsl && $sslSupported): ?>
@@ -369,7 +369,7 @@ $breadcrumbs = [
         </div>
       </div>
     </div>
-    <script src="/js/ssl.js?v=4"></script>
+    <script src="/js/ssl.js?v=5"></script>
   <?php endif; ?>
 </section>
 <?php else: ?>

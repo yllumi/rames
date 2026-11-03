@@ -6,7 +6,7 @@
     <div class="d-flex align-items-center gap-2 flex-wrap">
       <?php if ($canLogs): ?>
         <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#deploy-log-modal"
-                title="Lihat log deploy terakhir / output build">⧉ Log deploy</button>
+                title="Lihat log deploy terakhir / output build"><?= svg_icon('terminal') ?> Log deploy</button>
       <?php endif; ?>
       <?php if ($isCompose): ?>
         <span class="text-muted small">Sumber: file compose <span class="mono"><?= e((string) ($compose['main_file'] ?? 'docker-compose.yml')) ?></span> · tanpa checkpoint Git</span>
@@ -51,7 +51,7 @@
                   onsubmit="return confirm('Rollback app <?= e($app['name']) ?> ke commit <?= e($hShort) ?>?\n\nSource code akan diganti ke versi itu dan container di-build ulang. Volume/data tidak dihapus.');">
               <?= csrf_field() ?>
               <input type="hidden" name="ref" value="<?= e((string) ($h['sha'] ?? '')) ?>">
-              <button class="btn btn-outline-warning btn-sm">↶ Rollback</button>
+              <button class="btn btn-outline-warning btn-sm"><?= svg_icon('rotate-left') ?> Rollback</button>
             </form>
           <?php else: ?>
             <span class="text-muted small">-</span>

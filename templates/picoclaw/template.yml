@@ -13,7 +13,7 @@ description: >-
   setup terbuka tanpa auth sehingga siapa pun yang bisa membuka domain app dapat
   mengklaimnya (lihat Panduan).
 category: AI/Asisten
-icon: "🦐"
+icon: "terminal"
 docs_url: https://docs.picoclaw.io/docs/docker/
 
 # Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke

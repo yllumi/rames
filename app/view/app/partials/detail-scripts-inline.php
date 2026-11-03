@@ -138,13 +138,13 @@ function copyDetailKey() {
           startPoll('queued', d.message || 'Menunggu worker rebuild ...');
         } else {
           showError((d && (d.error || d.msg)) ? (d.error || d.msg) : 'Gagal memulai rebuild.');
-          if (rebuildBtn) { rebuildBtn.disabled = false; rebuildBtn.textContent = '↻ Rebuild'; }
+          if (rebuildBtn) { rebuildBtn.disabled = false; rebuildBtn.replaceChildren(ramesIconNode('refresh'), document.createTextNode(' Rebuild')); }
           var actions = document.getElementById('app-actions');
           if (actions) actions.classList.remove('d-none');
         }
       }).catch(function () {
         showError('Gagal terhubung ke server. Periksa koneksi lalu coba lagi.');
-        if (rebuildBtn) { rebuildBtn.disabled = false; rebuildBtn.textContent = '↻ Rebuild'; }
+        if (rebuildBtn) { rebuildBtn.disabled = false; rebuildBtn.replaceChildren(ramesIconNode('refresh'), document.createTextNode(' Rebuild')); }
         var actions = document.getElementById('app-actions');
         if (actions) actions.classList.remove('d-none');
       });
@@ -176,10 +176,10 @@ function copyDetailKey() {
           return;
         }
         showError((d && (d.error || d.msg)) ? (d.error || d.msg) : 'Gagal membatalkan deploy.');
-        if (btn) { btn.disabled = false; btn.textContent = '■ Batalkan build'; }
+        if (btn) { btn.disabled = false; btn.replaceChildren(ramesIconNode('stop'), document.createTextNode(' Batalkan build')); }
       }).catch(function () {
         showError('Gagal terhubung ke server. Periksa koneksi lalu coba lagi.');
-        if (btn) { btn.disabled = false; btn.textContent = '■ Batalkan build'; }
+        if (btn) { btn.disabled = false; btn.replaceChildren(ramesIconNode('stop'), document.createTextNode(' Batalkan build')); }
       });
     });
   }

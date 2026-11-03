@@ -6,7 +6,7 @@ description: >-
   /var/www/html/public, jadi file di luar folder itu tidak dapat diakses dari
   browser. Password root MySQL dibuat otomatis dan di-inject ke aplikasi.
 category: Web
-icon: "🐘"
+icon: "code"
 docs_url: https://serversideup.net/open-source/docker-php/docs/
 
 # Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke

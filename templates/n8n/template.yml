@@ -1,7 +1,7 @@
 title: n8n
 description: Otomasi workflow self-hosted (n8n) dengan antarmuka web dan database internal.
 category: Otomasi
-icon: "🔀"
+icon: "workflow"
 docs_url: https://docs.n8n.io/hosting/installation/docker/
 
 # Variabel yang ditanyakan saat create. Kosong = pakai `default`; bila tidak ada

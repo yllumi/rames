@@ -315,7 +315,7 @@ $breadcrumbs = [
                       data-version="<?= e($__version) ?>"
                       <?= $__canAgentUpdate ? '' : 'disabled' ?>
                       title="<?= e($__updateTitle) ?>">
-                <span class="spinner-border spinner-border-sm me-1 d-none" aria-hidden="true"></span><span class="js-agent-update-label">⟳ Perbarui agen</span>
+                <span class="spinner-border spinner-border-sm me-1 d-none" aria-hidden="true"></span><span class="js-agent-update-label"><?= svg_icon('refresh') ?> Perbarui agen</span>
               </button>
             <?php endif; ?>
             <button type="button" class="btn btn-outline-secondary btn-sm js-server-test"
@@ -326,7 +326,7 @@ $breadcrumbs = [
               <form method="post" action="/servers/<?= e(rawurlencode($__id)) ?>/delete" class="d-inline"
                     onsubmit="return confirm('Hapus server <?= e($__name) ?>? App yang dideploy di server itu tidak ikut dihapus, tetapi berhenti dikelola dashboard (masih bisa dihapus dari daftar app; kontainer/volume di server itu harus dibersihkan manual).');">
                 <?= csrf_field() ?>
-                <button class="btn btn-outline-danger btn-sm" title="Hapus server">✕</button>
+                <button class="btn btn-outline-danger btn-sm" title="Hapus server"><?= svg_icon('trash') ?></button>
               </form>
             <?php endif; ?>
           </td>
@@ -338,6 +338,6 @@ $breadcrumbs = [
   <?php endif; ?>
 </section>
 
-<script src="/js/server.js?v=5"></script>
+<script src="/js/server.js?v=6"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

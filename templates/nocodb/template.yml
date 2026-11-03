@@ -8,7 +8,7 @@ description: >-
   dengan privilege minimum dan jangan mengekspos port database ke publik tanpa
   alasan.
 category: Database
-icon: "🗂️"
+icon: "database"
 docs_url: https://nocodb.com/docs/product/integrations/data-sources/connect-to-data-source
 
 env:

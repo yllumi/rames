@@ -5,7 +5,7 @@ description: >-
   scan QR, status koneksi, health). Kredensial WhatsApp tersimpan di volume sehingga
   tidak perlu scan QR ulang setelah restart.
 category: Messaging
-icon: "📱"
+icon: "message"
 docs_url: https://hub.docker.com/r/yllumi/wabaileys
 
 # Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke

@@ -5,7 +5,7 @@ description: >-
   dibuka ke host (app tanpa vhost/subdomain) — kelola database, user, serta import/export
   dump dari halaman /database dashboard.
 category: Database
-icon: "🐬"
+icon: "database"
 docs_url: https://hub.docker.com/_/mysql
 
 # Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke

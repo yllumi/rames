@@ -230,7 +230,7 @@
             <?= csrf_field() ?>
             <input type="hidden" name="domain" value="<?= e($customDomain) ?>">
             <button class="btn btn-<?= $customSslFailed ? 'outline-danger' : 'primary' ?> btn-sm">
-              <?= $customSslFailed ? '↻ Retry SSL' : 'Aktifkan SSL' ?>
+              <?= $customSslFailed ? svg_icon('refresh') . ' Retry SSL' : 'Aktifkan SSL' ?>
             </button>
           </form>
         <?php else: ?>
@@ -238,7 +238,7 @@
         <?php endif; ?>
         <form method="post" action="/apps/<?= e($app['id']) ?>/domain/remove"
               onsubmit="return confirm('Hapus custom domain <?= e($customDomain) ?>? Sertifikat SSL-nya (bila ada) akan di-revoke.');">
-          <?= csrf_field() ?><button class="btn btn-outline-danger btn-sm">✕ Hapus domain</button>
+          <?= csrf_field() ?><button class="btn btn-outline-danger btn-sm"><?= svg_icon('trash') ?> Hapus domain</button>
         </form>
         <?php endif; ?>
       </div>

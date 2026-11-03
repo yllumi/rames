@@ -319,6 +319,11 @@ code { font-family: var(--mono); font-size: .9em; color: var(--chip-fg); backgro
   font-size: .72rem; font-weight: 600; line-height: 1.35; text-align: center; overflow-wrap: anywhere;
 }
 
+/* ---------- Ikon SVG (sprite `partials/icon-sprite.php`) ---------- */
+.icon { width: 1em; height: 1em; flex: 0 0 auto; vertical-align: -0.125em; }
+.icon-lg { width: 2rem; height: 2rem; }
+.icon-sprite { position: absolute; overflow: hidden; }
+
 /* ---------- Empty state ---------- */
 .empty { text-align: center; padding: 48px 20px; }
 .empty-icon {

@@ -12,7 +12,7 @@ $status = is_array($status ?? null) ? $status : null;
     <form method="post" action="/nginx/reload" class="d-inline">
       <?= csrf_field() ?>
       <input type="hidden" name="tab" value="nginx">
-      <button class="btn btn-outline-secondary btn-sm" title="Validasi config lalu reload nginx host">↻ Reload Nginx</button>
+      <button class="btn btn-outline-secondary btn-sm" title="Validasi config lalu reload nginx host"><?= svg_icon('refresh') ?> Reload Nginx</button>
     </form>
     <?php else: ?>
     <span class="text-muted small">Reload hanya untuk admin (berlaku untuk seluruh host).</span>

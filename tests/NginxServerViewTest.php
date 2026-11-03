@@ -363,7 +363,7 @@ class NginxServerViewTest extends TestCase
         self::assertStringContainsString('Perbarui agen tidak tersedia: server ini nonaktif', $html);
 
         // Sudah dinaikkan cache-bust JS-nya (v=5: status `unreachable` + `reason`).
-        self::assertStringContainsString('src="/js/server.js?v=5"', $html);
+        self::assertStringContainsString('src="/js/server.js?v=6"', $html);
 
         $this->assertNoServerIndexSecretLeak($html);
     }
@@ -395,7 +395,10 @@ class NginxServerViewTest extends TestCase
         self::assertStringContainsString("new URLSearchParams({ _token: CSRF, mode: 'update' })", $js);
         self::assertStringContainsString('window.confirm(', $js);
         self::assertStringContainsString("target('data-server-update', id)", $js);
+        // Tidak ada jalur penyisipan HTML dari data server: ikon dinamis
+        // dibangun sebagai Node SVG (`ramesIconNode`), bukan string markup.
         self::assertStringNotContainsString('.innerHTML', $js, 'JS tidak boleh menyisipkan HTML dari data server');
+        self::assertStringContainsString("label.replaceChildren(ramesIconNode('refresh'), document.createTextNode(' ' + UPDATE_LABEL));", $js);
     }
 
     /**
@@ -693,14 +696,17 @@ class NginxServerViewTest extends TestCase
      */
     private function installStubs(): void
     {
-        if (function_exists('csrf_field')) {
-            return; // sudah terpasang di proses anak ini
+        if (!function_exists('csrf_field')) {
+            $file = sys_get_temp_dir() . '/rames-nginx-server-view-stubs-' . getmypid() . '.php';
+            file_put_contents($file, self::STUB_SOURCE);
+            require $file;
+            unlink($file);
         }
 
-        $file = sys_get_temp_dir() . '/rames-nginx-server-view-stubs-' . getmypid() . '.php';
-        file_put_contents($file, self::STUB_SOURCE);
-        require $file;
-        unlink($file);
+        // Footer merender sprite ikon ⇒ butuh `icon_paths()`/`svg_icon()` produksi.
+        if (!function_exists('svg_icon')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 
     /**

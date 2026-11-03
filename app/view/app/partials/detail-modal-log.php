@@ -28,7 +28,7 @@
             <input class="form-check-input" type="checkbox" role="switch" id="log-follow">
             <label class="form-check-label small" for="log-follow">Auto</label>
           </div>
-          <button type="button" class="btn btn-outline-secondary btn-sm" id="log-refresh" title="Muat ulang">↻</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="log-refresh" title="Muat ulang"><?= svg_icon('refresh') ?></button>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
         </div>
       </div>

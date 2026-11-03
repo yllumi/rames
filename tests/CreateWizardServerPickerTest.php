@@ -1061,14 +1061,18 @@ final class CreateWizardServerPickerTest extends TestCase
      */
     private function installStubs(): void
     {
-        if (function_exists('csrf_field')) {
-            return; // sudah terpasang di proses anak ini
+        if (!function_exists('csrf_field')) {
+            $file = sys_get_temp_dir() . '/rames-wizard-view-stubs-' . getmypid() . '.php';
+            file_put_contents($file, self::STUB_SOURCE);
+            require $file;
+            unlink($file);
         }
 
-        $file = sys_get_temp_dir() . '/rames-wizard-view-stubs-' . getmypid() . '.php';
-        file_put_contents($file, self::STUB_SOURCE);
-        require $file;
-        unlink($file);
+        // Sprite ikon (`<symbol id="ico-*">`) dirender footer, jadi view butuh
+        // `icon_paths()`/`svg_icon()` dari produksi (`app/functions.php`).
+        if (!function_exists('svg_icon')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 
     /** @return array<int,array{action:string,inner:string}> */

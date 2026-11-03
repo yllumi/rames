@@ -56,15 +56,15 @@ $canUpdate = is_admin() && !empty($pf['ok']) && !empty($check['update_available'
     <h2 class="h6 mb-0">Versi Dashboard <span class="text-muted fw-normal small">(self-update)</span></h2>
     <div class="d-flex gap-2 flex-wrap">
       <button type="button" class="btn btn-outline-secondary btn-sm" id="update-check-btn"
-              title="Bandingkan commit lokal dengan branch di remote (git ls-remote)">⟳ Cek Pembaruan</button>
+              title="Bandingkan commit lokal dengan branch di remote (git ls-remote)"><?= svg_icon('refresh') ?> Cek Pembaruan</button>
       <?php if (is_admin()): ?>
       <button type="button" class="btn btn-outline-danger btn-sm" id="update-rollback-btn"
               data-sha="<?= e($shortSha($rollbackSha)) ?>"
               <?= $rollbackSha !== '' && !empty($pf['ok']) ? '' : 'disabled' ?>
-              title="Kembalikan ke versi sebelum update terakhir">↶ Rollback<?= $rollbackSha !== '' && !empty($pf['ok']) ? ' ke ' . e($shortSha($rollbackSha)) : '' ?></button>
+              title="Kembalikan ke versi sebelum update terakhir"><?= svg_icon('rotate-left') ?> Rollback<?= $rollbackSha !== '' && !empty($pf['ok']) ? ' ke ' . e($shortSha($rollbackSha)) : '' ?></button>
       <button type="button" class="btn btn-primary btn-sm" id="update-start-btn"
               <?= $canUpdate ? '' : 'disabled' ?>
-              title="<?= $canUpdate ? 'Pull + rebuild + recreate dashboard' : 'Tidak tersedia: belum ada pembaruan / repo tidak bersih / bukan admin' ?>">⬆ Update Sekarang</button>
+              title="<?= $canUpdate ? 'Pull + rebuild + recreate dashboard' : 'Tidak tersedia: belum ada pembaruan / repo tidak bersih / bukan admin' ?>"><?= svg_icon('refresh') ?> Update Sekarang</button>
       <?php endif; ?>
     </div>
   </div>

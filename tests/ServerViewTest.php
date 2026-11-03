@@ -220,7 +220,7 @@ class ServerViewTest extends TestCase
         // Hapus server agent = form HTML biasa + CSRF (semua POST controller selalu redirect).
         self::assertStringContainsString('action="/servers/vps-jakarta/delete"', $html);
         self::assertStringContainsString('name="_token" value="smoke-csrf-token"', $html);
-        self::assertStringContainsString('src="/js/server.js?v=5"', $html);
+        self::assertStringContainsString('src="/js/server.js?v=6"', $html);
 
         $this->assertNoSecretLeak($html);
     }
@@ -571,14 +571,17 @@ class ServerViewTest extends TestCase
      */
     private function installStubs(): void
     {
-        if (function_exists('csrf_field')) {
-            return; // sudah terpasang di proses anak ini
+        if (!function_exists('csrf_field')) {
+            $file = sys_get_temp_dir() . '/rames-server-view-stubs-' . getmypid() . '.php';
+            file_put_contents($file, self::STUB_SOURCE);
+            require $file;
+            unlink($file);
         }
 
-        $file = sys_get_temp_dir() . '/rames-server-view-stubs-' . getmypid() . '.php';
-        file_put_contents($file, self::STUB_SOURCE);
-        require $file;
-        unlink($file);
+        // Footer merender sprite ikon ⇒ butuh `icon_paths()`/`svg_icon()` produksi.
+        if (!function_exists('svg_icon')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 
     /**

@@ -11,7 +11,7 @@ description: >-
   pengaturan belum otomatis (mis. gateway.controlUi.allowedOrigins untuk origin
   publik dan penambahan channel) dan harus dikonfigurasi lewat tab Terminal app.
 category: AI/Asisten
-icon: "🦞"
+icon: "terminal"
 docs_url: https://docs.openclaw.ai/install/docker
 
 # Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke

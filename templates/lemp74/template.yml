@@ -8,7 +8,7 @@ description: >-
   ke aplikasi. PHP 7.4 sudah EOL — pakai template `lemp` (PHP 8.4) untuk proyek
   baru.
 category: Web
-icon: "🐘"
+icon: "code"
 docs_url: https://serversideup.net/open-source/docker-php/docs/
 
 # Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke

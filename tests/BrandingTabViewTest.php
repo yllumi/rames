@@ -309,13 +309,16 @@ class BrandingTabViewTest extends TestCase
      */
     private function installStubs(): void
     {
-        if (function_exists('csrf_field')) {
-            return; // sudah terpasang di proses anak ini
+        if (!function_exists('csrf_field')) {
+            $file = sys_get_temp_dir() . '/rames-branding-tab-view-stubs-' . getmypid() . '.php';
+            file_put_contents($file, self::STUB_SOURCE);
+            require $file;
+            unlink($file);
         }
 
-        $file = sys_get_temp_dir() . '/rames-branding-tab-view-stubs-' . getmypid() . '.php';
-        file_put_contents($file, self::STUB_SOURCE);
-        require $file;
-        unlink($file);
+        // Footer merender sprite ikon ⇒ butuh `icon_paths()`/`svg_icon()` produksi.
+        if (!function_exists('svg_icon')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 }

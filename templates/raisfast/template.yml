@@ -7,7 +7,7 @@ description: >-
   tetap sama selama data terenkripsi (mis. token API) dipakai. Setelah deploy,
   buka /admin untuk menyiapkan akun admin.
 category: CMS
-icon: "🦀"
+icon: "terminal"
 docs_url: https://www.raisfast.com/en/docs
 
 env:

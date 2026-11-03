@@ -30,7 +30,7 @@ description: >-
   volume Docker persisten (`HOME` container `/home/opencode`), terpisah dari
   direktori project.
 category: AI/Asisten
-icon: "🧩"
+icon: "code"
 docs_url: https://opencode.ai/docs/
 
 # Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke

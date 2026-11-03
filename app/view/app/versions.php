@@ -28,7 +28,7 @@ $breadcrumbs = [
       <form method="post" action="/apps/<?= e($app['id']) ?>/deploy/cancel" class="ms-auto"
             onsubmit="return confirm('Batalkan proses build/deploy yang sedang berjalan?\n\nContainer yang sudah ada tidak dihapus.');">
         <?= csrf_field() ?>
-        <button type="submit" class="btn btn-outline-danger btn-sm">■ Batalkan build</button>
+        <button type="submit" class="btn btn-outline-danger btn-sm"><?= svg_icon('stop') ?> Batalkan build</button>
       </form>
     <?php endif; ?>
   </div>
@@ -100,7 +100,7 @@ $breadcrumbs = [
                   onsubmit="return confirm('Rollback app <?= e($app['name']) ?> ke commit <?= e($hShort) ?>?\n\nSource code akan diganti ke versi itu dan container di-build ulang. Volume/data tidak dihapus.');">
               <?= csrf_field() ?>
               <input type="hidden" name="ref" value="<?= e($hSha) ?>">
-              <button class="btn btn-outline-warning btn-sm">↶ Rollback</button>
+              <button class="btn btn-outline-warning btn-sm"><?= svg_icon('rotate-left') ?> Rollback</button>
             </form>
           <?php elseif ($isActive): ?>
             <span class="text-muted small">versi aktif</span>

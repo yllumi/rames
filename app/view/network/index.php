@@ -127,7 +127,7 @@ foreach ($rows as $r) {
                       onsubmit="return confirm('Hapus network <?= e($r['name']) ?>? Pastikan tidak dipakai container lain.');">
                   <?= csrf_field() ?>
                   <input type="hidden" name="server" value="<?= e($__serverId) ?>">
-                  <button class="btn btn-outline-danger btn-sm" title="Hapus network">✕</button>
+                  <button class="btn btn-outline-danger btn-sm" title="Hapus network"><?= svg_icon('trash') ?></button>
                 </form>
               <?php endif; ?>
             </td>

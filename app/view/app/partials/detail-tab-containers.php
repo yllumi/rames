@@ -60,21 +60,21 @@
             <?php if ($canLogs): ?>
               <button type="button" class="btn btn-outline-secondary btn-sm log-btn"
                       data-container="<?= e($cName) ?>" data-bs-toggle="modal" data-bs-target="#log-modal"
-                      title="Lihat log container ini (docker logs)">⧉ Log</button>
+                      title="Lihat log container ini (docker logs)"><?= svg_icon('terminal') ?> Log</button>
             <?php endif; ?>
             <?php if ($cRunning && $canFiles): ?>
               <button type="button" class="btn btn-outline-secondary btn-sm files-btn ms-1"
                       data-app="<?= e($app['id']) ?>" data-container="<?= e($cName) ?>"
-                      title="Jelajahi &amp; kelola berkas di dalam container ini">📁 Files</button>
+                      title="Jelajahi &amp; kelola berkas di dalam container ini"><?= svg_icon('folder') ?> Files</button>
             <?php endif; ?>
             <?php if ($cRunning && $canTerminal): ?>
               <button type="button" class="btn btn-outline-secondary btn-sm terminal-btn ms-1"
                       data-app="<?= e($app['id']) ?>" data-container="<?= e($cName) ?>"
-                      title="Buka shell interaktif (docker exec -it, shell otomatis: bash bila ada; user root)<?= $isRemoteServer ? ' di server agent ' . e($appServerName) : '' ?>">⌁ Terminal</button>
+                      title="Buka shell interaktif (docker exec -it, shell otomatis: bash bila ada; user root)<?= $isRemoteServer ? ' di server agent ' . e($appServerName) : '' ?>"><?= svg_icon('terminal') ?> Terminal</button>
               <button type="button" class="btn btn-outline-primary btn-sm run-btn ms-1"
                       data-app="<?= e($app['id']) ?>" data-container="<?= e($cName) ?>"
                       data-server="<?= $isRemoteServer ? e($appServerName) : '' ?>"
-                      title="Jalankan perintah satu kali (docker exec ... sh -c)<?= $isRemoteServer ? ' di server agent ' . e($appServerName) : '' ?>">> Run</button>
+                      title="Jalankan perintah satu kali (docker exec ... sh -c)<?= $isRemoteServer ? ' di server agent ' . e($appServerName) : '' ?>"><?= svg_icon('play') ?> Run</button>
             <?php endif; ?>
           <?php endif; ?>
         </td>

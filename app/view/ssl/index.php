@@ -114,7 +114,7 @@ foreach ($rows as $row) {
               <?php /* Fallback tanpa JS: form POST biasa. JS mencegat `submit` dan memakai `data-ssl-url`. */ ?>
               <form method="post" action="/ssl/<?= e($appId) ?>/enable" class="d-inline<?= $formVisible ? '' : ' d-none' ?>" data-ssl-form data-ssl-url="/api/ssl/<?= e($appId) ?>/enable">
                 <?= csrf_field() ?>
-                <button class="btn btn-<?= $st === 'failed' ? 'outline-danger' : 'primary' ?> btn-sm" data-ssl-submit><?= $st === 'failed' ? '↻ Retry SSL' : 'Aktifkan SSL' ?></button>
+                <button class="btn btn-<?= $st === 'failed' ? 'outline-danger' : 'primary' ?> btn-sm" data-ssl-submit><?= $st === 'failed' ? svg_icon('refresh') . ' Retry SSL' : 'Aktifkan SSL' ?></button>
               </form>
             <?php endif; ?>
             <?php if ($canSsl && $sslSupported): ?>
@@ -130,5 +130,5 @@ foreach ($rows as $row) {
 </div>
 
 <?php /* Status baris disegarkan lewat polling JSON `/api/ssl/status` (public/js/ssl.js). */ ?>
-<script src="/js/ssl.js?v=3"></script>
+<script src="/js/ssl.js?v=4"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

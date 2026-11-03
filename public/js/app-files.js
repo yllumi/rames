@@ -1,8 +1,10 @@
 /* File manager container (jelajah / unggah / unduh / edit teks / berkas baru / pindah / ekstrak arsip).
- * Dipakai di halaman detail app (tab Container) lewat tombol 📁 Files per container.
+ * Dipakai di halaman detail app (tab Container) lewat tombol "Files" per container.
  * Semua mutasi via POST + token CSRF; daftar & isi berkas via GET (JSON).
- * Nama/path dari server TIDAK pernah dimasukkan sebagai innerHTML — selalu
- * textContent/createElement (anti-XSS). XHR/unggahan dibatalkan saat modal ditutup
+ * Nama/path dari server TIDAK pernah masuk ke DOM sebagai HTML — selalu
+ * textContent/createElement (anti-XSS); ikon pun dibangun sebagai Node SVG
+ * (`iconNode()` → `ramesIconNode()`), jadi tidak ada string HTML dinamis.
+ * XHR/unggahan dibatalkan saat modal ditutup
  * atau saat halaman berpindah (pagehide/beforeunload); "Pindahkan" memakai picker
  * folder tujuan di dalam modal (bukan window.prompt). */
 (function () {
@@ -16,6 +18,15 @@
   var UPLOAD_LIMIT = 64 * 1024 * 1024;
 
   function el(id) { return document.getElementById(id); }
+
+  /**
+   * Node `<svg>` dari sprite ikon (`#ico-*`, lihat `public/js/icons.js`).
+   * Hanya nama ikon statis yang masuk; data dari server tetap lewat textContent.
+   */
+  function iconNode(name, cls) {
+    return ramesIconNode(name, cls);
+  }
+
   function enc(v) { return encodeURIComponent(String(v == null ? '' : v)); }
 
   function parseJson(text) {
@@ -291,7 +302,9 @@
       var open = document.createElement('button');
       open.type = 'button';
       open.className = 'btn btn-link btn-sm p-0 mono text-decoration-none';
-      open.textContent = '📁 ' + name;
+      open.textContent = '';
+      open.appendChild(iconNode('folder'));
+      open.appendChild(document.createTextNode(' ' + name));
       open.title = 'Buka folder';
       open.setAttribute('aria-label', 'Buka folder ' + name);
       open.addEventListener('click', function () { loadFiles(childPath(name)); });
@@ -299,7 +312,8 @@
     } else {
       var span = document.createElement('span');
       span.className = 'mono';
-      span.textContent = (isLink ? '🔗 ' : '📄 ') + name;
+      span.appendChild(iconNode(isLink ? 'link' : 'file'));
+      span.appendChild(document.createTextNode(' ' + name));
       tdName.appendChild(span);
     }
     if (isLink && entry.link) {
@@ -332,25 +346,25 @@
     var tdAct = document.createElement('td');
     tdAct.className = 'text-end text-nowrap';
     if (!isDir) {
-      tdAct.appendChild(actionBtn('⬇', 'Unduh ' + name, downloadEntry.bind(null, name)));
-      tdAct.appendChild(actionBtn('✎', 'Edit teks ' + name, startEdit.bind(null, name)));
+      tdAct.appendChild(actionBtn('download', 'Unduh ' + name, downloadEntry.bind(null, name)));
+      tdAct.appendChild(actionBtn('edit', 'Edit teks ' + name, startEdit.bind(null, name)));
       if (isArchive(name)) {
-        tdAct.appendChild(actionBtn('🗜', 'Ekstrak ' + name, extractEntry.bind(null, name)));
+        tdAct.appendChild(actionBtn('archive', 'Ekstrak ' + name, extractEntry.bind(null, name)));
       }
     }
-    tdAct.appendChild(actionBtn('⇄', 'Ubah nama ' + name, renameEntry.bind(null, entry)));
-    tdAct.appendChild(actionBtn('📦', 'Pindahkan ' + name, moveEntry.bind(null, entry)));
-    tdAct.appendChild(actionBtn('⌫', 'Hapus ' + name, deleteEntry.bind(null, entry), 'btn-outline-danger'));
+    tdAct.appendChild(actionBtn('rename', 'Ubah nama ' + name, renameEntry.bind(null, entry)));
+    tdAct.appendChild(actionBtn('move', 'Pindahkan ' + name, moveEntry.bind(null, entry)));
+    tdAct.appendChild(actionBtn('trash', 'Hapus ' + name, deleteEntry.bind(null, entry), 'btn-outline-danger'));
     tr.appendChild(tdAct);
 
     tbody.appendChild(tr);
   }
 
-  function actionBtn(text, label, fn, cls) {
+  function actionBtn(icon, label, fn, cls) {
     var b = document.createElement('button');
     b.type = 'button';
     b.className = 'btn ' + (cls || 'btn-outline-secondary') + ' btn-sm ms-1';
-    b.textContent = text;
+    b.appendChild(iconNode(icon));
     b.title = label;
     b.setAttribute('aria-label', label);
     b.addEventListener('click', fn);
@@ -598,7 +612,8 @@
         if (moveInsideSource(child, ST.moveSrc)) {
           var ro = document.createElement('div');
           ro.className = 'list-group-item px-0 text-muted small mono';
-          ro.textContent = '📁 ' + name + ' (folder yang dipindahkan)';
+          ro.appendChild(iconNode('folder'));
+          ro.appendChild(document.createTextNode(' ' + name + ' (folder yang dipindahkan)'));
           box.appendChild(ro);
           return;
         }
@@ -606,7 +621,8 @@
         var b = document.createElement('button');
         b.type = 'button';
         b.className = 'list-group-item list-group-item-action px-0 mono';
-        b.textContent = '📁 ' + name;
+        b.appendChild(iconNode('folder'));
+        b.appendChild(document.createTextNode(' ' + name));
         b.title = 'Buka folder ' + child;
         b.setAttribute('aria-label', 'Buka folder tujuan ' + name);
         b.addEventListener('click', function () { moveOpenDir(child); });

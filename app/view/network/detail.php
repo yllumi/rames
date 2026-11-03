@@ -98,7 +98,7 @@ $labels = is_array($network['Labels'] ?? null) ? $network['Labels'] : [];
               onsubmit="return confirm('Hapus network <?= e($name) ?>? Pastikan tidak dipakai container lain.');">
           <?= csrf_field() ?>
           <input type="hidden" name="server" value="<?= e($__serverId) ?>">
-          <button class="btn btn-outline-danger btn-sm">✕ Hapus network</button>
+          <button class="btn btn-outline-danger btn-sm"><?= svg_icon('trash') ?> Hapus network</button>
           <span class="text-muted small ms-2">Network yang masih dipakai container akan ditolak.</span>
         </form>
       </div>

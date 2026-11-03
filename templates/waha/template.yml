@@ -5,7 +5,7 @@ description: >-
   Dashboard ada di /dashboard, Swagger di /. QR juga tercetak di log container
   (tombol Log di halaman detail app).
 category: Messaging
-icon: "💬"
+icon: "message"
 docs_url: https://waha.devlike.pro/docs/overview/quick-start/
 
 # Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke

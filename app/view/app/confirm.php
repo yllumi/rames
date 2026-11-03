@@ -289,7 +289,7 @@ $breadcrumbs = [
                          class="form-control mono env-value" autocomplete="off"
                          placeholder="<?= $envRequired ? 'wajib diisi' : 'opsional' ?>"
                          <?= $envRequired ? 'required' : '' ?>>
-                  <button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai">👁</button>
+                  <button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai"><?= svg_icon('eye') ?></button>
                 </div>
               </td>
             </tr>
@@ -298,7 +298,7 @@ $breadcrumbs = [
         </table>
       </div>
 
-      <button type="button" class="btn btn-outline-secondary btn-sm" id="create-env-add-row">＋ Tambah variabel</button>
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="create-env-add-row"><?= svg_icon('plus') ?> Tambah variabel</button>
       <p class="form-text mb-0 mt-2">
         Variabel tambahan juga bisa diubah kapan saja di tab <strong>Environment</strong> halaman detail app.
       </p>
@@ -314,11 +314,14 @@ $breadcrumbs = [
     var rowIndex = 0;
     addBtn.addEventListener('click', function () {
       var tr = document.createElement('tr');
+      // Markup baris statis (tanpa data pengguna) — ikonnya sprite aplikasi
+      // sendiri (`ramesIcon()`), jadi aman lewat innerHTML. Ikon yang berubah
+      // dinamis (tombol mata) tetap dibangun sebagai Node (`ramesIconNode()`).
       tr.innerHTML =
         '<td><input type="text" name="env_extra[' + rowIndex + '][key]" class="form-control form-control-sm mono" placeholder="APP_KEY"></td>' +
         '<td><div class="input-group input-group-sm" style="max-width:520px;">' +
           '<input type="password" name="env_extra[' + rowIndex + '][value]" class="form-control mono env-value" placeholder="nilai" autocomplete="off">' +
-          '<button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai">👁</button>' +
+          '<button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai">' + ramesIcon('eye') + '</button>' +
         '</div></td>';
       table.querySelector('tbody').appendChild(tr);
       rowIndex++;
@@ -332,7 +335,7 @@ $breadcrumbs = [
       var input = group ? group.querySelector('.env-value') : null;
       if (!input) return;
       input.type = input.type === 'password' ? 'text' : 'password';
-      btn.textContent = input.type === 'password' ? '👁' : '🙈';
+      btn.replaceChildren(ramesIconNode(input.type === 'password' ? 'eye' : 'eye-off'));
     });
   })();
   </script>

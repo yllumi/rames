@@ -41,7 +41,7 @@ $isAdmin = (bool) ($isAdmin ?? false);
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
     <div class="text-muted small" data-m="status">Belum dimuat.</div>
     <button type="button" class="btn btn-outline-secondary btn-sm" data-m="refresh"
-            title="Ambil ulang metrik dari Docker Engine & /proc host">↻ Refresh</button>
+            title="Ambil ulang metrik dari Docker Engine & /proc host"><?= svg_icon('refresh') ?> Refresh</button>
   </div>
 
   <div class="alert alert-warning py-2 small d-none" role="alert" data-m="error"></div>

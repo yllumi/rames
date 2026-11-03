@@ -278,13 +278,16 @@ final class CreateEnvFormViewTest extends TestCase
 
     private function installStubs(): void
     {
-        if (function_exists('csrf_field')) {
-            return;
+        if (!function_exists('csrf_field')) {
+            $file = sys_get_temp_dir() . '/rames-envform-view-stubs-' . getmypid() . '.php';
+            file_put_contents($file, self::STUB_SOURCE);
+            require $file;
+            unlink($file);
         }
 
-        $file = sys_get_temp_dir() . '/rames-envform-view-stubs-' . getmypid() . '.php';
-        file_put_contents($file, self::STUB_SOURCE);
-        require $file;
-        unlink($file);
+        // Footer merender sprite ikon ⇒ butuh `icon_paths()`/`svg_icon()` produksi.
+        if (!function_exists('svg_icon')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 }

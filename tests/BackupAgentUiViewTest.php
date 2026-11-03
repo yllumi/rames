@@ -526,13 +526,16 @@ class BackupAgentUiViewTest extends TestCase
      */
     private function installStubs(): void
     {
-        if (function_exists('csrf_field')) {
-            return; // sudah terpasang di proses anak ini
+        if (!function_exists('csrf_field')) {
+            $this->stubFile = sys_get_temp_dir() . '/rames-backup-agent-ui-stubs-' . getmypid() . '.php';
+            file_put_contents($this->stubFile, self::STUB_SOURCE);
+            require $this->stubFile;
         }
 
-        $this->stubFile = sys_get_temp_dir() . '/rames-backup-agent-ui-stubs-' . getmypid() . '.php';
-        file_put_contents($this->stubFile, self::STUB_SOURCE);
-        require $this->stubFile;
+        // Footer merender sprite ikon ⇒ butuh `icon_paths()`/`svg_icon()` produksi.
+        if (!function_exists('svg_icon')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 
     private function assertNoSecretLeak(string $html): void

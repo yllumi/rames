@@ -11,6 +11,7 @@ $__brandLogo = brand_logo_url();
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <?php include app_path() . '/view/partials/theme-boot.php'; ?>
 <title><?= e($pageTitle ?? 'Dashboard') ?> · <?= e($__brandName) ?></title>
+<script src="/js/icons.js"></script>
 <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="/css/app.css">
 <meta name="csrf-token" content="<?= e(csrf_token()) ?>">

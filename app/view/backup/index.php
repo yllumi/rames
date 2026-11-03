@@ -40,7 +40,7 @@ $breadcrumbs = [
     </span>
     <?php if ($isAdmin): ?>
       <button type="button" class="btn btn-outline-secondary btn-sm" id="backup-refresh-status">Segarkan status</button>
-      <a class="btn btn-outline-secondary btn-sm" href="/backups/guide">📖 Panduan setup</a>
+      <a class="btn btn-outline-secondary btn-sm" href="/backups/guide"><?= svg_icon('book') ?> Panduan setup</a>
     <?php endif; ?>
     <a class="btn btn-outline-secondary btn-sm" href="/volumes">Volumes</a>
   </div>

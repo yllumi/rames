@@ -130,7 +130,7 @@ Jika hasil akan dijadikan template di `templates/<slug>/`:
   title: Nama Aplikasi
   description: Ringkasan singkat.
   category: Web
-  icon: "🚀"
+  icon: "package"   # nama ikon dari icon_paths() (app/functions.php): database, code, terminal, workflow, message, book, file, refresh, package, … — bukan emoji; kosong/tak dikenal ⇒ package
   docs_url: https://…
   env:
     - key: APP_URL

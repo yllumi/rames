@@ -305,7 +305,7 @@ $breadcrumbs = [
       <?php /* Fallback tanpa JS: POST biasa ke route admin; status tampil di halaman Domains. */ ?>
       <form method="post" action="<?= e($sslFormUrl) ?>" class="mt-3 d-flex flex-wrap align-items-center gap-2">
         <?= csrf_field() ?>
-        <button type="submit" class="btn btn-<?= $sslStatus === 'failed' ? 'outline-danger' : 'primary' ?> btn-sm"><?= $sslStatus === 'failed' ? '↻ Retry SSL' : 'Aktifkan SSL' ?></button>
+        <button type="submit" class="btn btn-<?= $sslStatus === 'failed' ? 'outline-danger' : 'primary' ?> btn-sm"><?= $sslStatus === 'failed' ? svg_icon('refresh') . ' Retry SSL' : 'Aktifkan SSL' ?></button>
         <span class="text-muted small">Status diperbarui di halaman Domains.</span>
       </form>
     <?php else: ?>

@@ -4,13 +4,13 @@
 
 ## 5.16 File Manager Container (docker exec + docker cp)
 
-Tab **Container** di detail app menampilkan tombol **📁 Files** di tiap baris container — hanya bila container `running` **dan** user punya ability `files` (operator+). Klik → modal `#files-modal` (`public/js/app-files.js`): breadcrumb + daftar isi, editor teks (aksi **`📄+ Berkas baru`** membuka editor kosong — berkas baru tercipta saat **Simpan**), tombol unggah (multi + progres), unduh, mkdir, rename, **pindah**, hapus, ekstrak. Target = **container app yang berjalan** (dipilih seperti Log/Terminal), bukan volume Docker. Spesifikasi produk: `SPECS.md` §7.9.
+Tab **Container** di detail app menampilkan tombol **Files** (ikon folder SVG) di tiap baris container — hanya bila container `running` **dan** user punya ability `files` (operator+). Klik → modal `#files-modal` (`public/js/app-files.js`): breadcrumb + daftar isi, editor teks (aksi **Berkas baru** membuka editor kosong — berkas baru tercipta saat **Simpan**), tombol unggah (multi + progres), unduh, mkdir, rename, **pindah**, hapus, ekstrak. Target = **container app yang berjalan** (dipilih seperti Log/Terminal), bukan volume Docker. Spesifikasi produk: `SPECS.md` §7.9.
 
 Kontrak route: `GET /api/apps/{id}/files` (list), `GET …/files/read`, `GET /apps/{id}/files/download`, `POST /apps/{id}/files/{write,mkdir,rename,move,delete,upload,extract}` (10 rute). Semua di balik `AuthMiddleware`; POST kena CSRF; envelope `{code:0,data}` / `{code:<status>,msg}` (unduh = respons file). Parameter `container` divalidasi `AppContainers::resolve()` — **jalur yang sama** dengan `TerminalController`/`LogController`. Aksi **berkas baru** memakai ulang `read` (probe eksistensi) + `write` (pembuatan berkas) sehingga **jumlah rute tetap 10**.
 
 ```mermaid
 flowchart TD
-    B["Tombol 📁 Files (hanya container running + ability files)"] --> C[FileController]
+    B["Tombol Files (ikon folder; hanya container running + ability files)"] --> C[FileController]
     C --> R["requireApp() → AppAccess::require('files')<br/>app tanpa hak → 404"]
     R --> RC["resolveContainer() → AppContainers::resolve()<br/>nama asing → 400"]
     RC --> G["ContainerFiles::assertRunning()<br/>inspect Engine → berhenti → 409"]

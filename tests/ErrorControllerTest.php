@@ -648,6 +648,8 @@ class FakeErrorController extends ErrorController
     private static function installStubs(): void
     {
         if (function_exists('csrf_field')) {
+            self::installIconHelpers();
+
             return;
         }
 
@@ -738,5 +740,19 @@ class FakeErrorController extends ErrorController
         file_put_contents($file, $stubs);
         require $file;
         @unlink($file);
+
+        self::installIconHelpers();
+    }
+
+    /**
+     * Footer halaman merender sprite ikon (`partials/icon-sprite.php`) ⇒ view
+     * butuh `icon_paths()`/`svg_icon()` dari produksi (stub global dipasang dulu
+     * supaya helper lain tetap versi stub).
+     */
+    private static function installIconHelpers(): void
+    {
+        if (!function_exists('svg_icon')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 }

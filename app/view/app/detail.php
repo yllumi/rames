@@ -55,12 +55,12 @@ include app_path() . '/view/app/partials/detail-setup.php'; ?>
   <?php if ((($guideHtml ?? '') !== '') || ($logContainer !== null && $logContainer !== '')): ?>
   <div class="d-flex flex-wrap gap-2 align-items-center">
     <?php if (($guideHtml ?? '') !== ''): ?>
-      <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#app-guide-modal">📖 Panduan</button>
+      <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#app-guide-modal"><?= svg_icon('book') ?> Panduan</button>
     <?php endif; ?>
     <?php if ($logContainer !== null && $logContainer !== ''): ?>
       <button type="button" class="btn btn-outline-secondary btn-sm log-btn"
               data-container="<?= e($logContainer) ?>" data-bs-toggle="modal" data-bs-target="#log-modal"
-              title="Lihat log container app (docker logs)">⧉ Log</button>
+              title="Lihat log container app (docker logs)"><?= svg_icon('terminal') ?> Log</button>
     <?php endif; ?>
   </div>
   <?php endif; ?>
@@ -92,13 +92,13 @@ include app_path() . '/view/app/partials/detail-setup.php'; ?>
       <div class="d-flex align-items-center gap-2 ms-auto">
         <?php if ($canLogs): ?>
           <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#deploy-log-modal"
-                  title="Lihat tahap worker &amp; output build docker compose (live)">⧉ Log build</button>
+                  title="Lihat tahap worker &amp; output build docker compose (live)"><?= svg_icon('terminal') ?> Log build</button>
         <?php endif; ?>
         <?php if ($canOperate): ?>
           <form method="post" action="/apps/<?= e($app['id']) ?>/deploy/cancel" id="cancel-deploy-form" class="d-inline">
             <?= csrf_field() ?>
             <button type="submit" class="btn btn-outline-danger btn-sm" id="cancel-deploy-btn"
-                    title="Hentikan worker deploy &amp; proses docker compose yang sedang build">■ Batalkan build</button>
+                    title="Hentikan worker deploy &amp; proses docker compose yang sedang build"><?= svg_icon('stop') ?> Batalkan build</button>
           </form>
         <?php endif; ?>
       </div>
@@ -110,7 +110,7 @@ include app_path() . '/view/app/partials/detail-setup.php'; ?>
   <div class="alert alert-danger d-flex align-items-start gap-2 flex-wrap" role="alert">
     <div class="flex-grow-1"><strong>Error:</strong> <?= e($app['error'] ?? $app['message'] ?? '') ?></div>
     <?php if ($canLogs): ?>
-      <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deploy-log-modal">⧉ Lihat log deploy</button>
+      <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deploy-log-modal"><?= svg_icon('terminal') ?> Lihat log deploy</button>
     <?php endif; ?>
   </div>
 <?php endif; ?>
@@ -118,13 +118,13 @@ include app_path() . '/view/app/partials/detail-setup.php'; ?>
 <?php if (!$isBusy && $canOperate): ?>
 <div class="d-flex flex-wrap gap-2 mb-4<?= $isImported ? ' align-items-center' : '' ?>" id="app-actions">
 <?php if (!$isImported): ?>
-  <form method="post" action="/apps/<?= e($app['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm"<?= $isCompose ? ' title="Ciptakan ulang container dari file compose & image lokal (tanpa build)"' : '' ?>>↻ <?= $isCompose ? 'Deploy Ulang' : 'Rebuild' ?></button></form>
+  <form method="post" action="/apps/<?= e($app['id']) ?>/rebuild" id="rebuild-form"><?= csrf_field() ?><button id="rebuild-btn" class="btn btn-outline-secondary btn-sm"<?= $isCompose ? ' title="Ciptakan ulang container dari file compose & image lokal (tanpa build)"' : '' ?>><?= svg_icon('refresh') ?> <?= $isCompose ? 'Deploy Ulang' : 'Rebuild' ?></button></form>
 <?php endif; ?>
 
   <?php if ($status === 'running'): ?>
-    <form method="post" action="/apps/<?= e($app['id']) ?>/stop"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm">■ Stop</button></form>
+    <form method="post" action="/apps/<?= e($app['id']) ?>/stop"><?= csrf_field() ?><button class="btn btn-outline-secondary btn-sm"><?= svg_icon('stop') ?> Stop</button></form>
   <?php elseif ($status === 'stopped'): ?>
-    <form method="post" action="/apps/<?= e($app['id']) ?>/start"><?= csrf_field() ?><button class="btn btn-success btn-sm">▶ Start</button></form>
+    <form method="post" action="/apps/<?= e($app['id']) ?>/start"><?= csrf_field() ?><button class="btn btn-success btn-sm"><?= svg_icon('play') ?> Start</button></form>
   <?php endif; ?>
 <?php if ($isImported): ?>
   <p class="text-muted small mb-0">Deploy, rebuild, environment, dan batas resource dikelola di terminal host (direktori proyek) — Rames tidak menjalankan <code>docker compose</code> untuk app ini.</p>

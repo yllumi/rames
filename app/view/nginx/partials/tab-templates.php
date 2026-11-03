@@ -287,7 +287,7 @@ $logoMap = template_logo_map();
           <?php if ($logoExtension !== ''): ?>
           <img class="template-logo-card" src="/images/templates/<?= e($slug) ?>.<?= e($logoExtension) ?>" alt="<?= e($title) ?>" loading="lazy">
           <?php else: ?>
-          <span class="fs-3" aria-hidden="true"><?= e($icon !== '' ? $icon : '📦') ?></span>
+          <span class="fs-3" aria-hidden="true"><?= template_icon($icon, 'icon-lg') ?></span>
           <?php endif; ?>
           <div class="flex-grow-1" style="min-width:0;">
             <div class="d-flex align-items-center flex-wrap gap-2">
@@ -331,7 +331,7 @@ $logoMap = template_logo_map();
       </div>
       <div class="card-footer d-flex justify-content-between align-items-center gap-2 flex-wrap">
         <?php if ($docsOk): ?>
-          <a class="small" href="<?= e($docsUrl) ?>" target="_blank" rel="noopener">Dokumentasi ↗</a>
+          <a class="small" href="<?= e($docsUrl) ?>" target="_blank" rel="noopener">Dokumentasi <?= svg_icon('external-link') ?></a>
         <?php else: ?>
           <span class="small text-muted">Tanpa tautan dokumentasi</span>
         <?php endif; ?>
@@ -341,7 +341,7 @@ $logoMap = template_logo_map();
                   data-valid="<?= $valid ? '1' : '0' ?>"
                   <?= $valid ? '' : 'disabled' ?>
                   title="<?= $valid ? 'docker pull seluruh image template ini di host' : 'Template tidak valid — perbaiki template.yml/compose-nya dulu' ?>">
-            <span class="spinner-border spinner-border-sm me-1 d-none" aria-hidden="true"></span>⬇ Tarik image
+            <span class="spinner-border spinner-border-sm me-1 d-none" aria-hidden="true"></span><?= svg_icon('download') ?> Tarik image
           </button>
         <?php else: ?>
           <span class="small text-muted">Tarik image hanya untuk admin.</span>

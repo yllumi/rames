@@ -18,9 +18,11 @@ use PHPUnit\Framework\TestCase;
  *     `antrean #2 dari 3` (1-based, teks di-`e()`);
  *  2. baris `pending` tanpa kedua field ⇒ tetap `proses ...`;
  *  3. baris `pending` `#1 dari 1` ⇒ `antrean #1 dari 1`;
- *  4. cache-buster naik (`/js/ssl.js?v=4` di `/domains`, `v=3` di `/ssl`);
+ *  4. cache-buster naik (`/js/ssl.js?v=5` di `/domains`, `v=4` di `/ssl`);
  *  5. `public/js/ssl.js` membaca `ssl_queue_position`/`ssl_queue_size` dan
- *     menulis teks lewat `textContent` — tanpa `innerHTML`.
+ *     menulis teks lewat `textContent`; **tanpa `innerHTML`** — ikon dinamis
+ *     dibangun sebagai Node SVG (`ramesIconNode('refresh')`) sehingga tidak
+ *     ada data server yang bisa menjadi HTML.
  *
  * Pola sama dengan `AppsViewModeTest`: proses terpisah, helper global di-stub,
  * partial header/footer diganti stub (view tetap dirender penuh — warning PHP
@@ -126,6 +128,11 @@ final class SslQueuePositionViewTest extends TestCase
         $this->stubFile = sys_get_temp_dir() . '/rames-ssl-queue-stubs-' . $suffix . '.php';
         file_put_contents($this->stubFile, self::STUB_SOURCE);
         require $this->stubFile;
+
+        // Footer merender sprite ikon ⇒ butuh `icon_paths()`/`svg_icon()` produksi.
+        if (!function_exists('svg_icon')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 
     protected function tearDown(): void
@@ -162,7 +169,7 @@ final class SslQueuePositionViewTest extends TestCase
 
         // Polling tetap dimulai otomatis karena ada baris pending.
         self::assertStringContainsString('data-ssl-autostart="1"', $html);
-        self::assertStringContainsString('/js/ssl.js?v=4', $html);
+        self::assertStringContainsString('/js/ssl.js?v=5', $html);
     }
 
     // ------------------------------------------------------------------
@@ -191,7 +198,7 @@ final class SslQueuePositionViewTest extends TestCase
         self::assertStringContainsString('>antrean #1 dari 1</span>', $satu);
 
         self::assertStringContainsString('data-ssl-autostart="1"', $html);
-        self::assertStringContainsString('/js/ssl.js?v=3', $html);
+        self::assertStringContainsString('/js/ssl.js?v=4', $html);
     }
 
     // ------------------------------------------------------------------
@@ -223,18 +230,19 @@ final class SslQueuePositionViewTest extends TestCase
         foreach (['ssl_queue_position', 'ssl_queue_size', 'queuePosition', 'queueSize', 'antrean #', 'proses ...'] as $needle) {
             self::assertStringContainsString($needle, $js, 'ssl.js harus memuat: ' . $needle);
         }
-        // Teks selalu lewat textContent; tidak ada penulisan `.innerHTML =` (komentar
-        // dokumen boleh menyebut larangannya).
+        // Teks selalu lewat textContent; ikon dinamis dibangun sebagai Node SVG
+        // (`ramesIconNode('refresh')`), jadi tidak ada penyisipan HTML sama sekali.
         self::assertStringContainsString('.textContent =', $js);
-        self::assertDoesNotMatchRegularExpression('/\.innerHTML\s*=/', $js);
+        self::assertStringNotContainsString('.innerHTML', $js, 'JS tidak boleh menyisipkan HTML dari data server');
+        self::assertStringContainsString("btn.replaceChildren(ramesIconNode('refresh'), document.createTextNode(' ' + LABEL_RETRY));", $js);
 
         // Cache-buster: satu-satunya mekanisme pembaruan skrip di browser.
         self::assertStringContainsString(
-            '<script src="/js/ssl.js?v=4"></script>',
+            '<script src="/js/ssl.js?v=5"></script>',
             (string) file_get_contents($root . '/app/view/domain/index.php')
         );
         self::assertStringContainsString(
-            '<script src="/js/ssl.js?v=3"></script>',
+            '<script src="/js/ssl.js?v=4"></script>',
             (string) file_get_contents($root . '/app/view/ssl/index.php')
         );
     }

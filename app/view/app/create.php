@@ -303,7 +303,7 @@ $logoMap = template_logo_map();
       <?php if ($hasLogo): ?>
       <img class="template-tile-logo" src="/images/templates/<?= e($slug) ?>.<?= e($logoExtension) ?>" alt="<?= e($t['title']) ?>" loading="lazy">
       <?php else: ?>
-      <span class="template-tile-fallback" aria-hidden="true"><?= ($t['icon'] ?? '') !== '' ? e($t['icon']) : '◈' ?></span>
+      <span class="template-tile-fallback" aria-hidden="true"><?= template_icon(is_string($t['icon'] ?? null) ? trim((string) $t['icon']) : '', 'icon-lg') ?></span>
       <?php endif; ?>
     </span>
     <span class="template-tile-name"><?= e($t['title']) ?></span>
@@ -323,7 +323,7 @@ $logoMap = template_logo_map();
             <?php if ($modalLogoExtension !== ''): ?>
             <img class="template-logo-inline me-1" src="/images/templates/<?= e($modalSlug) ?>.<?= e($modalLogoExtension) ?>" alt="">
             <?php else: ?>
-            <span class="me-1" aria-hidden="true"><?= ($t['icon'] ?? '') !== '' ? e($t['icon']) : '◈' ?></span>
+            <span class="me-1" aria-hidden="true"><?= template_icon(is_string($t['icon'] ?? null) ? trim((string) $t['icon']) : '') ?></span>
             <?php endif ?><?= e($t['title']) ?>
           </h2>
           <span class="badge text-bg-secondary"><?= e($t['category']) ?></span>

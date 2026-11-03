@@ -1,5 +1,5 @@
 /**
- * Tabel domain/SSL — aksi "Aktifkan SSL" / "↻ Retry SSL" sebagai **AJAX** +
+ * Tabel domain/SSL — aksi "Aktifkan SSL" / "Retry SSL" sebagai **AJAX** +
  * polling status, menggantikan `window.location.reload()` tiap 5 detik
  * (docs/SPECS.md §8a/§8j). Dipakai halaman `/domains` (tab Semua Domain) dan
  * halaman lama `/ssl`.
@@ -32,7 +32,8 @@
  *    `submit` (`preventDefault`) lalu memakai `data-ssl-url` (endpoint JSON).
  *  - Respons selalu dibaca sebagai **teks** lalu `JSON.parse` di dalam
  *    `try/catch`: respons non-2xx / bukan JSON tidak pernah jadi "sukses palsu",
- *    dan HTML tidak pernah disisipkan ke DOM (berkas ini **tanpa** `innerHTML`).
+ *    dan HTML dari server tidak pernah disisipkan ke DOM (ikon dinamis dibangun
+ *    sebagai elemen SVG lewat `ramesIconNode('refresh')`, tanpa HTML).
  *  - CSRF diambil dari `meta[name="csrf-token"]` dan dikirim di **body**
  *    (`_token`) karena `CsrfMiddleware` hanya membaca `$request->post('_token')`;
  *    header `X-CSRF-TOKEN` ikut sebagai sabuk pengaman. Token tidak pernah
@@ -85,7 +86,7 @@
   var POLL_MS = 5000;
   var FALLBACK_BADGE = 'badge-stopped';
   var LABEL_ENABLE = 'Aktifkan SSL';
-  var LABEL_RETRY = '\u21bb Retry SSL';
+  var LABEL_RETRY = 'Retry SSL';
   var MSG_UNREACHABLE = 'Gagal menghubungi server. Coba muat ulang halaman.';
   var MSG_EXPIRED = 'Sesi kedaluwarsa \u2014 muat ulang halaman lalu coba lagi.';
 
@@ -161,7 +162,14 @@
     btn.disabled = busy;
     btn.setAttribute('aria-busy', busy ? 'true' : 'false');
     var retry = statusOf(row) === 'failed';
-    btn.textContent = busy ? 'Memproses\u2026' : (retry ? LABEL_RETRY : LABEL_ENABLE);
+    if (busy) {
+      btn.textContent = 'Memproses\u2026';
+    } else if (retry) {
+      // Ikon sebagai Node SVG (bukan string HTML) + label teks.
+      btn.replaceChildren(ramesIconNode('refresh'), document.createTextNode(' ' + LABEL_RETRY));
+    } else {
+      btn.textContent = LABEL_ENABLE;
+    }
     btn.classList.toggle('btn-outline-danger', retry);
     btn.classList.toggle('btn-primary', !retry);
   }

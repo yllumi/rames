@@ -415,13 +415,17 @@ final class AppsViewModeTest extends TestCase
         // Default admin untuk header; tes non-admin menimpanya sebelum render.
         $GLOBALS['RAMES_VIEW_ADMIN'] ??= true;
 
-        if (function_exists('e')) {
-            return;
+        if (!function_exists('e')) {
+            $file = sys_get_temp_dir() . '/rames-apps-view-stubs-' . getmypid() . '.php';
+            file_put_contents($file, self::STUB_SOURCE);
+            require $file;
+            unlink($file);
         }
 
-        $file = sys_get_temp_dir() . '/rames-apps-view-stubs-' . getmypid() . '.php';
-        file_put_contents($file, self::STUB_SOURCE);
-        require $file;
-        unlink($file);
+        // Footer merender sprite ikon (`partials/icon-sprite.php`) ⇒ butuh
+        // `icon_paths()`/`svg_icon()` dari produksi.
+        if (!function_exists('svg_icon')) {
+            require_once dirname(__DIR__) . '/app/functions.php';
+        }
     }
 }

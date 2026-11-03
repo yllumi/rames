@@ -138,8 +138,8 @@ $breadcrumbs = [
       <?php $logoExtension = template_logo_map()[$template['slug'] ?? ''] ?? ''; ?>
       <?php if ($logoExtension !== ''): ?>
       <img class="template-logo-inline me-1" src="/images/templates/<?= e((string) $template['slug']) ?>.<?= e($logoExtension) ?>" alt="">
-      <?php elseif (($template['icon'] ?? '') !== ''): ?>
-      <span class="me-1"><?= e($template['icon']) ?></span>
+      <?php else: ?>
+      <span class="me-1" aria-hidden="true"><?= template_icon(is_string($template['icon'] ?? null) ? trim((string) $template['icon']) : '') ?></span>
       <?php endif; ?>
       <?= e($template['title']) ?>
     </h1>
@@ -152,7 +152,7 @@ $breadcrumbs = [
   </div>
   <?php if (($guide_html ?? '') !== ''): ?>
   <div class="d-flex flex-wrap gap-2 align-items-center">
-    <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#template-guide-modal">📖 Panduan</button>
+    <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#template-guide-modal"><?= svg_icon('book') ?> Panduan</button>
   </div>
   <?php endif; ?>
 </div>

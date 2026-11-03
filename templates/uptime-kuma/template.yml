@@ -1,7 +1,7 @@
 title: Uptime Kuma
 description: Monitoring uptime (HTTP/TCP/ping) dengan dashboard web dan notifikasi.
 category: Monitoring
-icon: "📈"
+icon: "refresh"
 docs_url: https://github.com/louislam/uptime-kuma/wiki
 
 env:

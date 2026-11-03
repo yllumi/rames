@@ -59,9 +59,11 @@
  *    dengan `public/js/update.js` / `template-pull.js` / `backup.js`. Header
  *    `X-CSRF-TOKEN` ikut dikirim sebagai sabuk pengaman bila middleware kelak
  *    juga menerima header; tanpa `_token` di body request akan ditolak 419.
- *  - Hampir semua teks ditulis lewat `textContent` (tanpa `innerHTML`) → tidak
- *    ada jalur injeksi dari pesan galat server; nama server (dari form admin)
- *    hanya dipakai di `window.confirm`, bukan sebagai HTML.
+ *  - Semua teks ditulis lewat `textContent`/node teks dan ikon dinamis dibangun
+ *    sebagai elemen SVG (`ramesIconNode('refresh')` dari `public/js/icons.js`)
+ *    lalu dipasang dengan `replaceChildren()` — **tidak ada** penyisipan HTML,
+ *    jadi tidak ada jalur injeksi dari pesan galat server; nama server (dari
+ *    form admin) hanya dipakai di `window.confirm`, bukan sebagai HTML.
  *  - Pemetaan status → kelas badge di sini **sama** dengan
  *    `app/view/server/index.php` (jaga keduanya tetap sinkron).
  */
@@ -208,7 +210,7 @@
   // Perbarui agen (server agent saja) — konfirmasi dulu, agen restart
   // ------------------------------------------------------------------
 
-  var UPDATE_LABEL = '\u27f3 Perbarui agen';
+  var UPDATE_LABEL = 'Perbarui agen';
 
   function setUpdateBusy(btn, busy) {
     btn.disabled = busy;
@@ -216,7 +218,15 @@
     var spinner = btn.querySelector('.spinner-border');
     if (spinner) spinner.classList.toggle('d-none', !busy);
     var label = btn.querySelector('.js-agent-update-label');
-    if (label) label.textContent = busy ? 'Memperbarui\u2026' : UPDATE_LABEL;
+    if (label) {
+      if (busy) {
+        label.textContent = 'Memperbarui\u2026';
+      } else {
+        // Ikon dibangun sebagai Node (bukan string HTML) — guard test melarang
+        // penyisipan HTML ke DOM dari kode JS.
+        label.replaceChildren(ramesIconNode('refresh'), document.createTextNode(' ' + UPDATE_LABEL));
+      }
+    }
   }
 
   /**

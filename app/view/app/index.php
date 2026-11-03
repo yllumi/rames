@@ -150,7 +150,7 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
 
 <?php if (empty($apps)): ?>
   <div class="card empty">
-    <div class="empty-icon">◈</div>
+    <div class="empty-icon"><?= svg_icon('package') ?></div>
     <?php if ($__filterActive): ?>
       <p class="text-muted mb-0">Tidak ada app yang cocok dengan filter. Coba longgarkan kata kunci atau <a href="<?= e($__resetUrl) ?>">Reset filter</a>.</p>
     <?php elseif ($__serverFilter !== ''): ?>
@@ -280,13 +280,13 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
               </td>
               <td>
                 <?php if ($__card['hasPort']): ?>
-                  <a class="mono text-decoration-none text-nowrap" href="http://<?= e($__card['domain']) ?>" target="_blank" rel="noopener"><?= e($__card['domain']) ?> ↗</a>
+                  <a class="mono text-decoration-none text-nowrap" href="http://<?= e($__card['domain']) ?>" target="_blank" rel="noopener"><?= e($__card['domain']) ?> <?= svg_icon('external-link') ?></a>
                 <?php else: ?>
                   <span class="text-muted small" title="App tidak mem-publish port host — tidak ada vhost/subdomain">tanpa domain</span>
                 <?php endif; ?>
                 <br>
                 <?php if ($__card['customDomain'] !== ''): ?>
-                  <a class="mono text-decoration-none text-nowrap fw-bold text-primary" href="<?= $__card['customSsl'] ? 'https' : 'http' ?>://<?= e($__card['customDomain']) ?>" target="_blank" rel="noopener"><?= e($__card['customDomain']) ?> ↗</a>
+                  <a class="mono text-decoration-none text-nowrap fw-bold text-primary" href="<?= $__card['customSsl'] ? 'https' : 'http' ?>://<?= e($__card['customDomain']) ?>" target="_blank" rel="noopener"><?= e($__card['customDomain']) ?> <?= svg_icon('external-link') ?></a>
                 <?php else: ?>
                   <span class="text-muted small">&mdash;</span>
                 <?php endif; ?>
@@ -357,13 +357,13 @@ $__tab = static function (string $key, string $label, int $count) use ($__scope,
             </div>
             <div class="small mb-2">
               <?php if ($__card['hasPort']): ?>
-                <a class="mono text-decoration-none text-nowrap" href="http://<?= e($__card['domain']) ?>" target="_blank" rel="noopener"><?= e($__card['domain']) ?> ↗</a>
+                <a class="mono text-decoration-none text-nowrap" href="http://<?= e($__card['domain']) ?>" target="_blank" rel="noopener"><?= e($__card['domain']) ?> <?= svg_icon('external-link') ?></a>
               <?php else: ?>
                 <span class="text-muted" title="App tidak mem-publish port host — tidak ada vhost/subdomain">tanpa domain</span>
               <?php endif; ?>
               <?php if ($__card['customDomain'] !== ''): ?>
                 <br>
-                <a class="mono text-decoration-none text-nowrap fw-bold text-primary" href="<?= $__card['customSsl'] ? 'https' : 'http' ?>://<?= e($__card['customDomain']) ?>" target="_blank" rel="noopener"><?= e($__card['customDomain']) ?> ↗</a>
+                <a class="mono text-decoration-none text-nowrap fw-bold text-primary" href="<?= $__card['customSsl'] ? 'https' : 'http' ?>://<?= e($__card['customDomain']) ?>" target="_blank" rel="noopener"><?= e($__card['customDomain']) ?> <?= svg_icon('external-link') ?></a>
               <?php endif; ?>
             </div>
             <?php if ($__isAdmin): ?>

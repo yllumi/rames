@@ -8,32 +8,32 @@
   <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable" style="height:90vh;">
     <div class="modal-content h-100">
       <div class="modal-header py-2 gap-2 flex-wrap">
-        <h5 class="modal-title small mb-0" id="files-title">📁 Files</h5>
+        <h5 class="modal-title small mb-0" id="files-title"><?= svg_icon('folder') ?> Files</h5>
         <span class="text-muted small mono" id="files-container"></span>
         <div class="d-flex align-items-center gap-2 ms-auto flex-wrap">
           <button type="button" class="btn btn-outline-secondary btn-sm" id="files-refresh"
-                  title="Muat ulang daftar" aria-label="Muat ulang daftar berkas">↻ Refresh</button>
+                  title="Muat ulang daftar" aria-label="Muat ulang daftar berkas"><?= svg_icon('refresh') ?> Refresh</button>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
         </div>
       </div>
       <div class="modal-body">
         <div class="d-flex flex-wrap align-items-center gap-2 mb-2" id="files-toolbar" tabindex="-1">
           <button type="button" class="btn btn-outline-secondary btn-sm" id="files-up"
-                  title="Naik ke folder induk" aria-label="Naik ke folder induk" disabled>⬆ Naik</button>
+                  title="Naik ke folder induk" aria-label="Naik ke folder induk" disabled><?= svg_icon('arrow-up') ?> Naik</button>
           <nav aria-label="Lokasi folder" class="flex-grow-1" style="min-width:0;">
             <ol class="breadcrumb mb-0 small flex-nowrap" id="files-breadcrumb" style="overflow-x:auto;"></ol>
           </nav>
           <div class="d-flex gap-2 flex-wrap">
             <button type="button" class="btn btn-outline-secondary btn-sm" id="files-new"
-                    title="Buat berkas baru (format bebas)" aria-label="Buat berkas baru (format bebas)">📄+ Berkas baru</button>
+                    title="Buat berkas baru (format bebas)" aria-label="Buat berkas baru (format bebas)"><?= svg_icon('file-plus') ?> Berkas baru</button>
             <button type="button" class="btn btn-outline-secondary btn-sm" id="files-mkdir"
-                    title="Buat folder baru" aria-label="Buat folder baru">📁+ Buat folder</button>
+                    title="Buat folder baru" aria-label="Buat folder baru"><?= svg_icon('folder-plus') ?> Buat folder</button>
             <button type="button" class="btn btn-outline-primary btn-sm" id="files-upload-btn"
-                    title="Unggah satu atau beberapa berkas" aria-label="Unggah berkas">⬆ Unggah</button>
+                    title="Unggah satu atau beberapa berkas" aria-label="Unggah berkas"><?= svg_icon('upload') ?> Unggah</button>
             <input type="file" id="files-upload-input" class="d-none" multiple
                    aria-label="Pilih berkas untuk diunggah">
             <button type="button" class="btn btn-outline-secondary btn-sm" id="files-extract-btn"
-                    title="Ekstrak arsip .zip / .tar.gz di folder ini" aria-label="Ekstrak arsip">🗜 Ekstrak</button>
+                    title="Ekstrak arsip .zip / .tar.gz di folder ini" aria-label="Ekstrak arsip"><?= svg_icon('archive') ?> Ekstrak</button>
           </div>
         </div>
         <p class="text-muted small mb-2">Batas <strong>64 MiB</strong> per berkas. Arsip <span class="mono">.zip</span> /
@@ -82,7 +82,7 @@
           </p>
           <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
             <button type="button" class="btn btn-outline-secondary btn-sm" id="files-move-up"
-                    title="Naik ke folder induk" aria-label="Naik ke folder induk" disabled>⬆ Naik</button>
+                    title="Naik ke folder induk" aria-label="Naik ke folder induk" disabled><?= svg_icon('arrow-up') ?> Naik</button>
             <nav aria-label="Folder tujuan" class="flex-grow-1" style="min-width:0;">
               <ol class="breadcrumb mb-0 small flex-nowrap" id="files-move-breadcrumb" style="overflow-x:auto;"></ol>
             </nav>
@@ -101,7 +101,7 @@
           <div class="d-flex justify-content-end gap-2 mt-2">
             <button type="button" class="btn btn-outline-secondary btn-sm" id="files-move-cancel">Batal</button>
             <button type="button" class="btn btn-primary btn-sm" id="files-move-confirm" disabled>
-              <span id="files-move-spinner" class="spinner-border spinner-border-sm d-none me-1" role="status" aria-hidden="true"></span>📦 Pindahkan ke folder ini
+              <span id="files-move-spinner" class="spinner-border spinner-border-sm d-none me-1" role="status" aria-hidden="true"></span><?= svg_icon('move') ?> Pindahkan ke folder ini
             </button>
           </div>
         </div>

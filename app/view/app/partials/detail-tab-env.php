@@ -17,12 +17,12 @@
               <option value="merge">Gabungkan (timpa kunci yang sama)</option>
               <option value="replace">Ganti semua</option>
             </select>
-            <button class="btn btn-outline-secondary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>⇧ Upload .env</button>
+            <button class="btn btn-outline-secondary btn-sm" <?= $isBusy ? 'disabled' : '' ?>><?= svg_icon('upload') ?> Upload .env</button>
           </form>
           <?php if ($envExampleExists): ?>
           <form method="post" action="/apps/<?= e($app['id']) ?>/env/import" class="d-inline">
             <?= csrf_field() ?>
-            <button class="btn btn-outline-secondary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>⇩ Import dari .env.example</button>
+            <button class="btn btn-outline-secondary btn-sm" <?= $isBusy ? 'disabled' : '' ?>><?= svg_icon('download') ?> Import dari .env.example</button>
           </form>
           <?php endif; ?>
         </div>
@@ -56,7 +56,7 @@
               <td>
                 <div class="input-group input-group-sm">
                   <input type="password" name="env[<?= $i ?>][value]" value="<?= e((string) $v) ?>" class="form-control mono env-value" placeholder="nilai" autocomplete="off">
-                  <button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai">👁</button>
+                  <button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai"><?= svg_icon('eye') ?></button>
                 </div>
               </td>
               <td class="text-end">
@@ -69,7 +69,7 @@
       </div>
       <div class="p-3">
         <p class="text-muted small mb-3">
-          Nilai ter-mask; klik 👁 per baris atau tombol <strong>Tampilkan semua</strong>. Perubahan diterapkan dengan menciptakan
+          Nilai ter-mask; klik ikon mata per baris atau tombol <strong>Tampilkan semua</strong>. Perubahan diterapkan dengan menciptakan
           ulang container yang env-nya berubah (tanpa rebuild source). Variabel tersedia
           untuk substitusi <code>${VAR}</code> di <span class="mono">docker-compose.yml</span>
           dan di-inject ke environment <strong>semua container</strong> app.
@@ -81,8 +81,8 @@
           <?php endif; ?>
         </p>
         <div class="d-flex flex-wrap gap-2 align-items-center">
-          <button type="button" class="btn btn-outline-secondary btn-sm" id="env-toggle-all" aria-pressed="false" title="Tampilkan semua nilai variabel">👁 Tampilkan semua</button>
-          <button type="button" class="btn btn-outline-secondary btn-sm" id="env-add-row">＋ Tambah variabel</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="env-toggle-all" aria-pressed="false" title="Tampilkan semua nilai variabel"><?= svg_icon('eye') ?> Tampilkan semua</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="env-add-row"><?= svg_icon('plus') ?> Tambah variabel</button>
           <button type="submit" class="btn btn-primary btn-sm" <?= $isBusy ? 'disabled' : '' ?>>Simpan &amp; Terapkan</button>
           <?php if ($isBusy): ?>
             <span class="text-muted small">Dinonaktifkan sementara app sedang diproses.</span>
@@ -101,7 +101,7 @@
   if (!table || !addBtn) return;
   var toggleAllBtn = document.getElementById('env-toggle-all');
   // Status global "semua nilai sedang tampil" — dipakai baris baru agar ikut
-  // aturan yang sama, dan diselaraskan ulang setiap kali 👁 per baris diklik.
+  // aturan yang sama, dan diselaraskan ulang setiap kali ikon mata per baris diklik.
   var revealedAll = false;
   var rowIndex = <?= (int) count($envVars) ?>;
 
@@ -120,7 +120,10 @@
   function syncToggleAll() {
     if (!toggleAllBtn) return;
     revealedAll = isAllRevealed();
-    toggleAllBtn.textContent = revealedAll ? '🙈 Sembunyikan semua' : '👁 Tampilkan semua';
+    toggleAllBtn.replaceChildren(
+      ramesIconNode(revealedAll ? 'eye-off' : 'eye'),
+      document.createTextNode(revealedAll ? ' Sembunyikan semua' : ' Tampilkan semua')
+    );
     toggleAllBtn.setAttribute('aria-pressed', revealedAll ? 'true' : 'false');
     toggleAllBtn.title = revealedAll ? 'Sembunyikan semua nilai variabel' : 'Tampilkan semua nilai variabel';
   }
@@ -130,7 +133,7 @@
     if (!input) return;
     input.type = reveal ? 'text' : 'password';
     var btn = tr.querySelector('.env-reveal');
-    if (btn) btn.textContent = reveal ? '🙈' : '👁';
+    if (btn) btn.replaceChildren(ramesIconNode(reveal ? 'eye-off' : 'eye'));
   }
 
   if (toggleAllBtn) {
@@ -149,11 +152,13 @@
   addBtn.addEventListener('click', function () {
     var tr = document.createElement('tr');
     tr.setAttribute('data-env-row', '');
+    // Markup baris statis (tanpa data pengguna) — ikon sprite lewat
+    // `ramesIcon()`, aman di innerHTML; ikon dinamis memakai `ramesIconNode()`.
     tr.innerHTML =
       '<td><input type="text" name="env[' + rowIndex + '][key]" class="form-control form-control-sm mono" placeholder="APP_KEY"></td>' +
       '<td><div class="input-group input-group-sm">' +
         '<input type="password" name="env[' + rowIndex + '][value]" class="form-control mono env-value" placeholder="nilai" autocomplete="off">' +
-        '<button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai">👁</button>' +
+        '<button type="button" class="btn btn-outline-secondary env-reveal" tabindex="-1" title="Tampilkan / sembunyikan nilai">' + ramesIcon('eye') + '</button>' +
       '</div></td>' +
       '<td class="text-end"><input class="form-check-input" type="checkbox" name="env_delete[]" title="Hapus variabel ini"></td>';
     table.querySelector('tbody').appendChild(tr);
@@ -169,7 +174,7 @@
     var input = btn.parentElement.querySelector('.env-value');
     if (!input) return;
     input.type = input.type === 'password' ? 'text' : 'password';
-    btn.textContent = input.type === 'password' ? '👁' : '🙈';
+    btn.replaceChildren(ramesIconNode(input.type === 'password' ? 'eye' : 'eye-off'));
     // Jangan biarkan label tombol global berbohong setelah toggle per baris.
     syncToggleAll();
   });

@@ -21,7 +21,7 @@ if (!defined('BASE_PATH')) {
  *
  * Kontrak yang dikunci (gerbang Import `.env.example` + catatan server agent):
  *  1. app **lokal** dengan `apps_path/<name>/.env.example` ⇒ tombol
- *     `⇩ Import dari .env.example` ADA, tombol Upload `.env` & form simpan ADA,
+ *     `Import dari .env.example` ADA, tombol Upload `.env` & form simpan ADA,
  *     dan catatan "berjalan di server agent" TIDAK dirender;
  *  2. app **server agent** (walau `.env.example` ada di path host) ⇒ tombol
  *     Import TIDAK ADA (import membaca berkas di host ini, bukan server agent)
@@ -36,7 +36,8 @@ if (!defined('BASE_PATH')) {
  *     `#env-form`, `type="button"` + `aria-pressed="false"` + `title`
  *     "Tampilkan semua nilai variabel", berada **sebelum** `#env-add-row` dan
  *     **tidak** ikut dinonaktifkan saat `$isBusy` (kontrol murni klien);
- *  8. teks bantuan menyebut `per baris` dan tombol `Tampilkan semua`;
+ *  8. teks bantuan menyebut `per baris` dan tombol `Tampilkan semua` (ikon mata
+ *     SVG, bukan emoji);
  *  9. nol variabel env ⇒ tombol global tetap dirender sekali tanpa warning PHP.
  *
  * Pola sama dengan `CreateEnvFormViewTest`: partial dirender **penuh** di proses
@@ -72,6 +73,16 @@ final class DetailEnvTabViewTest extends TestCase
                 function csrf_field(): string
                 {
                     return '<input type="hidden" name="_token" value="' . e(csrf_token()) . '">';
+                }
+            }
+            if (!function_exists('svg_icon')) {
+                // Markup sama dengan `svg_icon()` asli (sprite `#ico-*` di footer),
+                // cukup untuk menguji bahwa ikon tidak lagi berupa emoji.
+                function svg_icon(string $name, string $class = ''): string
+                {
+                    return '<svg class="icon' . ($class !== '' ? ' ' . $class : '') . '"'
+                        . ' width="1em" height="1em" aria-hidden="true" focusable="false">'
+                        . '<use href="#ico-' . e($name) . '"></use></svg>';
                 }
             }
         }
@@ -121,9 +132,9 @@ final class DetailEnvTabViewTest extends TestCase
         $html = $this->render();
 
         // Tombol import + upload + form simpan tersedia.
-        self::assertStringContainsString('⇩ Import dari .env.example', $html);
+        self::assertStringContainsString('Import dari .env.example', $html);
         self::assertStringContainsString('action="/apps/app-1/env/import"', $html);
-        self::assertStringContainsString('⇧ Upload .env', $html);
+        self::assertStringContainsString('Upload .env', $html);
         self::assertStringContainsString('action="/apps/app-1/env/upload"', $html);
         self::assertStringContainsString('id="env-form"', $html);
         self::assertStringContainsString('name="_token"', $html);
@@ -147,13 +158,13 @@ final class DetailEnvTabViewTest extends TestCase
 
         $html = $this->render(['isRemoteServer' => true]);
 
-        self::assertStringNotContainsString('⇩ Import dari .env.example', $html);
+        self::assertStringNotContainsString('Import dari .env.example', $html);
         self::assertStringNotContainsString('/env/import', $html);
         self::assertStringContainsString('App ini berjalan di server agent', $html);
         self::assertStringContainsString('dikirim sebagai job', $html);
 
         // Upload tetap tersedia (review-only) begitu pula form simpan.
-        self::assertStringContainsString('⇧ Upload .env', $html);
+        self::assertStringContainsString('Upload .env', $html);
         self::assertStringContainsString('action="/apps/app-1/env/upload"', $html);
         self::assertStringContainsString('id="env-form"', $html);
     }
@@ -164,9 +175,9 @@ final class DetailEnvTabViewTest extends TestCase
     {
         $html = $this->render();
 
-        self::assertStringNotContainsString('⇩ Import dari .env.example', $html);
+        self::assertStringNotContainsString('Import dari .env.example', $html);
         self::assertStringNotContainsString('/env/import', $html);
-        self::assertStringContainsString('⇧ Upload .env', $html);
+        self::assertStringContainsString('Upload .env', $html);
     }
 
     #[RunInSeparateProcess]
@@ -182,8 +193,8 @@ final class DetailEnvTabViewTest extends TestCase
         self::assertStringNotContainsString('name="env_file"', $html);
         self::assertStringNotContainsString('/env/upload', $html);
         self::assertStringNotContainsString('/env/import', $html);
-        self::assertStringNotContainsString('⇧ Upload .env', $html);
-        self::assertStringNotContainsString('⇩ Import dari .env.example', $html);
+        self::assertStringNotContainsString('Upload .env', $html);
+        self::assertStringNotContainsString('Import dari .env.example', $html);
         self::assertStringNotContainsString('type="submit"', $html);
         // Tombol global hanya hidup di dalam form env, jadi tidak boleh bocor
         // ke tampilan viewer (blok `<script>` bawah tetap menyebut id-nya,
@@ -216,7 +227,7 @@ final class DetailEnvTabViewTest extends TestCase
         self::assertMatchesRegularExpression('/name="env_file"[^>]*\bdisabled\b/', $html);
         self::assertMatchesRegularExpression('/name="mode"[^>]*\bdisabled\b/', $html);
         self::assertMatchesRegularExpression('/type="submit"[^>]*\bdisabled\b/', $html);
-        self::assertMatchesRegularExpression('/disabled>⇩ Import dari \.env\.example/', $html);
+        self::assertMatchesRegularExpression('/<button[^>]*\bdisabled\b[^>]*>(?:<svg.*?<\/svg>\s*)?Import dari \.env\.example/', $html);
         self::assertStringContainsString('Dinonaktifkan sementara app sedang diproses.', $html);
     }
 
@@ -253,7 +264,7 @@ final class DetailEnvTabViewTest extends TestCase
 
         // Frasa ini hanya ada di paragraf bantuan (bukan di blok `<script>`).
         self::assertStringContainsString('per baris', $form);
-        self::assertStringContainsString('klik 👁 per baris atau tombol <strong>Tampilkan semua</strong>', $form);
+        self::assertStringContainsString('klik ikon mata per baris atau tombol <strong>Tampilkan semua</strong>', $form);
     }
 
     #[RunInSeparateProcess]
@@ -380,7 +391,7 @@ final class DetailEnvTabViewTest extends TestCase
         return $matches[0];
     }
 
-    /** Label (isi) tombol global `#env-toggle-all`, mis. `👁 Tampilkan semua`. */
+    /** Label (isi) tombol global `#env-toggle-all`, mis. `<svg …>eye</svg> Tampilkan semua`. */
     private function envToggleAllLabel(string $html): string
     {
         self::assertMatchesRegularExpression(

@@ -26,7 +26,7 @@ $isImported = (bool) ($isImported ?? false);
         <?php if ($isBusy): ?>
           <span class="text-muted small">Dinonaktifkan sementara app sedang diproses.</span>
         <?php else: ?>
-          <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteModal"><?= $isImported ? 'Lepas dari dashboard' : '✕ Delete app' ?></button>
+          <button type="button" class="btn btn-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteModal"><?php if (!$isImported): ?><?= svg_icon('trash') ?> <?php endif ?><?= $isImported ? 'Lepas dari dashboard' : 'Delete app' ?></button>
         <?php endif; ?>
       </div>
     </section>

@@ -12,7 +12,7 @@
             <input class="form-check-input" type="checkbox" role="switch" id="deploy-log-follow" checked>
             <label class="form-check-label small" for="deploy-log-follow">Ikuti</label>
           </div>
-          <button type="button" class="btn btn-outline-secondary btn-sm" id="deploy-log-refresh" title="Muat ulang dari ekor log">↻</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="deploy-log-refresh" title="Muat ulang dari ekor log"><?= svg_icon('refresh') ?></button>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
         </div>
       </div>

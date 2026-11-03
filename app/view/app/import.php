@@ -46,7 +46,7 @@ $__stateClasses = [
   </div>
 <?php elseif ($__projects === []): ?>
   <div class="card empty">
-    <div class="empty-icon">◈</div>
+    <div class="empty-icon"><?= svg_icon('package') ?></div>
     <p class="text-muted mb-0">Tidak ada project <code>docker compose</code> yang terdeteksi di host ini. Jalankan <code>docker compose up -d</code> di direktori proyek, lalu muat ulang halaman ini.</p>
   </div>
 <?php else: ?>

@@ -206,6 +206,13 @@ function childElement() {
   const classes = new Set();
   return {
     textContent: '',
+    // Label tombol kini diisi lewat `replaceChildren()` (Node ikon + node teks),
+    // bukan string HTML — stub merekam anak-anaknya untuk diperiksa.
+    children: [],
+    replaceChildren: function () {
+      this.children = Array.prototype.slice.call(arguments);
+      this.textContent = '';
+    },
     classes: classes,
     classList: {
       add: function (name) { classes.add(name); },
@@ -291,6 +298,7 @@ function boot(fetches) {
       }
       return null;
     },
+    createTextNode: function (text) { return { nodeType: 3, textContent: String(text) }; },
     addEventListener: function (type, handler) {
       (docListeners[type] = docListeners[type] || []).push(handler);
     }
@@ -300,6 +308,14 @@ function boot(fetches) {
     document: doc,
     console: console,
     URLSearchParams: URLSearchParams,
+    // Ikon SVG dinamis — stub `public/js/icons.js`. Di browser `ramesIconNode()`
+    // membangun Node lewat `document.createElementNS`; di harness cukup penanda.
+    ramesIconNode: function (name, className) {
+      return { tag: 'svg', name: String(name), className: className || '' };
+    },
+    ramesIcon: function (name, className) {
+      return '<svg class="icon' + (className ? ' ' + className : '') + '"><use href="#ico-' + String(name) + '"></use></svg>';
+    },
     confirm: function () { return true; },
     fetch: function (url, init) {
       calls.push({ url: url, init: init || {} });
@@ -421,7 +437,13 @@ const SCENARIOS = {
     check('pesan done', h.box.textContent === '✔ Update agen selesai — jalankan Test connection untuk memverifikasi versi.', h.box.textContent);
     check('polling berhenti', h.live().length === 0, String(h.live().length));
     check('tombol aktif kembali', h.btn.disabled === false && h.btn.getAttribute('aria-busy') === 'false');
-    check('label tombol normal', h.btn.label.textContent === '⟳ Perbarui agen', h.btn.label.textContent);
+    check(
+      'label tombol normal (ikon refresh + teks)',
+      h.btn.label.children.length === 2 &&
+        h.btn.label.children[0].name === 'refresh' &&
+        h.btn.label.children[1].textContent === ' Perbarui agen',
+      JSON.stringify(h.btn.label.children)
+    );
     check('status terminal tidak menambah GET', h.statusGets().length === 2, String(h.statusGets().length));
   },
 
