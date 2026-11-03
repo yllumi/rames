@@ -177,6 +177,9 @@ if ($ramesMode === 'agent') {
         // Ukuran storage satu app **server ini** (volume project + writable
         // layer container) untuk tab Info detail app di control plane.
         Route::get('/system/disk-usage', [AgentDockerController::class, 'diskUsage']);
+        // Ukuran terpakai tiap volume ber-label compose **server ini** — dipakai
+        // control plane untuk kolom Ukuran baris volume agent di `/volumes`.
+        Route::get('/system/volume-usage', [AgentDockerController::class, 'volumeUsage']);
 
         // F3d multi-server (plan §4.1/§5): **database/Adminer** & **network/volume**
         // app yang berjalan di server ini. Helper Adminer dijalankan di sini

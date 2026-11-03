@@ -7,6 +7,7 @@ use app\controller\BackupController;
 use app\library\Agent\AgentClient;
 use app\library\Agent\TlsPinMaterializer;
 use app\library\Auth\AppAccessDenied;
+use app\library\Backup\BackupCatalog;
 use app\library\Backup\VolumeBackupService;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ServerResolver;
@@ -294,6 +295,51 @@ class BackupAgentScopeTest extends TestCase
 
         $this->assertSame('local', $payload['data']['volumes'][0]['server_name']);
         $this->assertSame(1, $controller->serverNamesReads);
+    }
+
+    /**
+     * Status menyinkronkan baris volume server agent (TTL) sehingga volume app
+     * agent terlihat & bisa di-backup tanpa menunggu admin "Segarkan status";
+     * poll berikutnya dalam TTL tidak menghubungi agent lagi, dan run lokal
+     * (tulis katalog tanpa baris agent) tidak menghapus baris agent.
+     */
+    public function testStatusSyncsAgentRowsPerTtlAndLocalWritesKeepThem(): void
+    {
+        $catalog = new BackupCatalog($this->tmp . '/catalog.json');
+        $catalog->write([
+            ['name' => 'lokal_data', 'project' => 'demo-a', 'app_id' => self::APP_A, 'orphaned' => false, 'server_id' => 'local'],
+        ]);
+
+        $service = new BackupAgentScopeCatalogService($catalog);
+        $handler = (new BackupAgentScopeFakeHandler())->replyJson($this->volumesPayload([
+            ['name' => 'demo-a_data', 'project' => 'demo-a', 'app_id' => self::APP_A, 'orphaned' => false],
+        ]));
+
+        $controller = $this->controller(self::ADMIN, ['srv-a' => $handler], $service);
+        $first = json_decode(
+            (string) $controller->status(new Request("GET /api/backups/status HTTP/1.1\r\nHost: localhost\r\n\r\n"))->rawBody(),
+            true,
+            512,
+            JSON_THROW_ON_ERROR
+        );
+
+        $names = array_column($first['data']['volumes'], 'name');
+        sort($names);
+        $this->assertSame(['demo-a_data', 'lokal_data'], $names);
+        $this->assertSame(1, $handler->count(), 'satu panggilan per server saat sinkron');
+        $this->assertNotSame([], $catalog->agentSyncTimes());
+
+        // Poll berikutnya di dalam TTL: memakai cache, agent tidak dihubungi lagi.
+        $controller->status(new Request("GET /api/backups/status HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+        $this->assertSame(1, $handler->count());
+
+        // Run lokal menulis katalog tanpa baris agent → baris agent dipertahankan.
+        $catalog->write([
+            ['name' => 'lokal_data', 'project' => 'demo-a', 'app_id' => self::APP_A, 'orphaned' => false, 'server_id' => 'local', 'snapshots' => 2],
+        ], true);
+        $names = array_column($catalog->read()['volumes'], 'name');
+        sort($names);
+        $this->assertSame(['demo-a_data', 'lokal_data'], $names);
     }
 
     // ==================================================================
@@ -602,6 +648,39 @@ final class BackupAgentScopeFakeHandler
  * Service backup tiruan: baris cache + `catalog()` dipasok langsung, overlay live
  * tidak menyentuh Engine, tanpa berkas cache/registry nyata.
  */
+final class BackupAgentScopeCatalogService extends VolumeBackupService
+{
+    public function __construct(private BackupCatalog $catalog)
+    {
+    }
+
+    public function isRunning(): bool
+    {
+        return false;
+    }
+
+    /** @return array{volumes:array<int,array<string,mixed>>,cached_at:?string} */
+    public function catalog(): array
+    {
+        return $this->catalog->read();
+    }
+
+    public function catalogStore(): ?BackupCatalog
+    {
+        return $this->catalog;
+    }
+
+    public function overlayLiveContainerStates(array $rows, int $timeoutSeconds = 5): array
+    {
+        return $rows;
+    }
+
+    public function archived(): array
+    {
+        return [];
+    }
+}
+
 final class BackupAgentScopeFakeService extends VolumeBackupService
 {
     /** @param array<int,array<string,mixed>> $rows */

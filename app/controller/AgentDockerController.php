@@ -4,7 +4,9 @@ declare(strict_types=1);
 namespace app\controller;
 
 use app\library\Agent\AgentAppProjection;
+use app\library\Backup\VolumeTargetMap;
 use app\library\Docker\DockerClient;
+use app\library\Docker\VolumeUsage;
 use app\library\Monitor\AppStorage;
 use app\library\Monitor\ResourceCollector;
 use app\library\Storage\AppStore;
@@ -150,6 +152,43 @@ class AgentDockerController
         }
 
         return json(['code' => 0, 'data' => AppStorage::summarize(is_array($df) ? $df : [], $project) + [
+            'at' => date('H:i:s'),
+        ]]);
+    }
+
+    /**
+     * `GET /system/volume-usage` — ukuran terpakai **setiap volume ber-label
+     * compose** di server ini (`GET /system/df` Engine server ini).
+     *
+     * Dipakai control plane untuk mengisi kolom Ukuran baris volume server agent
+     * di halaman `/volumes`; bentuk baris memuat `project` supaya control plane
+     * dapat menyaringnya dengan aturan hak akses yang sama seperti daftar
+     * volume. Sama seperti `diskUsage()`: tidak menyentuh Engine host control
+     * plane, dan kegagalan Engine ⇒ 502 (bukan respons setengah jadi).
+     */
+    public function volumeUsage(Request $request): Response
+    {
+        try {
+            $df = $this->docker()->getDiskUsage(['volume']);
+        } catch (\Throwable $e) {
+            return $this->error(
+                'Gagal menghitung ukuran volume di server agent: ' . $e->getMessage(),
+                'volume_usage_failed',
+                502
+            );
+        }
+
+        $volumes = [];
+        foreach (is_array($df['Volumes'] ?? null) ? $df['Volumes'] : [] as $volume) {
+            // Volume DB dashboard/agent (label `rames.role`) bukan volume app —
+            // sama dengan pengecualian daftar/target backup.
+            if (is_array($volume) && !VolumeTargetMap::isDashboardVolume($volume)) {
+                $volumes[] = $volume;
+            }
+        }
+
+        return json(['code' => 0, 'data' => [
+            'volumes' => VolumeUsage::composeRows($volumes),
             'at' => date('H:i:s'),
         ]]);
     }

@@ -62,35 +62,123 @@ class VolumeController
      * Ukuran terpakai tiap volume (JSON) — dipanggil AJAX setelah halaman tampil.
      *
      * `GET /system/df` membuat Engine menelusuri filesystem tiap volume sehingga
-     * bisa lambat; halaman `/volumes` tidak boleh menunggunya. Hanya volume
-     * **server lokal** yang boleh dilihat user yang dikembalikan (aturan
-     * visibilitas sama dengan `index()`): Engine host ini memang tidak mengenal
-     * volume server agent, jadi baris agent tidak diikutkan.
+     * bisa lambat; halaman `/volumes` tidak boleh menunggunya.
+     *
+     * Multi-server: volume **lokal** diukur Engine host ini, volume **server
+     * agent** diukur Engine server itu (`GET /system/volume-usage` per server
+     * yang boleh dilihat user) — host ini tidak pernah mengenal volume agent.
+     * Penyaringan baris agent memakai project app yang boleh diakses user,
+     * aturan yang sama dengan `collectRows()`; nama volume app lain tidak ikut
+     * dikirim ke browser.
+     *
+     * Kegagalan satu sumber tidak menggagalkan respons: Engine lokal ⇒
+     * `engine_error` + `total_human: null` (bukan "0B" yang menyesatkan —
+     * konsumen `/monitor` membedakan tidak-tersedia dari nol), server agent ⇒
+     * entri `error` per server + `server_errors` (pesan sudah diredaksi
+     * `AgentError::sanitizeForServer()`). Ukuran volume yang tak terbaca
+     * dilaporkan `size_human:"N/A"` dan tidak dijumlahkan.
      */
     public function usage(Request $request)
     {
-        $collected = $this->collectRows(false);
-        if ($collected['engineError'] !== null) {
-            return json(['code' => 500, 'msg' => $collected['engineError']]);
+        $apps = $this->appStore()->all();
+        $isAdmin = $this->isAdmin();
+        $accessible = $this->accessibleProjectNames($apps);
+
+        $local = $this->collectRows(false);
+        $engineError = $local['engineError'];
+        $localUsage = VolumeUsage::summarize([], []);
+
+        if ($engineError === null) {
+            try {
+                $diskUsage = $this->docker(30)->getDiskUsage(['volume']);
+                $volumes = is_array($diskUsage['Volumes'] ?? null) ? $diskUsage['Volumes'] : [];
+                $localUsage = VolumeUsage::summarize($volumes, array_column($local['rows'], 'name'));
+            } catch (\Throwable $e) {
+                $engineError = 'Tidak dapat menghitung ukuran volume: ' . $e->getMessage();
+            }
         }
 
-        try {
-            $diskUsage = $this->docker(30)->getDiskUsage(['volume']);
-        } catch (\Throwable $e) {
-            return json(['code' => 500, 'msg' => 'Tidak dapat menghitung ukuran volume: ' . $e->getMessage()]);
+        $servers = [];
+        $serverErrors = [];
+        $grandTotal = $localUsage['total'];
+
+        foreach ($this->visibleAgentServers() as $server) {
+            $serverId = trim((string) ($server['id'] ?? ''));
+            if ($serverId === '') {
+                continue;
+            }
+            // Fail-closed seperti daftar volume: non-admin tanpa app terlihat di
+            // server itu (mis. hanya grant `server_select`) tidak menghubunginya
+            // dan tidak memunculkan galat server yang tidak relevan.
+            if (!$isAdmin && ($accessible[$serverId] ?? []) === []) {
+                continue;
+            }
+            $agent = $this->agentDeployerForServer($server);
+            if ($agent === null) {
+                continue;
+            }
+
+            try {
+                $rows = $agent->volumeUsage();
+            } catch (\Throwable $e) {
+                $message = $this->agentErrorMessage($server, $e);
+                $servers[$serverId] = [
+                    'usage' => new \stdClass(),
+                    'total' => 0,
+                    'total_human' => VolumeUsage::human(0),
+                    'error' => $message,
+                ];
+                $serverErrors[] = 'Server "' . $this->serverLabel($server) . '": ' . $message;
+                continue;
+            }
+
+            $usage = [];
+            foreach ($rows as $row) {
+                if (!$isAdmin && !isset($accessible[$serverId][$row['project']])) {
+                    continue;
+                }
+                $usage[$row['name']] = [
+                    'size' => (int) $row['size'],
+                    'ref_count' => (int) $row['ref_count'],
+                    'size_human' => (string) $row['size_human'],
+                ];
+            }
+
+            $total = 0;
+            foreach ($usage as $item) {
+                if ($item['size'] > 0) {
+                    $total += $item['size'];
+                }
+            }
+
+            $servers[$serverId] = [
+                'usage' => $usage === [] ? new \stdClass() : $usage,
+                'total' => $total,
+                'total_human' => VolumeUsage::human($total),
+                'error' => null,
+            ];
+            $grandTotal += $total;
         }
 
-        // hanya volume lokal yang tampil di halaman ikut dihitung/dikirim
-        return json(['code' => 0, 'data' => VolumeUsage::summarize(
-            $diskUsage['Volumes'] ?? [],
-            array_column($collected['rows'], 'name')
-        )]);
+        return json(['code' => 0, 'data' => [
+            'usage' => $localUsage['usage'] === [] ? new \stdClass() : $localUsage['usage'],
+            'total' => $localUsage['total'],
+            // Null (bukan "0B") bila Engine lokal tak terbaca: `/monitor` dan
+            // halaman `/volumes` dapat membedakan "tidak tersedia" dari "kosong".
+            'total_human' => $engineError === null ? $localUsage['total_human'] : null,
+            'servers' => $servers === [] ? new \stdClass() : $servers,
+            'server_errors' => $serverErrors,
+            'engine_error' => $engineError,
+            'grand_total' => $grandTotal,
+            'grand_total_human' => VolumeUsage::human($grandTotal),
+        ]]);
     }
 
     /**
      * Baris volume dari **setiap server yang berhak dilihat user** + pesan galat
-     * per sumber. Dipakai `index()` (render halaman) dan `usage()` (JSON ukuran,
-     * hanya server lokal).
+     * per sumber. Dipakai `index()` (render halaman); `usage()` memakai
+     * `$includeAgents = false` karena ukuran volume agent dibaca lewat endpoint
+     * Engine server itu (`/system/volume-usage`), bukan lewat daftar ini.
      *
      * Kegagalan satu server tidak pernah menggagalkan halaman: Engine lokal ⇒
      * `engineError`; server agent ⇒ satu entri `serverErrors`.

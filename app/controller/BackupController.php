@@ -90,6 +90,25 @@ class BackupController
     private const DB_RESTORE_CONFIRM = 'RESTORE';
 
     /**
+     * TTL sinkron baris volume server agent di `GET /api/backups/status`
+     * (detik). Endpoint ini dipolling tiap ±20 dtk; daftar volume agent dibaca
+     * live (Engine + hitung snapshot restic server itu) paling sering sekali per
+     * TTL, sehingga volume agent **muncul tanpa menunggu admin** tetapi server
+     * tidak dihajar tiap poll. Percobaan yang gagal pun dicatat agar server
+     * offline tidak dicoba ulang terus-menerus.
+     */
+    private const AGENT_ROWS_TTL = 300;
+
+    /**
+     * Batas server agent yang disinkronkan **per request** status. Agent yang
+     * lambat/tak terjangkau bisa memakan timeout transport (±25–30 dtk); dengan
+     * batas ini satu poll tidak pernah menahan N×timeout. Server sisanya
+     * disinkronkan pada poll berikutnya (TTL server yang sudah dicoba dicatat,
+     * jadi server mati tidak diulang terus).
+     */
+    private const AGENT_ROWS_SYNC_PER_REQUEST = 2;
+
+    /**
      * Halaman /backups. Data volume diambil via AJAX (`status()`) agar halaman
      * tidak menunggu Engine/restic.
      */
@@ -159,6 +178,11 @@ class BackupController
         }
 
         $apps = (new AppStore())->all();
+        // Baris volume server agent disegarkan best-effort (TTL) supaya volume
+        // app agent terlihat & bisa di-backup tanpa harus menunggu admin menekan
+        // "Segarkan status" — dan tetap bertahan setelah run lokal menulis cache.
+        $catalog = $this->syncAgentRows($service, $apps, $catalog);
+
         $user = $this->currentUser();
         $visible = BackupAccess::visible($catalog['volumes'], $apps, $user);
         $status = self::publicStatus((new BackupReport())->readStatus());
@@ -221,7 +245,9 @@ class BackupController
         $rows = array_merge($rows, $this->agentVolumeRows());
 
         try {
-            (new BackupCatalog((new BackupReport())->dir() . '/catalog.json'))->write($rows);
+            // Pertahankan baris server agent yang tidak terjangkau saat refresh
+            // ini (baris dari server yang ikut terkirim tetap menang).
+            (new BackupCatalog((new BackupReport())->dir() . '/catalog.json'))->write($rows, true);
         } catch (\Throwable $e) {
             // Cache bersifat best-effort: baris live tetap dikembalikan.
         }
@@ -1262,6 +1288,150 @@ class BackupController
     protected function agentVolumeRows(): array
     {
         $apps = (new AppStore())->all();
+        $byId = self::appsById($apps);
+
+        $rows = [];
+        foreach ($this->visibleAgentServers($apps) as $server) {
+            $agent = $this->agentDeployerForServer($server);
+            if ($agent === null) {
+                continue;
+            }
+
+            try {
+                $rows = array_merge($rows, $this->agentRowsForServer($server, $agent, $byId));
+            } catch (\Throwable $e) {
+                continue;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Baris satu server agent dari `GET /backups/volumes` server itu, dengan
+     * metadata app diambil dari **control plane** (sumber metadata, plan §4.3).
+     * Baris mentah agent disanitasi ke kunci yang dikenal `BackupCatalog`.
+     *
+     * @param array<string,mixed> $server
+     * @param array<string,array<string,mixed>> $byId app id ⇒ dokumen app control plane
+     * @return array<int,array<string,mixed>>
+     * @throws \Throwable server tak terjangkau / kontrak respons salah
+     */
+    private function agentRowsForServer(array $server, AgentDeployer $agent, array $byId): array
+    {
+        $serverId = (string) ($server['id'] ?? '');
+        $listing = $agent->backupVolumes();
+
+        $rows = [];
+        foreach ($listing['volumes'] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = (string) ($row['name'] ?? '');
+            if ($name === '') {
+                continue;
+            }
+            $appId = (string) ($row['app_id'] ?? '');
+            $app = $appId !== '' ? ($byId[$appId] ?? null) : null;
+
+            $row['app_id'] = $app !== null ? $appId : null;
+            $row['app_name'] = $app !== null ? (string) ($app['name'] ?? '') : null;
+            $row['orphaned'] = $app === null;
+            $row['server_id'] = $serverId;
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Sinkronkan baris volume server agent ke cache dengan **TTL** — hanya
+     * server yang boleh dilihat pemanggil (satu pintu `visibleAgentServers()`)
+     * dan hanya bila sinkron terakhirnya lebih tua dari {@see self::AGENT_ROWS_TTL}.
+     *
+     * Tujuannya: volume app server agent terlihat di `/backups` (dan bisa
+     * di-backup/dijadwalkan) **tanpa** menuntut admin menekan "Segarkan status",
+     * sambil tetap menghormati invarian "polling tidak menyentuh Engine/restic
+     * tiap kali": satu panggilan per server per TTL. Kegagalan server dicatat
+     * (`touchAgentSync`) agar server offline tidak dicoba ulang tiap poll.
+     *
+     * Best-effort: kegagalan baca/tulis cache tidak pernah menggagalkan status.
+     * `VolumeBackupService::catalogStore()` adalah seam uji (service palsu boleh
+     * menonaktifkan sinkron); baris tetap disaring `BackupAccess::visible()`
+     * oleh pemanggil.
+     *
+     * @param array<string,mixed> $catalog hasil `$service->catalog()`
+     * @param array<int,array> $apps daftar app control plane
+     * @return array<string,mixed> katalog terbaru (atau `$catalog` bila tak bersinkron)
+     */
+    protected function syncAgentRows(VolumeBackupService $service, array $apps, array $catalog): array
+    {
+        $store = $service->catalogStore();
+        $servers = $this->visibleAgentServers($apps);
+        if ($store === null || $servers === []) {
+            return $catalog;
+        }
+
+        $now = time();
+        $synced = $store->agentSyncTimes();
+        $byId = self::appsById($apps);
+        $changed = false;
+        $attempts = 0;
+
+        foreach ($servers as $server) {
+            $serverId = trim((string) ($server['id'] ?? ''));
+            if ($serverId === '') {
+                continue;
+            }
+            $last = (int) ($synced[$serverId] ?? 0);
+            if ($last > 0 && $now - $last < self::AGENT_ROWS_TTL) {
+                continue;
+            }
+
+            $agent = $this->agentDeployerForServer($server);
+            if ($agent === null) {
+                continue;
+            }
+
+            $attempts++;
+            try {
+                $rows = $this->agentRowsForServer($server, $agent, $byId);
+                try {
+                    $store->writeAgentRows($serverId, $rows, $now);
+                    $changed = true;
+                } catch (\Throwable) {
+                    // Cache best-effort: baris lama tetap dipakai.
+                }
+            } catch (\Throwable $e) {
+                try {
+                    $store->touchAgentSync($serverId, $now);
+                } catch (\Throwable) {
+                    // Cache best-effort.
+                }
+            }
+
+            if ($attempts >= self::AGENT_ROWS_SYNC_PER_REQUEST) {
+                break;
+            }
+        }
+
+        if (!$changed) {
+            return $catalog;
+        }
+
+        try {
+            return $store->read();
+        } catch (\Throwable) {
+            return $catalog;
+        }
+    }
+
+    /**
+     * @param array<int,array> $apps
+     * @return array<string,array<string,mixed>>
+     */
+    private static function appsById(array $apps): array
+    {
         $byId = [];
         foreach ($apps as $app) {
             if (is_array($app) && (string) ($app['id'] ?? '') !== '') {
@@ -1269,40 +1439,7 @@ class BackupController
             }
         }
 
-        $rows = [];
-        foreach ($this->visibleAgentServers($apps) as $server) {
-            $serverId = (string) ($server['id'] ?? '');
-            $agent = $this->agentDeployerForServer($server);
-            if ($agent === null) {
-                continue;
-            }
-
-            try {
-                $listing = $agent->backupVolumes();
-            } catch (\Throwable $e) {
-                continue;
-            }
-
-            foreach ($listing['volumes'] as $row) {
-                if (!is_array($row)) {
-                    continue;
-                }
-                $name = (string) ($row['name'] ?? '');
-                if ($name === '') {
-                    continue;
-                }
-                $appId = (string) ($row['app_id'] ?? '');
-                $app = $appId !== '' ? ($byId[$appId] ?? null) : null;
-
-                $row['app_id'] = $app !== null ? $appId : null;
-                $row['app_name'] = $app !== null ? (string) ($app['name'] ?? '') : null;
-                $row['orphaned'] = $app === null;
-                $row['server_id'] = $serverId;
-                $rows[] = $row;
-            }
-        }
-
-        return $rows;
+        return $byId;
     }
 
     /**

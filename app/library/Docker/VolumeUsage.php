@@ -11,6 +11,58 @@ namespace app\library\Docker;
  */
 final class VolumeUsage
 {
+    /** Label Engine yang menandai pemilik compose project sebuah volume. */
+    private const PROJECT_LABEL = 'com.docker.compose.project';
+
+    /**
+     * Baris ukuran untuk volume **ber-label compose project** — bentuk yang
+     * dipakai halaman `/volumes` lintas server: control plane butuh `project`
+     * (untuk menyaring hak akses) di samping nama & ukuran.
+     *
+     * Statik murni (tanpa I/O) supaya bisa diuji tanpa daemon. Nama kosong /
+     * volume tanpa label project / duplikat dibuang; urutan deterministik
+     * (`project`, lalu `name`). `UsageData`/`Size` yang tidak dilaporkan Engine
+     * menghasilkan `size:-1` + `size_human:"N/A"` (tidak dijumlahkan).
+     *
+     * @param array<int,array> $volumes daftar `Volumes` dari respons /system/df
+     * @return array<int,array{name:string,project:string,size:int,ref_count:int,size_human:string}>
+     */
+    public static function composeRows(array $volumes): array
+    {
+        $rows = [];
+        $seen = [];
+        foreach ($volumes as $volume) {
+            if (!is_array($volume)) {
+                continue;
+            }
+            $name = trim((string) ($volume['Name'] ?? ''));
+            $labels = $volume['Labels'] ?? null;
+            $project = is_array($labels) ? trim((string) ($labels[self::PROJECT_LABEL] ?? '')) : '';
+            if ($name === '' || $project === '' || isset($seen[$name])) {
+                continue;
+            }
+            $seen[$name] = true;
+            // `UsageData` absen/`Size` bukan angka = Engine tidak melaporkan
+            // ukuran (bukan 0 byte) → -1 → "N/A" dan tidak dijumlahkan.
+            $usageData = is_array($volume['UsageData'] ?? null) ? $volume['UsageData'] : [];
+            $size = array_key_exists('Size', $usageData) && is_numeric($usageData['Size'])
+                ? (int) $usageData['Size']
+                : -1;
+            $rows[] = [
+                'name' => $name,
+                'project' => $project,
+                'size' => $size,
+                'ref_count' => is_numeric($usageData['RefCount'] ?? null) ? (int) $usageData['RefCount'] : 0,
+                'size_human' => self::human($size),
+            ];
+        }
+
+        usort($rows, static fn (array $a, array $b): int => strcmp($a['project'], $b['project'])
+            ?: strcmp($a['name'], $b['name']));
+
+        return $rows;
+    }
+
     /**
      * Peta nama volume → ukuran terpakai.
      *

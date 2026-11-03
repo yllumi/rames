@@ -151,4 +151,30 @@ class VolumeTargetMapTest extends TestCase
         $targets = VolumeTargetMap::build([$dashboard, $otherRole], $this->apps());
         $this->assertSame(['lain_data'], VolumeTargetMap::names($targets));
     }
+
+    /**
+     * Volume DB **agent** (`rames.role=agent-db`, mis. `rames-agent-data` pada
+     * paket agent) juga lolos filter label compose tetapi bukan volume app —
+     * ia tidak boleh muncul di target backup/restore/schedule maupun `/volumes`
+     * server agent.
+     */
+    public function testAgentDatabaseVolumeIsNeverATarget(): void
+    {
+        $agentDb = [
+            'Name' => 'rames-agent-data',
+            'Labels' => [
+                'com.docker.compose.project' => 'rames-agent',
+                VolumeTargetMap::DASHBOARD_VOLUME_LABEL_KEY => VolumeTargetMap::AGENT_DB_VOLUME_LABEL_VALUE,
+            ],
+        ];
+
+        $this->assertTrue(VolumeTargetMap::isDashboardVolume($agentDb));
+
+        $targets = VolumeTargetMap::build([
+            $agentDb,
+            ['Name' => 'demo_data', 'Labels' => ['com.docker.compose.project' => 'tonidata']],
+        ], $this->apps());
+
+        $this->assertSame(['demo_data'], VolumeTargetMap::names($targets));
+    }
 }

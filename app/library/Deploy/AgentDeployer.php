@@ -1253,6 +1253,61 @@ final class AgentDeployer implements DeployerInterface
     }
 
     /**
+     * Ukuran terpakai tiap volume ber-label compose **di server agent**
+     * (`GET /system/volume-usage`) — dipakai kolom Ukuran halaman `/volumes`.
+     *
+     * Baris memuat `project` supaya control plane menyaringnya dengan aturan
+     * hak akses yang sama seperti daftar volume (nama volume app lain tidak
+     * boleh tampil). Agent lama tanpa endpoint ini menjawab 404 ⇒
+     * `AgentError::NOT_FOUND` diteruskan (pemanggil menampilkan "—" sekaligus
+     * melaporkan bahwa versi agent belum mendukung ukuran). Bentuk baris
+     * dinormalisasi; kunci asing dari Engine tidak diteruskan.
+     *
+     * @return array<int,array{name:string,project:string,size:int,ref_count:int,size_human:string}>
+     * @throws AgentError
+     */
+    public function volumeUsage(): array
+    {
+        $data = $this->short(
+            'membaca ukuran volume',
+            fn (): array => $this->client->get('/system/volume-usage')
+        );
+        $data = $this->ok($data, 'membaca ukuran volume');
+
+        $rows = $data['data']['volumes'] ?? null;
+        if (!is_array($rows)) {
+            throw AgentError::badResponse(
+                $this->label() . ': agent tidak mengembalikan ukuran volume (kontrak: `{code:0,data:{volumes}}`).'
+            );
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = is_scalar($row['name'] ?? null) ? trim((string) $row['name']) : '';
+            $project = is_scalar($row['project'] ?? null) ? trim((string) $row['project']) : '';
+            if ($name === '' || $project === '') {
+                continue;
+            }
+            // Size absen = agent tidak melaporkan ukuran (bukan 0 byte) → -1
+            // ("N/A"), agar control plane/UI tidak menjumlahkannya sebagai nol.
+            $size = is_numeric($row['size'] ?? null) ? (int) $row['size'] : -1;
+            $human = $row['size_human'] ?? null;
+            $out[] = [
+                'name' => $name,
+                'project' => $project,
+                'size' => $size,
+                'ref_count' => is_numeric($row['ref_count'] ?? null) ? (int) $row['ref_count'] : 0,
+                'size_human' => is_string($human) && $human !== '' ? $human : VolumeUsage::human($size),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
      * Normalisasi daftar `{name,size,size_human}` dari agent (bentuk tak sah
      * dibuang; `size_human` hilang dihitung ulang dengan rumus yang sama).
      *

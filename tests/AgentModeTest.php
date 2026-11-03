@@ -272,6 +272,7 @@ class AgentModeTest extends TestCase
                 'GET /networks/{id}',
                 'GET /system/disk-usage',
                 'GET /system/host-usage',
+                'GET /system/volume-usage',
                 'GET /terminal/{token}/stream',
                 'GET /version',
                 'GET /volumes',
@@ -434,6 +435,11 @@ class AgentModeTest extends TestCase
             [AgentDockerController::class, 'diskUsage'],
             $routes['pairs']['GET /system/disk-usage']->getCallback()
         );
+        // Ukuran tiap volume compose server ini (/volumes control plane).
+        $this->assertSame(
+            [AgentDockerController::class, 'volumeUsage'],
+            $routes['pairs']['GET /system/volume-usage']->getCallback()
+        );
         // Operasional per server (F3d): database/Adminer & network/volume app
         // yang berjalan di server ini (helper Adminer hidup di sini; control plane
         // mem-forward permintaannya).
@@ -490,13 +496,13 @@ class AgentModeTest extends TestCase
             $routes['pairs']['GET /healthz']->getCallback()
         );
         $this->assertCount(
-            42,
+            43,
             $routes['definitions'],
             'route agent F0 (diagnostik) + F1 (3 job + proyeksi app + preflight nama app + cancel job) + F2 (nginx)'
             . ' + F3a (log + 5 terminal)'
             . ' + F3b/F3c (10 file manager + 2 monitoring) + F3d (1 database + 1 adminer + 7 network/volume)'
             . ' + F4 (3 route data: daftar volume backup + daftar snapshot + unduh dump bertahap)'
-            . ' + metrik per-app (1 ukuran storage)'
+            . ' + metrik per-app (2 ukuran: storage app + ukuran tiap volume compose)'
             . ' + batas resource app agent (1 daftar service dari base compose server itu)'
         );
     }

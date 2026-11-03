@@ -39,6 +39,13 @@ final class VolumeScopeAgentHandler
     /** @var array<string,array<int,string>> nama volume per project (`?project=`) */
     public array $volumesByProject = [];
 
+    /**
+     * Baris `GET /system/volume-usage`: nama volume ⇒ `{project,size,ref_count}`.
+     *
+     * @var array<string,array{project?:string,size?:int,ref_count?:int}>
+     */
+    public array $volumeUsage = [];
+
     /** true ⇒ `GET /backups/volumes` belum ada di agent (404) — uji jalur mundur. */
     public bool $noBackupVolumesEndpoint = false;
 
@@ -86,6 +93,25 @@ final class VolumeScopeAgentHandler
                 200,
                 ['Content-Type' => 'application/json'],
                 (string) json_encode(['code' => 0, 'data' => ['volumes' => $rows, 'status' => []]])
+            ));
+        }
+
+        if ($path === '/system/volume-usage') {
+            $rows = [];
+            foreach ($this->volumeUsage as $name => $info) {
+                $rows[] = [
+                    'name' => $name,
+                    'project' => (string) ($info['project'] ?? ''),
+                    'size' => (int) ($info['size'] ?? 0),
+                    'ref_count' => (int) ($info['ref_count'] ?? 0),
+                    'size_human' => '',
+                ];
+            }
+
+            return Create::promiseFor(new Psr7Response(
+                200,
+                ['Content-Type' => 'application/json'],
+                (string) json_encode(['code' => 0, 'data' => ['volumes' => $rows, 'at' => '12:00:00']])
             ));
         }
 
@@ -595,29 +621,109 @@ class VolumeServerScopeTest extends TestCase
     }
 
     // ==================================================================
-    // /api/volumes/usage tetap lokal-only (Engine host ini tidak mengenal agent)
+    // /api/volumes/usage: lokal dari Engine host ini, agent dari server itu
     // ==================================================================
 
-    public function testUsageCountsOnlyLocalVolumes(): void
+    public function testUsageMeasuresLocalAndAgentVolumesPerServer(): void
     {
         $this->localVolumes([$this->volume('lokal_data', 'app-a')]);
         $this->docker->diskUsage = ['Volumes' => [
             ['Name' => 'lokal_data', 'UsageData' => ['Size' => 2_000_000, 'RefCount' => 1]],
+            // Volume agent bernama sama tidak pernah dihitung dari Engine lokal.
             ['Name' => 'jakarta_data', 'UsageData' => ['Size' => 5_000_000, 'RefCount' => 1]],
         ]];
         $this->app(['id' => 'a1', 'name' => 'app-a', 'owner_id' => 'u-member', 'server_id' => ServerStore::LOCAL_ID]);
-        $this->agentServer('srv-jakarta', 'vps-jakarta', ['app-jakarta' => ['jakarta_data']]);
+        $this->agentServer('srv-jakarta', 'vps-jakarta', ['app-jakarta' => ['jakarta_data', 'jakarta_yatim']]);
         $this->app(['id' => 'a2', 'name' => 'app-jakarta', 'owner_id' => 'u-member', 'server_id' => 'srv-jakarta']);
+        $this->handlers['srv-jakarta']->volumeUsage = [
+            'jakarta_data' => ['project' => 'app-jakarta', 'size' => 5_000_000, 'ref_count' => 1],
+            'jakarta_yatim' => ['project' => 'app-hilang', 'size' => 7_000_000],
+        ];
 
         $controller = $this->controller(self::MEMBER);
         $response = $controller->usage($this->get('/api/volumes/usage'));
         $payload = json_decode((string) $response->rawBody(), true);
+        $data = $payload['data'] ?? [];
 
         $this->assertSame(0, $payload['code'] ?? null);
-        $this->assertSame(['lokal_data'], array_keys($payload['data']['usage'] ?? []));
-        $this->assertSame(2_000_000, $payload['data']['total'] ?? null);
-        // Agent tidak dihubungi untuk menghitung ukuran.
-        $this->assertSame([], $this->handlers['srv-jakarta']->calls ?? []);
+        $this->assertSame(['lokal_data'], array_keys($data['usage'] ?? []), 'peta lokal tidak memuat volume agent');
+        $this->assertSame(2_000_000, $data['total'] ?? null);
+        $this->assertArrayHasKey('engine_error', $data);
+        $this->assertNull($data['engine_error']);
+
+        $agent = $data['servers']['srv-jakarta'] ?? [];
+        $this->assertSame(['jakarta_data'], array_keys($agent['usage'] ?? []), 'yatim server agent tidak dikirim ke non-admin');
+        $this->assertSame(5_000_000, $agent['total'] ?? null);
+        $this->assertSame('5.000MB', $agent['total_human'] ?? null);
+        $this->assertArrayHasKey('error', $agent);
+        $this->assertNull($agent['error']);
+        $this->assertSame(7_000_000, $data['grand_total'] ?? null);
+        $this->assertSame(['/system/volume-usage'], $this->handlers['srv-jakarta']->paths(), 'ukuran agent dibaca dari endpoint server itu');
+    }
+
+    public function testUsageAdminIncludesAgentOrphanVolumes(): void
+    {
+        $this->localVolumes([]);
+        $this->docker->diskUsage = ['Volumes' => []];
+        $this->agentServer('srv-jakarta', 'vps-jakarta', ['app-hilang' => ['jakarta_yatim']]);
+        $this->handlers['srv-jakarta']->volumeUsage = [
+            'jakarta_yatim' => ['project' => 'app-hilang', 'size' => 7_000_000],
+        ];
+
+        $payload = json_decode(
+            (string) $this->controller(self::ADMIN)->usage($this->get('/api/volumes/usage'))->rawBody(),
+            true
+        );
+
+        $this->assertSame(7_000_000, $payload['data']['servers']['srv-jakarta']['total'] ?? null);
+        $this->assertSame(7_000_000, $payload['data']['grand_total'] ?? null);
+    }
+
+    public function testUsageLocalEngineFailureDoesNotReportZeroBytes(): void
+    {
+        $this->docker->explode = true; // listVolumes & getDiskUsage gagal
+        $this->agentServer('srv-jakarta', 'vps-jakarta', ['app-jakarta' => ['jakarta_data']]);
+        $this->app(['id' => 'a2', 'name' => 'app-jakarta', 'owner_id' => 'u-member', 'server_id' => 'srv-jakarta']);
+        $this->handlers['srv-jakarta']->volumeUsage = [
+            'jakarta_data' => ['project' => 'app-jakarta', 'size' => 5_000_000],
+        ];
+
+        $payload = json_decode(
+            (string) $this->controller(self::MEMBER)->usage($this->get('/api/volumes/usage'))->rawBody(),
+            true
+        );
+        $data = $payload['data'] ?? [];
+
+        $this->assertSame(0, $payload['code'] ?? null);
+        $this->assertArrayHasKey('engine_error', $data);
+        $this->assertStringContainsString('Tidak dapat mengakses Docker Engine', (string) $data['engine_error']);
+        // Kunci: bukan "0B" — konsumen /monitor membedakan tidak-tersedia dari nol.
+        $this->assertArrayHasKey('total_human', $data);
+        $this->assertNull($data['total_human']);
+        $this->assertSame(0, $data['total']);
+        $this->assertSame(5_000_000, $data['servers']['srv-jakarta']['total'] ?? null, 'ukuran agent tetap terkirim');
+        $this->assertSame(5_000_000, $data['grand_total'] ?? null);
+    }
+
+    public function testUsageReportsAgentFailureWithoutFailingTheResponse(): void
+    {
+        $this->localVolumes([$this->volume('lokal_data', 'app-a')]);
+        $this->docker->diskUsage = ['Volumes' => [
+            ['Name' => 'lokal_data', 'UsageData' => ['Size' => 2_000_000, 'RefCount' => 1]],
+        ]];
+        $this->app(['id' => 'a1', 'name' => 'app-a', 'owner_id' => 'u-member', 'server_id' => ServerStore::LOCAL_ID]);
+        $this->agentServer('srv-mati', 'vps-mati', ['app-mati' => ['mati_data']], offline: true);
+        $this->app(['id' => 'a2', 'name' => 'app-mati', 'owner_id' => 'u-member', 'server_id' => 'srv-mati']);
+
+        $payload = json_decode(
+            (string) $this->controller(self::MEMBER)->usage($this->get('/api/volumes/usage'))->rawBody(),
+            true
+        );
+
+        $this->assertSame(0, $payload['code'] ?? null);
+        $this->assertSame(2_000_000, $payload['data']['total'] ?? null, 'ukuran lokal tetap terkirim');
+        $this->assertNotSame([], $payload['data']['server_errors'] ?? [], 'kegagalan agent dilaporkan');
+        $this->assertStringNotContainsString('agt_', (string) json_encode($payload), 'token tidak bocor');
     }
 
     // ==================================================================

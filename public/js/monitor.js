@@ -330,7 +330,13 @@
         .then(function (r) { return r.json(); })
         .then(function (d) {
           if (!d || d.code !== 0) throw new Error((d && d.msg) ? d.msg : 'gagal');
-          diskText = (d.data && d.data.total_human) ? d.data.total_human : EMPTY;
+          // `total_human: null` = Engine lokal tak terbaca (bukan nol byte);
+          // `engine_error` ikut dikirim untuk membedakannya dari volume kosong.
+          var total = d.data && d.data.total_human;
+          if (typeof total !== 'string' || total === '' || (d.data && d.data.engine_error)) {
+            throw new Error('tidak tersedia');
+          }
+          diskText = total;
         })
         .catch(function () { diskText = 'tidak tersedia'; })
         .then(applyDisk);

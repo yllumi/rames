@@ -77,6 +77,64 @@ class BackupCatalogTest extends TestCase
         $this->assertSame(3, $read['volumes'][0]['snapshots']);
     }
 
+    public function testLocalWritesKeepCachedAgentRowsButReplaceLocalRows(): void
+    {
+        $catalog = new BackupCatalog($this->path);
+        $catalog->write([
+            ['name' => 'lokal_data', 'project' => 'demo', 'server_id' => 'local', 'snapshots' => 1],
+            ['name' => 'agent_data', 'project' => 'demo-remote', 'server_id' => 'srv-a', 'snapshots' => 4],
+        ]);
+
+        // Penulisan jalur lokal (tanpa baris agent) tidak boleh menghapus baris agent.
+        $catalog->write([
+            ['name' => 'lokal_data', 'project' => 'demo', 'server_id' => 'local', 'snapshots' => 2],
+            ['name' => 'lokal_baru', 'project' => 'baru', 'server_id' => 'local', 'snapshots' => 0],
+        ], true);
+
+        $rows = $catalog->read()['volumes'];
+        $names = array_column($rows, 'name');
+        sort($names);
+        $this->assertSame(['agent_data', 'lokal_baru', 'lokal_data'], $names);
+        $byName = array_column($rows, null, 'name');
+        $this->assertSame(2, $byName['lokal_data']['snapshots'], 'baris lokal diganti data live');
+        $this->assertSame(4, $byName['agent_data']['snapshots']);
+    }
+
+    public function testWriteAgentRowsReplacesOnlyThatServerAndSealsSyncTime(): void
+    {
+        $catalog = new BackupCatalog($this->path);
+        $catalog->write([
+            ['name' => 'lokal_data', 'project' => 'demo', 'server_id' => 'local'],
+            ['name' => 'a_data', 'project' => 'app-a', 'server_id' => 'srv-a', 'snapshots' => 1],
+            ['name' => 'b_data', 'project' => 'app-b', 'server_id' => 'srv-b', 'snapshots' => 2],
+        ]);
+
+        $catalog->writeAgentRows('srv-a', [
+            ['name' => 'a_data', 'project' => 'app-a', 'snapshots' => 3],
+            ['name' => 'a_cache', 'project' => 'app-a', 'snapshots' => 0],
+        ], 1700000000);
+
+        $rows = $catalog->read()['volumes'];
+        $this->assertSame(['lokal_data', 'b_data', 'a_data', 'a_cache'], array_column($rows, 'name'));
+        $this->assertSame('srv-a', $rows[2]['server_id'], 'server_id dipaksa dari argumen');
+        $this->assertSame(['srv-a' => 1700000000], $catalog->agentSyncTimes());
+
+        // Server tanpa volume: baris lama server itu hilang, server lain tetap.
+        $catalog->writeAgentRows('srv-a', [], 1700000100);
+        $this->assertSame(['lokal_data', 'b_data'], array_column($catalog->read()['volumes'], 'name'));
+    }
+
+    public function testTouchAgentSyncDoesNotChangeRows(): void
+    {
+        $catalog = new BackupCatalog($this->path);
+        $catalog->write([['name' => 'b_data', 'project' => 'app-b', 'server_id' => 'srv-b']]);
+
+        $catalog->touchAgentSync('srv-b', 1700000200);
+
+        $this->assertSame(['srv-b' => 1700000200], $catalog->agentSyncTimes());
+        $this->assertSame(['b_data'], array_column($catalog->read()['volumes'], 'name'));
+    }
+
     public function testUnknownKeysAreDropped(): void
     {
         $catalog = new BackupCatalog($this->path);

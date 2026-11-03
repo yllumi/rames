@@ -214,6 +214,19 @@ class VolumeBackupService
     }
 
     /**
+     * Cache ringkasan (seam baca/tulis). `BackupController::status()` memakainya
+     * untuk menyinkronkan baris volume server agent (TTL) — instance yang sama
+     * dengan service, sehingga tes yang menyuntikkan cache temp tidak menyentuh
+     * `runtime/` nyata.
+     */
+    public function catalogStore(): ?BackupCatalog
+    {
+        // `null` untuk implementasi tiruan/uji yang tidak memanggil konstruktor
+        // induk (tanpa cache nyata) — pemanggil melewati sinkronisasi cache.
+        return isset($this->catalog) ? $this->catalog : null;
+    }
+
+    /**
      * Hitung ulang ringkasan secara **live** (Engine + restic) lalu simpan ke
      * cache; mengembalikan baris live. Dipakai tombol "Segarkan"
      * (`POST /backups/refresh`) — bukan polling status.
@@ -231,7 +244,9 @@ class VolumeBackupService
         $counts = $this->snapshotCountsByVolume();
         $rows = $this->overviewWithCounts($targets, $this->report->readStatus(), $counts ?? []);
         $this->backfillScheduled($rows);
-        $this->catalog->write($rows);
+        // Jalur lokal: pertahankan baris server agent yang sudah ada (Engine
+        // host ini tidak bisa menghasilkannya kembali).
+        $this->catalog->write($rows, true);
         $this->syncRegistryCounts($counts);
         $this->backfillRegistry($rows);
 
@@ -696,7 +711,7 @@ class VolumeBackupService
             $counts = $this->snapshotCountsByVolume();
             $rows = $this->overviewWithCounts($this->targets(), $run, $counts ?? []);
             $this->backfillScheduled($rows);
-            $this->catalog->write($rows);
+            $this->catalog->write($rows, true);
             $this->syncRegistryCounts($counts);
             $this->backfillRegistry($rows);
         } catch (\Throwable $e) {

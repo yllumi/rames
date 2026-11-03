@@ -215,9 +215,11 @@ class VolumeAppServerViewTest extends TestCase
         self::assertStringContainsString('yatim di server agent, hapus di server itu', $html);
         self::assertStringContainsString('Hapus SEMUA volume yatim di server lokal (1 volume)', $html);
 
-        // Baris agent tidak memakai pengukuran ukuran Engine lokal.
-        self::assertSame(2, preg_match_all('/data-volume-size=/', $html), 'hanya 2 volume lokal yang diukur');
-        self::assertSame(0, preg_match_all('/data-volume-size="jakarta_[^"]*"/', $html));
+        // Semua baris diukur: baris lokal tanpa `data-volume-server`, baris agent
+        // membawa `data-volume-server` supaya JS memakai peta per server.
+        self::assertSame(4, preg_match_all('/data-volume-size=/', $html), 'keempat volume diukur');
+        self::assertSame(2, preg_match_all('/data-volume-size="jakarta_[^"]*" data-volume-server="srv-jakarta"/', $html));
+        self::assertSame(2, preg_match_all('/data-volume-size="(?:a_yatim|lokal_data)"/', $html), 'baris lokal tetap tanpa server');
         self::assertStringContainsString('4 volume di 2 server (2 yatim)', $html);
 
         $this->assertNoSecretLeak($html);

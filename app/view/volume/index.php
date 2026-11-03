@@ -41,8 +41,8 @@ $__serverCount = count($__serverNames);
     Volume ber-label <span class="mono">docker compose</span> dari <strong>setiap server</strong>
     yang berhak Anda lihat. Volume <strong>yatim</strong> ditinggalkan app yang dihapus dengan mode
     "pertahankan volume" — bisa dibersihkan di sini (server lokal).
-    Kolom <strong>Ukuran</strong> menampilkan storage terpakai tiap volume server lokal (dihitung
-    Docker Engine dan dimuat setelah tabel tampil).
+    Kolom <strong>Ukuran</strong> menampilkan storage terpakai tiap volume, diukur Docker Engine
+    <em>server tempat volume itu hidup</em> (dimuat setelah tabel tampil).
   </p>
 <?php $__infoHtml = (string) ob_get_clean(); $__infoId = 'volumes-info'; $__infoTitle = 'Tentang Volumes'; ?>
 <?php include app_path() . '/view/partials/page-info-modal.php'; ?>
@@ -118,7 +118,7 @@ $__serverCount = count($__serverNames);
             <?php endif; ?>
           </td>
           <?php if ($__agent): ?>
-            <td class="small text-end text-muted" title="Ukuran volume dihitung dari Engine server lokal">&mdash;</td>
+            <td class="small text-end text-muted" data-volume-size="<?= e($r['name']) ?>" data-volume-server="<?= e((string) ($r['server_id'] ?? '')) ?>" title="Menghitung ukuran terpakai di server <?= e($__srvName !== '' ? $__srvName : (string) ($r['server_id'] ?? '')) ?> ...">&hellip;</td>
           <?php else: ?>
             <td class="small text-end text-muted" data-volume-size="<?= e($r['name']) ?>" title="Menghitung ukuran terpakai ...">&hellip;</td>
           <?php endif; ?>
@@ -183,17 +183,44 @@ $__serverCount = count($__serverNames);
     cell.setAttribute('title', title);
   }
 
+  // Baris lokal memakai peta `usage`; baris server agent memakai peta
+  // `servers[serverId].usage` (Engine host ini tidak mengenal volume agent).
+  function itemFor(data, cell) {
+    var name = cell.getAttribute('data-volume-size');
+    var server = cell.getAttribute('data-volume-server');
+    if (server) {
+      var entry = (data.servers || {})[server];
+      return entry && entry.usage ? entry.usage[name] : null;
+    }
+    return (data.usage || {})[name];
+  }
+
+  function showErrors(data) {
+    if (!errorEl) return;
+    var messages = [];
+    if (data && typeof data.engine_error === 'string' && data.engine_error !== '') {
+      messages.push(data.engine_error);
+    }
+    var serverErrors = (data && Array.isArray(data.server_errors)) ? data.server_errors : [];
+    messages = messages.concat(serverErrors);
+    if (messages.length === 0) return;
+    errorEl.textContent = '· ' + messages.join(' · ');
+    errorEl.classList.remove('d-none');
+  }
+
   fetch('/api/volumes/usage', { headers: { 'Accept': 'application/json' } })
     .then(function (r) { return r.json(); })
     .then(function (d) {
-      if (!d || d.code !== 0) {
+      if (!d || d.code !== 0 || !d.data) {
         throw new Error((d && d.msg) ? d.msg : 'Docker Engine tidak merespons.');
       }
-      var usage = (d.data && d.data.usage) || {};
+      var data = d.data;
       Array.prototype.forEach.call(cells, function (cell) {
-        var item = usage[cell.getAttribute('data-volume-size')];
+        var item = itemFor(data, cell);
         if (!item) {
-          fill(cell, '—', 'Ukuran volume ini tidak dilaporkan Docker Engine.');
+          fill(cell, '—', cell.hasAttribute('data-volume-server')
+            ? 'Ukuran volume ini tidak dilaporkan Docker Engine server itu.'
+            : 'Ukuran volume ini tidak dilaporkan Docker Engine.');
           return;
         }
         cell.classList.remove('text-muted');
@@ -201,9 +228,10 @@ $__serverCount = count($__serverNames);
           item.size_human + ' terpakai · ' + item.size + ' byte · dipakai ' + item.ref_count + ' container');
       });
       if (totalEl) {
-        totalEl.textContent = '· total terpakai ' + (d.data.total_human || '0B');
+        totalEl.textContent = '· total terpakai ' + (data.grand_total_human || data.total_human || '0B');
         totalEl.classList.remove('d-none');
       }
+      showErrors(data);
     })
     .catch(function (err) {
       Array.prototype.forEach.call(cells, function (cell) {

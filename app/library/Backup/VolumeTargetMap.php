@@ -39,19 +39,23 @@ final class VolumeTargetMap
     public const LABEL_PROJECT = 'com.docker.compose.project';
 
     /**
-     * Label penanda volume database dashboard. `docker-compose.yml` memberi
-     * named volume `rames` (mount `/var/lib/rames`) label `rames.role=dashboard-db`.
+     * Label penanda volume database dashboard / agent. `docker-compose.yml`
+     * memberi named volume `rames` (mount `/var/lib/rames`) label
+     * `rames.role=dashboard-db`; paket agent (`docker-compose.agent.yml`) memberi
+     * volume `rames-agent-data` label `rames.role=agent-db`.
      *
-     * Volume itu **ikut** ber-label compose (`com.docker.compose.project=rames`)
-     * sehingga lolos filter label di atas — padahal ia bukan volume app.
-     * Bila ikut menjadi target backup, run berkala berkebijakan snapshot `stop`
-     * + `require_stopped` akan menghentikan container dashboard (proses yang
-     * menjalankan backup itu sendiri) → run gagal / dashboard mati. Karena itu
-     * volume ber-label ini **dikecualikan permanen** dari target
-     * backup/restore/schedule (dan dari daftar/purge volume di `/volumes`).
+     * Kedua volume itu **ikut** ber-label compose (`com.docker.compose.project`
+     * = `rames`/`rames-agent`) sehingga lolos filter label di atas — padahal
+     * bukan volume app. Bila ikut menjadi target backup, run berkala
+     * berkebijakan snapshot `stop` + `require_stopped` akan menghentikan
+     * container dashboard/agent (proses yang menjalankan backup itu sendiri) →
+     * run gagal / dashboard mati. Karena itu volume ber-label ini
+     * **dikecualikan permanen** dari target backup/restore/schedule (dan dari
+     * daftar/purge/ukuran volume di `/volumes`).
      */
     public const DASHBOARD_VOLUME_LABEL_KEY = 'rames.role';
     public const DASHBOARD_VOLUME_LABEL_VALUE = 'dashboard-db';
+    public const AGENT_DB_VOLUME_LABEL_VALUE = 'agent-db';
 
     /**
      * Apakah entri volume Engine ini volume database dashboard (yang harus
@@ -67,7 +71,10 @@ final class VolumeTargetMap
             return false;
         }
 
-        return (string) ($labels[self::DASHBOARD_VOLUME_LABEL_KEY] ?? '') === self::DASHBOARD_VOLUME_LABEL_VALUE;
+        $role = (string) ($labels[self::DASHBOARD_VOLUME_LABEL_KEY] ?? '');
+
+        return $role === self::DASHBOARD_VOLUME_LABEL_VALUE
+            || $role === self::AGENT_DB_VOLUME_LABEL_VALUE;
     }
 
     /**
