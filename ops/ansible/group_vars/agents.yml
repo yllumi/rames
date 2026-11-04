@@ -1,0 +1,32 @@
+---
+# Group vars untuk grup `agents` (server tempat app berjalan, RAMES_MODE=agent).
+#
+# Semua nama adalah bagian kontrak. Nilai di sini aman untuk sebagian besar
+# server; timpa per host di inventories/agents/hosts.yml (host var menang atas
+# group var).
+
+# Domain yang dilayani server ini (APP_DOMAIN di secrets/agent.env).
+# String kosong = jangan kirim --domain (installer mempertahankan nilai lama).
+rames_agent_domain: ''
+
+# Alamat kontak Let's Encrypt (ADMIN_EMAIL). Wajib ada agar job ssl_issue di
+# server ini bisa jalan; kosong = installer memperingatkan, bukan mengisi.
+rames_agent_email: ''
+
+# Rentang host port untuk container app di server ini.
+rames_agent_port_range_start: 30000
+rames_agent_port_range_end: 30999
+
+# AGENT_BIND — alamat listen agent DI DALAM container (bentuk <ip|host>:<port>).
+# Port di sini adalah port internal (8443), bukan port publish di host.
+rames_agent_bind: "0.0.0.0:8443"
+
+# IPv4 server ini untuk SAN sertifikat self-signed & URL onboarding.
+# Kosong = installer mendeteksi otomatis; verifikasi memakai ansible_host.
+rames_agent_ip: ''
+
+# SSL_CHALLENGE: '' (pertahankan) | http | dns-cloudflare.
+rames_agent_ssl_challenge: ''
+
+# SSL_CA_SERVER: '' (pertahankan) | production | staging.
+rames_agent_ssl_ca_server: ''

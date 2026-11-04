@@ -1,0 +1,109 @@
+---
+# Onboarding — menyalin berkas onboarding agent DARI server ke control node.
+#
+# Konteks: `agent/install.sh --onboarding-file <path>` (dipasang install.yml)
+# menulis berkas 0600 berisi RAMES_ONBOARDING_VERSION / URL / TOKEN /
+# FINGERPRINT_SHA256 / DOMAIN / PORT_RANGE_START / PORT_RANGE_END /
+# AGENT_VERSION / GENERATED_AT + blok PEM. Isinya RAHASIA (token agent).
+#
+# Perilaku role:
+#   * rames_agent_onboarding_out kosong  → tidak ada yang diambil
+#   * terisi → slurp (no_log) → copy ke control node (0600, no_log) →
+#     HAPUS berkas sementara di server (blok `always`)
+#   * berkas sementara tidak ada         → berhenti dengan pesan jelas
+#     (artinya installer tidak dijalankan pada run ini)
+#
+# Role ini TIDAK PERNAH mencetak isi berkas — hanya path tujuan. Membaca isinya
+# adalah tindakan operator yang disengaja (`sudo cat` di control node).
+
+- name: "Onboarding | lewati (rames_agent_onboarding_out kosong)"
+  ansible.builtin.debug:
+    msg: >-
+      rames_agent_onboarding_out kosong — berkas onboarding tidak diambil.
+      Isi variabel itu (path di control node, di luar repo) bila ingin
+      mendapatkan URL/token/fingerprint/PEM siap-tempel ke dashboard.
+  when: rames_agent_onboarding_out | length == 0
+
+- name: "Onboarding | path tujuan harus absolut di control node"
+  ansible.builtin.assert:
+    that:
+      - rames_agent_onboarding_out is match('/.*')
+      - rames_agent_onboarding_out is not search('[\r\n\x00]')
+    fail_msg: >-
+      rames_agent_onboarding_out='{{ rames_agent_onboarding_out }}' bukan path
+      absolut (harus mulai '/') atau memuat karakter kontrol. Berkas ini
+      ditulis di CONTROL NODE, jadi path relatif bergantung pada cwd dan bisa
+      mendarat di tempat tak terduga.
+    success_msg: "{{ inventory_hostname }}: tujuan onboarding {{ rames_agent_onboarding_out }}."
+  when: rames_agent_onboarding_out | length > 0
+
+- name: "Onboarding | mode --check: berkas onboarding tidak diambil"
+  ansible.builtin.debug:
+    msg: >-
+      Mode --check: installer dilewati sehingga
+      {{ rames_agent_onboarding_remote_path }} tidak ada — penyalinan berkas
+      onboarding juga dilewati.
+  when:
+    - rames_agent_onboarding_out | length > 0
+    - ansible_check_mode
+
+- name: "Onboarding | ambil berkas onboarding dari server (no_log)"
+  when:
+    - rames_agent_onboarding_out | length > 0
+    - not ansible_check_mode
+  block:
+    - name: "Onboarding | stat {{ rames_agent_onboarding_remote_path }}"
+      ansible.builtin.stat:
+        path: "{{ rames_agent_onboarding_remote_path }}"
+      register: rames_agent_onboarding_stat
+      check_mode: false
+      changed_when: false
+      become: true
+
+    - name: "Onboarding | hentikan bila berkas onboarding tidak dibuat installer"
+      ansible.builtin.assert:
+        that:
+          - rames_agent_onboarding_stat.stat.exists
+        fail_msg: >-
+          {{ rames_agent_onboarding_remote_path }} tidak ada di
+          {{ inventory_hostname }}. Berkas itu hanya ditulis ketika
+          `agent/install.sh` BENAR-BENAR dijalankan dengan --onboarding-file;
+          pada run ini rames_agent_run_installer={{ rames_agent_run_installer }}
+          sehingga installer dilewati (host dianggap sudah terpasang).
+          Pilihan: set rames_agent_run_installer=true (installer idempoten —
+          token & sertifikat lama dipertahankan), atau kosongkan
+          rames_agent_onboarding_out bila salinan onboarding tidak diperlukan.
+        success_msg: "{{ inventory_hostname }}: berkas onboarding tersedia."
+
+    - name: "Onboarding | baca berkas onboarding (no_log)"
+      ansible.builtin.slurp:
+        src: "{{ rames_agent_onboarding_remote_path }}"
+      register: rames_agent_onboarding_slurp
+      no_log: true
+      become: true
+
+    - name: "Onboarding | simpan berkas onboarding di control node (0600, no_log)"
+      ansible.builtin.copy:
+        content: "{{ (rames_agent_onboarding_slurp.content | b64decode) }}"
+        dest: "{{ rames_agent_onboarding_out }}"
+        mode: "0600"
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Onboarding | berkas onboarding tersimpan (isi tidak dicetak)"
+      ansible.builtin.debug:
+        msg: >-
+          Berkas onboarding (URL, token, fingerprint, PEM) tersimpan 0600 di
+          {{ rames_agent_onboarding_out }} pada control node. Isinya RAHASIA:
+          jangan di-commit, jangan dicetak ke log/chat; hapus setelah
+          didaftarkan di dashboard (Servers → Add Server).
+
+  always:
+    - name: "Onboarding | hapus berkas onboarding sementara di server"
+      ansible.builtin.file:
+        path: "{{ rames_agent_onboarding_remote_path }}"
+        state: absent
+      become: true
+      no_log: true
+      changed_when: false
+      when: rames_agent_onboarding_remote_path is defined

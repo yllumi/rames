@@ -169,7 +169,10 @@ Apa yang terjadi:
    agent (`Version : rames-agent <versi>`, mis. `rames-agent 0.1.0` — dibaca dari
    const `AgentController::VERSION` → `AgentVersionGate::CODEBASE_VERSION`), dan
    PEM sertifikat di antara penanda
-   `-----BEGIN ONBOARDING PEM-----` / `-----END ONBOARDING PEM-----`.
+   `-----BEGIN ONBOARDING PEM-----` / `-----END ONBOARDING PEM-----`. Blok yang
+   **sama** dapat ditulis ke berkas 0600 untuk dibaca mesin lewat
+   `--onboarding-file <path>` (lihat
+   [Berkas onboarding](#berkas-onboarding---onboarding-file)).
 
 Lalu di dashboard (admin): **Servers → Add Server** → isi name/URL/token +
 **paste PEM** di blok onboarding (`APP_DOMAIN`, port range) → **Test connection**.
@@ -188,6 +191,7 @@ ketik) dan menolak tegas bila fingerprint tidak cocok.
 | `--ssl-challenge <http\|dns-cloudflare>` | `SSL_CHALLENGE` (default `http` = webroot HTTP-01). |
 | `--ssl-ca-server <production\|staging>` | `SSL_CA_SERVER` (`staging` untuk uji — sertifikat tidak dipercaya). |
 | `--cloudflare-creds <path>` | `CLOUDFLARE_CREDS` — path **absolut** (wajib mulai `/`, tanpa spasi/kutip) ini-file kredensial Cloudflare untuk `--dns-cloudflare`; harus **terbaca container agent** (paling aman di bawah path repo, karena repo di-mount di path yang sama). Tidak terbaca **di host** hanya **diperingatkan** — yang menentukan adalah keterbacaan **di dalam container** (path di container bisa berbeda, mis. berkas disalin/di-mount ke tempat lain). |
+| `--onboarding-file <path>` | tulis blok onboarding ke berkas **0600** (path **absolut**, direktori induk harus ada & bisa ditulis) untuk dibaca **mesin** (Ansible/control plane). Isi: `KUNCI=nilai` lalu blok PEM ([rincian format](#berkas-onboarding---onboarding-file)). Berisi **rahasia**; blok di stdout **tidak** berubah. |
 | `--force` | regenerasi token + sertifikat, lalu force-recreate container. **Perbarui server di dashboard setelahnya.** |
 | `--help` | bantuan. |
 
@@ -201,6 +205,57 @@ Validasi **fail-fast sebelum efek samping apa pun**: `--domain` dinormalkan
 sertifikat), `--cloudflare-creds` wajib **path absolut**. Pesan galat menyebut
 **asal nilai** — opsi CLI (`--email`, `--domain`, …) atau baris di
 `secrets/agent.env` — beserta contoh perbaikannya.
+
+### Berkas onboarding (`--onboarding-file`)
+
+Pasangan **machine-readable** dari blok stdout — dipakai otomasi (Ansible di
+[`ops/ansible/`](../ops/ansible/README.md), atau control plane) yang tidak boleh
+mem-parsing stdout dan tidak boleh mencetak rahasia ke log.
+
+| Aspek | Nilai |
+|---|---|
+| Path | **absolut** (mulai `/`); ditolak fail-fast bila relatif, direktori, memuat newline/CR, atau direktori induk tidak ada/tidak bisa ditulis. Direktori induk **tidak** dibuat otomatis. |
+| Mode | `0600`, ditulis **atomik** (`<path>.tmp.$$` → `mv`) ⇒ pembaca tidak pernah melihat PEM terpotong. |
+| Format | `RAMES_ONBOARDING_VERSION`, `URL`, `TOKEN`, `FINGERPRINT_SHA256`, `DOMAIN`, `PORT_RANGE_START`, `PORT_RANGE_END`, `AGENT_VERSION`, `GENERATED_AT`, lalu `-----BEGIN ONBOARDING PEM-----` … `-----END ONBOARDING PEM-----` (PEM = sisa berkas; **bukan** JSON). |
+| Isi | nilai **efektif** run ini (rerun tanpa `--force` ⇒ token sama; dengan `--force` ⇒ token baru). Tidak dibaca ulang installer dan **tidak** disimpan di `secrets/agent.env`. |
+| Gagal tulis | exit **non-zero** dengan pesan `instalasi selesai, tetapi berkas onboarding gagal ditulis: …` — agent **sudah** terpasang & token **tidak** berubah ⇒ perbaiki path/izin lalu rerun **tanpa** `--force`. |
+
+**DILARANG** meng-commit berkas ini atau menempelkan isinya ke tiket/chat: ia
+memuat token agent + PEM sertifikat. Simpan di luar repo (mis.
+`~/.rames/onboarding/`), lalu hapus setelah server terdaftar (Servers → Add
+Server). Fingerprint dihitung ulang dashboard dari PEM, jadi tidak perlu
+diketik. Urutan & guard otomasinya ada di
+[`ops/ansible/README.md`](../ops/ansible/README.md) §8 — jangan diduplikasi di
+sini.
+
+**GOTCHA (diperbarui)** — bootstrap `install.agent.sh` **kini meneruskan**
+`--onboarding-file <path absolut>` ke `agent/install.sh`
+(`SINGLE_VALUE_AGENT_OPTS` memuat opsi itu), jadi satu perintah bootstrap bisa
+menghasilkan berkas onboarding `0600` untuk dibaca mesin:
+
+```bash
+sudo bash /tmp/rames-install-agent.sh --domain agent.example.com \
+  --email ops@example.com --onboarding-file /root/rames-onboarding.ini
+```
+
+Path tetap divalidasi `agent/install.sh` (absolut, direktori induk ada, mode
+`0600`, tulis atomik); berkas berisi token + PEM ⇒ simpan di luar repo dan hapus
+setelah server terdaftar. **Catatan lama** (“bootstrap tidak meneruskan opsi
+ini”) **tidak berlaku lagi**.
+
+Selain lewat playbook manual, server agent kini dapat diprovisi **dari dashboard**
+oleh admin: **Servers → Provision Server** (`/servers/provision`) menjalankan
+Ansible di helper container control plane, mem-pin host key (TOFU), lalu
+mendaftarkan server sendiri setelah verifikasi `GET /version` — termasuk menulis
+dan membaca berkas onboarding ini secara otomatis. Panduan pengguna:
+[DETAILS.md § Provision server dari dashboard](../DETAILS.md#provision-server-dari-dashboard);
+alur internal: `docs/ARCHITECTURE/05-09-multiserver-operasional.md` §5.21b.
+
+Provisi beberapa server dapat diotomasi dengan **`ops/ansible/`** (role
+`rames_agent` + `provision-agent.yml`/`verify-agent.yml`/`upgrade-agents.yml`):
+pembungkus idempoten `host/install.sh --deps-only` + `agent/install.sh` di
+control node operator — **tidak** menambah dependensi runtime image ini dan
+**tidak** menggantikan installer.
 
 ## Firewall (wajib)
 

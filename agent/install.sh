@@ -11,7 +11,9 @@
 #   4. Agent: docker compose -f docker-compose.agent.yml -p rames-agent up -d --build
 #   5. Verifikasi: GET https://127.0.0.1:<port>/version (dengan header token)
 #   6. Blok onboarding: URL + token + fingerprint SHA-256 + PEM sertifikat
-#      (bahan form Add Server di dashboard)
+#      (bahan form Add Server di dashboard) — opsional juga DITULIS ke berkas
+#      ber-mode 0600 lewat --onboarding-file, agar bisa dibaca mesin
+#      (Ansible/control plane) tanpa mem-parsing stdout.
 #
 # Pemakaian:
 #   ./agent/install.sh --domain domain2.com --email ops@domain2.com \
@@ -20,6 +22,7 @@
 #                      [--ssl-challenge http|dns-cloudflare]
 #                      [--ssl-ca-server production|staging]
 #                      [--cloudflare-creds /path/cloudflare.ini]
+#                      [--onboarding-file /path/onboarding.ini]
 #
 # Idempoten: aman dijalankan ulang. Tanpa `--force`, token agent, sertifikat TLS,
 # dan nilai yang sudah ada di secrets/agent.env DIPERTAHANKAN (hanya diisi bila
@@ -29,6 +32,14 @@
 # sentinel '# rames-installer:begin' … '# rames-installer:end'. `--force`
 # meregenerasi token + sertifikat (perlu diperbarui manual di dashboard:
 # Add Server / rotasi) dan memaksa recreate container.
+#
+# `--onboarding-file <path>` (path ABSOLUT) menulis blok onboarding ke berkas
+# ber-mode 0600 dengan format `KUNCI=nilai` sederhana + blok
+# `-----BEGIN/END ONBOARDING PEM-----` (BUKAN JSON — PEM tidak perlu di-escape),
+# untuk dibaca control plane/Ansible. Berkas itu BERISI RAHASIA (token agent) dan
+# TIDAK dibaca ulang oleh installer maupun disimpan di secrets/agent.env: isinya
+# selalu nilai efektif run ini (rerun tanpa --force ⇒ token sama; dengan --force
+# ⇒ token baru). Blok onboarding tetap dicetak ke stdout seperti biasa.
 #
 # Semua opsi divalidasi fail-fast SEBELUM efek samping apa pun; nilai yang
 # berasal dari berkas env dibedakan dari nilai opsi CLI di pesan galat.
@@ -69,6 +80,7 @@ OPT_EMAIL=""
 OPT_SSL_CHALLENGE=""
 OPT_SSL_CA_SERVER=""
 OPT_CLOUDFLARE_CREDS=""
+OPT_ONBOARDING_FILE=""
 FORCE=0
 
 # ---------------------------------------------------------------- colors
@@ -130,6 +142,14 @@ Opsi:
                           --dns-cloudflare), mis. /srv/rames/cloudflare.ini.
                           Harus terbaca container agent (repo di-mount di path
                           yang sama di dalamnya).
+  --onboarding-file <p>   tulis blok onboarding (URL, token, fingerprint SHA-256,
+                          PEM sertifikat) ke berkas <p> dengan mode 0600 agar
+                          bisa dibaca mesin (Ansible/control plane). Path WAJIB
+                          absolut, direktori induknya harus sudah ada & bisa
+                          ditulis. Berkas itu MEMUAT RAHASIA (token agent) —
+                          jangan di-commit, hapus/salin ke vault setelah dipakai.
+                          Blok onboarding tetap dicetak ke stdout seperti biasa;
+                          tanpa opsi ini perilakunya tidak berubah.
   --force                 regenerasi token agent + sertifikat TLS, lalu
                           force-recreate container (perbarui di dashboard!)
   -h, --help              tampilkan bantuan ini
@@ -162,6 +182,16 @@ parse_args() {
             --ssl-challenge) OPT_SSL_CHALLENGE="${2?--ssl-challenge butuh nilai}"; shift ;;
             --ssl-ca-server) OPT_SSL_CA_SERVER="${2?--ssl-ca-server butuh nilai}"; shift ;;
             --cloudflare-creds) OPT_CLOUDFLARE_CREDS="${2?--cloudflare-creds butuh nilai}"; shift ;;
+            # Path onboarding divalidasi SEKARANG, bukan di main(): parse_args
+            # berjalan sebelum prasyarat, sebelum ensure_dirs, dan sebelum token
+            # baru dibuat — path cacat harus gagal di situ (fail-fast), bukan
+            # setelah container di-recreate. `${2?}` menolak nilai yang HILANG;
+            # string kosong yang diberikan eksplisit ditolak validator.
+            --onboarding-file)
+                OPT_ONBOARDING_FILE="${2?--onboarding-file butuh path berkas}"
+                validate_onboarding_file_path "$OPT_ONBOARDING_FILE"
+                shift
+                ;;
             --force) FORCE=1 ;;
             -h|--help) usage; exit 0 ;;
             *) die "Argumen tidak dikenal: $1 (lihat --help)" ;;
@@ -942,6 +972,103 @@ verify_version() {
 }
 
 # ---------------------------------------------------------------- onboarding
+# Berkas onboarding untuk MESIN (Ansible/control plane) — pasangan dari blok
+# yang dicetak ke stdout untuk manusia (kompatibilitas penuh: stdout TIDAK
+# berubah). Format sengaja BUKAN JSON: isinya baris `KUNCI=nilai` sederhana lalu
+# blok PEM apa adanya, jadi PEM (yang memuat baris baru) tidak perlu di-escape
+# dan tidak ada ketergantungan pada pustaka JSON. Pembaca cukup memecah baris
+# dengan split pertama pada '=' dan berhenti di sentinel
+# `-----BEGIN ONBOARDING PEM-----` (PEM = sisa berkas sampai sentinel END).
+ONBOARDING_FORMAT_VERSION=1
+
+# Catatan penempatan: kedua fungsi di bawah dipakai parse_args()/main(). Bash
+# me-resolve nama fungsi saat dipanggil dan `main "$@"` ada di paling akhir
+# berkas, jadi urutan definisi tidak berpengaruh — keduanya ditaruh di sini agar
+# dekat dengan format yang mereka layani.
+
+# Validasi path --onboarding-file (dipanggil dari parse_args ⇒ sebelum efek
+# samping apa pun). Yang ditolak: path kosong, path relatif, path memuat
+# newline/CR/NUL, path berupa direktori, serta direktori induk yang tidak ada
+# atau tidak bisa ditulis. Direktori induk TIDAK dibuat otomatis: path salah
+# ketik tidak boleh diam-diam menghasilkan direktori baru di tempat acak.
+validate_onboarding_file_path() {
+    local path="$1" parent="" stripped=""
+    if [ -z "$path" ]; then
+        die "--onboarding-file butuh nilai: path ABSOLUT berkas tujuan (mulai '/'), mis. --onboarding-file /srv/rames/onboarding.ini"
+    fi
+    # Newline/CR memecah berkas dan menyamarkan isinya (juga ke log/parser);
+    # NUL memotong path di execve. NUL tidak bisa hidup di variabel bash, jadi
+    # pemeriksaan NUL di bawah bersifat defensif untuk pemakaian fungsi ini di
+    # masa depan — dibandingkan sebagai STRING (bukan panjang): `${#path}`
+    # menghitung karakter sementara `tr` menghitung byte, jadi path multibyte
+    # akan salah ditolak.
+    case "$path" in
+        *$'\n'*|*$'\r'*)
+            die "--onboarding-file ditolak: path memuat baris baru/CR" ;;
+    esac
+    stripped="$(printf '%s' "$path" | LC_ALL=C tr -d '\000')"
+    if [ "$stripped" != "$path" ]; then
+        die "--onboarding-file ditolak: path memuat karakter NUL"
+    fi
+    case "$path" in
+        /*) ;;
+        *) die "--onboarding-file ditolak: \"$path\" bukan path absolut (harus mulai '/') — path relatif bergantung pada cwd (mis. saat dijalankan sudo/Ansible) sehingga berkas rahasia bisa mendarat di tempat tak terduga" ;;
+    esac
+    if [ -d "$path" ]; then
+        die "--onboarding-file ditolak: \"$path\" adalah direktori (butuh path berkas)"
+    fi
+    parent="$(dirname -- "$path")"
+    if [ ! -d "$parent" ]; then
+        die "--onboarding-file ditolak: direktori induk \"$parent\" tidak ada — buat direktori itu dulu atau pilih path lain"
+    fi
+    if [ ! -w "$parent" ]; then
+        die "--onboarding-file ditolak: direktori induk \"$parent\" tidak bisa ditulis oleh user ini (periksa owner/izin, atau jalankan dengan user yang tepat)"
+    fi
+}
+
+# Tulis blok onboarding ke berkas 0600 secara ATOMIK: isi dulu ke
+# `<path>.tmp.$$`, lalu `mv` ke `<path>` — control plane yang membaca berkas ini
+# tidak boleh pernah melihat berkas separuh jadi (PEM terpotong = fingerprint
+# salah), dan berkas sementara tidak boleh ber-mode longgar (umask 077 + chmod
+# 600 eksplisit; chmod diulang setelah mv karena umask bisa diwarisi lingkungan).
+# Semua nilai masuk sebagai argumen (bukan global) supaya fungsi ini bisa diuji
+# terisolasi; hanya `AGENT_TLS_CERT` (sumber PEM) yang tetap global.
+# Kegagalan ⇒ die dengan pesan yang menegaskan instalasi SUDAH selesai: operator
+# tidak boleh menyimpulkan agent belum terpasang lalu mengulang dengan --force
+# (itu akan merotasi token & sertifikat yang sudah tercatat di dashboard).
+write_onboarding_file() {  # $1=path $2=url $3=token $4=fingerprint $5=version $6=domain $7=range_start $8=range_end
+    local path="$1" url="$2" token="$3" fingerprint="$4" version="$5"
+    local domain="$6" range_start="$7" range_end="$8"
+    local tmp="${path}.tmp.$$" generated_at=""
+
+    generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || generated_at=""
+    [ -n "$generated_at" ] || generated_at="unknown"
+
+    if ! (
+        umask 077
+        printf '%s\n' \
+            "RAMES_ONBOARDING_VERSION=${ONBOARDING_FORMAT_VERSION}" \
+            "URL=${url}" \
+            "TOKEN=${token}" \
+            "FINGERPRINT_SHA256=${fingerprint}" \
+            "DOMAIN=${domain}" \
+            "PORT_RANGE_START=${range_start}" \
+            "PORT_RANGE_END=${range_end}" \
+            "AGENT_VERSION=${version}" \
+            "GENERATED_AT=${generated_at}" \
+            "-----BEGIN ONBOARDING PEM-----" >"$tmp" &&
+        cat "$AGENT_TLS_CERT" >>"$tmp" &&
+        printf '%s\n' "-----END ONBOARDING PEM-----" >>"$tmp" &&
+        chmod 600 "$tmp" &&
+        mv -f "$tmp" "$path" &&
+        chmod 600 "$path"
+    ); then
+        rm -f "$tmp" 2>/dev/null || true
+        die "instalasi selesai, tetapi berkas onboarding gagal ditulis: $path — agent SUDAH terpasang & berjalan dan token TIDAK berubah. Perbaiki path/izin direktori lalu jalankan ulang installer TANPA --force untuk mencetak ulang blok onboarding (atau salin blok yang tercetak di stdout)."
+    fi
+    ok "berkas onboarding (0600, RAHASIA): $path"
+}
+
 print_onboarding() {
     local url="$1" token="$2" fingerprint="$3" version="$4" port="$5"
     cat <<EOF
@@ -1164,11 +1291,28 @@ main() {
     wait_running
     verify_version "$EFFECTIVE_PUBLISH_PORT" "$EFFECTIVE_TOKEN"
 
+    # Onboarding: SATU sumber nilai untuk stdout (manusia) & berkas (mesin) —
+    # fingerprint/versi dihitung sekali agar kedua saluran tidak mungkin beda.
+    local onboarding_url="https://${EFFECTIVE_IP}:${EFFECTIVE_PUBLISH_PORT}"
+    local onboarding_fingerprint="" onboarding_version=""
+    onboarding_fingerprint="$(cert_fingerprint_sha256 "$AGENT_TLS_CERT")"
+    onboarding_version="$(agent_version)"
+
+    # Berkas onboarding ditulis SESUDAH instalasi terbukti jalan (verify_version,
+    # jadi versi agent diketahui) dan SEBELUM blok stdout. Gagal tulis ⇒ die
+    # non-zero, tetapi TIDAK membatalkan/mengulang instalasi yang sudah berhasil
+    # (pesannya menyatakan itu; token tidak berubah).
+    if [ -n "$OPT_ONBOARDING_FILE" ]; then
+        write_onboarding_file "$OPT_ONBOARDING_FILE" "$onboarding_url" \
+            "$EFFECTIVE_TOKEN" "$onboarding_fingerprint" "$onboarding_version" \
+            "$EFFECTIVE_DOMAIN" "$EFFECTIVE_RANGE_START" "$EFFECTIVE_RANGE_END"
+    fi
+
     print_onboarding \
-        "https://${EFFECTIVE_IP}:${EFFECTIVE_PUBLISH_PORT}" \
+        "$onboarding_url" \
         "$EFFECTIVE_TOKEN" \
-        "$(cert_fingerprint_sha256 "$AGENT_TLS_CERT")" \
-        "$(agent_version)" \
+        "$onboarding_fingerprint" \
+        "$onboarding_version" \
         "$EFFECTIVE_PUBLISH_PORT"
 }
 

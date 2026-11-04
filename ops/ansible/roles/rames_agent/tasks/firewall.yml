@@ -1,0 +1,111 @@
+---
+# Firewall — HANYA menambah aturan yang belum ada. TIDAK PERNAH:
+#   * `ufw enable` / `ufw --force` (bisa memutus SSH operator)
+#   * mengubah default policy (`ufw default ...`)
+#   * menghapus/mengganti aturan yang sudah ada
+#
+# Dua kelompok port dengan aturan BERBEDA (GOTCHA no. 52):
+#   1. port agent ({{ rames_agent_port }}) — HANYA dari IP control plane.
+#      Ini pintu eksekusi Docker server ini; jangan pernah dibuka ke publik.
+#   2. port web publik 80 & 443 — SELALU terbuka untuk semua. Nginx host
+#      melayani app di sini dan certbot memvalidasi HTTP-01 dari IP acak
+#      Let's Encrypt; allowlist IP di port 80 selalu menggagalkan penerbitan
+#      SSL dengan "Timeout during connect (likely firewall problem)".
+#
+# Bila ufw tidak tersedia, role hanya memperingatkan (tidak memasang ufw dan
+# tidak menyentuh iptables) — aturan cloud/iptables menjadi tanggung jawab
+# operator.
+
+- name: "Firewall | probe ufw (read-only)"
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - --version
+  register: rames_agent_ufw_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+  when: rames_agent_manage_firewall | bool
+
+- name: "Firewall | tandai ketersediaan ufw"
+  ansible.builtin.set_fact:
+    rames_agent_ufw_available: "{{ (rames_agent_ufw_probe.rc | default(1)) == 0 }}"
+  when: rames_agent_manage_firewall | bool
+
+- name: "Firewall | peringatan bila ufw tidak ada (lanjut tanpa mengubah apa pun)"
+  ansible.builtin.debug:
+    msg: >-
+      ufw tidak tersedia di {{ inventory_hostname }} — role TIDAK memasang
+      firewall dan TIDAK menyentuh iptables. Atur firewall manual / cloud
+      firewall:
+      (1) izinkan port {{ rames_agent_port }}/tcp HANYA dari IP control plane
+      ({{ rames_agent_control_plane_ips | join(', ') | default('(belum diisi)', true) }});
+      (2) buka 80 & 443/tcp untuk SEMUA (GOTCHA no. 52). Verifikasi dari mesin
+      luar: curl -sS -m 8 -o /dev/null -w '%{http_code}\n' http://{{ rames_agent_domain }}/
+      harus mengeluarkan kode HTTP, bukan timeout.
+  when:
+    - rames_agent_manage_firewall | bool
+    - not (rames_agent_ufw_available | bool)
+
+- name: "Firewall | baca aturan ufw yang sudah ditambahkan (read-only)"
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - show
+      - added
+  register: rames_agent_ufw_added
+  changed_when: false
+  check_mode: false
+  become: true
+  when:
+    - rames_agent_manage_firewall | bool
+    - rames_agent_ufw_available | bool
+
+- name: "Firewall | izinkan port agent HANYA dari IP control plane"
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - from
+      - "{{ item }}"
+      - to
+      - any
+      - port
+      - "{{ rames_agent_port }}"
+      - proto
+      - tcp
+  loop: "{{ rames_agent_control_plane_ips }}"
+  loop_control:
+    label: "{{ item }}"
+  become: true
+  # Task hanya berjalan bila `ufw show added` BELUM memuat aturan ini, jadi
+  # setiap eksekusi memang mengubah state → changed_when: true.
+  changed_when: true
+  when:
+    - rames_agent_manage_firewall | bool
+    - rames_agent_ufw_available | bool
+    - >-
+      ('ufw allow from ' ~ item ~ ' to any port ' ~ rames_agent_port
+      ~ ' proto tcp') not in rames_agent_ufw_added.stdout
+
+- name: "Firewall | buka port web publik 80 & 443 untuk SEMUA (GOTCHA no. 52)"
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - "80,443/tcp"
+  become: true
+  # Hanya berjalan bila `ufw show added` belum memuat `ufw allow 80,443/tcp`.
+  changed_when: true
+  when:
+    - rames_agent_manage_firewall | bool
+    - rames_agent_ufw_available | bool
+    - "'ufw allow 80,443/tcp' not in rames_agent_ufw_added.stdout"
+
+- name: "Firewall | lewati (rames_agent_manage_firewall=false)"
+  ansible.builtin.debug:
+    msg: >-
+      rames_agent_manage_firewall=false — role tidak menambah/mengubah aturan
+      firewall apa pun.
+  when: not (rames_agent_manage_firewall | bool)

@@ -60,7 +60,11 @@ $breadcrumbs = [
     <h1 class="h3 mb-1">Servers<?php $__infoTarget = 'servers-info'; include app_path() . '/view/partials/page-info-button.php'; ?></h1>
     <p class="text-muted mb-0">Kelola server lokal dan server agent (HTTPS + pinning sertifikat).</p>
   </div>
-  <a class="btn btn-primary" href="/servers/create">+ Tambah Server</a>
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="/servers/provision"
+       title="Pasang agent di server tujuan lewat Ansible dari control plane"><?= svg_icon('plus') ?> Provision Server</a>
+    <a class="btn btn-primary" href="/servers/create">+ Tambah Server</a>
+  </div>
 </div>
 
 <?php // Penjelasan panjang (termasuk catatan versi & kompatibilitas agen) dipindah ke modal "Tentang halaman ini". ?>

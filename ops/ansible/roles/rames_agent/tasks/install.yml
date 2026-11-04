@@ -1,0 +1,190 @@
+---
+# Install — menjalankan installer agent yang SUDAH ADA (agent/install.sh).
+#
+# Role ini tidak menggantikan installer: token agent, sertifikat TLS
+# self-signed, blok env kelolaan (`# rames-installer:begin … end`), dan
+# `docker compose -f docker-compose.agent.yml up -d --build` semuanya tetap
+# milik agent/install.sh. Ansible hanya memutuskan KAPAN memanggilnya dan
+# dengan argumen apa.
+#
+# Mode (rames_agent_run_installer):
+#   auto  → jalankan hanya bila secrets/agent.env BELUM ada
+#   true  → selalu jalankan (upgrade/rotasi nilai env)
+#   false → jangan pernah jalankan (adopsi read-only)
+#
+# TIDAK PERNAH memakai --force: --force meregenerasi AGENT_TOKEN + sertifikat
+# TLS dan force-recreate container, sehingga server harus di-onboard ulang di
+# dashboard. Rotasi rahasia adalah tindakan operator yang disengaja.
+
+- name: "Install | stat secrets/agent.env"
+  ansible.builtin.stat:
+    path: "{{ rames_agent_env_file }}"
+  register: rames_agent_env_stat
+  check_mode: false
+  changed_when: false
+  become: true
+
+- name: "Install | normalisasi mode installer"
+  ansible.builtin.set_fact:
+    rames_agent_installer_mode: "{{ rames_agent_run_installer | string | lower }}"
+
+- name: "Install | putuskan apakah installer dijalankan"
+  ansible.builtin.set_fact:
+    rames_agent_installer_active: >-
+      {{ (rames_agent_installer_mode in ['true', 'yes', 'on', '1'])
+         or (rames_agent_installer_mode == 'auto'
+             and not rames_agent_env_stat.stat.exists) }}
+
+- name: "Install | lewati (host sudah terpasang — adopsi read-only)"
+  ansible.builtin.debug:
+    msg: >-
+      {{ rames_agent_env_file }} sudah ada dan rames_agent_run_installer={{ rames_agent_run_installer }}
+      ⇒ installer TIDAK dijalankan (host diadopsi apa adanya, tidak ada
+      recreate container). Set rames_agent_run_installer=true bila memang ingin
+      menjalankan ulang installer (mis. setelah upgrade checkout).
+  when: not (rames_agent_installer_active | bool)
+
+- name: "Install | domain wajib pada instalasi pertama"
+  ansible.builtin.assert:
+    that:
+      - rames_agent_domain | length > 0
+    fail_msg: >-
+      secrets/agent.env belum ada di {{ rames_install_dir }} sehingga ini
+      instalasi pertama, tetapi rames_agent_domain kosong. agent/install.sh
+      menolak berjalan tanpa --domain (APP_DOMAIN server ini, mis.
+      domain2.com). Isi rames_agent_domain di inventories/agents/hosts.yml.
+    success_msg: "{{ inventory_hostname }}: instalasi pertama dengan domain {{ rames_agent_domain }}."
+  when:
+    - rames_agent_installer_active | bool
+    - not rames_agent_env_stat.stat.exists
+
+- name: "Install | baca secrets/agent.env untuk pemeriksaan identitas (no_log)"
+  ansible.builtin.slurp:
+    src: "{{ rames_agent_env_file }}"
+  register: rames_agent_env_slurp
+  no_log: true
+  become: true
+  when:
+    - rames_agent_installer_active | bool
+    - rames_agent_env_stat.stat.exists
+    - rames_agent_assert_identity | bool
+
+- name: "Install | parse nilai env yang sudah ada (no_log)"
+  ansible.builtin.set_fact:
+    rames_agent_env_values: "{{ dict(rames_agent_env_slurp.content | b64decode | regex_findall('(?m)^([A-Z0-9_]+)=([^\\r\\n]*)$')) }}"
+  no_log: true
+  when: rames_agent_env_slurp is defined and not (rames_agent_env_slurp.skipped | default(false))
+
+# Bandingkan HANYA nilai yang diisi di inventory. String kosong di inventory =
+# "installer mempertahankan nilai lama" sehingga tidak ada yang perlu dicek.
+# Hanya NAMA kunci yang dilaporkan (nilai env bisa memuat rahasia).
+- name: "Install | hitung kunci identitas yang berbeda (nama kunci saja)"
+  ansible.builtin.set_fact:
+    rames_agent_identity_mismatch: >-
+      {{ (['APP_DOMAIN'] if (rames_agent_domain | length > 0
+            and (rames_agent_env_values.APP_DOMAIN | default('') | lower) != (rames_agent_domain | lower)) else [])
+         + (['ADMIN_EMAIL'] if (rames_agent_email | length > 0
+            and (rames_agent_env_values.ADMIN_EMAIL | default('')) != rames_agent_email) else [])
+         + (['PORT_RANGE_START'] if (rames_agent_port_range_start | string | length > 0
+            and (rames_agent_env_values.PORT_RANGE_START | default('')) != (rames_agent_port_range_start | string)) else [])
+         + (['PORT_RANGE_END'] if (rames_agent_port_range_end | string | length > 0
+            and (rames_agent_env_values.PORT_RANGE_END | default('')) != (rames_agent_port_range_end | string)) else [])
+         + (['AGENT_BIND'] if (rames_agent_bind | length > 0
+            and (rames_agent_env_values.AGENT_BIND | default('')) != rames_agent_bind) else []) }}
+  no_log: true
+  when: rames_agent_env_values is defined
+
+- name: "Install | identitas host harus cocok dengan inventory"
+  ansible.builtin.assert:
+    that:
+      - rames_agent_identity_mismatch | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: nilai inventory berbeda dengan
+      secrets/agent.env yang sudah ada pada kunci
+      {{ rames_agent_identity_mismatch | join(', ') }}. Installer idempoten,
+      jadi nilai berbeda berarti identitas server ini akan BERUBAH (domain /
+      rentang port / binding agent) — bukan sekadar "menyegarkan".
+      Samakan inventory dengan nilai yang terpasang, atau — bila perubahan itu
+      memang disengaja — set rames_agent_assert_identity=false untuk satu kali
+      jalan. Kunci lain di secrets/agent.env (AGENT_TOKEN, sertifikat TLS)
+      tidak pernah dicetak role ini.
+    success_msg: "{{ inventory_hostname }}: identitas inventory cocok dengan secrets/agent.env."
+  when: rames_agent_env_values is defined
+
+- name: "Install | susun argumen installer (dasar)"
+  ansible.builtin.set_fact:
+    rames_agent_installer_argv: "{{ ['bash', 'agent/install.sh'] }}"
+  when: rames_agent_installer_active | bool
+
+- name: "Install | argumen --port-range"
+  ansible.builtin.set_fact:
+    rames_agent_installer_argv: >-
+      {{ rames_agent_installer_argv + ['--port-range',
+         rames_agent_port_range_start | string,
+         rames_agent_port_range_end | string] }}
+  when: rames_agent_installer_active | bool
+
+- name: "Install | argumen opsional (hanya nilai terisi)"
+  ansible.builtin.set_fact:
+    rames_agent_installer_argv: "{{ rames_agent_installer_argv + [item.flag, item.value] }}"
+  loop:
+    - { flag: '--domain', value: "{{ rames_agent_domain }}", enabled: "{{ rames_agent_domain | length > 0 }}" }
+    - { flag: '--email', value: "{{ rames_agent_email }}", enabled: "{{ rames_agent_email | length > 0 }}" }
+    - { flag: '--bind', value: "{{ rames_agent_bind }}", enabled: "{{ rames_agent_bind | length > 0 }}" }
+    - { flag: '--ip', value: "{{ rames_agent_ip }}", enabled: "{{ rames_agent_ip | length > 0 }}" }
+    - { flag: '--ssl-challenge', value: "{{ rames_agent_ssl_challenge }}", enabled: "{{ rames_agent_ssl_challenge | length > 0 }}" }
+    - { flag: '--ssl-ca-server', value: "{{ rames_agent_ssl_ca_server }}", enabled: "{{ rames_agent_ssl_ca_server | length > 0 }}" }
+  loop_control:
+    label: "{{ item.flag }}"
+  when:
+    - rames_agent_installer_active | bool
+    - item.enabled | bool
+
+# --onboarding-file: installer menulis blok onboarding (URL, token, fingerprint,
+# PEM) ke berkas 0600 di server; onboarding.yml menyalinnya ke control node lalu
+# menghapusnya dari server. Hanya diminta bila operator meminta salinan itu —
+# dan otomatis diabaikan saat installer tidak dijalankan (berkas tidak akan ada).
+- name: "Install | argumen --onboarding-file (bila diminta)"
+  ansible.builtin.set_fact:
+    rames_agent_installer_argv: "{{ rames_agent_installer_argv + ['--onboarding-file', rames_agent_onboarding_remote_path] }}"
+  when:
+    - rames_agent_installer_active | bool
+    - rames_agent_onboarding_out | length > 0
+
+- name: "Install | jalankan agent/install.sh (tanpa --force)"
+  ansible.builtin.command:
+    argv: "{{ rames_agent_installer_argv }}"
+    chdir: "{{ rames_install_dir }}"
+  become: true
+  no_log: true
+  changed_when: false
+  async: "{{ rames_agent_async_timeout }}"
+  poll: "{{ rames_agent_async_poll }}"
+  when:
+    - rames_agent_installer_active | bool
+    # WAJIB: tugas `command` ber-`async` TETAP DIEKSEKUSI di mode --check
+    # (Ansible hanya menandainya "skipped" SETELAH proses berjalan). Tanpa
+    # penjaga ini, `--check` benar-benar me-recreate container agent.
+    - not ansible_check_mode
+
+- name: "Install | mode --check: installer TIDAK dijalankan (tidak ada recreate)"
+  ansible.builtin.debug:
+    msg: >-
+      Mode --check: `agent/install.sh` dilewati (argumentasi:
+      {{ rames_agent_installer_argv | default([]) | join(' ') }}). Dry-run ini
+      memverifikasi rencana role, bukan hasil installer — container agent tidak
+      di-recreate.
+  when:
+    - rames_agent_installer_active | bool
+    - ansible_check_mode
+
+- name: "Install | selesai"
+  ansible.builtin.debug:
+    msg: >-
+      agent/install.sh selesai di {{ inventory_hostname }}. Token agent &
+      sertifikat TLS TIDAK dicetak (no_log): ambil manual dari
+      {{ rames_agent_env_file }} (0600, kunci AGENT_TOKEN) dan
+      {{ rames_agent_tls_cert_file }} saat mendaftarkan server di dashboard.
+  when:
+    - rames_agent_installer_active | bool
+    - not ansible_check_mode

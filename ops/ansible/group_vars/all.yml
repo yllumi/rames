@@ -1,0 +1,59 @@
+---
+# Group vars GLOBAL untuk semua server agent Rames.
+#
+# Nama variabel di bawah adalah KONTRAK (lihat ops/ansible/README.md) — jangan
+# diganti namanya. Nilai di sini adalah bawaan; timpa per host/group di
+# inventories/agents/hosts.yml.
+
+# ---------------------------------------------------------------- repo & ref
+# Repo yang di-checkout di server agent (mode RAMES_MODE=agent).
+rames_repo_url: https://github.com/yllumi/rames.git
+rames_ref: main
+rames_install_dir: /opt/rames-agent
+
+# ---------------------------------------------------------------- port agent
+# Port HTTPS agent di HOST (publish ${AGENT_PORT_PUBLISH:-8443}:8443 di
+# docker-compose.agent.yml). Dipakai untuk aturan firewall & verifikasi.
+rames_agent_port: 8443
+
+# ---------------------------------------------------------------- firewall
+# IP control plane (dashboard) yang boleh menyentuh port agent.
+# WAJIB berisi minimal satu IP bila rames_agent_manage_firewall=true
+# (diperiksa preflight.yml). Isi per host bila tiap server beda.
+rames_agent_control_plane_ips: []
+
+# ---------------------------------------------------------------- saklar
+# true  = jalankan `bash host/install.sh --deps-only` (Docker Engine, compose
+#         v2, nginx, certbot, git, openssl — daftar paket TIDAK diduplikasi di
+#         role ini, sumbernya satu: host/install.sh).
+rames_agent_manage_deps: true
+
+# true  = kelola aturan ufw (port agent dari IP control plane + 80/443 publik).
+# false = role tidak menyentuh firewall sama sekali.
+rames_agent_manage_firewall: true
+
+# auto  = jalankan `bash agent/install.sh` HANYA bila secrets/agent.env belum ada
+# true  = selalu jalankan installer (upgrade/rotasi nilai env; TANPA --force)
+# false = jangan pernah menjalankan installer (mode adopsi read-only)
+rames_agent_run_installer: auto
+
+# true  = bila secrets/agent.env SUDAH ada, nilai yang diisi di inventory harus
+#         sama dengan nilai di env; kalau berbeda, role berhenti (tidak menimpa
+#         diam-diam). String kosong di inventory = "pertahankan nilai lama".
+rames_agent_assert_identity: true
+
+# true  = izinkan OS non-Debian (dependensi harus disiapkan manual; tidak diuji).
+rames_agent_allow_other_os: false
+
+# ---------------------------------------------------------------- onboarding
+# Path di CONTROL NODE (mesin operator) untuk berkas onboarding agent:
+# RAMES_ONBOARDING_VERSION/URL/TOKEN/FINGERPRINT_SHA256/DOMAIN/PORT_RANGE_*/
+# AGENT_VERSION/GENERATED_AT + blok PEM, ditulis installer lewat
+# `--onboarding-file` lalu disalin dari server (0600, no_log).
+#
+# Kosong = tidak mengambil berkas onboarding (bawaan). Bila diisi, installer
+# HARUS benar-benar dijalankan (rames_agent_run_installer auto/true pada host
+# yang belum terpasang, atau true) — kalau tidak, role berhenti dengan pesan.
+# Isinya RAHASIA: simpan di luar repo (mis. ~/.rames/onboarding/), jangan
+# di-commit, dan jangan pernah dicetak ke log/chat.
+rames_agent_onboarding_out: ''

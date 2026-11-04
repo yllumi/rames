@@ -54,6 +54,7 @@ use app\controller\FileController;
 use app\controller\HealthController;
 use app\controller\PaymentController;
 use app\controller\ProfileController;
+use app\controller\server\ProvisionController;
 use app\controller\ServerController;
 use app\controller\SslController;
 use app\controller\TerminalController;
@@ -404,6 +405,16 @@ Route::get('/api/update/status', [UpdateController::class, 'status']);
 Route::get('/servers', [ServerController::class, 'index']);
 Route::get('/servers/create', [ServerController::class, 'createForm']);
 Route::post('/servers', [ServerController::class, 'store']);
+
+// Provisioning server agent lewat Ansible (opsi B) — admin-only ⇒ 404 untuk
+// non-admin (dijaga `ProvisionController::guard()`), mutasi POST kena CSRF
+// global. Didaftarkan SEBELUM `/servers/{id}` agar `/servers/provision` tidak
+// tertangkap sebagai id server.
+Route::get('/servers/provision', [ProvisionController::class, 'form']);
+Route::post('/servers/provision', [ProvisionController::class, 'store']);
+Route::get('/servers/provision/status', [ProvisionController::class, 'status']);
+Route::post('/servers/provision/cancel', [ProvisionController::class, 'cancel']);
+
 Route::get('/servers/{id}', [ServerController::class, 'editForm']);
 Route::post('/servers/{id}', [ServerController::class, 'update']);
 Route::post('/servers/{id}/delete', [ServerController::class, 'delete']);

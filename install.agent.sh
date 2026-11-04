@@ -86,6 +86,9 @@ Opsi agent (diteruskan apa adanya ke agent/install.sh):
   --ssl-challenge <m>     http (default) | dns-cloudflare
   --ssl-ca-server <s>     production (default) | staging
   --cloudflare-creds <p>  path berkas kredensial Cloudflare (dns-cloudflare)
+  --onboarding-file <p>   tulis blok onboarding (URL, token, fingerprint, PEM)
+                          ke berkas 0600 (path absolut) — RAHASIA, untuk
+                          otomasi (Ansible/control plane); blok stdout tetap
   --force                 regenerasi token agent + sertifikat TLS
 
 Catatan: pada instalasi PERTAMA server agent, --domain wajib (interaktif atau
@@ -394,7 +397,7 @@ is_port_number() { # nilai → 0 bila bilangan bulat 1..65535
 }
 
 # ---------------------------------------------------------------- args
-SINGLE_VALUE_AGENT_OPTS="--email --ip --bind --ssl-challenge --ssl-ca-server --cloudflare-creds"
+SINGLE_VALUE_AGENT_OPTS="--email --ip --bind --ssl-challenge --ssl-ca-server --cloudflare-creds --onboarding-file"
 
 parse_args() {
     while [ "$#" -gt 0 ]; do

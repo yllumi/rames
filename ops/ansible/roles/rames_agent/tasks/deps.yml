@@ -1,0 +1,49 @@
+---
+# Deps — memasang dependensi HOST lewat installer yang sudah ada.
+#
+# Sumber tunggal daftar paket (Docker Engine + compose v2, nginx, certbot,
+# inotify-tools, git, openssl, ...) adalah host/install.sh (fungsi
+# install_deps_apt / ensure_docker). Role ini TIDAK menyalin daftar itu dan
+# TIDAK memakai ansible.builtin.apt — kalau daftar paket berubah di
+# host/install.sh, hasil role ikut berubah tanpa suntingan di sini.
+#
+# --deps-only menjamin installer berhenti SEBELUM menyentuh .env, preflight,
+# atau compose (aman di host yang sudah punya dashboard Rames).
+
+- name: "Deps | pasang dependensi host lewat host/install.sh --deps-only"
+  ansible.builtin.command:
+    argv:
+      - bash
+      - host/install.sh
+      - --deps-only
+    chdir: "{{ rames_install_dir }}"
+  become: true
+  changed_when: false
+  async: "{{ rames_agent_async_timeout }}"
+  poll: "{{ rames_agent_async_poll }}"
+  register: rames_agent_deps_result
+  when:
+    - rames_agent_manage_deps | bool
+    # WAJIB: tugas `command` ber-`async` TETAP DIEKSEKUSI di mode --check
+    # (Ansible hanya menandainya "skipped" SETELAH proses berjalan). Tanpa
+    # penjaga ini, `--check` benar-benar memasang paket di server.
+    - not ansible_check_mode
+
+- name: "Deps | mode --check: dependensi TIDAK dipasang (dry-run tidak mensimulasikan installer)"
+  ansible.builtin.debug:
+    msg: >-
+      Mode --check: `host/install.sh --deps-only` dilewati. Tugas command ber-async
+      tetap dieksekusi di mode check, jadi role ini memagarnya eksplisit agar
+      dry-run tetap read-only. Paket yang akan dipasang: lihat daftar di
+      host/install.sh (install_deps_apt / ensure_docker).
+  when:
+    - rames_agent_manage_deps | bool
+    - ansible_check_mode
+
+- name: "Deps | lewati (rames_agent_manage_deps=false)"
+  ansible.builtin.debug:
+    msg: >-
+      rames_agent_manage_deps=false — dependensi host tidak disentuh. Pastikan
+      manual: Docker Engine + plugin compose v2.6+, nginx, certbot, git,
+      openssl (lihat agent/README.md prasyarat).
+  when: not (rames_agent_manage_deps | bool)

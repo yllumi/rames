@@ -1,0 +1,75 @@
+---
+# Repo — memastikan rames_install_dir berisi checkout Rames pada rames_ref.
+#
+# Aturan:
+#   * .git SUDAH ada  => SKIP total (tidak ada checkout, tidak ada fetch, tidak
+#     ada force/reset). Host yang sudah terpasang diadopsi apa adanya; untuk
+#     memperbarui checkout gunakan playbook upgrade-agents.yml.
+#   * .git belum ada, direktori tidak ada / kosong => clone (git update=false,
+#     force=false).
+#   * .git belum ada, direktori ada & TIDAK kosong => berhenti (role tidak
+#     pernah menghapus/menimpa isi direktori orang lain).
+
+- name: "Repo | stat penanda git di {{ rames_install_dir }}"
+  ansible.builtin.stat:
+    path: "{{ rames_install_dir }}/.git"
+  register: rames_agent_git_marker
+  check_mode: false
+  changed_when: false
+  become: true
+
+- name: "Repo | stat direktori instalasi"
+  ansible.builtin.stat:
+    path: "{{ rames_install_dir }}"
+  register: rames_agent_install_dir_stat
+  check_mode: false
+  changed_when: false
+  become: true
+  when: not rames_agent_git_marker.stat.exists
+
+- name: "Repo | daftar isi direktori instalasi (bila ada & bukan repo)"
+  ansible.builtin.find:
+    paths: "{{ rames_install_dir }}"
+    file_type: any
+    hidden: true
+    depth: 1
+  register: rames_agent_install_dir_listing
+  changed_when: false
+  become: true
+  when:
+    - not rames_agent_git_marker.stat.exists
+    - rames_agent_install_dir_stat.stat.isdir | default(false)
+
+- name: "Repo | tolak direktori berisi yang bukan repo Rames"
+  ansible.builtin.assert:
+    that:
+      - rames_agent_install_dir_listing.matched | default(0) | int == 0
+    fail_msg: >-
+      {{ rames_install_dir }} sudah ada, BUKAN checkout git (tidak ada .git),
+      dan tidak kosong ({{ rames_agent_install_dir_listing.matched | default(0) }}
+      entri teratas). Role ini tidak menghapus apa pun. Pindahkan isinya,
+      clone repo secara manual ke direktori itu, atau set rames_install_dir ke
+      direktori lain yang kosong/belum ada.
+    success_msg: "{{ inventory_hostname }}: {{ rames_install_dir }} kosong/belum ada."
+  when:
+    - not rames_agent_git_marker.stat.exists
+    - rames_agent_install_dir_stat.stat.isdir | default(false)
+
+- name: "Repo | clone repo rames ke {{ rames_install_dir }}"
+  ansible.builtin.git:
+    repo: "{{ rames_repo_url }}"
+    dest: "{{ rames_install_dir }}"
+    version: "{{ rames_ref }}"
+    update: false
+    force: false
+    accept_hostkey: false
+  become: true
+  when: not rames_agent_git_marker.stat.exists
+
+- name: "Repo | lewati (checkout sudah ada)"
+  ansible.builtin.debug:
+    msg: >-
+      {{ rames_install_dir }} sudah berupa checkout git — tidak ada
+      checkout/fetch. Perbarui lewat playbooks/upgrade-agents.yml (yang
+      memverifikasi `git status --porcelain` kosong lebih dulu).
+  when: rames_agent_git_marker.stat.exists

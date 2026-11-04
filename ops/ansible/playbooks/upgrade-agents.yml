@@ -1,0 +1,100 @@
+---
+# Perbarui checkout server agent ke rames_ref lalu jalankan installer ulang.
+#
+# serial: 1 + any_errors_fatal → satu server gagal berarti play berhenti, tidak
+# ada upgrade bergilir yang meninggalkan sebagian armada di versi berbeda tanpa
+# diketahui. max_fail_percentage 0 = toleransi nol.
+#
+#   ansible-playbook playbooks/upgrade-agents.yml --limit agent-01
+#   ansible-playbook playbooks/upgrade-agents.yml --check --diff   (dry-run)
+#
+# Pagar keamanan (urutan):
+#   1. preflight (OS, git, direktori bukan dashboard)
+#   2. rames_install_dir harus checkout git
+#   3. `git -C <dir> status --porcelain` harus KOSONG — role tidak pernah
+#      membuang suntingan lokal operator (butuh commit/stash manual lebih dulu)
+#   4. ansible.builtin.git update ke rames_ref, force=false (tidak ada reset
+#      paksa, tidak ada checkout ke ref lain)
+#   5. installer (agent/install.sh, tanpa --force) lalu verifikasi /version
+#
+# Dampak: container agent di-recreate (20–90 dtk). Job deploy/SSL yang sedang
+# berjalan di server itu terputus; container app milik user TIDAK ikut mati.
+
+- name: "Upgrade server agent Rames (satu per satu)"
+  hosts: agents
+  gather_facts: true
+  serial: 1
+  max_fail_percentage: 0
+  any_errors_fatal: true
+  vars:
+    # Upgrade = sengaja menjalankan installer walau secrets/agent.env sudah ada
+    # (nilai lama tetap dipertahankan karena installer idempoten; identitas
+    # dipagari rames_agent_assert_identity).
+    rames_agent_run_installer: true
+  tasks:
+    - name: "Preflight (read-only)"
+      ansible.builtin.include_role:
+        name: rames_agent
+        tasks_from: preflight
+
+    - name: "Upgrade | stat penanda git di {{ rames_install_dir }}"
+      ansible.builtin.stat:
+        path: "{{ rames_install_dir }}/.git"
+      register: rames_agent_upgrade_git
+      check_mode: false
+      changed_when: false
+      become: true
+
+    - name: "Upgrade | direktori instalasi harus checkout git"
+      ansible.builtin.assert:
+        that:
+          - rames_agent_upgrade_git.stat.exists
+        fail_msg: >-
+          {{ rames_install_dir }} bukan checkout git — jalankan
+          playbooks/provision-agent.yml lebih dulu (atau clone repo manual ke
+          direktori itu, lalu ulangi playbook ini).
+        success_msg: "{{ inventory_hostname }}: checkout git ditemukan."
+
+    - name: "Upgrade | periksa perubahan lokal (git status --porcelain)"
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ rames_install_dir }}"
+          - status
+          - "--porcelain"
+      register: rames_agent_upgrade_status
+      changed_when: false
+      check_mode: false
+      become: true
+
+    - name: "Upgrade | tolak bila ada perubahan tracked/untracked"
+      ansible.builtin.assert:
+        that:
+          - rames_agent_upgrade_status.stdout | trim | length == 0
+        fail_msg: >-
+          {{ rames_install_dir }} memuat perubahan lokal sehingga upgrade
+          dibatalkan (role tidak pernah membuang suntingan operator):
+          {{ rames_agent_upgrade_status.stdout_lines | default([]) }}
+          Commit atau stash dulu di server itu, lalu jalankan ulang playbook.
+        success_msg: "{{ inventory_hostname }}: worktree bersih."
+
+    - name: "Upgrade | git update (force=false) ke {{ rames_ref }}"
+      ansible.builtin.git:
+        repo: "{{ rames_repo_url }}"
+        dest: "{{ rames_install_dir }}"
+        version: "{{ rames_ref }}"
+        update: true
+        force: false
+        accept_hostkey: false
+      become: true
+
+    - name: "Install (agent/install.sh, tanpa --force)"
+      ansible.builtin.include_role:
+        name: rames_agent
+        tasks_from: install
+
+    - name: "Verify (/version dengan CA self-signed)"
+      ansible.builtin.include_role:
+        name: rames_agent
+        tasks_from: verify

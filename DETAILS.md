@@ -318,7 +318,7 @@ Dashboard dapat mengendalikan **server tambahan** (multi-server): dashboard berp
      | sudo bash -s -- --domain agent.example.com --email ops@example.com
    ```
 
-   Dependensi host dipasang lewat `host/install.sh --deps-only` yang berhenti **sebelum** wizard `.env`, preflight, `docker compose up`, dan unit systemd — aman dijalankan di host yang sudah menjalankan dashboard. Opsi bootstrap: `--dir <path>` (default `/opt/rames-agent`), `--ref <branch|tag>` (default `main`), `--repo <url>`, `--no-deps` (lewati paket dasar + dependensi host; `agent/install.sh` hanya memeriksa prasyarat), `--help`. Flag agent diteruskan utuh & berurutan ke `agent/install.sh`: `--domain`, `--email`, `--ip`, `--bind`, `--port-range <start> <end>`, `--ssl-challenge`, `--ssl-ca-server`, `--cloudflare-creds`, `--force` — lihat `sudo bash /tmp/rames-install-agent.sh --help`.
+   Dependensi host dipasang lewat `host/install.sh --deps-only` yang berhenti **sebelum** wizard `.env`, preflight, `docker compose up`, dan unit systemd — aman dijalankan di host yang sudah menjalankan dashboard. Opsi bootstrap: `--dir <path>` (default `/opt/rames-agent`), `--ref <branch|tag>` (default `main`), `--repo <url>`, `--no-deps` (lewati paket dasar + dependensi host; `agent/install.sh` hanya memeriksa prasyarat), `--help`. Flag agent diteruskan utuh & berurutan ke `agent/install.sh`: `--domain`, `--email`, `--ip`, `--bind`, `--port-range <start> <end>`, `--ssl-challenge`, `--ssl-ca-server`, `--cloudflare-creds`, `--onboarding-file`, `--force` — lihat `sudo bash /tmp/rames-install-agent.sh --help`.
 
    > **Penting — agent menolak direktori instalasi dashboard.** Direktori yang sudah terpasang sebagai **dashboard** Rames (punya `.env`, `database/apps.json`, atau `apps/` berisi) **ditolak** (`die`), karena agent tidak boleh menimpa dashboard hidup. Pada host yang sama dengan dashboard, pakai `--dir` lain (default `/opt/rames-agent` sudah terpisah dari `/opt/rames`). Checkout Rames agent yang sudah ada (`secrets/agent.env`) dipakai ulang tanpa reset; rerun idempoten — domain/email tidak ditanyakan lagi bila `APP_DOMAIN` sudah tercatat.
 
@@ -333,6 +333,10 @@ Dashboard dapat mengendalikan **server tambahan** (multi-server): dashboard berp
 
    Tambahkan juga **`ADMIN_EMAIL`** ke `secrets/agent.env` **server itu** — lewat opsi installer `--email <email>` — lalu recreate container agent (env dibaca saat create). Job `ssl_issue` dijalankan **di server agent** memakai env server itu, jadi tanpa `ADMIN_EMAIL` penerbitan SSL di sana selalu gagal ([rincian](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
 
+   **Alternatif — Ansible (opsional, untuk banyak server / adopsi host lama).** [`ops/ansible/`](./ops/ansible/README.md) membungkus langkah yang sama secara idempoten di **control node operator** (bukan di image Rames): role `rames_agent` memanggil `host/install.sh --deps-only` lalu `agent/install.sh` (**tanpa** `--force`), menambah aturan `ufw` yang belum ada, memverifikasi `GET /version`, dan — bila diminta `rames_agent_onboarding_out` — menyalin berkas onboarding `0600` dari `--onboarding-file`. Playbook: `provision-agent.yml`, `verify-agent.yml` (read-only), `upgrade-agents.yml` (`serial: 1`). Langkah **Add Server → Test connection** tetap manual. Prasyarat, kontrak variabel, runbook adopsi, dan larangan: [`ops/ansible/README.md`](./ops/ansible/README.md).
+
+   > **Peringatan dampak ke host produksi.** `agent/install.sh` berakhir dengan `docker compose … up -d --build` ⇒ container **agent** di-recreate (**20–90 detik** tanpa dashboard untuk server itu; job deploy/SSL yang sedang berjalan ikut terputus dan harus diulang). Reload Nginx (dari agent) hanya memutus koneksi in-flight (**detik**), dan `host/install.sh --deps-only` tidak me-restart Nginx paksa — tetapi `apt-get` upgrade paket bisa memicu restart service. Container **app** milik user **TIDAK** mati: project compose-nya berbeda (`app-*`) dan agent hanya mengendalikannya lewat Docker API. Jalankan di luar jam deploy. **DILARANG** mengirim `--force` otomatis (merotasi token + sertifikat ⇒ server harus di-onboard ulang) dan **DILARANG** `ufw enable`/`ufw --force` dari otomasi (bisa memutus SSH operator).
+
 2. **Batasi port agent** (default `8443`) hanya untuk IP control plane (`ufw`/`iptables`) — port ini adalah pintu eksekusi Docker di server itu, jangan pernah dibuka ke publik.
 
 3. **Di dashboard (admin)**: menu **Servers → Add Server** → isi name, URL (`https://<ip>:8443`), token, **PEM** (paste dari blok onboarding), domain server, dan rentang port → **Test connection**. Dashboard menghitung fingerprint sendiri dari PEM; tidak cocok ⇒ gagal tegas dan server tidak disimpan.
@@ -342,6 +346,35 @@ Dashboard dapat mengendalikan **server tambahan** (multi-server): dashboard berp
 5. **Kelola resource server itu dari dashboard**: `Nginx`/domains/SSL, log & terminal, file manager, monitoring, **database/Adminer**, **network & volume project**, dan **backup/restore/dump volume** app di server itu semuanya dieksekusi **di server target** — host control plane tidak menyentuh daemon/restic server lain. Halaman sadar-server (`/apps`, `/network`, `/volumes`, `/backups`) hanya menawarkan server yang boleh dilihat user: admin melihat semua; member tanpa grant hanya server yang menaungi app yang boleh ia akses (di luar itu **404**); member pemegang grant mendapat server yang boleh ia pilih ([Member yang boleh memilih server](#member-yang-boleh-memilih-server)). `/monitor` hanya menampilkan kartu server yang menaungi app yang boleh ia lihat. **Kelola registry server tetap admin-only.** Backup volume terjadwal ikut **fan-out per server** dari timer control plane (satu clock; agent tidak punya timer) — lihat `docs/SPECS.md` §8h.12.
 
 Selengkapnya (opsi installer, rotasi token/sertifikat dengan `--force`, firewall, operasi harian): [`agent/README.md`](./agent/README.md). Alur internal: `docs/ARCHITECTURE.md` §5.21–§5.26 + §5.41 (bootstrap agent), `docs/SPECS.md` §2a/§7.14/§12.
+
+### Provision server dari dashboard
+
+Admin bisa memasang agent di server tujuan **langsung dari dashboard** (opsi B: Ansible dijalankan control plane). Server mendaftar sendiri setelah verifikasi agent lolos — token/PEM tidak perlu disalin manual.
+
+1. Buka **Servers → Provision Server** (atau `/servers/provision`). Halaman `/servers` dan tombol ini **admin-only**; non-admin yang membuka URL provisioning mendapat **404** (bukan 403).
+2. Isi form: **nama server** (slug; juga menjadi slot kunci SSH & nama host inventori), **host/IP** target SSH, **user SSH** + port, **kunci privat SSH** (PEM/OpenSSH utuh, maks 64 KiB), **domain** server (FQDN) + **email** (Let's Encrypt), rentang port app, port agent, `bind`, IP control plane (untuk `ufw`), dan playbook (`provision-agent` = pasang; `verify-agent` = verifikasi read-only). Opsi `force` **tidak ada** — rotasi token/TLS tetap tindakan manual.
+3. Kirim. Dashboard membuat job, menyimpan kunci di control plane (berkas **0600**, di luar basis data), lalu menjalankan worker di latar belakang. Panel status memantau tiap **2 detik** dan menampilkan tahap + potongan log; tombol **Batal** menghentikan helper container. Menutup tab **tidak** menghentikan job — buka halaman lagi untuk memantau.
+4. Bila sukses **dan auto-register aktif** (`PROVISION_AUTO_REGISTER=true`, playbook `provision-agent`), server otomatis muncul di `/servers` dan siap dipakai untuk deploy app. Dengan `PROVISION_AUTO_REGISTER=false` atau playbook `verify-agent`, agent hanya diverifikasi — daftarkan lewat **Add Server** bila perlu. Bila job gagal, status `error` + pesan; log lengkap ada di panel status (`runtime/logs/provision/<jobId>.log`).
+
+**Prasyarat.**
+
+- **Kunci privat SSH** untuk user yang bisa `become`/sudo di server tujuan (root atau user sudo), dan **port SSH terbuka dari control plane**.
+- **Egress control plane** ke registry image untuk menarik image helper Ansible (`ANSIBLE_IMAGE`, default `alpine/ansible:latest`) dan akses SSH ke server tujuan.
+- **Host key server bisa dibaca** dari control plane (`ssh-keyscan`); host key dipin **TOFU** saat job pertama — bandingkan fingerprint `SHA256:…` di log dengan server tujuan.
+- Image helper **wajib dipin** di produksi: set `ANSIBLE_IMAGE` ke tag/digest eksplisit di `.env` (jangan `latest`). Variabel lain: `ANSIBLE_TIMEOUT` (default 1800 dtk), `PROVISION_AUTO_REGISTER` (default `true`), `PROVISION_STALE_SECONDS` (default 3600), `PROVISION_KNOWN_HOSTS`.
+
+**Yang tetap manual** (tidak dikerjakan job): membuat VPS/host, **DNS wildcard** `*.<APP_DOMAIN>` ke IP server itu, membuka port **80/443** publik di firewall cloud, dan memutuskan apakah host key baru sah bila fingerprint berubah. Port agent `8443` tetap **hanya** untuk IP control plane.
+
+**Troubleshooting singkat.**
+
+- **Job `error`** — buka panel status di halaman Provision lalu baca log; pesan galat job sudah menyebut tahap (`preflight`/`hostkey`/`run`/`register`). Log lengkap: `runtime/logs/provision/<jobId>.log` di control plane.
+- **Helper gagal jalan / image tidak ada** — cek di control plane: `docker images | grep ansible`; bila kosong, `docker pull <ANSIBLE_IMAGE>` (butuh egress/DNS) atau pin tag yang tersedia di registry internal.
+- **“host key server berubah — verifikasi manual”** — bandingkan fingerprint di log dengan server tujuan. Bila pergantian sah (reinstall), hapus pin lama (slot = nama server, lihat `docs/ARCHITECTURE/09-gotcha-multiserver.md` GOTCHA no. 60) lalu ulangi job. Jangan mematikan `StrictHostKeyChecking`.
+- **Playbook sukses tapi server tidak terdaftar** — job berhenti di tahap `register` (verifikasi `GET /version` gagal; baris server otomatis dihapus). Pastikan port agent `8443` terbuka dari control plane dan `ADMIN_EMAIL`/domain server benar.
+- **Job tampak “macet” `running`** — worker bisa mati (host reboot/recreate); job akan ditandai `error` saat worker provisioning **berikutnya** start bila umurnya melewati `PROVISION_STALE_SECONDS`. Ulangi job; worker berikutnya yang membersihkan antrean.
+- **Nama server ditolak** — nama harus unik di registry dan menjadi slot kunci/inventori; pilih nama lain atau perbarui server yang sudah ada.
+
+Rincian internal (route, guard, tahap worker, skenario gagal): `docs/ARCHITECTURE/05-09-multiserver-operasional.md` §5.21b; kebutuhan produk: `docs/SPECS.md` §8k. Jalur Ansible manual (tanpa dashboard): `docs/ARCHITECTURE/05-09-multiserver-operasional.md` §5.21a dan [`ops/ansible/README.md`](./ops/ansible/README.md).
 
 ### Member yang boleh memilih server
 
@@ -458,6 +491,13 @@ Tarif billing default global (`.env`: `BILLING_RATE_CPU_PER_CORE_HOUR`, `BILLING
 | `ERROR_LOG_MAX_SAMPLES` | `20` | Plafon sampel event per grup (tertua dibuang) |
 | `ERROR_REPORT_MAX_BYTES` | `16384` | Batas body laporan klien `POST /api/errors` (byte) |
 | `ERROR_REPORT_RATE_PER_MIN` | `20` | Kuota laporan per menit per user (klien) / per fingerprint (server) |
+| `ANSIBLE_IMAGE` | `alpine/ansible:latest` | Image helper container yang menjalankan `ansible-playbook` untuk provisioning (SPECS §8k, ARCHITECTURE §5.21b) — **wajib dipin** ke tag/digest di produksi, bukan `latest` |
+| `ANSIBLE_TIMEOUT` | `1800` | Timeout satu run `ansible-playbook` (detik) |
+| `PROVISION_WORK_DIR` | `{proyek}/runtime/provision` | Direktori kerja per job (`inventory.yml`, `extra_vars.yml`, `onboarding.txt`) — berisi rahasia saat job berjalan, selalu dibersihkan worker |
+| `PROVISION_LOG_DIR` | `{proyek}/runtime/logs/provision` | Log worker per job (`<jobId>.log`) yang dibaca UI lewat offset byte |
+| `PROVISION_STALE_SECONDS` | `3600` | Job `running` lebih tua dari ini dianggap macet (worker hilang) ⇒ ditandai `error` oleh worker berikutnya |
+| `PROVISION_AUTO_REGISTER` | `true` | Daftarkan server otomatis setelah playbook `provision-agent` sukses (verifikasi `GET /version` tetap wajib) |
+| `PROVISION_KNOWN_HOSTS` | `{proyek}/database/keys/known_hosts` | `known_hosts` untuk SSH provisioning (default sama dengan `GIT_KNOWN_HOSTS`; dipisah bila ingin isolasi alur) |
 
 ## Struktur Direktori (Ringkas)
 

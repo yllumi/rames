@@ -30,3 +30,8 @@
 # SSL Let's Encrypt: webroot challenge & kredensial DNS provider
 /webroot/
 /secrets/
+
+# Ansible ops (inventory nyata & artefak onboarding — lingkungan/rahasia)
+/ops/ansible/inventories/agents/hosts.yml
+/ops/ansible/.onboarding/
+/ops/ansible/.venv/

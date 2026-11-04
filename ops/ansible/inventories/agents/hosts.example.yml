@@ -1,0 +1,69 @@
+---
+# Contoh inventaris — SALIN ke hosts.yml (di-gitignore) lalu sesuaikan.
+#
+#   cp inventories/agents/hosts.example.yml inventories/agents/hosts.yml
+#   editor inventories/agents/hosts.yml
+#
+# ansible.cfg sudah menunjuk ke inventories/agents/hosts.yml sebagai inventaris
+# bawaan, jadi contoh ini hanya untuk dokumentasi & syntax-check:
+#   ansible-inventory -i inventories/agents/hosts.example.yml --list
+#
+# IPv4 di bawah memakai blok dokumentasi RFC 5737 (203.0.113.0/24,
+# 198.51.100.0/24) — ganti dengan alamat nyata.
+
+all:
+  children:
+    agents:
+      hosts:
+        agent-01:
+          # ---------------------------------------------------- koneksi
+          ansible_host: 203.0.113.10
+          ansible_user: root
+          # ansible_ssh_private_key_file: ~/.ssh/rames-agent-01
+          # ansible_port: 22
+
+          # ---------------------------------------------------- identitas server
+          # APP_DOMAIN server agent ini (instalasi pertama WAJIB; rerun boleh
+          # dikosongkan agar nilai lama dipertahankan).
+          rames_agent_domain: domain2.com
+          # ADMIN_EMAIL — wajib ada agar job ssl_issue di server ini bisa jalan.
+          rames_agent_email: ops@domain2.com
+
+          # ---------------------------------------------------- port
+          rames_agent_port_range_start: 30000
+          rames_agent_port_range_end: 30999
+
+          # AGENT_BIND = alamat listen DI DALAM container (port internal 8443).
+          rames_agent_bind: "0.0.0.0:8443"
+
+          # Port HTTPS agent di HOST. Bila berbeda dari 8443, isi juga
+          # AGENT_PORT_PUBLISH=<port> di wilayah operator secrets/agent.env
+          # (di luar blok `# rames-installer:begin … end`).
+          rames_agent_port: 8443
+
+          # IP control plane (dashboard) yang boleh menyentuh port agent.
+          # WAJIB terisi bila rames_agent_manage_firewall=true. Ganti dengan
+          # IP publik dashboard Anda.
+          rames_agent_control_plane_ips:
+            - 198.51.100.7
+
+          # Kosong = biarkan installer mendeteksi IP server untuk SAN
+          # sertifikat. Isi bila ansible_host berupa hostname atau deteksi
+          # otomatis salah (verifikasi /version memakai IP ini).
+          rames_agent_ip: ''
+
+          # '' = pertahankan nilai lama. http | dns-cloudflare.
+          rames_agent_ssl_challenge: ''
+          # '' = pertahankan nilai lama. production | staging.
+          rames_agent_ssl_ca_server: ''
+
+          # ---------------------------------------------------- contoh host kedua
+        # agent-02:
+        #   ansible_host: 203.0.113.11
+        #   ansible_user: root
+        #   rames_agent_domain: domain3.com
+        #   rames_agent_email: ops@domain3.com
+        #   rames_agent_port_range_start: 31000
+        #   rames_agent_port_range_end: 31999
+        #   rames_agent_control_plane_ips:
+        #     - 198.51.100.7

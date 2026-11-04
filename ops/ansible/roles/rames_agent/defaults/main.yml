@@ -1,0 +1,58 @@
+---
+# Bawaan role rames_agent. Nilai nyata biasanya datang dari
+# group_vars/{all,agents}.yml atau host var di inventories/agents/hosts.yml;
+# variabel di sini membuat role tetap bisa dipakai tanpa group_vars.
+#
+# Kontrak variabel: ops/ansible/README.md. Jangan ganti nama.
+
+# ---------------------------------------------------------------- repo & ref
+# Nama di bawah adalah kontrak lintas playbook/dokumentasi (jangan diganti),
+# sehingga aturan ansible-lint var-naming[no-role-prefix] di-noqa.
+rames_repo_url: https://github.com/yllumi/rames.git  # noqa: var-naming[no-role-prefix]
+rames_ref: main  # noqa: var-naming[no-role-prefix]
+rames_install_dir: /opt/rames-agent  # noqa: var-naming[no-role-prefix]
+
+# ---------------------------------------------------------------- identitas server
+rames_agent_control_plane_ips: []
+rames_agent_port: 8443
+rames_agent_domain: ''
+rames_agent_email: ''
+rames_agent_port_range_start: 30000
+rames_agent_port_range_end: 30999
+rames_agent_bind: "0.0.0.0:8443"
+rames_agent_ip: ''
+rames_agent_ssl_challenge: ''
+rames_agent_ssl_ca_server: ''
+
+# Path di CONTROL NODE untuk menyimpan berkas onboarding agent (URL, token,
+# fingerprint, PEM) yang ditulis `agent/install.sh --onboarding-file`.
+# Kosong = jangan ambil berkas onboarding sama sekali (perilaku bawaan).
+# Berkas itu BERISI RAHASIA (token agent) → simpan di luar repo, mode 0600,
+# dan jangan pernah meng-commit/mencetaknya.
+rames_agent_onboarding_out: ''
+
+# ---------------------------------------------------------------- saklar perilaku
+rames_agent_manage_deps: true
+rames_agent_manage_firewall: true
+# auto | true | false — lihat group_vars/all.yml
+rames_agent_run_installer: auto
+rames_agent_assert_identity: true
+rames_agent_allow_other_os: false
+
+# ---------------------------------------------------------------- internal
+# Path di dalam repo (relatif terhadap rames_install_dir).
+rames_agent_env_file: "{{ rames_install_dir }}/secrets/agent.env"
+rames_agent_tls_cert_file: "{{ rames_install_dir }}/secrets/agent/tls.crt"
+
+# Berkas onboarding sementara DI SERVER (dibuat installer, 0600, selalu dihapus
+# oleh onboarding.yml di blok `always`). Jangan diarahkan ke repo.
+rames_agent_onboarding_remote_path: /tmp/rames-onboarding.txt
+
+# Batas waktu pemanggilan installer/dependensi (detik) — async + poll.
+rames_agent_async_timeout: 1800
+rames_agent_async_poll: 5
+
+# Pertahanan verifikasi endpoint /version.
+rames_agent_verify_retries: 20
+rames_agent_verify_delay: 3
+rames_agent_verify_timeout: 15

@@ -38,6 +38,9 @@ Sisa pekerjaan aktif **hanya** di §12; section lain adalah aturan yang berlaku 
 - **TLS self-signed + pinning**: sertifikat agent menjadi trust anchor; fingerprint tidak cocok ⇒ gagal tegas, bukan `verify=false`.
 - **Kepemilikan data disjoint**: metadata milik control plane; state eksekusi & job milik agent; billing/backup registry milik control plane (§7.14).
 - **Op tingkat server**: tarik image template, self-update agen, restore arsip volume dijalankan di server yang benar.
+- **Onboarding agent idempoten & satu sumber rahasia**: token, sertifikat TLS, dan bahan onboarding **hanya** dibuat `agent/install.sh`; bootstrap/otomasi (`install.agent.sh`, `ops/ansible/`) tidak pernah membuat atau mencetak rahasia sendiri dan **DILARANG** mengirim `--force` otomatis (§7.14).
+- **Berkas onboarding machine-readable (opsional)**: `agent/install.sh --onboarding-file <path absolut>` menulis URL/token/fingerprint/domain/rentang port/versi + PEM ke berkas **0600** (format `KUNCI=nilai` + blok PEM, atomik) untuk dibaca control plane/Ansible. Blok stdout tidak berubah; berkas berisi rahasia ⇒ di luar repo dan dihapus setelah server terdaftar (§7.14).
+- **Otomasi provisi adalah tooling ops, di luar image Rames**: `ops/ansible/` (role `rames_agent` + playbook provisi/verifikasi/upgrade) hanya **pembungkus** installer yang ada, tidak menambah dependensi runtime, tidak memuat collection pihak ketiga, dan tidak menggantikan installer.
 - **Kompatibilitas single-server**: tanpa agent, seluruh perilaku lama tetap berlaku.
 
 ## 3. Non-Goals (Phase 1)
@@ -303,7 +306,7 @@ Jalur **eksplisit** menyegarkan image prebuilt template (tanpa ini `docker compo
 
 **Otorisasi dua kuasa.** Kelola registry = admin-only; pilih server = admin atau grant `server_select`. Grant tidak membuka registry, app/backup user lain, atau metrik host server tanpa app terlihat. `ServerAccess::visibleServers()`: admin semua; non-admin = union server yang menaungi app yang boleh dilihat **dan** server yang boleh dipilih karena grant; dipakai `/apps`, `/network`, `/volumes`, `/backups`, `/monitor`.
 
-**Onboarding.** `install.agent.sh` (satu perintah, idempoten) menyiapkan paket dasar, clone ke `/opt/rames-agent` (default), dependensi host, lalu `agent/install.sh` yang membuat token + TLS self-signed dan mencetak blok onboarding. Bootstrap **tidak mencetak secret**. Direktori berpenanda dashboard (`.env`, `database/apps.json`, `apps/` berisi) **ditolak**; checkout Rames tanpa penanda dipakai ulang dengan peringatan. Test connection memakai **pinning PEM** (bukan `verify=false`); fingerprint tidak cocok ⇒ gagal tegas. Sukses menyimpan `agent_version`/`capabilities`/`last_seen_at`.
+**Onboarding.** `install.agent.sh` (satu perintah, idempoten) menyiapkan paket dasar, clone ke `/opt/rames-agent` (default), dependensi host, lalu `agent/install.sh` yang membuat token + TLS self-signed dan mencetak blok onboarding. Bootstrap **tidak mencetak secret**. Direktori berpenanda dashboard (`.env`, `database/apps.json`, `apps/` berisi) **ditolak**; checkout Rames tanpa penanda dipakai ulang dengan peringatan. Blok yang sama dapat ditulis ke berkas **0600** (`--onboarding-file <path absolut>`, format `KUNCI=nilai` + blok PEM) untuk dibaca mesin; berkas itu memuat token ⇒ di luar repo, tidak di-commit, dihapus setelah Add Server. Provisi berulang boleh memakai tooling ops [`ops/ansible/`](../ops/ansible/README.md) yang **membungkus** kedua installer (bukan pengganti, tanpa dependensi runtime). Test connection memakai **pinning PEM** (bukan `verify=false`); fingerprint tidak cocok ⇒ gagal tegas. Sukses menyimpan `agent_version`/`capabilities`/`last_seen_at`.
 
 **Port.** Agent `8443` **tidak boleh publik** — hanya allowlist ke IP control plane. Port 80/443 server app wajib terbuka untuk **semua** sumber (ACME HTTP-01).
 
@@ -585,6 +588,36 @@ Cakupan minimum: validasi domain/redirect/ukuran/kode, keunikan dua arah dengan 
 ### 8j.11 Future work
 
 Dukungan multi-server (kolom `server_id` sudah ada), backup konten terintegrasi, SSL wildcard, alias `www` otomatis, dan penyegaran `ssl_expires_at` setelah renewal — lihat §12.
+
+## 8k. Provisioning Server Agent dari Dashboard (Ansible, opsi B)
+
+Tujuan: admin dapat **menambah server agent tanpa keluar dashboard** dan tanpa menempel token/PEM. Admin mengisi target SSH + opsi agent; control plane menjalankan playbook `ops/ansible/` di **helper container one-shot** lalu **mendaftarkan server sendiri** setelah verifikasi agent lolos. Jalur manual **Add Server → Test connection** (§7.14) tetap ada — wajib untuk adopsi host yang sudah terpasang atau bila operator tidak ingin memberi dashboard akses SSH.
+
+### 8k.1 Kebutuhan
+
+- **Admin-only, 404 bukan 403**: `GET/POST /servers/provision`, `GET /servers/provision/status`, `POST /servers/provision/cancel`. Otorisasi dicek **sebelum** efek samping; mutasi POST kena CSRF global; route tidak didaftarkan di `RAMES_MODE=agent`.
+- **Input allowlist**: `name` (slug unik per registry), `host`, `ssh_user`, `ssh_port`, `domain` (FQDN), `email`, `port_range_start < port_range_end`, `agent_port`, `bind` (port agent), `control_plane_ips`, `manage_firewall`, `playbook` ∈ `provision-agent|verify-agent`; opsi identitas `ip`/`ssl_challenge`/`ssl_ca_server` hanya metadata. Field asing diabaikan, **`force`/`--force` ditolak** — provisioning tidak boleh merotasi token/TLS.
+- **Audit lewat job + log**: setiap upaya tercatat di `provision_jobs` (status `queued|running|done|error|cancelled`, `stage`, `message`, `error`) + log `runtime/logs/provision/<jobId>.log`; UI memantau status tiap 2 detik dan mengambil **potongan log berdasarkan offset**. Job adalah catatan historis: identitas (host/domain/playbook/rentang port) tidak bisa diubah setelah dibuat.
+- **Secret tidak pernah dirender ulang**: kunci privat SSH hanya di berkas 0600 (`ServerSshKeyStore`, di luar basis data) dan di-mount read-only ke helper; form yang dirender ulang setelah validasi gagal tidak memuat `private_key`; token/PEM agent tidak pernah disimpan di `provision_jobs`, tidak masuk log (baris dipotong) dan tidak muncul di respons status; direktori kerja job yang memuat `onboarding.txt` **selalu** dibersihkan.
+- **TOFU host-key pinning**: host key dipin saat job pertama (`ssh-keyscan` + fingerprint), lalu koneksi Ansible memakai `StrictHostKeyChecking=yes`. Kunci berbeda ⇒ job `error`, pin **tidak** diperbarui, server tidak terdaftar; menerima kunci baru = keputusan manual operator setelah membandingkan fingerprint.
+- **Auto-register dapat dimatikan** (`PROVISION_AUTO_REGISTER`): bila aktif dan playbook `provision-agent` sukses, server didaftarkan lewat jalur validasi yang sama dengan Add Server (`ServerResolver::validate()`); verifikasi `GET /version` gagal ⇒ baris server **dihapus lagi** dan job `error` (pesan diredaksi).
+- **Ansible tetap tooling ops di luar image**: image dashboard tidak memuat Ansible; helper memakai image terpisah (`ANSIBLE_IMAGE`) yang **wajib dipin** di produksi, dan control plane butuh egress registry + SSH ke server tujuan. Playbook tetap `ops/ansible/` yang sama dengan §5.21a — tidak ada role kedua.
+
+### 8k.2 Keamanan (mengikat)
+
+- Non-admin tidak boleh mengetahui keberadaan fitur ini (404 di keempat route) dan tidak boleh memicu spawn/penulisan kunci.
+- `provision_jobs` **DILARANG** mendapat kolom token/PEM/private key; backup DB tidak boleh memuat rahasia agent.
+- `--force` **DILARANG** dikirim dari otomasi mana pun (dashboard, Ansible, skrip); rotasi rahasia adalah tindakan sadar yang menuntut onboarding ulang.
+- Verifikasi koneksi agent memakai **pinning PEM**, bukan `verify=false`; galat tidak boleh menggema token/PEM.
+- Helper container diberi hak minimum: mount playbook/kunci/`known_hosts` `:ro`, jobdir `:rw`, tanpa shell (argv array), label job untuk pembatalan.
+
+### 8k.3 Kriteria uji
+
+Validasi payload (termasuk `force` ditolak, bind/port/email/playbook), guard 404 tanpa efek samping untuk keempat route, status job tak dikenal 404 + cancel id asing 422, migrasi skema v6 idempoten & **tanpa kolom rahasia**, argv helper (label, mount, `StrictHostKeyChecking=yes`), TOFU pin idempoten vs perubahan kunci, register sukses + rollback baris saat verifikasi gagal, dan render view (field lengkap, status panel, tanpa `private_key`).
+
+### 8k.4 Future work
+
+UI kelola/hapus pin & kunci per server (saat ini kunci slot tetap ada setelah server dihapus), antrean paralel terbatas per host, retry otomatis job yang gagal transien, inventori banyak host dalam satu job, dan dukungan image registry internal dengan digest.
 
 ## 9. Environment Variables (`.env`)
 

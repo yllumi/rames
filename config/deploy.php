@@ -412,4 +412,30 @@ return [
     // tidak pernah hilang total.
     'billing_duitku_forced_min_interval' => $billingInt('BILLING_DUITKU_FORCED_MIN_INTERVAL', 15),
     'billing_duitku_status_max_per_tick' => $billingInt('BILLING_DUITKU_STATUS_MAX_PER_TICK', 20),
+
+    // ---------------------------------------------------------------------
+    // Provisioning server agent via Ansible (opsi B: Ansible → control plane)
+    // ---------------------------------------------------------------------
+    // Playbook dijalankan helper container `docker run --rm` (image dipisah dari
+    // image dashboard), bukan instalasi Ansible di host. Image/tag bisa dinaikkan
+    // tanpa rebuild dashboard.
+    'ansible_image' => getenv('ANSIBLE_IMAGE') ?: 'alpine/ansible:latest',
+    // Timeout SATU run `ansible-playbook` (detik). Provisioning pertama bisa
+    // lama (tarik image, pasang dependensi) — 30 menit bawaan.
+    'ansible_timeout' => $billingInt('ANSIBLE_TIMEOUT', 1800),
+    // Direktori kerja per job (inventory/extra_vars/onboarding). Dibersihkan
+    // worker di blok `finally`; berisi data RAHASIA saat job berjalan.
+    'provision_work_dir' => getenv('PROVISION_WORK_DIR') ?: (base_path() . '/runtime/provision'),
+    // Log worker provisioning per job (dibaca UI lewat offset byte).
+    'provision_log_dir' => getenv('PROVISION_LOG_DIR') ?: (base_path() . '/runtime/logs/provision'),
+    // Job `running` yang lebih tua dari ini dianggap mati (worker hilang) dan
+    // ditandai error saat worker berikutnya start.
+    'provision_stale_seconds' => $billingInt('PROVISION_STALE_SECONDS', 3600),
+    // Daftarkan server otomatis setelah playbook `provision-agent` sukses dan
+    // berkas onboarding tersedia (verifikasi `GET /version` tetap wajib).
+    'provision_auto_register' => $billingBool('PROVISION_AUTO_REGISTER', true),
+    // known_hosts untuk SSH provisioning. Default = berkas yang sama dengan
+    // `git_known_hosts` (satu daftar host tepercaya); dipisah bila operator
+    // ingin isolasi penuh antar-alur.
+    'provision_known_hosts' => getenv('PROVISION_KNOWN_HOSTS') ?: (base_path() . '/database/keys/known_hosts'),
 ];

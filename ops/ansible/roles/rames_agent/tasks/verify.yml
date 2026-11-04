@@ -1,0 +1,138 @@
+---
+# Verify — memastikan agent benar-benar hidup dan berbicara versi yang dikenal.
+#
+# Read-only terhadap state Rames: tidak menulis ke rames_install_dir, tidak
+# menyentuh firewall. Satu-satunya berkas yang ditulis adalah salinan CA
+# sementara di direktori temp host (0644) yang SELALU dihapus di blok `always`.
+#
+# Kenapa CA sementara: sertifikat agent adalah self-signed, jadi verifikasi TLS
+# tidak bisa memakai CA publik. `uri` menerima `ca_path`, dan `ca_path` butuh
+# berkas nyata — isi PEM di-slurp (no_log) lalu ditulis ke temp.
+#
+# Token TIDAK pernah dicetak: ia hanya dipakai di header Authorization pada
+# task ber-no_log.
+
+- name: "Verify | peringatan mode --check"
+  ansible.builtin.debug:
+    msg: >-
+      Mode --check: verifikasi endpoint /version dilewati karena butuh berkas
+      CA sementara di host. Jalankan playbooks/verify-agent.yml tanpa --check.
+  when: ansible_check_mode
+
+- name: "Verify | stat berkas rahasia agent (env + sertifikat TLS)"
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ rames_agent_env_file }}"
+    - "{{ rames_agent_tls_cert_file }}"
+  register: rames_agent_secret_files
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  become: true
+  when: not ansible_check_mode
+
+- name: "Verify | hentikan bila host belum terpasang (berkas rahasia tidak ada)"
+  ansible.builtin.assert:
+    that:
+      - rames_agent_secret_files.results | selectattr('stat.exists', 'equalto', True) | list | length == 2
+    fail_msg: >-
+      {{ inventory_hostname }} belum tampak terpasang: berkas yang hilang
+      {{ rames_agent_secret_files.results | rejectattr('stat.exists', 'equalto', True) | map(attribute='item') | join(', ') }}.
+      Jalankan playbooks/provision-agent.yml (installer idempoten — token &
+      sertifikat lama dipertahankan) lebih dulu, atau periksa
+      rames_install_dir={{ rames_install_dir }}.
+    success_msg: "{{ inventory_hostname }}: berkas rahasia agent lengkap."
+  when: not ansible_check_mode
+
+- name: "Verify | baca sertifikat TLS agent (no_log)"
+  ansible.builtin.slurp:
+    src: "{{ rames_agent_tls_cert_file }}"
+  register: rames_agent_tls_crt
+  no_log: true
+  become: true
+  when: not ansible_check_mode
+
+- name: "Verify | baca secrets/agent.env (no_log)"
+  ansible.builtin.slurp:
+    src: "{{ rames_agent_env_file }}"
+  register: rames_agent_verify_env
+  no_log: true
+  become: true
+  when: not ansible_check_mode
+
+- name: "Verify | ambil AGENT_TOKEN untuk header Authorization (no_log)"
+  ansible.builtin.set_fact:
+    rames_agent_token: "{{ (rames_agent_verify_env.content | b64decode | regex_findall('(?m)^AGENT_TOKEN=(.*)$') | last | default('')) | trim }}"
+  no_log: true
+  when: not ansible_check_mode
+
+- name: "Verify | hentikan bila token agent tidak terbaca"
+  ansible.builtin.assert:
+    that:
+      - rames_agent_token | length > 0
+    fail_msg: >-
+      {{ rames_agent_env_file }} tidak memuat AGENT_TOKEN (atau tidak terbaca).
+      Jalankan installer: `cd {{ rames_install_dir }} && bash agent/install.sh
+      --domain {{ rames_agent_domain | default('<domain>') }}`. Perhatikan:
+      tanpa --force token lama dipertahankan.
+    success_msg: "{{ inventory_hostname }}: token agent terbaca (nilainya tidak dicetak)."
+  when: not ansible_check_mode
+
+- name: "Verify | tentukan host & path CA sementara"
+  ansible.builtin.set_fact:
+    rames_agent_verify_host: >-
+      {{ rames_agent_ip if (rames_agent_ip | length > 0)
+         else (ansible_host | default(inventory_hostname)) }}
+    rames_agent_verify_ca_path: >-
+      {{ (ansible_facts.env.TMPDIR | default('/tmp')) | regex_replace('/+$', '') }}/rames-agent-verify-{{ inventory_hostname }}-{{ 999999 | random }}.pem
+  when: not ansible_check_mode
+
+- name: "Verify | GET /version dengan pinning CA self-signed + Bearer token"
+  when: not ansible_check_mode
+  block:
+    - name: "Verify | tulis salinan CA sementara (0644, no_log)"
+      ansible.builtin.copy:
+        content: "{{ rames_agent_tls_crt.content | b64decode }}"
+        dest: "{{ rames_agent_verify_ca_path }}"
+        mode: "0644"
+      become: true
+      no_log: true
+      changed_when: false
+
+    - name: "Verify | panggil endpoint /version agent (TLS dipin ke CA self-signed)"
+      ansible.builtin.uri:
+        url: "https://{{ rames_agent_verify_host }}:{{ rames_agent_port }}/version"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ rames_agent_token }}"
+          Accept: application/json
+        ca_path: "{{ rames_agent_verify_ca_path }}"
+        validate_certs: true
+        status_code: 200
+        timeout: "{{ rames_agent_verify_timeout }}"
+        return_content: true
+      register: rames_agent_version_response
+      until: rames_agent_version_response is not failed
+      retries: "{{ rames_agent_verify_retries }}"
+      delay: "{{ rames_agent_verify_delay }}"
+      changed_when: false
+      no_log: true
+
+    - name: "Verify | laporkan versi agent (tanpa token)"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} ({{ rames_agent_verify_host }}:{{ rames_agent_port }})
+          → agent_version={{ rames_agent_version_response.json.agent_version | default('(tidak terbaca)') }},
+          capabilities={{ rames_agent_version_response.json.capabilities | default([]) | join(', ') }},
+          min_control_plane_version={{ rames_agent_version_response.json.min_control_plane_version | default('(tidak terbaca)') }}
+
+  always:
+    - name: "Verify | hapus salinan CA sementara"
+      ansible.builtin.file:
+        path: "{{ rames_agent_verify_ca_path }}"
+        state: absent
+      become: true
+      no_log: true
+      changed_when: false
+      when: rames_agent_verify_ca_path is defined

@@ -1,0 +1,18 @@
+---
+# Provision satu/lebih server agent Rames (idempoten).
+#
+# Yang dijalankan role: preflight → repo → deps → firewall → install → verify.
+# Perintah:
+#   ansible-playbook playbooks/provision-agent.yml --limit agent-01
+#   ansible-playbook playbooks/provision-agent.yml --check --diff   (dry-run)
+#
+# Semua efek samping tetap milik installer yang sudah ada (host/install.sh
+# --deps-only dan agent/install.sh). Baca tabel dampak host produksi di
+# ops/ansible/README.md sebelum menjalankan pada server yang sedang melayani app.
+
+- name: "Provision server agent Rames"
+  hosts: agents
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: rames_agent

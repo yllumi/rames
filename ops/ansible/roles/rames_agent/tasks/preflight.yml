@@ -1,0 +1,118 @@
+---
+# Preflight — TIDAK menulis apa pun ke host. Semua tugas di sini read-only
+# sehingga aman dipakai playbook verifikasi.
+#
+# Yang diperiksa:
+#   1. fakta sistem tersedia & OS family Debian (kecuali allow_other_os)
+#   2. `git` ada di host (dibutuhkan SEBELUM dependensi dipasang, karena
+#      repo.yml berjalan lebih dulu dan harus meng-clone repo)
+#   3. identitas direktori instalasi: rames_install_dir BUKAN instalasi
+#      dashboard (dashboard punya .env + database/apps.json di root repo)
+#   4. rames_agent_domain & rames_agent_control_plane_ips terisi bila
+#      firewall dikelola role ini
+
+- name: "Preflight | pastikan fakta sistem tersedia"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!min"
+      - distribution
+  when: ansible_facts.os_family is not defined
+  changed_when: false
+
+- name: "Preflight | OS family harus Debian (Ubuntu termasuk)"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family | default('') == 'Debian'
+    fail_msg: >-
+      {{ inventory_hostname }}: os_family terdeteksi
+      '{{ ansible_facts.os_family | default('tidak diketahui') }}', sedangkan
+      host/install.sh (sumber dependensi) memakai apt dan hanya diuji di
+      Debian/Ubuntu. Pasang docker + compose v2 + nginx + certbot + git +
+      openssl secara manual lalu set rames_agent_allow_other_os=true bila Anda
+      menerima risiko ketidakcocokan.
+    success_msg: "{{ inventory_hostname }}: OS family Debian."
+  when: not (rames_agent_allow_other_os | bool)
+
+- name: "Preflight | peringatan OS non-Debian (diizinkan eksplisit)"
+  ansible.builtin.debug:
+    msg: >-
+      rames_agent_allow_other_os=true — OS family
+      '{{ ansible_facts.os_family | default('tidak diketahui') }}' diproses
+      apa adanya. Pastikan docker + compose v2, nginx, certbot, git, openssl
+      sudah tersedia sebelum menaikkan saklar lain.
+  when: rames_agent_allow_other_os | bool
+
+- name: "Preflight | git harus tersedia (dipakai sebelum dependensi)"
+  ansible.builtin.command:
+    argv:
+      - git
+      - --version
+  register: rames_agent_git_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+- name: "Preflight | hentikan bila git belum terpasang"
+  ansible.builtin.assert:
+    that:
+      - rames_agent_git_probe.rc | default(1) == 0
+    fail_msg: >-
+      {{ inventory_hostname }}: perintah `git` tidak tersedia. Role ini
+      meng-clone repo (repo.yml) SEBELUM memasang dependensi, jadi git adalah
+      satu-satunya prasyarat yang harus ada lebih dulu:
+      `apt-get update && apt-get install -y git`. Setelah itu ulangi playbook —
+      sisa dependensi (Docker Engine, compose v2, nginx, certbot) tetap
+      dipasang lewat `host/install.sh --deps-only`.
+    success_msg: "{{ inventory_hostname }}: git tersedia."
+
+- name: "Preflight | stat penanda instalasi dashboard (.env, database/apps.json)"
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ rames_install_dir }}/.env"
+    - "{{ rames_install_dir }}/database/apps.json"
+  register: rames_agent_dashboard_markers
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: "Preflight | tolak direktori instalasi dashboard pada host agent"
+  ansible.builtin.assert:
+    that:
+      - rames_agent_dashboard_markers.results | selectattr('stat.exists', 'equalto', True) | list | length == 0
+    fail_msg: >-
+      {{ rames_install_dir }} terlihat sebagai instalasi DASHBOARD Rames
+      (ditemukan:
+      {{ rames_agent_dashboard_markers.results | selectattr('stat.exists', 'equalto', True) | map(attribute='item') | join(', ') }}).
+      Project dashboard ( `rames` / container `rames-webman` ) dan server agent
+      ( `rames-agent` ) WAJIB di direktori terpisah — mengarahkan
+      rames_install_dir ke direktori dashboard akan menimpa .env dashboard.
+      Pilih direktori lain, mis. /opt/rames-agent.
+    success_msg: "{{ inventory_hostname }}: {{ rames_install_dir }} bukan instalasi dashboard."
+
+- name: "Preflight | domain & IP control plane wajib bila firewall dikelola"
+  ansible.builtin.assert:
+    that:
+      - rames_agent_domain | length > 0
+      - rames_agent_control_plane_ips | length > 0
+    fail_msg: >-
+      rames_agent_manage_firewall=true tetapi
+      rames_agent_domain='{{ rames_agent_domain }}' /
+      rames_agent_control_plane_ips={{ rames_agent_control_plane_ips }}.
+      Port agent ({{ rames_agent_port }}) hanya boleh terbuka untuk IP control
+      plane, jadi daftar IP itu wajib diketahui sebelum aturan firewall
+      ditulis. Isi keduanya di inventories/agents/hosts.yml, atau set
+      rames_agent_manage_firewall=false dan atur firewall manual.
+    success_msg: "{{ inventory_hostname }}: domain & IP control plane terisi."
+  when: rames_agent_manage_firewall | bool
+
+- name: "Preflight | peringatan firewall tidak dikelola role"
+  ansible.builtin.debug:
+    msg: >-
+      rames_agent_manage_firewall=false — role TIDAK menambah aturan firewall.
+      Pastikan manual: port {{ rames_agent_port }} hanya dari IP control plane,
+      dan port 80 & 443 terbuka untuk SEMUA (GOTCHA no. 52).
+  when: not (rames_agent_manage_firewall | bool)

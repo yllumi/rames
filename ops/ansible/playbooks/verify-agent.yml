@@ -1,0 +1,30 @@
+---
+# Verifikasi READ-ONLY — tidak menulis berkas di rames_install_dir, tidak
+# menambah aturan firewall, tidak menjalankan installer.
+#
+#   ansible-playbook playbooks/verify-agent.yml --limit agent-01
+#   ansible-playbook playbooks/verify-agent.yml            (semua agent)
+#
+# Dipakai sebagai langkah pertama runbook adopsi (lihat README): amankan dulu
+# bukti bahwa host yang ada memang hidup & identitasnya sesuai sebelum menyentuh
+# apa pun. Jangan jalankan dengan --check: verifikasi /version butuh berkas CA
+# sementara di host, dan mode check melewatinya secara sengaja.
+
+- name: "Verifikasi server agent Rames (read-only)"
+  hosts: agents
+  gather_facts: true
+  vars:
+    # Tidak ada penulisan apa pun: dependensi, firewall, dan installer dimatikan.
+    rames_agent_manage_firewall: false
+    rames_agent_manage_deps: false
+    rames_agent_run_installer: false
+  tasks:
+    - name: "Preflight (hanya baca: OS, git, identitas direktori)"
+      ansible.builtin.include_role:
+        name: rames_agent
+        tasks_from: preflight
+
+    - name: "Verifikasi /version (CA self-signed, token tidak dicetak)"
+      ansible.builtin.include_role:
+        name: rames_agent
+        tasks_from: verify

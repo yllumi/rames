@@ -1,0 +1,38 @@
+---
+# Role rames_agent — provisi server agent Rames sebagai PEMBUNGKUS idempoten
+# dari installer yang sudah ada:
+#   * dependensi host   → host/install.sh --deps-only
+#   * rahasia + TLS + compose up/build → agent/install.sh
+#
+# Urutan wajib: preflight → repo → deps → firewall → install → verify.
+# preflight/repo tidak menulis apa pun; deps/firewall/install masing-masing
+# bisa dimatikan lewat saklar (rames_agent_manage_deps, _manage_firewall,
+# _run_installer) sehingga role yang sama dipakai untuk mode adopsi read-only.
+
+- name: "Preflight (read-only)"
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [rames_agent, rames_agent_preflight]
+
+- name: "Repo (clone hanya bila belum ada)"
+  ansible.builtin.import_tasks: repo.yml
+  tags: [rames_agent, rames_agent_repo]
+
+- name: "Deps (host/install.sh --deps-only)"
+  ansible.builtin.import_tasks: deps.yml
+  tags: [rames_agent, rames_agent_deps]
+
+- name: "Firewall (ufw: port agent + 80/443)"
+  ansible.builtin.import_tasks: firewall.yml
+  tags: [rames_agent, rames_agent_firewall]
+
+- name: "Install (agent/install.sh, tanpa --force)"
+  ansible.builtin.import_tasks: install.yml
+  tags: [rames_agent, rames_agent_install]
+
+- name: "Onboarding (salin berkas onboarding ke control node)"
+  ansible.builtin.import_tasks: onboarding.yml
+  tags: [rames_agent, rames_agent_onboarding]
+
+- name: "Verify (/version dengan CA self-signed)"
+  ansible.builtin.import_tasks: verify.yml
+  tags: [rames_agent, rames_agent_verify]

@@ -22,7 +22,7 @@ use Throwable;
 final class SchemaMigrations
 {
     /** Versi skema terakhir yang dikenal. */
-    public const LATEST = 5;
+    public const LATEST = 6;
 
     /**
      * Daftar migrasi berversi. Kunci = nomor versi (menaik), nilai = callable.
@@ -169,6 +169,62 @@ final class SchemaMigrations
                 );
                 $pdo->exec(
                     'CREATE INDEX IF NOT EXISTS "idx_ssl_jobs_parked" ON "ssl_jobs" ("parked_id")'
+                );
+            },
+            6 => static function (PDO $pdo): void {
+                // Antrean provisioning server agent via Ansible (Opsi B:
+                // integrasi playbook `ops/ansible/playbooks/*.yml`).
+                //
+                // Tabel khusus di luar `storeDefinitions()`: job adalah antrean
+                // yang dimutasi per baris lewat prepared statement
+                // (`ProvisionJobStore`), bukan koleksi JSON yang ditulis ulang
+                // seluruhnya.
+                //
+                // TANPA kolom rahasia: token agent, private key SSH, dan
+                // passphrase TIDAK boleh disimpan di sini. Kolom yang ada hanya
+                // metadata job yang ditampilkan UI; kunci SSH hidup di
+                // `ServerSshKeyStore` (berkas 0600), bukan di basis data.
+                // Idempoten (`IF NOT EXISTS`) agar DB v1..v5 mendapat tabel.
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS "provision_jobs" ('
+                    . '"id" TEXT PRIMARY KEY,'
+                    . '"server_id" TEXT,'
+                    . '"name" TEXT NOT NULL,'
+                    . '"playbook" TEXT NOT NULL,'
+                    . '"host" TEXT NOT NULL,'
+                    . '"ssh_user" TEXT NOT NULL,'
+                    . '"ssh_port" INTEGER NOT NULL,'
+                    . '"domain" TEXT NOT NULL,'
+                    . '"port_range_start" INTEGER NOT NULL,'
+                    . '"port_range_end" INTEGER NOT NULL,'
+                    . '"agent_port" INTEGER NOT NULL,'
+                    . '"control_plane_ips" TEXT NOT NULL DEFAULT \'\','
+                    . '"manage_firewall" INTEGER NOT NULL DEFAULT 1,'
+                    // Opsi identitas opsional (bukan rahasia): dikirim ke
+                    // installer sebagai flag. Kosong = nilai lama di
+                    // `secrets/agent.env` dipertahankan (perilaku idempoten).
+                    . '"email" TEXT NOT NULL DEFAULT \'\','
+                    . '"bind" TEXT NOT NULL DEFAULT \'\','
+                    . '"ip" TEXT NOT NULL DEFAULT \'\','
+                    . '"ssl_challenge" TEXT NOT NULL DEFAULT \'\','
+                    . '"ssl_ca_server" TEXT NOT NULL DEFAULT \'\','
+                    . '"status" TEXT NOT NULL DEFAULT \'queued\','
+                    . '"stage" TEXT NOT NULL DEFAULT \'queued\','
+                    . '"message" TEXT NOT NULL DEFAULT \'\','
+                    . '"error" TEXT,'
+                    . '"created_at" TEXT NOT NULL,'
+                    . '"started_at" TEXT,'
+                    . '"finished_at" TEXT,'
+                    . '"updated_at" TEXT NOT NULL'
+                    . ')'
+                );
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS "idx_provision_jobs_status"'
+                    . ' ON "provision_jobs" ("status","created_at")'
+                );
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS "idx_provision_jobs_server"'
+                    . ' ON "provision_jobs" ("server_id")'
                 );
             },
         ];
