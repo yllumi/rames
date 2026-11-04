@@ -1,0 +1,55 @@
+title: Chevereto
+description: >-
+  Galeri gambar & video self-hosted (Chevereto V4 free edition) dengan MariaDB
+  internal dan Redis untuk cache/sesi. CHEVERETO_HOSTNAME wajib sama dengan
+  domain atau subdomain app ini di Rames; unggahan tetap dibatasi
+  `client_max_body_size` Nginx host (lihat panduan). Berkas unggahan tersimpan di
+  named volume sehingga bertahan saat container dibuat ulang.
+category: Media/Galeri
+icon: "upload"
+docs_url: https://v4-docs.chevereto.com/
+
+# Nilai ditulis ke database/env/<nama app>.env → di-inject sebagai environment ke
+# service (tanpa disimpan di repo). Kosong = pakai `default`; `generate: secret`
+# berarti nilai acak dibuat otomatis bila dikosongkan.
+env:
+  - key: CHEVERETO_HOSTNAME
+    label: Hostname Chevereto
+    help: >-
+      Hostname TANPA skema, misalnya photos.example.com. Harus sama dengan domain
+      atau subdomain app ini di Rames — bila tidak, tautan, gambar, dan email
+      akan salah alamat.
+    required: true
+  - key: CHEVERETO_HTTPS
+    label: HTTPS
+    help: >-
+      "1" = app diakses lewat HTTPS (URL absolut & cookie sesi memakai https,
+      dan semua request HTTP dialihkan ke https). Isi "0" selama SSL belum
+      aktif; dengan "1" app tidak bisa dibuka lewat HTTP.
+    default: "1"
+  - key: MARIADB_PASSWORD
+    label: Password database Chevereto
+    help: Kosongkan agar password user database dibuat otomatis.
+    generate: secret
+  - key: MARIADB_ROOT_PASSWORD
+    label: Password root MariaDB
+    help: Kosongkan agar password root MariaDB dibuat otomatis.
+    generate: secret
+  - key: REDIS_PASSWORD
+    label: Password Redis
+    help: Kosongkan agar password Redis dibuat otomatis.
+    generate: secret
+  - key: CHEVERETO_ENCRYPTION_KEY
+    label: Kunci enkripsi Chevereto (opsional)
+    help: >-
+      Base64 tepat 32 byte — buat dengan `openssl rand -base64 32`. Dipakai
+      mengenkripsi rahasia di database (SMTP, kunci API, dsb). Kosongkan untuk
+      menonaktifkan enkripsi. Nilai harus tetap sama dengan data yang sudah
+      tersimpan; menggantinya membuat rahasia lama tidak terbaca.
+    secret: true
+    required: false
+
+# Port container yang di-proxy ke domain app (semua port lain tetap di-publish).
+primary:
+  service: chevereto
+  port: 8080

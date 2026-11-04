@@ -1,0 +1,92 @@
+# Chevereto V4 (free edition) + MariaDB + Redis. Host port Chevereto dikelola
+# oleh dashboard Rames.
+#
+# Image sudah membawa Apache + PHP 8.2 (listen 8080) dan berjalan sebagai
+# www-data. Aplikasi TIDAK disimpan di volume (CHEVERETO_SERVICING=docker):
+# pembaruan dilakukan dengan menukar image, bukan mengubah berkas di dalam app.
+services:
+  chevereto:
+    image: chevereto/chevereto:4.5
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      CHEVERETO_DB_HOST: database
+      CHEVERETO_DB_PORT: "3306"
+      CHEVERETO_DB_NAME: chevereto
+      CHEVERETO_DB_USER: chevereto
+      CHEVERETO_DB_PASS: ${MARIADB_PASSWORD}
+      # Hostname tanpa skema; URL absolut, tautan media, dan email dibangun dari
+      # nilai ini — harus sama dengan domain/subdomain app di Rames.
+      CHEVERETO_HOSTNAME: ${CHEVERETO_HOSTNAME}
+      CHEVERETO_HOSTNAME_PATH: /
+      CHEVERETO_HTTPS: ${CHEVERETO_HTTPS}
+      # Opsional: kosong = enkripsi rahasia di database dinonaktifkan.
+      CHEVERETO_ENCRYPTION_KEY: ${CHEVERETO_ENCRYPTION_KEY:-}
+      # Nginx Rames mengirim X-Real-IP; tanpa ini Chevereto mencatat IP proxy.
+      CHEVERETO_HEADER_CLIENT_IP: X-Real-IP
+      # Batas PHP di dalam container (bukan batas Nginx host — lihat guide.md).
+      CHEVERETO_MAX_POST_SIZE: 512M
+      CHEVERETO_MAX_UPLOAD_FILE_SIZE: 512M
+      CHEVERETO_MAX_UPLOAD_SIZE: 512M
+      CHEVERETO_CACHE_DRIVER: redis
+      CHEVERETO_CACHE_HOST: redis
+      CHEVERETO_CACHE_PORT: "6379"
+      CHEVERETO_CACHE_PASSWORD: ${REDIS_PASSWORD}
+      CHEVERETO_SESSION_SAVE_HANDLER: redis
+      CHEVERETO_SESSION_SAVE_PATH: "tcp://redis:6379?auth[]=${REDIS_PASSWORD}&prefix=chv:SESSION:"
+
+    volumes:
+      - chevereto-images:/var/www/html/images
+
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  database:
+    image: mariadb:11.4
+    restart: unless-stopped
+    init: true
+
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+      MARIADB_DATABASE: chevereto
+      MARIADB_USER: chevereto
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD}
+      MARIADB_AUTO_UPGRADE: "1"
+
+    volumes:
+      - mariadb-data:/var/lib/mysql
+
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    init: true
+
+    # Tanpa port ke host: Redis hanya dijangkau service lain di project ini.
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+
+    volumes:
+      - redis-data:/data
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  chevereto-images:
+  mariadb-data:
+  redis-data:
