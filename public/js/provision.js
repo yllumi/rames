@@ -18,8 +18,8 @@
  *
  * Catatan desain:
  *  - Body dikirim **urlencoded** (bukan multipart) supaya `$request->post()`
- *    Webman menerima `_token` & field teks tanpa jalur upload; `private_key`
- *    ikut terkirim sekali lalu form dikosongkan (tidak pernah dirender ulang).
+ *    Webman menerima `_token` & field teks tanpa jalur upload. Tidak ada kunci
+ *    privat di form — panel `rames-agent-key` hanya menampilkan public key.
  *  - Polling tiap **2 detik**, berhenti pada status terminal
  *    (`done`/`error`/`cancelled`), maksimum **900 percobaan** (±30 menit), dan
  *    setelah **5 kegagalan jaringan** berturut-turut. Polling **dijeda** saat
@@ -45,7 +45,12 @@
   var cancelButton = document.querySelector('[data-provision-cancel]');
   var submitButton = form.querySelector('[data-provision-submit]');
   var spinner = form.querySelector('[data-provision-spinner]');
-  var keyField = document.getElementById('provision-private-key');
+  var pubKeyField = document.querySelector('[data-provision-pubkey]');
+  var keygenButton = document.querySelector('[data-provision-keygen]');
+  var keygenLabel = document.querySelector('[data-provision-keygen-label]');
+  var keyCopyButton = document.querySelector('[data-provision-keycopy]');
+  var keyMessage = document.querySelector('[data-provision-keymsg]');
+  var fingerprintNode = document.querySelector('[data-provision-fingerprint]');
 
   var CSRF = '';
   var meta = document.querySelector('meta[name="csrf-token"]');
@@ -185,7 +190,6 @@
       setJob('Job ' + state.jobId + ' · percobaan ' + state.attempts);
 
       if (TERMINAL[status] === true) {
-        if (keyField) keyField.value = '';
         stop();
         return;
       }
@@ -222,7 +226,6 @@
     setCancelEnabled(true);
 
     // Kunci privat tidak perlu lagi disimpan di DOM setelah terkirim.
-    if (keyField) keyField.value = '';
 
     schedule(0);
   }
@@ -297,6 +300,76 @@
         setStatus('Permintaan batal gagal dikirim. Coba lagi.');
         setCancelEnabled(true);
       });
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Kunci provisioning bersama (`rames-agent-key`)
+  // ---------------------------------------------------------------------
+  function setKeyMessage(text, isError) {
+    if (!keyMessage) return;
+    keyMessage.textContent = text;
+    keyMessage.className = 'small mt-2' + (isError ? ' text-danger' : ' text-muted');
+  }
+
+  function applyKey(data) {
+    if (pubKeyField && typeof data.public_key === 'string') pubKeyField.value = data.public_key;
+    if (fingerprintNode) fingerprintNode.textContent = (data.fingerprint || '—');
+    if (keyCopyButton) keyCopyButton.disabled = !(data.public_key || '');
+    if (keygenLabel) keygenLabel.textContent = 'Pastikan kunci ada';
+  }
+
+  if (keygenButton) {
+    keygenButton.addEventListener('click', function () {
+      var body = new URLSearchParams();
+      if (CSRF !== '') body.set('_token', CSRF);
+
+      keygenButton.disabled = true;
+      setKeyMessage('Membuat/memeriksa kunci …', false);
+
+      request('/servers/provision/keypair', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          'X-CSRF-TOKEN': CSRF
+        },
+        body: body.toString()
+      }).then(function (result) {
+        keygenButton.disabled = false;
+        if (result.response.ok && result.data && result.data.code === 0) {
+          applyKey(result.data);
+          setKeyMessage(result.data.created
+            ? 'Kunci dibuat. Salin public key di atas ke ~/.ssh/authorized_keys user SSH di server tujuan.'
+            : 'Kunci sudah ada — tidak diubah. Public key di atas tetap berlaku.', false);
+          return;
+        }
+        setKeyMessage(describe(result.data, result.response), true);
+      }).catch(function () {
+        keygenButton.disabled = false;
+        setKeyMessage('Gagal menghubungi control plane. Coba lagi.', true);
+      });
+    });
+  }
+
+  if (keyCopyButton) {
+    keyCopyButton.addEventListener('click', function () {
+      if (!pubKeyField) return;
+      var text = pubKeyField.value || '';
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+          setKeyMessage('Public key disalin — tempel di server tujuan.', false);
+        }).catch(function () {
+          pubKeyField.select();
+          setKeyMessage('Salin manual: teks sudah dipilih.', false);
+        });
+        return;
+      }
+
+      pubKeyField.select();
+      setKeyMessage('Salin manual: teks sudah dipilih.', false);
     });
   }
 

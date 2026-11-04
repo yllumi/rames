@@ -5,7 +5,7 @@ namespace Tests;
 
 use app\library\Provision\AnsibleRunner;
 use app\library\Provision\ProvisionInput;
-use app\library\Provision\ServerSshKeyStore;
+use app\library\Provision\ProvisionAgentKey;
 use app\library\Support\ProcessRunner;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -62,9 +62,9 @@ class AnsibleRunnerCommandTest extends TestCase
         $this->assertContains('rames.provision.job=job-1', $argv);
 
         // Mount: playbook & kunci read-only, direktori job write.
-        // Slot kunci = NAMA server (job provisioning berjalan sebelum baris
-        // server ada; nama unik & stabil untuk operasi lanjutan).
-        $keyPath = (new ServerSshKeyStore($this->tmp . '/keys'))->path('agent-01');
+        // Kunci = SATU pasangan bersama untuk semua server (`rames-agent-key`).
+        $keyPath = (new ProvisionAgentKey(null, $this->tmp . '/keys'))->privatePath();
+        $this->assertStringContainsString('/provision/rames-agent-key', $keyPath);
         $this->assertContains($this->tmp . '/playbooks:/ansible:ro', $argv);
         $this->assertContains($jobDir . ':/job:rw', $argv);
         $this->assertContains($keyPath . ':/ssh/id:ro', $argv);
@@ -88,7 +88,8 @@ class AnsibleRunnerCommandTest extends TestCase
         $this->assertSame(config('deploy.ansible_image', 'alpine/ansible:latest'), $this->runner()->image());
         $this->assertContains('-i', $argv);
         $this->assertContains('/job/inventory.yml', $argv);
-        $this->assertContains('playbooks/provision-agent.yml', $argv);
+        $this->assertContains('/ansible/playbooks/provision-agent.yml', $argv,
+            'path playbook WAJIB absolut di dalam helper (image ber-WorkingDir /)');
         $this->assertContains('-e', $argv);
         $this->assertContains('@/job/extra_vars.yml', $argv);
         $this->assertContains('--limit', $argv);
@@ -113,7 +114,7 @@ class AnsibleRunnerCommandTest extends TestCase
         foreach (ProvisionInput::PLAYBOOKS as $key => $file) {
             $job = $this->job(['playbook' => $key]);
             $this->assertContains(
-                'playbooks/' . $file,
+                '/ansible/playbooks/' . $file,
                 $this->runner()->command($job, $this->tmp . '/work/job-1'),
                 "playbook {$key} harus dipetakan ke {$file}"
             );
@@ -121,7 +122,7 @@ class AnsibleRunnerCommandTest extends TestCase
             // Nama berkasnya sendiri juga diterima (idempoten dari kolom job).
             $job = $this->job(['playbook' => $file]);
             $this->assertContains(
-                'playbooks/' . $file,
+                '/ansible/playbooks/' . $file,
                 $this->runner()->command($job, $this->tmp . '/work/job-1')
             );
         }

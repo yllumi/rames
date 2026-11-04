@@ -23,7 +23,7 @@ use RuntimeException;
  *
  * Kolom tabel **tidak memuat rahasia** (lihat migrasi 6): token agent, private
  * key SSH, dan passphrase TIDAK pernah ditulis di sini. Kunci SSH hidup di
- * {@see ServerSshKeyStore} dengan mode 0600.
+ * {@see ProvisionAgentKey} (private 0600 di control plane, di luar basis data).
  */
 final class ProvisionJobStore
 {

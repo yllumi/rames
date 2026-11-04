@@ -18,8 +18,8 @@ use RuntimeException;
  *
  * Yang sengaja TIDAK pernah ada di sini:
  *  - token agent / private key SSH / passphrase — rahasia hidup di
- *    {@see ServerSshKeyStore} (berkas 0600), tidak pernah di extra vars, log,
- *    atau pesan galat;
+ *    {@see ProvisionAgentKey} (private 0600 di control plane) dan berkas
+ *    onboarding agent; tidak pernah masuk extra vars, log, atau pesan galat;
  *  - `--force`/`force` — provisioning tidak boleh meregenerasi token/TLS atau
  *    memaksa ulang langkah yang sudah selesai (idempoten).
  *
@@ -167,6 +167,24 @@ final class ProvisionInput
             );
         }
 
+        $controlPlaneIps = self::normalizeControlPlaneIps($payload['control_plane_ips'] ?? null);
+        $manageFirewall = self::boolValue($payload['manage_firewall'] ?? null, 'manage_firewall', true);
+
+        // Konsistensi dengan role `rames_agent`: `tasks/firewall.yml` hanya
+        // menambah aturan `ufw allow from <ip> to any port <agent_port>` untuk
+        // IP control plane, dan preflight-nya MENOLAK host tanpa daftar IP saat
+        // firewall dikelola. Tanpa validasi di sini, form lolos lalu job gagal
+        // di preflight — setelah menunggu antre dan (bila sudah lewat) setelah
+        // dependensi terpasang.
+        if ($manageFirewall && $controlPlaneIps === []) {
+            throw new RuntimeException(
+                'Field "control_plane_ips" wajib diisi bila "Kelola firewall" dicentang: port agent '
+                . self::AGENT_PORT . ' hanya boleh terbuka untuk IP control plane (IP host dashboard ini '
+                . 'seperti terlihat DARI server tujuan). Isi daftar IP itu, atau hilangkan centang '
+                . '"Kelola firewall" lalu atur firewall manual.'
+            );
+        }
+
         return [
             'name' => $name,
             'host' => $host,
@@ -181,8 +199,8 @@ final class ProvisionInput
             'ip' => $ip,
             'ssl_challenge' => $sslChallenge,
             'ssl_ca_server' => $sslCaServer,
-            'control_plane_ips' => self::normalizeControlPlaneIps($payload['control_plane_ips'] ?? null),
-            'manage_firewall' => self::boolValue($payload['manage_firewall'] ?? null, 'manage_firewall', true),
+            'control_plane_ips' => $controlPlaneIps,
+            'manage_firewall' => $manageFirewall,
             'playbook' => $playbook,
         ];
     }

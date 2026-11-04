@@ -247,7 +247,11 @@ Selain lewat playbook manual, server agent kini dapat diprovisi **dari dashboard
 oleh admin: **Servers → Provision Server** (`/servers/provision`) menjalankan
 Ansible di helper container control plane, mem-pin host key (TOFU), lalu
 mendaftarkan server sendiri setelah verifikasi `GET /version` — termasuk menulis
-dan membaca berkas onboarding ini secara otomatis. Panduan pengguna:
+dan membaca berkas onboarding ini secara otomatis. Jalur ini **tidak** meminta
+kunci privat di form: control plane memakai satu pasangan bersama
+`rames-agent-key`, jadi **public key**-nya (dari panel Provision) harus Anda
+pasang di `~/.ssh/authorized_keys` user SSH server ini **sebelum** job dikirim.
+Panduan pengguna:
 [DETAILS.md § Provision server dari dashboard](../DETAILS.md#provision-server-dari-dashboard);
 alur internal: `docs/ARCHITECTURE/05-09-multiserver-operasional.md` §5.21b.
 

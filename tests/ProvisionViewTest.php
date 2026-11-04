@@ -17,11 +17,11 @@ use PHPUnit\Framework\TestCase;
  *
  * Yang dibuktikan:
  *  (i)   form lengkap: CSRF (`_token`), action POST `/servers/provision`, semua
- *        field wajib (name/host/ssh_user/ssh_port/private_key/domain/email,
+ *        field wajib (name/host/ssh_user/ssh_port/domain/email,
  *        rentang port, agent_port/bind/ip/control_plane_ips/manage_firewall/
  *        playbook/ssl_*), nilai default dari payload;
  *  (ii)  area status (`[data-provision-status]`, `[data-provision-log]`,
- *        `[data-provision-cancel]`) + skrip `/js/provision.js?v=1`;
+ *        `[data-provision-cancel]`) + skrip `/js/provision.js?v=2`;
  *  (iii) peringatan keamanan (kunci 0600, host key TOFU, egress image Ansible);
  *  (iv)  input lama ter-escape & pesan galat tampil; `private_key` tidak pernah
  *        dirender ulang;
@@ -142,7 +142,6 @@ class ProvisionViewTest extends TestCase
             'name="host"',
             'name="ssh_user"',
             'name="ssh_port"',
-            'name="private_key"',
             'name="domain"',
             'name="email"',
             'name="port_range_start"',
@@ -183,7 +182,7 @@ class ProvisionViewTest extends TestCase
         $this->assertStringContainsString('data-provision-status', $html);
         $this->assertStringContainsString('data-provision-log', $html);
         $this->assertStringContainsString('data-provision-cancel', $html);
-        $this->assertStringContainsString('src="/js/provision.js?v=1"', $html);
+        $this->assertStringContainsString('src="/js/provision.js?v=2"', $html);
 
         // Peringatan keamanan yang wajib terlihat operator.
         $this->assertStringContainsString('0600', $html);
@@ -220,6 +219,7 @@ class ProvisionViewTest extends TestCase
         $this->assertStringContainsString('vps&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;', $html);
         $this->assertStringNotContainsString('<script>alert(1)</script>', $html, 'Input user tidak boleh menjadi HTML');
         $this->assertStringNotContainsString('dummy', $html, 'Nilai private_key tidak boleh dirender');
+        $this->assertStringNotContainsString('name="private_key"', $html, 'form tidak lagi meminta kunci privat');
         $this->assertStringNotContainsString('checked', $html, 'manage_firewall=0 ⇒ checkbox tidak dicentang');
 
         $this->assertNoSecretLeak($html);
@@ -237,7 +237,8 @@ class ProvisionViewTest extends TestCase
 
         $this->assertStringContainsString('id="provision-form"', $html);
         $this->assertStringContainsString('name="_token"', $html);
-        $this->assertStringContainsString('name="private_key"', $html);
+        $this->assertStringContainsString('data-provision-pubkey', $html, 'panel kunci bersama tetap dirender');
+        $this->assertStringContainsString('data-provision-keygen', $html);
         $this->assertStringContainsString('value="provision-agent"', $html);
         $this->assertStringNotContainsString('Provisioning belum bisa dimulai', $html);
 

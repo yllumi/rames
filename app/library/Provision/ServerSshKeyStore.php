@@ -8,7 +8,13 @@ use RuntimeException;
 /**
  * Penyimpanan kunci SSH server untuk provisioning Ansible (Opsi B).
  *
- * Kunci privat per server disimpan sebagai berkas di
+ * **Pemakaian saat ini**: pin host key (TOFU) — `saveKnownHost()`/`hasPin()`/
+ * `knownHostsPath()`, dipakai {@see HostKeyPinner}. Jalur dashboard memakai SATU
+ * kunci bersama ({@see ProvisionAgentKey}) sehingga `save()`/`path()` hanya
+ * dipakai tes & pemakaian manual/legacy; jangan menambah pemanggil baru tanpa
+ * alasan (kunci privat di browser sudah dihapus dari desain).
+ *
+ * Kunci privat per server, bila dipakai, disimpan sebagai berkas di
  * `{deploy.ssh_keys_path}/servers/{serverId}` dengan mode 0600; direktori
  * `servers/` dibuat mode 0700. Private key **tidak pernah** masuk basis data,
  * log, atau pesan galat — kelas ini hanya menyebut path/nama kunci.

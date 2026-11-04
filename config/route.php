@@ -412,6 +412,8 @@ Route::post('/servers', [ServerController::class, 'store']);
 // tertangkap sebagai id server.
 Route::get('/servers/provision', [ProvisionController::class, 'form']);
 Route::post('/servers/provision', [ProvisionController::class, 'store']);
+// Buat/baca kunci provisioning bersama (`rames-agent-key`, public key saja).
+Route::post('/servers/provision/keypair', [ProvisionController::class, 'keypair']);
 Route::get('/servers/provision/status', [ProvisionController::class, 'status']);
 Route::post('/servers/provision/cancel', [ProvisionController::class, 'cancel']);
 

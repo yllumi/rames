@@ -183,7 +183,7 @@ final class SchemaMigrations
                 // TANPA kolom rahasia: token agent, private key SSH, dan
                 // passphrase TIDAK boleh disimpan di sini. Kolom yang ada hanya
                 // metadata job yang ditampilkan UI; kunci SSH hidup di
-                // `ServerSshKeyStore` (berkas 0600), bukan di basis data.
+                // `ProvisionAgentKey::privatePath()` (berkas 0600 di luar DB).
                 // Idempoten (`IF NOT EXISTS`) agar DB v1..v5 mendapat tabel.
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS "provision_jobs" ('

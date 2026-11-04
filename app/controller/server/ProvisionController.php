@@ -6,10 +6,10 @@ namespace app\controller\server;
 use app\library\Auth\AppAccessDenied;
 use app\library\Auth\ServerAccess;
 use app\library\Provision\AnsibleRunner;
+use app\library\Provision\ProvisionAgentKey;
 use app\library\Provision\ProvisionInput;
 use app\library\Provision\ProvisionJobStore;
 use app\library\Provision\ProvisionLog;
-use app\library\Provision\ServerSshKeyStore;
 use app\library\Storage\ServerStore;
 use app\library\Support\DetachedWorker;
 use InvalidArgumentException;
@@ -31,8 +31,9 @@ use Webman\Http\Response;
  *  - validasi & normalisasi payload di {@see ProvisionInput} (satu sumber aturan
  *    nama/host/port/playbook; tanpa salinan di sini);
  *  - antrean job di {@see ProvisionJobStore} (tabel `provision_jobs`, skema v6);
- *  - kunci privat SSH di {@see ServerSshKeyStore} (0600, slot = NAMA server yang
- *    juga dipakai {@see AnsibleRunner});
+ *  - kunci provisioning **bersama** di {@see ProvisionAgentKey} (satu pasangan
+ *    `ed25519` untuk semua VM; private 0600 di control plane, public ditampilkan
+ *    agar operator memasangnya di server tujuan) — form tidak meminta kunci privat;
  *  - proses Ansible di {@see AnsibleRunner} (helper container), dijalankan worker
  *    detached lewat {@see DetachedWorker} — bukan di worker HTTP.
  *
@@ -51,9 +52,6 @@ class ProvisionController
 {
     /** Bentuk id job yang aman untuk query string (sama dengan `ProvisionJobStore`). */
     private const JOB_ID_PATTERN = '/^[A-Za-z0-9_-]{1,64}$/';
-
-    /** Batas ukuran kunci privat yang diterima (64 KiB, sama dengan store). */
-    private const MAX_PRIVATE_KEY_BYTES = 65536;
 
     /**
      * Field form yang boleh dikembalikan ke view setelah validasi gagal.
@@ -80,20 +78,20 @@ class ProvisionController
     // Seam pengujian (pola `ServerController`): null ⇒ dibuat per panggilan.
     private readonly ?ProvisionJobStore $jobs;
     private readonly ?ServerStore $servers;
-    private readonly ?ServerSshKeyStore $keys;
+    private readonly ?ProvisionAgentKey $agentKey;
     private readonly ?ProvisionLog $logs;
     private readonly ?AnsibleRunner $runner;
 
     public function __construct(
         ?ProvisionJobStore $jobs = null,
         ?ServerStore $servers = null,
-        ?ServerSshKeyStore $keys = null,
+        ?ProvisionAgentKey $agentKey = null,
         ?ProvisionLog $logs = null,
         ?AnsibleRunner $runner = null,
     ) {
         $this->jobs = $jobs;
         $this->servers = $servers;
-        $this->keys = $keys;
+        $this->agentKey = $agentKey;
         $this->logs = $logs;
         $this->runner = $runner;
     }
@@ -119,6 +117,7 @@ class ProvisionController
             'defaults' => $this->defaults(),
             'values' => [],
             'errors' => [],
+            'agent_key' => $this->agentKeyState(),
             'active' => 'servers',
         ]);
     }
@@ -153,11 +152,15 @@ class ProvisionController
             ]);
         }
 
-        $privateKey = $request->post('private_key', '');
-        $privateKey = is_string($privateKey) ? trim($privateKey) : '';
-        $keyError = self::privateKeyError($privateKey);
-        if ($keyError !== null) {
-            return $this->invalidInput($request, $post, [$keyError]);
+        // Form tidak lagi meminta kunci privat: kunci provisioning bersama
+        // harus sudah dibuat (klik "Buat kunci" di halaman ini) dan public
+        // key-nya dipasang di server tujuan. Tanpa itu, SSH helper pasti gagal.
+        if (!$this->agentKey()->exists()) {
+            return $this->invalidInput($request, $post, [
+                'Kunci provisioning bersama belum dibuat. Klik "Buat kunci" di bagian atas halaman,'
+                . ' salin public key yang muncul ke ~/.ssh/authorized_keys user SSH di server tujuan,'
+                . ' lalu jalankan provisioning.',
+            ]);
         }
 
         try {
@@ -188,16 +191,6 @@ class ProvisionController
 
         $jobId = (string) ($job['id'] ?? '');
 
-        // Slot kunci = NAMA server (job berjalan sebelum baris server ada).
-        try {
-            $this->keys()->save($input['name'], $privateKey);
-        } catch (Throwable $e) {
-            $message = 'Kunci privat SSH tidak bisa disimpan: ' . $e->getMessage();
-            $this->markError($jobId, $message);
-
-            return $this->jsonError($message);
-        }
-
         $pid = 0;
         try {
             $spawned = $this->spawnWorker(
@@ -221,6 +214,36 @@ class ProvisionController
             'code' => 0,
             'job_id' => $jobId,
             'status_url' => '/servers/provision/status?job=' . rawurlencode($jobId),
+        ]);
+    }
+
+    /**
+     * `POST /servers/provision/keypair` — buat kunci provisioning bersama bila belum ada.
+     *
+     * Idempoten: kunci yang sudah ada **tidak** diregenerasi (public key yang
+     * sudah dipasang di VM lain tetap sah). Respons **hanya** memuat public key +
+     * fingerprint; private key tidak pernah dikirim ke browser.
+     *
+     * Respons: `{code:0, public_key, fingerprint, created}`; gagal ⇒ 500 `{code:1,error}`.
+     */
+    public function keypair(Request $request): Response
+    {
+        $denied = $this->guard($request);
+        if ($denied !== null) {
+            return $denied;
+        }
+
+        try {
+            $key = $this->agentKey()->ensure();
+        } catch (Throwable $e) {
+            return $this->jsonError('Kunci provisioning tidak bisa dibuat: ' . $e->getMessage());
+        }
+
+        return json([
+            'code' => 0,
+            'public_key' => $key['public_key'],
+            'fingerprint' => $key['fingerprint'],
+            'created' => $key['created'],
         ]);
     }
 
@@ -359,6 +382,9 @@ class ProvisionController
             'defaults' => $this->defaults(),
             'values' => self::echoValues($post),
             'errors' => $errors,
+            // Status kunci harus ikut: kalau tidak, panel tampak "belum dibuat"
+            // setelah validasi gagal dan user mengira kuncinya hilang.
+            'agent_key' => $this->agentKeyState(),
             'active' => 'servers',
         ]);
     }
@@ -381,6 +407,25 @@ class ProvisionController
         } catch (Throwable) {
             // baris job bisa saja sudah dihapus operator
         }
+    }
+
+    /**
+     * Status kunci provisioning bersama untuk view (tanpa private key).
+     *
+     * @return array{exists:bool,slot:string,public_key:string,fingerprint:string,public_path:string}
+     */
+    private function agentKeyState(): array
+    {
+        $key = $this->agentKey();
+        $exists = $key->exists();
+
+        return [
+            'exists' => $exists,
+            'slot' => ProvisionAgentKey::SLOT,
+            'public_key' => $exists ? $key->publicKey() : '',
+            'fingerprint' => $exists ? $key->fingerprint() : '',
+            'public_path' => $key->publicPath(),
+        ];
     }
 
     /**
@@ -443,31 +488,6 @@ class ProvisionController
         return $values;
     }
 
-    /**
-     * Pesan galat kunci privat (null = sah). Pesan **tidak pernah** memuat
-     * potongan isi kunci.
-     */
-    private static function privateKeyError(string $privateKey): ?string
-    {
-        if ($privateKey === '') {
-            return 'Field "private_key" wajib diisi: tempel kunci privat SSH (PEM/OpenSSH) untuk user SSH di atas.';
-        }
-
-        if (strlen($privateKey) > self::MAX_PRIVATE_KEY_BYTES) {
-            return 'Field "private_key" terlalu besar (maksimal 64 KiB).';
-        }
-
-        if (!str_contains($privateKey, '-----BEGIN ')
-            || !str_contains($privateKey, 'PRIVATE KEY-----')
-            || !str_contains($privateKey, '-----END ')
-        ) {
-            return 'Field "private_key" bukan kunci privat PEM utuh (harus memuat header "BEGIN ... PRIVATE KEY"'
-                . ' dan penutup "-----END").';
-        }
-
-        return null;
-    }
-
     /** User yang sedang login (seam; default membaca session). */
     protected function currentUser(): ?array
     {
@@ -505,9 +525,9 @@ class ProvisionController
         return $this->servers ?? new ServerStore();
     }
 
-    private function keys(): ServerSshKeyStore
+    private function agentKey(): ProvisionAgentKey
     {
-        return $this->keys ?? new ServerSshKeyStore();
+        return $this->agentKey ?? new ProvisionAgentKey();
     }
 
     private function logs(): ProvisionLog

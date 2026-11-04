@@ -139,16 +139,17 @@ class AgentModeTest extends TestCase
      * (operator+), dashboard-only: app impor ditolak & app agent menerima
      * metadata `host_ports` + worker `apply_ports` dari control plane.
      *
-     * +4 (provisioning server agent via Ansible, opsi B): `GET/POST
-     * /servers/provision` + `GET /servers/provision/status` + `POST
-     * /servers/provision/cancel` — admin-only (non-admin ⇒ 404), dashboard-only:
-     * playbook `ops/ansible/playbooks/*.yml` dijalankan DI control plane terhadap
-     * host SSH, jadi agent tidak punya permukaan ini.
+     * +5 (provisioning server agent via Ansible, opsi B): `GET/POST
+     * /servers/provision` + `POST /servers/provision/keypair` + `GET
+     * /servers/provision/status` + `POST /servers/provision/cancel` — admin-only
+     * (non-admin ⇒ 404), dashboard-only: playbook `ops/ansible/playbooks/*.yml`
+     * dijalankan DI control plane terhadap host SSH, jadi agent tidak punya
+     * permukaan ini.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 156;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 157;
 
-    /** Definisi di atas menghasilkan 162 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 162;
+    /** Definisi di atas menghasilkan 163 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 163;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -165,6 +166,7 @@ class AgentModeTest extends TestCase
         // control plane — tidak ada di mode agent.
         'GET /servers/provision',
         'POST /servers/provision',
+        'POST /servers/provision/keypair',
         'POST /nginx/reload',        'GET /monitor',
         'GET /database',
         'GET /ssl',

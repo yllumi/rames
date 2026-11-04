@@ -288,6 +288,45 @@ Berkas itu **berisi rahasia** (token agent). Simpan di luar repo (mis.
 setelah server terdaftar di dashboard. Fingerprint dihitung ulang dashboard dari
 PEM, jadi tidak perlu diketik manual.
 
+### Repo jadi milik root setelah role berjalan (`become: true`) — dampak ke Perbarui agen
+
+Semua task yang menulis (clone, `--deps-only`, installer) berjalan dengan
+`become: true`, jadi checkout di `rames_install_dir` **dan** `.git` menjadi milik
+`root`. Ini **tidak** mengganggu agent berjalan (container agent sendiri berjalan
+sebagai root), tetapi **Self-update agen** dari dashboard (`POST
+/servers/{id}/agent-update`) menolak preflight-nya: default menolak repo milik
+root karena helper update berjalan sebagai pemilik repo.
+
+Pilihan yang disarankan:
+
+```bash
+# Opt-in eksplisit di server agent (repo + .git SAMA-SAMA milik root)
+echo 'UPDATE_ALLOW_ROOT=true' | sudo tee -a /opt/rames-agent/secrets/agent.env
+sudo chmod 600 /opt/rames-agent/secrets/agent.env
+cd /opt/rames-agent && sudo docker compose -f docker-compose.agent.yml -p rames-agent up -d
+# `up -d` (recreate) — `restart` tidak membaca ulang env_file
+```
+
+
+`chown` saja **tidak** tahan lama: container agent berjalan sebagai root dan akan
+menulis berkas baru (runtime, `vendor/`) sebagai root lagi. Karena itu opsi A
+yang disarankan. Jangan mencampur kepemilikan (`.git` uid lain) — tetap ditolak
+preflight update.
+
+### Kunci SSH harus terlihat DI DALAM container control plane
+
+Jalur dashboard menjalankan helper `docker run` dari dalam container
+`rames-webman`, dan mount-nya memakai **path host**. Container itu hanya
+me-mount repo di path yang **sama** (`${PWD}:${PWD}`) — `/tmp` host **tidak**
+ikut. Karena itu:
+
+- jalur dashboard **tidak lagi** memakai kunci per-server dan **tidak** menerima tempelan kunci privat di form. Control plane memakai **satu** pasangan kunci bersama: `<keysDir>/provision/rames-agent-key` (private **0600**, direktori 0700) + `.pub` (public **0644**), dibuat lewat panel **Buat kunci**. Helper `docker run` me-mount **private key itu** read-only ke `/ssh/id`, jadi path host-nya yang harus terlihat container. `<keysDir>` = `deploy.ssh_keys_path` (default `database/keys`, `gitignored`).
+- **public key** pasangan itu dipasang operator di `~/.ssh/authorized_keys` user SSH **di setiap VM** (jalur dashboard tidak menyalin apa pun ke VM). Untuk menguji SSH manual dengan kunci yang sama dari dalam container, rujuk path repo `<repo>/database/keys/provision/rames-agent-key`; path di luar repo (mis. `~/.ssh/…` atau `/tmp/…` di host) tidak terlihat container. Jangan menggandakan private key ke lokasi lain hanya untuk probe.
+- untuk probe manual, pakai `known_hosts` sekali pakai
+  (`-o UserKnownHostsFile=/tmp/probe_kh -o StrictHostKeyChecking=accept-new`).
+  **Jangan** menulis ke `database/keys/known_hosts`: job provisioning harus
+  mem-pin sendiri (TOFU) agar fingerprint bisa Anda verifikasi.
+
 ### GOTCHA no. 52 — dua kelompok port, aturan berbeda
 
 `firewall.yml` menambahkan **dua** kelompok:

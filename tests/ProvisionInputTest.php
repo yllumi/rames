@@ -36,6 +36,9 @@ class ProvisionInputTest extends TestCase
             'ssh_user' => 'root',
             'domain' => 'agent-01.example.com',
             'email' => 'ops@example.com',
+            // Wajib saat `manage_firewall` aktif (bawaan) — port agent hanya
+            // boleh terbuka untuk IP control plane.
+            'control_plane_ips' => '203.0.113.7',
             // Rahasia yang TIDAK boleh ikut ke hasil normalisasi/extra vars.
             'ssh_private_key' => "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----",
             'token' => 'rahasia-jangan-bocor',
@@ -59,7 +62,7 @@ class ProvisionInputTest extends TestCase
         $this->assertSame('', $input['ip']);
         $this->assertSame('', $input['ssl_challenge']);
         $this->assertSame('', $input['ssl_ca_server']);
-        $this->assertSame([], $input['control_plane_ips']);
+        $this->assertSame(['203.0.113.7'], $input['control_plane_ips']);
         $this->assertTrue($input['manage_firewall']);
         $this->assertSame('provision-agent', $input['playbook']);
 
@@ -324,7 +327,11 @@ class ProvisionInputTest extends TestCase
 
     public function testExtraVarsVerifyPlaybookSkipsInstallerAndEmptyStrings(): void
     {
-        $input = ProvisionInput::validate($this->payload(['playbook' => 'verify-agent']));
+        $input = ProvisionInput::validate($this->payload([
+            'playbook' => 'verify-agent',
+            'manage_firewall' => 'off',
+            'control_plane_ips' => '',
+        ]));
 
         $vars = ProvisionInput::extraVars($input);
 
@@ -333,6 +340,29 @@ class ProvisionInputTest extends TestCase
         $this->assertArrayNotHasKey('rames_agent_ssl_challenge', $vars);
         $this->assertArrayNotHasKey('rames_agent_ssl_ca_server', $vars);
         $this->assertArrayNotHasKey('rames_agent_control_plane_ips', $vars, 'array kosong tidak dikirim');
+    }
+
+    /**
+     * Firewall dikelola tanpa daftar IP control plane = kegagalan PASTI di
+     * preflight role (setelah antre). Validasi harus menolaknya lebih awal.
+     */
+    public function testManagedFirewallRequiresControlPlaneIps(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('control_plane_ips');
+
+        ProvisionInput::validate($this->payload(['manage_firewall' => '1', 'control_plane_ips' => '']));
+    }
+
+    public function testFirewallDisabledAllowsEmptyControlPlaneIps(): void
+    {
+        $input = ProvisionInput::validate($this->payload([
+            'manage_firewall' => '0',
+            'control_plane_ips' => '',
+        ]));
+
+        $this->assertFalse($input['manage_firewall']);
+        $this->assertSame([], $input['control_plane_ips']);
     }
 
     public function testControlPlaneIpsAreParsedFromMixedSeparators(): void

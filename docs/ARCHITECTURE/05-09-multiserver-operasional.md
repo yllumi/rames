@@ -35,16 +35,20 @@ Prasyarat, kontrak variabel (`rames_agent_*`), contoh perintah, tabel dampak, da
 
 ## 5.21b Provisioning dari Dashboard (Ansible, opsi B)
 
-Jalur manual §5.21a menuntut operator menjalankan `ansible-playbook` sendiri lalu menempel token/PEM di **Add Server**. Opsi B memindahkan langkah itu ke dashboard: admin mengisi satu form, control plane menyimpan kunci SSH, menjalankan playbook `ops/ansible/` di **helper container one-shot**, lalu **mendaftarkan server sendiri** bila verifikasi agent lolos. Ansible tetap **tooling ops di luar image Rames** — `Dockerfile` tidak memuat Ansible; helper memakai image terpisah (`ANSIBLE_IMAGE`, default `alpine/ansible:latest`).
+Jalur manual §5.21a menuntut operator menjalankan `ansible-playbook` sendiri lalu menempel token/PEM di **Add Server**. Opsi B memindahkan langkah itu ke dashboard: admin membuat **satu kunci provisioning bersama** (`rames-agent-key`) sekali, menyalin **public key**-nya ke `~/.ssh/authorized_keys` VM tujuan, lalu mengisi form; control plane menjalankan playbook `ops/ansible/` di **helper container one-shot** dan **mendaftarkan server sendiri** bila verifikasi agent lolos. Private key tidak pernah melewati browser. Ansible tetap **tooling ops di luar image Rames** — `Dockerfile` tidak memuat Ansible; helper memakai image terpisah (`ANSIBLE_IMAGE`, default `alpine/ansible:latest`).
 
 ```mermaid
 flowchart TB
-    ADM["Admin: /servers/provision"] -->|POST + CSRF| VAL["ProvisionInput::validate<br/>allowlist, force ditolak"]
-    VAL --> NAME{"ServerStore::nameExists?"}
+    ADM["Admin: /servers/provision"] -->|"POST /servers/provision/keypair<br/>(sekali, idempoten)"| KEYGEN["ProvisionAgentKey::ensure<br/>rames-agent-key ed25519, private 0600"]
+    KEYGEN --> COPY["Salin public key + fingerprint"]
+    COPY -->|"tempel di ~/.ssh/authorized_keys VM"| SUBMIT["Admin submit form"]
+    SUBMIT -->|POST + CSRF| VAL["ProvisionInput::validate<br/>allowlist, force ditolak"]
+    VAL --> KEYCHK{"Kunci bersama ada?"}
+    KEYCHK -->|belum| N422K["422 / form + errors"]
+    KEYCHK -->|ada| NAME{"ServerStore::nameExists?"}
     NAME -->|ada| N422["422 / form + errors<br/>(job belum dibuat)"]
     NAME -->|belum| JOB["ProvisionJobStore::create<br/>provision_jobs (skema v6, queued)"]
-    JOB --> KEY["ServerSshKeyStore::save<br/>slot = NAMA server, 0600"]
-    KEY --> WK["DetachedWorker<br/>php cli/provision.php jobId"]
+    JOB --> WK["DetachedWorker<br/>php cli/provision.php jobId"]
     WK --> PIN["HostKeyPinner (TOFU)<br/>ssh-keyscan + ssh-keygen -lf"]
     PIN -->|host key berubah| ERR["job error<br/>pin TIDAK diperbarui"]
     PIN --> RUN["helper container<br/>docker run --rm ansible-playbook"]
@@ -58,12 +62,13 @@ flowchart TB
     ERR --> POLL
 ```
 
-**Route & otorisasi.** Keempat route didaftarkan **sebelum** `/servers/{id}` (agar `provision` tidak terbaca sebagai id server) dan **tidak ada** di `RAMES_MODE=agent` (`tests/AgentModeTest.php`). Non-admin dijawab **404, bukan 403**, dicek `ProvisionController::guard()` **sebelum** efek samping apa pun.
+**Route & otorisasi.** Kelima route didaftarkan **sebelum** `/servers/{id}` (agar `provision` tidak terbaca sebagai id server) dan **tidak ada** di `RAMES_MODE=agent` (`tests/AgentModeTest.php`). Non-admin dijawab **404, bukan 403**, dicek `ProvisionController::guard()` **sebelum** efek samping apa pun.
 
 | Route | Metode | Perilaku | Guard |
 |---|---|---|---|
-| `/servers/provision` | GET | Render form (default dari `config('deploy.port_range')`, `agent_port` 8443, `bind` `0.0.0.0:8443`) | admin-only ⇒ **404** |
-| `/servers/provision` | POST | Validasi → job → simpan kunci → spawn worker; sukses `{code:0,job_id,status_url}`, input tidak sah **422** (JSON) / form + `errors`, gagal simpan kunci/spawn **500** | admin-only ⇒ **404**; **CSRF global** |
+| `/servers/provision` | GET | Render form + panel **Kunci SSH provisioning** (`agent_key`: `exists/slot/public_key/fingerprint/public_path`; default dari `config('deploy.port_range')`, `agent_port` 8443, `bind` `0.0.0.0:8443`) | admin-only ⇒ **404** |
+| `/servers/provision/keypair` | POST | `ProvisionAgentKey::ensure()` — buat kunci bersama bila belum ada (idempoten, kunci lama tidak diregenerasi); respons `{code:0,public_key,fingerprint,created}`. **Private key tidak pernah dikirim** | admin-only ⇒ 404; **CSRF global** |
+| `/servers/provision` | POST | Validasi → cek kunci bersama (**422** bila belum ada) → job → spawn worker; sukses `{code:0,job_id,status_url}`, input tidak sah **422** (JSON) / form + `errors`, gagal spawn **500** | admin-only ⇒ **404**; **CSRF global** |
 | `/servers/provision/status?job=&offset=` | GET | Kolom job + potongan log baru; `offset` = offset lanjutan | admin-only ⇒ 404; id/job tak dikenal ⇒ **404 JSON** |
 | `/servers/provision/cancel` | POST | `AnsibleRunner::cancel()` + `markCancelled()`; job terminal/tak ada tetap `{code:0}` (idempoten) | admin-only ⇒ 404; CSRF; id berbentuk asing ⇒ **422** |
 
@@ -72,16 +77,16 @@ flowchart TB
 1. `failStaleRunning(deploy.provision_stale_seconds, default 3600)` — job `running` yang ditinggal worker (host reboot/recreate) ditandai `error`, tidak memblokir antrean.
 2. Stage `preflight` — tulis `inventory.yml` + `extra_vars.yml` (0600) di `<provision_work_dir>/<jobId>`; `extra_vars` dari `ProvisionInput::extraVars()` (hanya `rames_agent_*`, tanpa token/kunci) + `rames_agent_onboarding_out=/job/onboarding.txt` bila auto-register.
 3. Stage `hostkey` — `HostKeyPinner::pin(slot = nama server, host, port)`: pin **TOFU** ke `known_hosts` bersama (`PROVISION_KNOWN_HOSTS`, default `database/keys/known_hosts`).
-4. Stage `run` — helper container: `--rm`, label `rames.role=ansible-runner` + `rames.provision.job=<id>`, `--network host`, mount playbook `:ro`, jobdir `:rw`, kunci `:ro` di `/ssh/id`, `known_hosts` `:ro`, `StrictHostKeyChecking=yes` + `IdentitiesOnly=yes`, timeout `ANSIBLE_TIMEOUT` (default 1800 dtk).
+4. Stage `run` — helper container: `--rm`, label `rames.role=ansible-runner` + `rames.provision.job=<id>`, `--network host`, mount playbook `:ro`, jobdir `:rw`, kunci bersama `<keysDir>/provision/rames-agent-key` `:ro` di `/ssh/id`, `known_hosts` `:ro`, `StrictHostKeyChecking=yes` + `IdentitiesOnly=yes`, timeout `ANSIBLE_TIMEOUT` (default 1800 dtk).
 5. Stage `register` — hanya playbook `provision-agent` **dan** `PROVISION_AUTO_REGISTER=true` **dan** `onboarding.txt` ada: `ProvisionOnboarding::register()`.
 6. `done`/`error`; direktori job — berisi `onboarding.txt` (token + PEM) — **selalu** dibersihkan di `finally`, baik sukses maupun gagal.
 
 **Guard keamanan.**
 
-- **Rahasia tidak pernah di basis data/UI.** `provision_jobs` (skema v6) hanya metadata job; kunci privat hidup di `ServerSshKeyStore` (berkas 0600, direktori 0700) dan hanya di-mount **read-only** ke helper. Form yang dirender ulang setelah validasi gagal memakai whitelist `ECHO_FIELDS` — `private_key` **tidak** ikut. Status JSON dibatasi kolom job + potongan log; pemotongan baris 2000 karakter di log hanya membatasi ukuran (bukan pengaman rahasia) — penangkal yang sebenarnya adalah `no_log: true` pada task `agent/install.sh` & `uri` di role, sehingga blok onboarding (token+PEM) yang tetap dicetak installer tidak pernah masuk output Ansible.
+- **Rahasia tidak pernah di basis data/UI.** `provision_jobs` (skema v6) hanya metadata job; private key hidup di `ProvisionAgentKey` (`<ssh_keys_path>/provision/rames-agent-key`, direktori 0700, berkas 0600) dan hanya di-mount **read-only** ke helper. Form **tidak** menerima `private_key`; `keypair` hanya mengembalikan public key + fingerprint. Status JSON dibatasi kolom job + potongan log; pemotongan baris 2000 karakter di log hanya membatasi ukuran (bukan pengaman rahasia) — penangkal yang sebenarnya adalah `no_log: true` pada task `agent/install.sh` & `uri` di role, sehingga blok onboarding (token+PEM) yang tetap dicetak installer tidak pernah masuk output Ansible.
 - **`force` ditolak.** `ProvisionInput::rejectForce()` menolak `force`/`--force` truthy ⇒ otomasi tidak bisa merotasi token/TLS tanpa niat (server harus di-onboard ulang). Tidak ada jalur `--force` dari worker.
 - **Tanpa shell.** `AnsibleRunner` menyusun **argv array** (`ProcessRunner` + `bypass_shell`); id job/server dibatasi `[A-Za-z0-9_-]{1,64}`, nama host `--limit` tidak boleh diawali `-`, playbook hanya dari allowlist `ProvisionInput::PLAYBOOKS`.
-- **Slot kunci = nama server.** Job berjalan **sebelum** baris server ada, jadi `ServerSshKeyStore` memakai nama (bukan `server_id`); `AnsibleRunner` memakai slot yang sama — kalau berbeda, mount kunci menunjuk berkas lain.
+- **Kunci bersama, bukan per-server.** Form tidak lagi meminta kunci privat sehingga job tidak menyimpan kunci per nama server; `AnsibleRunner` selalu me-mount `<keysDir>/provision/rames-agent-key`. Satu public key dipasang di **semua** VM agent; rotasi = ganti pasangan kunci + perbarui `authorized_keys` semua VM. `ServerSshKeyStore` tinggal dipakai `HostKeyPinner` untuk `known_hosts` + penanda `servers/<slot>.pin` (slot = nama server, bukan sumber kunci privat).
 - **Host key tidak pernah "dipinj ulang diam-diam".** Perubahan host key ⇒ job `error`, `known_hosts` tidak ditulis.
 - **Mode agent tidak punya permukaan ini** — playbook dijalankan dari control plane, jadi route provisioning tidak didaftarkan di agent.
 
@@ -93,7 +98,8 @@ flowchart TB
 | Image Ansible tidak bisa ditarik (`docker run` gagal, egress/DNS registry) | Helper keluar dengan kode ≠ 0; log job memuat galat Docker, job `error`; tidak ada perubahan di server tujuan | Pastikan control plane punya egress ke registry; tarik image lebih dulu (`docker pull <ANSIBLE_IMAGE>`) atau pin image internal |
 | Playbook sukses tetapi verifikasi agent gagal (`GET /version`) | `ProvisionOnboarding::register()` **menghapus** baris server yang baru dibuat, lalu melempar galat (token/PEM diredaksi); job `error` | Periksa port agent (8443) terbuka dari control plane, PEM/token di berkas onboarding, dan log SSH pada langkah `register` |
 | Nama server sudah dipakai | `ServerStore::nameExists()` fail-fast ⇒ **422**/form + `errors`, **tanpa** job dan tanpa menyimpan kunci | Pilih nama lain (nama = slug server = slot kunci = nama host inventori) |
-| Kunci privat tidak valid / > 64 KiB | Ditolak sebelum job (`422`), pesan hanya menyebut field/format | Tempel PEM utuh (`BEGIN … PRIVATE KEY` … `END`) |
+| Kunci provisioning bersama belum dibuat | `POST /servers/provision` ditolak **422** sebelum job dibuat; panel menampilkan badge “belum dibuat” | Klik **Buat kunci** (`POST /servers/provision/keypair`), salin public key, lalu submit lagi |
+| Public key `rames-agent-key` belum dipasang di VM | Job berhenti di stage `run` dengan `Permission denied (publickey)` walau kunci “sudah ada” di dashboard (GOTCHA no. 66) | Pasang public key di `~/.ssh/authorized_keys` user SSH server tujuan (atau field SSH key saat membuat VM), lalu ulangi job |
 | Worker tidak bisa di-spawn (`pcntl` tidak tersedia/fork gagal) | Job ditandai `error`, respons `500` | Jalankan control plane yang mendukung `pcntl`; periksa log server |
 | Worker mati di tengah job | Job tetap `running` sampai `PROVISION_STALE_SECONDS`; job berikutnya menandainya `error` (“job macet …”) | Ulangi job; cek `runtime/logs/provision/<id>.log` |
 | Admin menekan **Batal** | Helper container dimatikan (`docker rm -f` atas label job), status `cancelled` — exit code ≠ 0 **tidak** menimpanya menjadi `error` | — |

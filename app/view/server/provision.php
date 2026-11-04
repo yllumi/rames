@@ -7,8 +7,11 @@
  *   $defaults — nilai awal form (name '' … ssh_user 'root', ssh_port 22,
  *               port_range dari config, agent_port 8443, bind '0.0.0.0:8443',
  *               playbooks = daftar kunci playbook yang diizinkan);
- *   $values   — input lama setelah validasi gagal (field scalar; `private_key`
- *               TIDAK pernah ada — rahasia tidak dirender ulang), boleh kosong;
+ *   $values   — input lama setelah validasi gagal (field scalar; form tidak lagi
+ *               meminta kunci privat), boleh kosong;
+ *   $agent_key — status kunci provisioning bersama `rames-agent-key`
+ *               (`exists`, `slot`, `public_key`, `fingerprint`, `public_path`):
+ *               HANYA public key — private key tidak pernah sampai ke view;
  *   $errors   — daftar pesan galat siap tampil;
  *   $active   — `'servers'` (penanda menu aktif).
  *
@@ -61,6 +64,14 @@ $sslCaServers = [
     'staging' => 'Staging (uji, tidak dipercaya browser)',
 ];
 
+// Status kunci provisioning bersama (payload `agent_key` dari controller).
+// Defensif: payload minimal tetap menghasilkan halaman yang bisa dirender.
+$agentKey = is_array($agent_key ?? null) ? $agent_key : [];
+$agentKeyExists = !empty($agentKey['exists']);
+$agentKeySlot = (string) ($agentKey['slot'] ?? 'rames-agent-key');
+$agentKeyPublic = (string) ($agentKey['public_key'] ?? '');
+$agentKeyFingerprint = (string) ($agentKey['fingerprint'] ?? '');
+
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
     ['label' => 'Servers', 'href' => '/servers'],
@@ -84,9 +95,11 @@ $breadcrumbs = [
   <p class="mb-2"><strong>Sebelum mengirim:</strong></p>
   <ul class="mb-0 small">
     <li>
-      <strong>Kunci privat SSH</strong> disimpan di control plane dengan mode <span class="mono">0600</span>
-      (di luar basis data) dan hanya dipasang <em>read-only</em> ke helper Ansible untuk job ini.
-      Jangan pernah mengirim kunci lewat chat, tiket, atau commit — tempel hanya di form ini.
+      <strong>Tidak ada kunci privat yang ditempel di form.</strong> Control plane membuat satu pasangan
+      kunci <span class="mono">rames-agent-key</span> (private <span class="mono">0600</span>, tidak pernah
+      keluar dari server ini) dan menampilkan <strong>public key</strong>-nya. Salin public key itu ke
+      <span class="mono">~/.ssh/authorized_keys</span> user SSH di server tujuan (atau field <em>SSH key</em>
+      saat membuat VM) <strong>sebelum</strong> menjalankan provisioning.
     </li>
     <li>
       <strong>Host key server dipin TOFU</strong> saat worker mulai: kunci SSH host dibaca sekali lalu
@@ -150,12 +163,39 @@ $breadcrumbs = [
         </div>
 
         <div class="col-12">
-          <label class="form-label" for="provision-private-key">Kunci privat SSH</label>
-          <textarea class="form-control mono" id="provision-private-key" name="private_key" rows="6" required
-                    autocomplete="off" autocapitalize="off" spellcheck="false"
-                    placeholder="Tempel isi kunci privat (OpenSSH/PEM) di sini — tidak ditampilkan lagi setelah dikirim."></textarea>
-          <div class="form-text">
-            Otomatis dihapus dari form setelah dikirim. Tidak pernah dicatat di log atau ditampilkan ulang.
+          <div class="border rounded p-3" data-provision-key>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+              <label class="form-label mb-0" for="provision-pubkey">
+                Kunci SSH provisioning — <code><?= e($agentKeySlot) ?></code>
+              </label>
+              <?php if (!$agentKeyExists): ?>
+                <span class="badge text-bg-warning">belum dibuat</span>
+              <?php else: ?>
+                <span class="badge text-bg-success">siap</span>
+              <?php endif; ?>
+            </div>
+
+            <textarea class="form-control mono" id="provision-pubkey" rows="3" readonly
+                      spellcheck="false" data-provision-pubkey
+                      placeholder="Klik &quot;Buat kunci&quot; untuk membuat pasangan kunci di control plane."><?= e($agentKeyPublic) ?></textarea>
+
+            <div class="form-text">
+              <strong>Public key</strong> ini yang dipasang di server tujuan (baris baru di
+              <code>~/.ssh/authorized_keys</code> user SSH, atau field <em>SSH key</em> saat membuat VM).
+              Kunci privat tetap di control plane (0600) dan tidak pernah dikirim ke browser.
+              Fingerprint: <span class="mono" data-provision-fingerprint><?= e($agentKeyFingerprint !== '' ? $agentKeyFingerprint : '—') ?></span>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mt-2">
+              <button type="button" class="btn btn-outline-primary btn-sm" data-provision-keygen>
+                <?= svg_icon('plus') ?> <span data-provision-keygen-label><?= $agentKeyExists ? 'Pastikan kunci ada' : 'Buat kunci' ?></span>
+              </button>
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-provision-keycopy
+                      <?= $agentKeyExists ? '' : 'disabled' ?>>
+                <?= svg_icon('code') ?> Salin public key
+              </button>
+            </div>
+            <div class="small mt-2" data-provision-keymsg aria-live="polite"></div>
           </div>
         </div>
 
@@ -199,10 +239,14 @@ $breadcrumbs = [
           <div class="form-text">Dipakai untuk SAN sertifikat &amp; URL onboarding.</div>
         </div>
         <div class="col-md-6">
-          <label class="form-label" for="provision-control-plane-ips">IP control plane (opsional)</label>
+          <label class="form-label" for="provision-control-plane-ips">IP control plane (wajib bila firewall dikelola)</label>
           <input class="form-control mono" id="provision-control-plane-ips" name="control_plane_ips"
                  value="<?= e($controlPlaneIpsValue) ?>" placeholder="10.0.0.1, 10.0.0.2" autocomplete="off">
-          <div class="form-text">Pisahkan dengan koma — alamat yang boleh memanggil API agent.</div>
+          <div class="form-text">
+            Pisahkan dengan koma — alamat yang boleh memanggil API agent (IP host dashboard ini
+            <strong>seperti terlihat dari server tujuan</strong>). Wajib selama &ldquo;Kelola firewall&rdquo;
+            dicentang; port <code>8443</code> tidak boleh terbuka untuk publik.
+          </div>
         </div>
 
         <div class="col-md-6">
@@ -272,6 +316,6 @@ $breadcrumbs = [
   </div>
 </section>
 
-<script src="/js/provision.js?v=1"></script>
+<script src="/js/provision.js?v=2"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

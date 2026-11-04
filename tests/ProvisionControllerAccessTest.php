@@ -7,7 +7,7 @@ use app\controller\server\ProvisionController;
 use app\library\Provision\AnsibleRunner;
 use app\library\Provision\ProvisionJobStore;
 use app\library\Provision\ProvisionLog;
-use app\library\Provision\ServerSshKeyStore;
+use app\library\Provision\ProvisionAgentKey;
 use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteDatabase;
 use app\library\Support\ProcessRunner;
@@ -136,7 +136,7 @@ class ProvisionControllerAccessTest extends TestCase
         $controller = new FakeProvisionController(
             new ProvisionJobStore(new SqliteDatabase($this->dbFile)),
             new ServerStore($this->dbFile),
-            new ServerSshKeyStore($this->tmp . '/keys'),
+            new ProvisionAgentKey($this->processRunner, $this->tmp . '/keys'),
             new ProvisionLog($this->tmp . '/logs'),
             new AnsibleRunner(
                 $this->processRunner,

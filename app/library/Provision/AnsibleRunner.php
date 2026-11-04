@@ -19,7 +19,8 @@ use Throwable;
  * Mount (semuanya absolut, ditolak bila relatif atau memuat `:`):
  *   - `<playbooksRoot>:/ansible:ro`        playbook, role, `ansible.cfg`, `group_vars`
  *   - `<jobDir>:/job:rw`                   `inventory.yml`, `extra_vars.yml`, keluaran onboarding
- *   - `<ServerSshKeyStore::path(serverId)>:/ssh/id:ro`  kunci privat SSH job ini
+ *   - `<ProvisionAgentKey::privatePath()>:/ssh/id:ro`  kunci privat provisioning bersama
+ *     (satu pasangan untuk semua server; public key-nya dipasang operator di tiap VM)
  *   - `<knownHosts>:/ssh/known_hosts:ro`   host key yang sudah diverifikasi
  *
  * `--network host` diperlukan karena playbook menghubungi server target lewat
@@ -49,6 +50,13 @@ final class AnsibleRunner
 
     private const CONTAINER_KEY_PATH = '/ssh/id';
     private const CONTAINER_KNOWN_HOSTS = '/ssh/known_hosts';
+
+    /**
+     * Titik mount playbook di dalam helper container. Dipakai juga sebagai
+     * prefiks path playbook (image `alpine/ansible` ber-WorkingDir `/`, jadi
+     * path relatif tidak bisa diandalkan).
+     */
+    private const CONTAINER_PLAYBOOKS = '/ansible';
 
     private readonly ProcessRunner $runner;
     private readonly string $playbooksRoot;
@@ -116,8 +124,8 @@ final class AnsibleRunner
      * **Hanya** menyusun argv, tanpa menjalankan docker. Pemeriksaan keberadaan
      * kunci/known_hosts sengaja ada di {@see self::run()}.
      *
-     * Catatan I/O: `ServerSshKeyStore::path()` memastikan direktori kunci
-     * (`<ssh_keys_path>/servers`) ada — direktori kosong, bukan rahasia.
+     * Catatan I/O: `ProvisionAgentKey::privatePath()` hanya menghitung path (tidak
+     * menulis apa pun); keberadaan kunci diperiksa {@see self::run()}.
      *
      * @param array<string,mixed> $job    baris job (`id`, `name`, `playbook`, `server_id`)
      * @param string              $jobDir direktori kerja job (absolut, dipasang rw di `/job`)
@@ -127,12 +135,11 @@ final class AnsibleRunner
     public function command(array $job, string $jobDir): array
     {
         $jobId = self::assertId((string) ($job['id'] ?? ''), 'id job');
-        $serverId = self::assertId(self::serverIdOf($job), 'id server');
         $playbookFile = self::playbookFile((string) ($job['playbook'] ?? ''));
         $hostName = self::assertHostName((string) ($job['name'] ?? ''));
 
         $jobDir = self::assertAbsolute($jobDir, 'job_dir');
-        $keyPath = self::assertAbsolute((new ServerSshKeyStore($this->keysDir))->path($serverId), 'ssh_key');
+        $keyPath = self::assertAbsolute($this->keyPath(), 'ssh_key');
 
         return [
             'docker',
@@ -172,9 +179,11 @@ final class AnsibleRunner
             'ansible-playbook',
             '-i',
             '/job/inventory.yml',
-            // Image `alpine/ansible` ber-WORKDIR `/ansible` ⇒ path relatif ini
-            // menunjuk mount playbook (bukan direktori kerja job).
-            'playbooks/' . $playbookFile,
+            // Path ABSOLUT di dalam helper: image `alpine/ansible` (diperiksa pada
+            // tag 2.21.0) punya `WorkingDir = /`, BUKAN `/ansible` — argumen
+            // relatif `playbooks/…` akan dicari di `/playbooks/…` dan gagal
+            // `file not found`. Mount playbook selalu di `/ansible`.
+            self::CONTAINER_PLAYBOOKS . '/playbooks/' . $playbookFile,
             '-e',
             '@/job/extra_vars.yml',
             '--limit',
@@ -280,10 +289,12 @@ final class AnsibleRunner
      */
     private function ensureKeyMaterial(array $job): void
     {
-        $serverId = self::assertId(self::serverIdOf($job), 'id server');
-        $keyPath = (new ServerSshKeyStore($this->keysDir))->path($serverId);
+        $keyPath = $this->keyPath();
         if (!is_file($keyPath) || !is_readable($keyPath)) {
-            throw new RuntimeException('Kunci SSH untuk provisioning server ini belum tersedia (berkas kunci tidak ditemukan).');
+            throw new RuntimeException(
+                'Kunci provisioning bersama belum ada (' . $keyPath . '). Buka /servers/provision lalu klik '
+                . '“Buat kunci”, pasang public key-nya di server tujuan, baru jalankan provisioning lagi.'
+            );
         }
 
         if (is_file($this->knownHosts)) {
@@ -300,27 +311,14 @@ final class AnsibleRunner
     }
 
     /**
-     * Id server pemilik kunci SSH job.
+     * Path private key provisioning bersama (satu pasangan untuk semua server).
      *
-     * Job provisioning dibuat **sebelum** server terdaftar, jadi kuncinya bisa
-     * dikunci dengan `server_id` (bila batch 1 mengisinya) atau dengan nama
-     * server (`name`, slug yang juga dipakai sebagai host inventori). Keduanya
-     * divalidasi dengan pola id yang sama.
+     * Tidak lagi per-server: form tidak meminta kunci privat sama sekali, dan
+     * public key pasangan ini dipasang operator di setiap VM baru.
      */
-    private static function serverIdOf(array $job): string
+    private function keyPath(): string
     {
-        // Slot kunci = NAMA server, bukan id: job provisioning berjalan SEBELUM
-        // baris server ada (id-nya baru dibuat saat registrasi onboarding),
-        // sementara nama unik & stabil. Operasi lanjutan (verify/upgrade) juga
-        // membawa nama yang sama, sehingga satu slot kunci dipakai konsisten.
-        foreach (['name', 'server_id', 'serverId'] as $key) {
-            $value = self::text($job[$key] ?? '');
-            if ($value !== '') {
-                return $value;
-            }
-        }
-
-        throw new InvalidArgumentException('Job provisioning tidak memuat identitas server (server_id/name).');
+        return (new ProvisionAgentKey(null, $this->keysDir))->privatePath();
     }
 
     /**
