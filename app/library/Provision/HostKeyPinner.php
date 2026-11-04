@@ -71,9 +71,11 @@ final class HostKeyPinner
      * @param string $keySlot slot kunci (nama server, dipakai juga oleh AnsibleRunner)
      * @param string $host    IPv4 atau FQDN target SSH
      * @param int    $port    port SSH 1–65535
-     * @return array{fingerprint:string,host_key_changed:bool,pinned:bool}
+     * @return array{fingerprint:string,host_key_changed:bool,pinned:bool,pinned_fingerprints:array<int,string>}
      *         `host_key_changed=true` ⇒ kunci di server BERBEDA dari pin lama;
-     *         berkas known_hosts tidak diubah dan job harus digagalkan pemanggil.
+     *         berkas known_hosts tidak diubah dan job harus digagalkan pemanggil
+     *         (pesan galat menyertakan fingerprint baru vs pin lama agar operator
+     *         bisa membandingkannya dengan server tujuan).
      * @throws RuntimeException host/port/slot tidak sah, atau host key tidak terbaca
      */
     public function pin(string $keySlot, string $host, int $port): array
@@ -111,17 +113,38 @@ final class HostKeyPinner
                     // "No ED25519 host key is known").
                     $this->store->saveKnownHost($keySlot, $host, $port, $keyType . ' ' . $keyBody);
 
-                    return ['fingerprint' => $fingerprint, 'host_key_changed' => false, 'pinned' => false];
+                    return [
+                        'fingerprint' => $fingerprint,
+                        'host_key_changed' => false,
+                        'pinned' => false,
+                        'pinned_fingerprints' => [$fingerprint],
+                    ];
                 }
             }
 
             // Ada entri untuk host:port ini tetapi isinya berbeda ⇒ JANGAN menulis.
-            return ['fingerprint' => $fingerprint, 'host_key_changed' => true, 'pinned' => false];
+            $pinnedFingerprints = [];
+            foreach ($existing as $entry) {
+                $fp = $this->fingerprint($entry[0] . ' ' . $entry[1]);
+                $pinnedFingerprints[] = ($fp !== '' ? $fp : 'tidak terbaca') . ' (' . $entry[0] . ')';
+            }
+
+            return [
+                'fingerprint' => $fingerprint,
+                'host_key_changed' => true,
+                'pinned' => false,
+                'pinned_fingerprints' => $pinnedFingerprints,
+            ];
         }
 
         $this->store->saveKnownHost($keySlot, $host, $port, $keyType . ' ' . $keyBody);
 
-        return ['fingerprint' => $fingerprint, 'host_key_changed' => false, 'pinned' => true];
+        return [
+            'fingerprint' => $fingerprint,
+            'host_key_changed' => false,
+            'pinned' => true,
+            'pinned_fingerprints' => [],
+        ];
     }
 
     // ==================================================================

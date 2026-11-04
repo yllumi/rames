@@ -112,6 +112,35 @@ class ServerSshKeyStoreTest extends TestCase
         $this->assertStringNotContainsString(']:22', implode("\n", $lines));
     }
 
+    public function testForgetKnownHostRemovesOnlyThatHostPort(): void
+    {
+        $this->store->saveKnownHost('srv-1', '103.82.92.133', 22, 'ssh-ed25519 AAAA-target');
+        $this->store->saveKnownHost('srv-2', '10.0.0.6', 2222, 'ssh-ed25519 AAAA-lain');
+        $this->store->saveKnownHost('srv-3', 'agent.example.com', 22, 'ssh-ed25519 AAAA-domain');
+
+        $removed = $this->store->forgetKnownHost('103.82.92.133', 22);
+
+        $this->assertSame(1, $removed);
+        $this->assertSame([
+            '[10.0.0.6]:2222 ssh-ed25519 AAAA-lain',
+            'agent.example.com ssh-ed25519 AAAA-domain',
+        ], $this->knownHostsLines());
+
+        $this->assertSame(0, $this->store->forgetKnownHost('103.82.92.133', 22), 'idempoten');
+    }
+
+    public function testForgetKnownHostAlsoRemovesLegacyBracketForm(): void
+    {
+        mkdir($this->dir, 0700, true);
+        file_put_contents(
+            $this->store->knownHostsPath(),
+            "[103.82.92.133]:22 ssh-ed25519 AAAA-legacy\n"
+        );
+
+        $this->assertSame(1, $this->store->forgetKnownHost('103.82.92.133', 22));
+        $this->assertSame([], $this->knownHostsLines());
+    }
+
     public function testDeleteIsIdempotentAndRemovesPin(): void
     {
         $this->store->save('srv-1', self::PRIVATE_KEY);

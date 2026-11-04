@@ -10,6 +10,7 @@ use app\library\Provision\ProvisionAgentKey;
 use app\library\Provision\ProvisionInput;
 use app\library\Provision\ProvisionJobStore;
 use app\library\Provision\ProvisionLog;
+use app\library\Provision\ServerSshKeyStore;
 use app\library\Storage\ServerStore;
 use app\library\Support\DetachedWorker;
 use InvalidArgumentException;
@@ -71,6 +72,7 @@ class ProvisionController
         'ip',
         'manage_firewall',
         'playbook',
+        'reset_host_key',
         'ssl_challenge',
         'ssl_ca_server',
     ];
@@ -164,6 +166,22 @@ class ProvisionController
                 . ' salin public key yang muncul ke ~/.ssh/authorized_keys user SSH di server tujuan,'
                 . ' lalu jalankan provisioning.',
             ]);
+        }
+
+        // "Percayai host key baru": aksi admin eksplisit yang menghapus pin lama
+        // untuk host:port itu SEBELUM worker mem-pin ulang (TOFU). Tanpa ini,
+        // server yang dipasang ulang memblokir provisioning selamanya dengan
+        // "host key server berubah". CSRF & otorisasi admin sudah berlaku di
+        // route ini; halaman menjelaskan bahwa fingerprint wajib dibandingkan
+        // dulu dengan server tujuan.
+        if (self::truthy($post['reset_host_key'] ?? null)) {
+            try {
+                $this->hostKeyStore()->forgetKnownHost($input['host'], (int) $input['ssh_port']);
+            } catch (Throwable $e) {
+                return $this->invalidInput($request, $post, [
+                    'Pin host key lama tidak bisa dihapus: ' . $e->getMessage(),
+                ]);
+            }
         }
 
         try {
@@ -410,6 +428,19 @@ class ProvisionController
     }
 
     /** Galat sisi server (job/kunci/spawn) — JSON 500 tanpa jejak rahasia. */
+    /** Nilai checkbox/flag form → bool ('' / '0' / 'false' = false). */
+    private static function truthy(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (!is_scalar($value)) {
+            return false;
+        }
+
+        return !in_array(strtolower(trim((string) $value)), ['', '0', 'false', 'no', 'off'], true);
+    }
+
     private function jsonError(string $message): Response
     {
         return json(['code' => 1, 'error' => $message])->withStatus(500);
@@ -584,6 +615,14 @@ class ProvisionController
     private function servers(): ServerStore
     {
         return $this->servers ?? new ServerStore();
+    }
+
+    /**
+     * Store pin host key (seam pengujian: direktori kunci temp).
+     */
+    protected function hostKeyStore(): ServerSshKeyStore
+    {
+        return new ServerSshKeyStore();
     }
 
     private function agentKey(): ProvisionAgentKey

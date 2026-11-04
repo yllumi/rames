@@ -8,6 +8,7 @@ use app\library\Provision\AnsibleRunner;
 use app\library\Provision\ProvisionJobStore;
 use app\library\Provision\ProvisionLog;
 use app\library\Provision\ProvisionAgentKey;
+use app\library\Provision\ServerSshKeyStore;
 use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteDatabase;
 use app\library\Support\ProcessRunner;
@@ -116,6 +117,34 @@ class ProvisionControllerAccessTest extends TestCase
         $this->assertArrayNotHasKey('private_key', $controller->rendered['vars']['agent_key'] ?? []);
     }
 
+    public function testAdminCanForgetOldHostKeyPinOnSubmit(): void
+    {
+        $controller = $this->controller(['id' => 'u1', 'username' => 'admin', 'role' => 'admin']);
+        $controller->hostKeys = new ServerSshKeyStore($this->tmp . '/keys');
+
+        mkdir($this->tmp . '/keys', 0700, true);
+        file_put_contents(
+            $this->tmp . '/keys/known_hosts',
+            "10.0.0.5 ssh-ed25519 AAAA-lama\n10.0.0.9 ssh-ed25519 AAAA-lain\n"
+        );
+
+        // Kunci bersama harus ada agar validasi lolos.
+        (new ProvisionAgentKey(null, $this->tmp . '/keys'))->ensure();
+
+        $response = $controller->store($this->post('/servers/provision', array_merge(
+            $this->payload(),
+            ['reset_host_key' => '1'],
+        ), true));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame(1, $controller->spawnCalls, 'job tetap dijalankan');
+        $this->assertSame(
+            ['10.0.0.9 ssh-ed25519 AAAA-lain'],
+            array_values(array_filter(array_map('trim', explode("\n", (string) file_get_contents($this->tmp . '/keys/known_hosts'))))),
+            'pin host target dihapus, entri host lain dipertahankan'
+        );
+    }
+
     public function testAdminJobListReturnsJobsWithoutSecrets(): void
     {
         $controller = $this->controller(['id' => 'u1', 'username' => 'admin', 'role' => 'admin']);
@@ -192,7 +221,8 @@ class ProvisionControllerAccessTest extends TestCase
             'port_range_end' => '31999',
             'agent_port' => '8443',
             'playbook' => 'provision-agent',
-            'private_key' => "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----",
+            // Wajib selama firewall dikelola (bawaan true).
+            'control_plane_ips' => '203.0.113.7',
         ], $overrides);
     }
 
@@ -272,6 +302,14 @@ class FakeProvisionController extends ProvisionController
         $this->spawnCalls++;
 
         return true;
+    }
+
+    /** Seam: pin host key disimpan di direktori temp tes. */
+    public ?ServerSshKeyStore $hostKeys = null;
+
+    protected function hostKeyStore(): ServerSshKeyStore
+    {
+        return $this->hostKeys ?? parent::hostKeyStore();
     }
 }
 

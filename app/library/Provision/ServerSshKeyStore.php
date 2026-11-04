@@ -229,6 +229,63 @@ final class ServerSshKeyStore
         $this->writeAtomic($this->pinPath($serverId), $entry . "\n", self::FILE_MODE);
     }
 
+    /**
+     * Lupakan pin host key untuk satu host:port (semua bentuk kolom host).
+     *
+     * Dipakai saat operator SUDAH memverifikasi bahwa host key server berubah
+     * sah (mis. VM dipasang ulang) sehingga pin lama harus dihapus sebelum TOFU
+     * berikutnya. Bukan operasi rutin: tanpa verifikasi manual, menghapus pin
+     * membuka peluang MITM.
+     *
+     * @return int jumlah baris known_hosts yang dihapus
+     */
+    public function forgetKnownHost(string $host, int $port): int
+    {
+        $normalizedHost = strtolower(trim($host));
+        if ($normalizedHost === '' || preg_match('/[\s#,\[\]]/', $normalizedHost) === 1) {
+            throw new RuntimeException('Host untuk known_hosts tidak valid (tanpa spasi, koma, #, atau kurung siku).');
+        }
+        if ($port < 1 || $port > 65535) {
+            throw new RuntimeException('Port host key SSH harus 1–65535.');
+        }
+
+        $spec = $port === 22 ? $normalizedHost : '[' . $normalizedHost . ']:' . $port;
+        $aliases = [$spec];
+        if ($port === 22) {
+            $aliases[] = '[' . $normalizedHost . ']:22';
+        }
+
+        $knownHosts = $this->knownHostsPath();
+        if (!is_file($knownHosts)) {
+            return 0;
+        }
+
+        $kept = [];
+        $removed = 0;
+        foreach ($this->knownHostLines() as $line) {
+            $parts = preg_split('/\s+/', trim($line)) ?: [];
+            $specs = explode(',', strtolower((string) ($parts[0] ?? '')));
+            $hit = false;
+            foreach ($specs as $existingSpec) {
+                if (in_array($existingSpec, $aliases, true)) {
+                    $hit = true;
+                    break;
+                }
+            }
+            if ($hit) {
+                $removed++;
+                continue;
+            }
+            $kept[] = $line;
+        }
+
+        if ($removed > 0) {
+            $this->writeAtomic($knownHosts, $kept === [] ? '' : implode("\n", $kept) . "\n", self::FILE_MODE);
+        }
+
+        return $removed;
+    }
+
     // ==================================================================
     // Internal
     // ==================================================================

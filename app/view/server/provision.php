@@ -51,6 +51,7 @@ $controlPlaneIpsValue = array_key_exists('control_plane_ips', $values)
     ? (string) $values['control_plane_ips']
     : (string) $controlPlaneIps;
 
+$resetHostKey = !in_array(strtolower(trim($field('reset_host_key', '0'))), ['', '0', 'false', 'no', 'off'], true);
 $manageFirewall = !in_array(strtolower(trim($field('manage_firewall', '1'))), ['', '0', 'false', 'no', 'off'], true);
 
 $sslChallenges = [
@@ -289,6 +290,23 @@ $breadcrumbs = [
             <label class="form-check-label" for="provision-manage-firewall">
               Kelola firewall di server tujuan (UFW) agar port agent terbuka
             </label>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="form-check mb-2">
+            <input type="hidden" name="reset_host_key" value="0">
+            <input class="form-check-input" type="checkbox" id="provision-reset-host-key"
+                   name="reset_host_key" value="1" <?= $resetHostKey ? 'checked' : '' ?>>
+            <label class="form-check-label" for="provision-reset-host-key">
+              Percayai host key baru — lupakan pin lama untuk host ini
+            </label>
+          </div>
+          <div class="form-text">
+            Centang <strong>hanya</strong> setelah Anda membandingkan fingerprint di log job dengan server tujuan
+            (<span class="mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span>), mis. karena VM dipasang ulang.
+            Pin lama dihapus lalu host key dipin ulang (TOFU) saat job berjalan — jangan centang bila tidak yakin,
+            karena itu melemahkan verifikasi MITM.
           </div>
         </div>
 

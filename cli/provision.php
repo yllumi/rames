@@ -225,8 +225,16 @@ try {
     if ($pin['host_key_changed']) {
         // Jangan menimpa pin lama: kunci berganti bisa berarti server dipasang
         // ulang (sah, verifikasi manual) atau MITM. Operator memutuskan.
+        // Pesan WAJIB menyertakan kedua fingerprint: tanpa itu operator tidak
+        // punya bahan untuk membandingkan dengan server tujuan.
+        $pinned = $pin['pinned_fingerprints'] ?? [];
         throw new RuntimeException(
-            'host key server berubah — verifikasi manual; kunci tidak diperbarui'
+            'Host key ' . $input['host'] . ':' . $input['ssh_port'] . ' BERBEDA dari pin lama; pin tidak diubah.'
+            . ' Kunci sekarang: ' . ($pin['fingerprint'] !== '' ? $pin['fingerprint'] : 'tidak terbaca') . '.'
+            . ' Pin lama: ' . ($pinned !== [] ? implode('; ', $pinned) : 'tidak terbaca') . '.'
+            . ' Verifikasi di server tujuan (mis. ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub).'
+            . ' Bila memang sah (server dipasang ulang), jalankan ulang provisioning dengan opsi'
+            . ' "Percayai host key baru" di /servers/provision.'
         );
     }
     $stage(

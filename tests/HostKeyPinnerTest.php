@@ -127,6 +127,31 @@ class HostKeyPinnerTest extends TestCase
         $this->assertSame($before, (string) file_get_contents($this->store->knownHostsPath()), 'known_hosts tidak boleh berubah');
     }
 
+    public function testChangedKeyReportsOldFingerprintsForComparison(): void
+    {
+        (new HostKeyPinner($this->runner(), $this->store))->pin('vps-jakarta', self::HOST, self::PORT);
+
+        $result = (new HostKeyPinner($this->runner(self::OTHER_KEY_BODY), $this->store))
+            ->pin('vps-jakarta', self::HOST, self::PORT);
+
+        $this->assertTrue($result['host_key_changed']);
+        $this->assertNotEmpty($result['pinned_fingerprints'], 'pin lama harus bisa dibandingkan operator');
+        $this->assertStringContainsString('ssh-ed25519', (string) $result['pinned_fingerprints'][0]);
+    }
+
+    public function testForgetThenPinAcceptsNewKey(): void
+    {
+        (new HostKeyPinner($this->runner(), $this->store))->pin('vps-jakarta', self::HOST, self::PORT);
+
+        $this->assertSame(1, $this->store->forgetKnownHost(self::HOST, self::PORT));
+
+        $result = (new HostKeyPinner($this->runner(self::OTHER_KEY_BODY), $this->store))
+            ->pin('vps-jakarta', self::HOST, self::PORT);
+
+        $this->assertFalse($result['host_key_changed'], 'setelah pin dilupakan, kunci baru dianggap TOFU');
+        $this->assertTrue($result['pinned']);
+    }
+
     public function testEmptyScanOutputThrows(): void
     {
         $runner = $this->runner('');
