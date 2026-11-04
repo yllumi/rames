@@ -21,8 +21,8 @@ use RuntimeException;
  * utama aturan plan §3 butir 4 — app di server agent **tidak boleh** diam-diam
  * dieksekusi di server lokal. Karena itu:
  *
- *  - **operasi panjang** (deploy/rebuild/rollback/apply/apply_env/stop/start/
- *    teardown) → job async di agent (`POST /jobs` → polling `GET /jobs/{id}` +
+ *  - **operasi panjang** (deploy/rebuild/rollback/apply/apply_env/apply_limits/
+ *    apply_ports/stop/start/teardown) → job async di agent (`POST /jobs` → polling `GET /jobs/{id}` +
  *    `GET /jobs/{id}/log?offset=N`). Setiap panggilan HTTP ≤30 s (aturan repo
  *    #7; dijaga `AgentClient`), sedangkan total waktu ditutup
  *    `config('deploy.deploy_timeout')`. Baris log **baru** diteruskan ke
@@ -64,8 +64,9 @@ use RuntimeException;
  * `POST /jobs`: gagal memaketkan (mis. file compose hilang di control plane) ⇒
  * **tidak ada** job yang dikirim dan galatnya disampaikan ke pemanggil — agent
  * tidak boleh menerima job yang pasti gagal separuh jalan. Op yang tidak
- * menyentuh artefak (`apply_env`, `stop`, `start`, `teardown`) tidak memaketkan
- * apa pun.
+ * menyentuh artefak (`apply_env`, `apply_limits`, `stop`, `start`, `teardown`)
+ * tidak memaketkan apa pun; `apply_ports` memaketkan karena override port hasil
+ * regenerasi metadata `host_ports` wajib ikut payload.
  *
  * **Offset log wajib**: log deploy per-app (`runtime/logs/deploy/{appId}.log`)
  * dipakai bersama antar-job (plan §12 butir 5), jadi polling mulai dari
@@ -134,10 +135,15 @@ final class AgentDeployer implements DeployerInterface
 
     /**
      * Op job yang membawa **artefak app** di payloadnya (file compose / deploy
-     * key / template) — lihat catatan kelas. `apply_env` tidak butuh (env sudah
-     * ikut `app`), `stop`/`start`/`teardown` hanya menyentuh container.
+     * key / template / override port) — lihat catatan kelas. `apply_env` tidak
+     * butuh (env sudah ikut `app`), `apply_limits`/`stop`/`start`/`teardown`
+     * hanya menyentuh container/metadata. `apply_ports` **wajib** memaketkan
+     * artefak: override port hasil regenerasi metadata `host_ports` tidak bisa
+     * dibaca agent dari metadata itu sendiri.
+     *
+     * @var array<int,string>
      */
-    private const ARTIFACT_OPS = ['deploy', 'rebuild', 'rollback', 'apply'];
+    private const ARTIFACT_OPS = ['deploy', 'rebuild', 'rollback', 'apply', 'apply_ports'];
 
     /** @var array<string,mixed> */
     private readonly array $server;
@@ -262,6 +268,23 @@ final class AgentDeployer implements DeployerInterface
     public function applyLimits(array $app, callable $logger): array
     {
         return $this->runJob('apply_limits', $app, $logger);
+    }
+
+    /**
+     * Terapkan perubahan host port app di server agent (op job `apply_ports`) —
+     * worker agent menyinkronkan override port hasil regenerasi metadata
+     * `host_ports` lalu `up -d` tanpa build, kemudian menulis ulang vhost Nginx
+     * agar `proxy_pass` mengikuti host port baru.
+     *
+     * Berbeda dari `apply_limits`, op ini **memaketkan artefak**
+     * ({@see self::ARTIFACT_OPS}): berkas override port
+     * (`docker-compose.override.yml` + `…override.ports.yml`) diregenerasi
+     * `AgentArtifactPackager` dari `host_ports` dan wajib ikut payload job —
+     * tanpa itu agent hanya menjalankan `up -d` dengan port lama.
+     */
+    public function applyPorts(array $app, callable $logger): array
+    {
+        return $this->runJob('apply_ports', $app, $logger);
     }
 
     public function stop(array $app): void
@@ -1759,7 +1782,7 @@ final class AgentDeployer implements DeployerInterface
 
     /**
      * Preflight ketersediaan nama app **di server agent** (`POST /apps/check`) —
-     * dipakai `AppController::createAndDeploy()` **sebelum** record app ditulis di
+     * dipakai `CreateDeployController::createAndDeploy()` **sebelum** record app ditulis di
      * control plane.
      *
      * Tanpa preflight ini nama yang bentrok dengan data tak dikenal di server itu
@@ -2218,7 +2241,7 @@ final class AgentDeployer implements DeployerInterface
      * Plafon total satu unduhan dump dari server agent (byte) — nilai default;
      * dapat diubah server ini lewat
      * `deploy.volume_backup_dump_download_max_bytes` (satu knob dengan jalur
-     * lokal `BackupController::downloadDumpSql()`).
+     * lokal `BackupDbController::downloadDumpSql()`).
      */
     public const MAX_DUMP_BYTES = 134217728; // 128 MiB
 
@@ -2537,7 +2560,7 @@ final class AgentDeployer implements DeployerInterface
      *
      * Kegagalan pemaketan disanitasi (higienitas token: pesan galat bisa memuat
      * keluaran tool) dan dilempar sebagai {@see RuntimeException} **sebelum**
-     * panggilan HTTP apa pun — pemanggil (mis. `AppController`) menampilkannya
+     * panggilan HTTP apa pun — pemanggil (mis. controller app) menampilkannya
      * ke user, agent tidak pernah menerima job yang artefaknya tidak lengkap.
      *
      * @param array<string,mixed> $app

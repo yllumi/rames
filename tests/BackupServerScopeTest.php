@@ -3,7 +3,6 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
 use app\library\Agent\AgentClient;
 use app\library\Agent\AgentError;
 use app\library\Agent\TlsPinMaterializer;

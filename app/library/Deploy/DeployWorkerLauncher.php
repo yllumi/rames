@@ -8,7 +8,7 @@ use app\library\Support\SigchldGuard;
 
 /**
  * Peluncur worker deploy **detached** — satu implementasi bersama untuk
- * `AppController::spawnWorker()` (dashboard) dan `AgentJobController` (server
+ * `AppControllerBase::spawnWorker()` (dashboard) dan `AgentJobController` (server
  * agent, misi F1 multi-server).
  *
  * Perintah yang dijalankan (posisi argumen **wajib** stabil — dibaca
@@ -87,6 +87,12 @@ final class DeployWorkerLauncher
      * `limits` di proyeksi app agent lalu `up -d` tanpa build
      * (`LocalDeployer::applyLimits()`). Control plane tidak menulis artefak app
      * agent; ia hanya menyimpan metadata + memicu op ini.
+     *
+     * F-lanjutan (host port app agent): `apply_ports` — worker **di server
+     * agent** menyalin override port hasil regenerasi metadata `host_ports`
+     * (dikirim `AgentArtifactPackager`), lalu `up -d` tanpa build + tulis ulang
+     * vhost Nginx (`LocalDeployer::applyPorts()`). Tanpa op ini perubahan host
+     * port app agent tidak pernah sampai ke container/vhost.
      */
     public const MODES = [
         'deploy',
@@ -98,6 +104,7 @@ final class DeployWorkerLauncher
         'teardown',
         'apply_env',
         'apply_limits',
+        'apply_ports',
         'nginx_write',
         'nginx_remove',
         'nginx_reload',

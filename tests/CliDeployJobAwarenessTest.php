@@ -224,6 +224,19 @@ class CliDeployJobAwarenessTest extends TestCase
         $this->assertSame('running', (string) $this->storedApp()['status']);
     }
 
+    /**
+     * Mode `apply_ports` (host port app agent): worker memanggil
+     * `DeployerInterface::applyPorts()` dan menandai app `running`.
+     */
+    public function testApplyPortsModeCallsApplyPorts(): void
+    {
+        $result = $this->worker('apply_ports');
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr']);
+        $this->assertSame(['apply-ports'], $this->notes());
+        $this->assertSame('running', (string) $this->storedApp()['status']);
+    }
+
     public function testTeardownModeUsesPreserveVolumesFromJobPayload(): void
     {
         $record = $this->jobStore()->create('teardown', self::APP_ID, [

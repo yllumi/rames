@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
+use app\controller\app\DeploymentController;
+use app\controller\app\ListController;
 use app\library\Auth\AppAccessDenied;
 use app\library\Backup\VolumeStateGuard;
 use app\library\Deploy\ComposeSource;
@@ -142,8 +143,8 @@ final class ImportedGuardRecordingCompose extends DockerComposeRunner
  *  2. `LocalDeployer::stop()/start()` app impor memakai Engine API dan **tidak**
  *     memanggil `docker compose`.
  *  3. Aksi yang butuh orkestrasi compose (deploy/rebuild/rollback/apply/
- *     applyEnv/applyLimits/teardown) ditolak sebelum runner dipanggil.
- *  4. `AppController::delete()` app impor hanya melepas record dashboard —
+ *     applyEnv/applyLimits/applyPorts/teardown) ditolak sebelum runner dipanggil.
+ *  4. `DeploymentController::delete()` app impor hanya melepas record dashboard —
  *     teardown/cleanupDir tidak dijalankan, container dibiarkan hidup.
  *
  * Tidak menyentuh Docker, `database/`, `apps/`, atau `nginx-status/` nyata:
@@ -408,6 +409,7 @@ class ImportedAppGuardTest extends TestCase
             'apply' => ['apply', 'Apply compose'],
             'applyEnv' => ['applyEnv', 'Terapkan environment'],
             'applyLimits' => ['applyLimits', 'Terapkan batas resource'],
+            'applyPorts' => ['applyPorts', 'Terapkan port'],
             'teardown' => ['teardown', 'Hapus app lewat compose'],
         ];
     }
@@ -447,7 +449,7 @@ class ImportedAppGuardTest extends TestCase
         $request = new Request("GET /apps/import HTTP/1.1\r\nHost: localhost\r\n\r\n");
 
         try {
-            (new AppController())->importForm($request);
+            (new ListController())->importForm($request);
             $this->fail('halaman impor harus 404 untuk non-admin');
         } catch (AppAccessDenied $e) {
             $this->assertSame(404, $e->getCode(), 'penolakan memakai 404, bukan 403');
@@ -478,7 +480,7 @@ class ImportedAppGuardTest extends TestCase
         );
 
         try {
-            (new AppController())->importStore($request);
+            (new ListController())->importStore($request);
             $this->fail('impor harus 404 untuk non-admin');
         } catch (AppAccessDenied $e) {
             $this->assertSame(404, $e->getCode(), 'penolakan memakai 404, bukan 403');
@@ -489,7 +491,7 @@ class ImportedAppGuardTest extends TestCase
     }
 
     // ==================================================================
-    // AppController::delete — lepas record, container dibiarkan
+    // DeploymentController::delete — lepas record, container dibiarkan
     // ==================================================================
 
     #[RunInSeparateProcess]
@@ -516,7 +518,7 @@ class ImportedAppGuardTest extends TestCase
         file_put_contents($this->tmp . '/database/env/blog.env', "FOO=bar\n");
 
         $request = new Request("POST /apps/{$app['id']}/delete HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        $response = (new AppController())->delete($request, $app['id']);
+        $response = (new DeploymentController())->delete($request, $app['id']);
 
         $this->assertSame(302, $response->getStatusCode());
         $this->assertSame('/apps', $response->getHeader('Location'));

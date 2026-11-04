@@ -6,9 +6,10 @@ namespace Tests;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Audit statik AppController: variabel lokal wajib didefinisikan sebelum dipakai.
+ * Audit statik controller app (`app/controller/app/`): variabel lokal wajib
+ * didefinisikan sebelum dipakai.
  *
- * Menutup regresi `AppController::rollback()` yang memakai `$store->update(...)`
+ * Menutup regresi `DeploymentController::rollback()` yang memakai `$store->update(...)`
  * tanpa pernah mendefinisikan `$store` → `Undefined variable $store` lalu
  * `Call to a member function update() on null` (HTTP 500 pada tombol Rollback).
  *
@@ -17,7 +18,7 @@ use PHPUnit\Framework\TestCase;
  */
 class AppControllerLocalVarsTest extends TestCase
 {
-    private const CONTROLLER = '/app/controller/AppController.php';
+    private const CONTROLLER_DIR = '/app/controller/app';
 
     /**
      * Daftar method yang memakai `$store` tanpa mendefinisikannya lebih dulu.
@@ -199,11 +200,17 @@ class AppControllerLocalVarsTest extends TestCase
 
     public function testEveryStoreUsageInAppControllerIsDefined(): void
     {
-        $path = dirname(__DIR__) . self::CONTROLLER;
-        $this->assertFileExists($path, 'AppController.php tidak ditemukan.');
+        $dir = dirname(__DIR__) . self::CONTROLLER_DIR;
+        $files = glob($dir . '/*.php') ?: [];
+        $this->assertNotEmpty($files, 'Controller app tidak ditemukan.');
 
-        $source = (string) file_get_contents($path);
-        $offenders = self::methodsUsingStoreWithoutDefinition($source);
+        $offenders = [];
+        foreach ($files as $path) {
+            $source = (string) file_get_contents($path);
+            foreach (self::methodsUsingStoreWithoutDefinition($source) as $method) {
+                $offenders[] = basename($path) . '::' . $method;
+            }
+        }
 
         $this->assertSame(
             [],

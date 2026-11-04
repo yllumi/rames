@@ -14,7 +14,7 @@
 
 - **Autentikasi** — login/logout berbasis session, password bcrypt, multi-user dengan role global (admin/member) + kepemilikan & sharing app per user (viewer/operator/owner; SPECS §7.7). Setiap user dapat **mengubah password sendiri** di halaman **Profil** (`/profile`): wajib memasukkan password saat ini dan password baru minimal 6 karakter. Setiap user juga dapat **mengaktifkan verifikasi dua langkah (2FA TOTP)** dari halaman yang sama — opt-in, memakai aplikasi authenticator, dilengkapi 10 kode pemulihan sekali pakai; jalur darurat host `php webman 2fa:reset <username>` (SPECS §6.4).
 - **Manage Users** — tambah/hapus user, ganti password user lain dari `/users` (password sendiri lewat halaman **Profil**).
-- **App Management** — buat app dari URL repo Git, deteksi & edit host port, deteksi konflik port dengan saran port otomatis. Daftar `/apps` punya **filter Nama / Domain / Owner** lewat query string (filter **Owner** admin-only); filter digabung AND dengan tab scope (`Semua`/`Milik Saya`/`Dibagikan`) & filter server (SPECS §8e); semua kontrol filter berada dalam **satu toolbar** di bawah tab scope, sedangkan aksi utama **Create App** tetap di header.
+- **App Management** — buat app dari URL repo Git, alokasi host port (dapat dipilih saat konfirmasi create) dengan deteksi konflik & saran otomatis; setelah app jadi, yang dapat diedit dari dashboard adalah **port container** (host port tetap, §5.12b). Daftar `/apps` punya **filter Nama / Domain / Owner** lewat query string (filter **Owner** admin-only); filter digabung AND dengan tab scope (`Semua`/`Milik Saya`/`Dibagikan`) & filter server (SPECS §8e); semua kontrol filter berada dalam **satu toolbar** di bawah tab scope, sedangkan aksi utama **Create App** tetap di header.
 - **Deploy otomatis** — clone repo → parse `docker-compose.yml` → tulis override port → `docker compose up -d --build` → kumpulkan info container → generate config Nginx.
 - **Background worker** — deploy/rebuild berjalan async (proses terpisah) dengan status yang bisa di-*poll* dari UI.
 - **Reverse proxy** — tiap app otomatis mendapat subdomain `{name}.{APP_DOMAIN}`; subdomain bisa **diganti** (label sendiri, terpisah dari nama app) lewat tab **Domain & SSL** (SPECS §7.11).
@@ -464,9 +464,17 @@ Tarif billing default global (`.env`: `BILLING_RATE_CPU_PER_CORE_HOUR`, `BILLING
 ```
 app/
 ├── command/MakeAdmin.php        # php webman make:admin (provisioning user awal)
-├── controller/                  # AuthController, AppController, CreditController, PaymentController,
-│                                #   FileController, SslController, NginxController, BrandingController, UserController,
-│                                #   ServerController (registry server), ErrorController (Error Log), AgentController + AgentJobController + AgentLogController + AgentTerminalController + AgentFilesController + AgentDockerController (route mesin agent)
+├── controller/                  # AuthController, CreditController, PaymentController, FileController, SslController,
+│                                #   NginxController, BrandingController, UserController, ServerController (registry server),
+│                                #   ErrorController (Error Log), AgentController + AgentJobController + AgentLogController
+│                                #   + AgentTerminalController + AgentFilesController + AgentDockerController (route mesin agent)
+│   ├── app/                     # domain "app" (namespace app\controller\app): AppControllerBase, AppArtifactControllerBase,
+│   │                            #   ListController, InfoController, CreateController, CreateDeployController, TemplateController,
+│   │                            #   DeploymentController, DomainSettingsController, EnvironmentController, ComposeController,
+│   │                            #   ContainerController, AccessController
+│   └── backup/                  # domain "backup" (namespace app\controller\backup): BackupControllerBase,
+│                                #   BackupOverviewController, BackupStatusController, BackupRunController,
+│                                #   BackupArchiveController, BackupDbController
 ├── library/                     # SELURUH logika bisnis (controller hanya mediator)
 │   ├── Auth/UserStore.php
 │   ├── Branding/                # BrandingManager, BrandingLogo (nama & logo dashboard — SPECS §7.16)
@@ -478,7 +486,7 @@ app/
 │   │                            #   AgentJobStore, NonceStore, AgentAppProjection, AgentArtifactPackager,
 │   │                            #   AgentArtifactMaterializer
 │   ├── Deploy/                  # DeployerInterface, LocalDeployer, AgentDeployer, DeployerFactory,
-│   │                            #   ServerResolver, DeployWorkerLauncher
+│   │                            #   ServerResolver, DeployWorkerLauncher, PortOverrides
 │   ├── Docker/                  # ComposeParser, DockerClient, DockerComposeRunner, PortManager, AppContainers
 │   ├── Errors/                  # Rekam Error: ErrorStore, ErrorReporter, ErrorRedactor,
 │   │                            #   ErrorRateLimiter, ErrorInput, ErrorFingerprint, ErrorQuery
@@ -520,7 +528,7 @@ runtime/                         # state runtime (gitignored): logs/, db-backup/
 
 1. Isi form: nama app (slug), URL repo Git, branch.
 2. Dashboard clone repo → cek `docker-compose.yml` → parse service & port.
-3. Deteksi konflik port → halaman konfirmasi (edit host port + pilih primary service).
+3. Deteksi konflik port → halaman konfirmasi (pilih/ubah host port saat create + pilih primary service). Setelah app jadi, edit port dari tab Container hanya mengubah **port container** — host port tetap (§5.12b).
 4. Submit → tulis `docker-compose.override.yml` + `docker-compose.override.ports.yml` → simpan app (status `deploying`) → spawn worker background.
 5. Worker: `docker compose up -d --build` → kumpulkan info container → generate config Nginx → status `running`.
 6. Config Nginx ditulis & nginx host di-reload otomatis oleh dashboard.

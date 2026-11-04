@@ -1063,7 +1063,7 @@ class ServerController
 
     /**
      * Deployer agent untuk satu dokumen server (seam pengujian) — pola yang sama
-     * dengan `BackupController::agentDeployerForServer()`. `null` = server lokal.
+     * dengan `BackupControllerBase::agentDeployerForServer()`. `null` = server lokal.
      *
      * @param array<string,mixed> $server
      */

@@ -17,7 +17,7 @@ use app\library\Storage\JsonStore;
  *    "agents_at":{"<serverId>":"<unix>"}}
  *
  * `agents_at` = waktu sinkron terakhir baris volume **server agent** per server
- * (dipakai `BackupController::status()` untuk TTL; bukan data user). Baris
+ * (dipakai `BackupStatusController::status()` untuk TTL; bukan data user). Baris
  * server agent hanya ditulis lewat {@see self::writeAgentRows()} — penulisan
  * jalur lokal (`VolumeBackupService`) **mempertahankan** baris agent yang sudah
  * ada agar volume agent tidak hilang dari `/backups` setiap run lokal.
@@ -160,7 +160,7 @@ final class BackupCatalog
     /**
      * Ganti **seluruh** baris satu server agent di cache (baris server lain
      * dipertahankan) dan segel waktu sinkronnya. Dipakai sinkronisasi TTL
-     * `BackupController::status()`: satu server diambil live, sisanya memakai
+     * `BackupStatusController::status()`: satu server diambil live, sisanya memakai
      * data cache.
      *
      * @param array<int,array<string,mixed>> $rows baris milik server itu

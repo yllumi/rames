@@ -3,7 +3,7 @@ $pageTitle = 'Panduan Setup Restic';
 $active = 'backups';
 
 // Halaman statis (admin-only): merender Markdown `host/restic-setup.md` yang
-// sudah disanitasi `Markdown::toHtml()` oleh BackupController::guideHtml().
+// sudah disanitasi `Markdown::toHtml()` oleh BackupOverviewController::guideHtml().
 // Sengaja TIDAK memuat `backup.js` — tidak ada aksi/AJAX di sini. HTML panduan
 // dirender tanpa `e()` (sudah aman), persis seperti panduan app di detail.php.
 $breadcrumbs = [

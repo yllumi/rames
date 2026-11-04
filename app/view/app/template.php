@@ -10,7 +10,7 @@ $formError = $form_error ?? null;
 $formSubdomain = $form_subdomain ?? '';
 
 // Pemilih server tujuan (multi-server: docs/SPECS.md §2a, docs/ARCHITECTURE.md §5.22).
-// Payload dari `AppController::serverFormContext()`: `servers`,
+// Payload dari `CreateController::serverFormContext()`: `servers`,
 // `selectedServerId`, `canSelectServer`. View hanya merender — server tetap
 // sumber kebenaran (`resolveCreateServer()` memvalidasi ulang `server_id`).
 // Nilai teks aman dari payload: hanya scalar yang dipakai (array/objek
@@ -287,7 +287,7 @@ $breadcrumbs = [
   <?php
   // Batas CPU/memori opsional saat create dari template — owner/member boleh
   // memilih (D2=a) dalam plafon billing; admin bebas plafon. Gerbang kartu
-  // memakai `canManage` dari AppController, bukan `is_admin()` langsung.
+  // memakai `canManage` dari controller app, bukan `is_admin()` langsung.
   $limitsCtx = is_array($resourceLimits ?? null) ? $resourceLimits : [];
   $limitsServices = [];
   foreach ((array) ($limitsCtx['services'] ?? []) as $limitsService) {

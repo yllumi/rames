@@ -3,11 +3,11 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupStatusController;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Test `BackupController::archivedRows()` — baris arsip registry untuk respons
+ * Test `BackupStatusController::archivedRows()` — baris arsip registry untuk respons
  * `/backups` (status & refresh).
  *
  * Keputusan 4a: tampilan arsip **admin-only** → non-admin selalu `[]`. Tiap
@@ -31,12 +31,12 @@ class BackupControllerArchivedTest extends TestCase
 
     public function testNonAdminGetsEmptyArchived(): void
     {
-        $this->assertSame([], BackupController::archivedRows($this->entries(), false));
+        $this->assertSame([], BackupStatusController::archivedRows($this->entries(), false));
     }
 
     public function testAdminGetsRowsInOrderWithRestorableFlag(): void
     {
-        $out = BackupController::archivedRows($this->entries(), true);
+        $out = BackupStatusController::archivedRows($this->entries(), true);
 
         $this->assertCount(4, $out);
         $this->assertSame('snap_data', $out[0]['name']);
@@ -52,7 +52,7 @@ class BackupControllerArchivedTest extends TestCase
 
     public function testAdminRowPreservesOriginalKeys(): void
     {
-        $out = BackupController::archivedRows($this->entries(), true);
+        $out = BackupStatusController::archivedRows($this->entries(), true);
 
         $this->assertSame('snap', $out[0]['project']);
         $this->assertSame(2, $out[0]['snapshots']);
@@ -61,7 +61,7 @@ class BackupControllerArchivedTest extends TestCase
 
     public function testEmptyInputYieldsEmptyArray(): void
     {
-        $this->assertSame([], BackupController::archivedRows([], true));
-        $this->assertSame([], BackupController::archivedRows([], false));
+        $this->assertSame([], BackupStatusController::archivedRows([], true));
+        $this->assertSame([], BackupStatusController::archivedRows([], false));
     }
 }

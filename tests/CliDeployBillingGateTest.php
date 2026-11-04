@@ -246,7 +246,7 @@ class CliDeployBillingGateTest extends TestCase
 
     // ------------------------------------------------------------------
     // Paritas dua subjek (aktor lalu pembayar/owner) dengan controller
-    // `AppController::billingAssertCanStart()`.
+    // `AppControllerBase::billingAssertCanStart()`.
     // ------------------------------------------------------------------
 
     /**

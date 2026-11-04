@@ -6,8 +6,8 @@ namespace app\library\Support;
 /**
  * Spawn proses worker CLI **detached** (pcntl_fork + pcntl_exec, tanpa shell).
  *
- * Pola ini SENGAJA diduplikasi dari `AppController::spawnWorker()` dan
- * `BackupController::spawnWorker()` — duplikasi dicatat sebagai **tech debt**,
+ * Pola ini SENGAJA diduplikasi dari `AppControllerBase::spawnWorker()` dan
+ * `BackupControllerBase::spawnWorker()` — duplikasi dicatat sebagai **tech debt**,
  * bukan kelalaian: mengekstrak satu implementasi bersama saat ini berarti
  * menyentuh jalur deploy/backup yang sudah terbukti stabil (dan sudah punya
  * test-nya sendiri). Penyatuan ketiga salinan dilakukan pada refactor tersendiri,

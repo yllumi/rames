@@ -3,11 +3,19 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
+use app\controller\app\AppControllerBase;
+use app\controller\app\ComposeController;
+use app\controller\app\ContainerController;
+use app\controller\app\CreateController;
+use app\controller\app\DeploymentController;
+use app\controller\app\EnvironmentController;
+use app\controller\app\InfoController;
+use app\controller\app\TemplateController;
 use app\library\Agent\AgentArtifactPackager;
 use app\library\Agent\AgentClient;
 use app\library\Agent\AgentError;
 use app\library\Agent\TlsPinMaterializer;
+use app\library\Auth\AppAccessDenied;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ComposeSource;
 use app\library\Deploy\DeployerFactory;
@@ -30,6 +38,7 @@ use ReflectionMethod;
 use ReflectionProperty;
 use RuntimeException;
 use support\Request;
+use Tests\Support\AppControllerLocator;
 use Webman\Config;
 
 /**
@@ -153,7 +162,7 @@ final class AppControllerServerSessionRequest extends Request
 }
 
 /**
- * Scope server pada wizard create & jalur app-scoped (`AppController`, misi
+ * Scope server pada wizard create & jalur app-scoped (`app\controller\app\*`, misi
  * `ms-f1-create-server`; plan §4, §4.1, §4.3, §9 keputusan 3, §11 catatan 6).
  *
  * Yang dikunci:
@@ -642,7 +651,7 @@ class AppControllerServerScopeTest extends TestCase
             $GLOBALS['RAMES_FLASH'] = [];
             $request = new Request("POST /apps/{$app['id']}/x HTTP/1.1\r\nHost: localhost\r\n\r\n");
 
-            $response = (new AppController())->{$method}($request, $app['id']);
+            $response = (new ContainerController())->{$method}($request, $app['id']);
 
             $this->assertSame(302, $response->getStatusCode(), "{$method}() harus mengalihkan, bukan menjalankan operasi");
             $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
@@ -683,7 +692,7 @@ class AppControllerServerScopeTest extends TestCase
         ]);
 
         $request = new Request("POST /apps/{$app['id']}/env/import HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        $response = (new AppController())->importEnv($request, $app['id']);
+        $response = (new EnvironmentController())->importEnv($request, $app['id']);
 
         $this->assertSame(302, $response->getStatusCode());
         $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
@@ -730,7 +739,7 @@ class AppControllerServerScopeTest extends TestCase
                 ['key' => 'MAIL_HOST', 'value' => 'smtp.test'],
             ],
         ]);
-        $response = (new AppController())->saveEnv($request, $app['id'], $this->fakeLauncher());
+        $response = (new EnvironmentController())->saveEnv($request, $app['id'], $this->fakeLauncher());
 
         $this->assertSame(302, $response->getStatusCode());
         $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
@@ -791,7 +800,7 @@ class AppControllerServerScopeTest extends TestCase
         $request = $this->postForm('/apps/' . $app['id'] . '/env', [
             'env_delete' => ['APP_KEY'],
         ]);
-        (new AppController())->saveEnv($request, $app['id'], $this->fakeLauncher());
+        (new EnvironmentController())->saveEnv($request, $app['id'], $this->fakeLauncher());
 
         $stored = (new AppStore())->find($app['id']) ?? [];
         $this->assertSame([], $stored['env'] ?? null);
@@ -820,7 +829,7 @@ class AppControllerServerScopeTest extends TestCase
         $request = $this->postForm('/apps/' . $app['id'] . '/env', [
             'env' => [['key' => 'APP_KEY', 'value' => 'rahasia']],
         ]);
-        $response = (new AppController())->saveEnv($request, $app['id'], $this->failingLauncher());
+        $response = (new EnvironmentController())->saveEnv($request, $app['id'], $this->failingLauncher());
 
         $this->assertSame(302, $response->getStatusCode());
 
@@ -865,7 +874,7 @@ class AppControllerServerScopeTest extends TestCase
             "APP_KEY=baru\nMAIL_HOST=smtp.test\n",
             ['mode' => 'merge']
         );
-        $response = (new AppController())->uploadEnv($request, $app['id']);
+        $response = (new EnvironmentController())->uploadEnv($request, $app['id']);
 
         $this->assertSame(302, $response->getStatusCode());
         $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
@@ -910,8 +919,8 @@ class AppControllerServerScopeTest extends TestCase
             $GLOBALS['RAMES_SPAWN'] = [];
             $request = new Request("POST /apps/{$orphan['id']}/env HTTP/1.1\r\nHost: localhost\r\n\r\n");
             $response = $method === 'saveEnv'
-                ? (new AppController())->saveEnv($request, $orphan['id'], $this->fakeLauncher())
-                : (new AppController())->{$method}($request, $orphan['id']);
+                ? (new EnvironmentController())->saveEnv($request, $orphan['id'], $this->fakeLauncher())
+                : (new EnvironmentController())->{$method}($request, $orphan['id']);
 
             $this->assertSame(302, $response->getStatusCode(), $method);
             $this->assertStringContainsString('Server tidak dikenal', $GLOBALS['RAMES_FLASH'][0]['message'] ?? '', $method);
@@ -948,7 +957,7 @@ class AppControllerServerScopeTest extends TestCase
             ],
         ]);
 
-        $controller = new class extends AppController {
+        $controller = new class extends ContainerController {
             protected function agentAppServices(array $app): array
             {
                 return [
@@ -1025,7 +1034,7 @@ class AppControllerServerScopeTest extends TestCase
             'limits' => ['web' => ['cpus' => '1', 'memory_mb' => '256']],
         ]);
 
-        $controller = new class extends AppController {
+        $controller = new class extends ContainerController {
             protected function agentAppServices(array $app): array
             {
                 return [
@@ -1067,7 +1076,7 @@ class AppControllerServerScopeTest extends TestCase
             'limits' => ['web' => ['cpus' => '1', 'memory_mb' => '256']],
         ]);
 
-        $controller = new class extends AppController {
+        $controller = new class extends ContainerController {
             protected function agentAppServices(array $app): array
             {
                 throw new AgentError('Endpoint/job tidak ada di agent (HTTP 404)', AgentError::NOT_FOUND);
@@ -1114,7 +1123,7 @@ class AppControllerServerScopeTest extends TestCase
             'limits' => ['hantu' => ['cpus' => '1', 'memory_mb' => '256']],
         ]);
 
-        $controller = new class extends AppController {
+        $controller = new class extends ContainerController {
             protected function agentAppServices(array $app): array
             {
                 return [
@@ -1169,7 +1178,7 @@ class AppControllerServerScopeTest extends TestCase
             'limits' => ['web' => ['cpus' => '1', 'memory_mb' => '256']],
         ]);
 
-        $controller = new class extends AppController {
+        $controller = new class extends ContainerController {
             public bool $called = false;
 
             protected function agentAppServices(array $app): array
@@ -1220,7 +1229,7 @@ class AppControllerServerScopeTest extends TestCase
         $request = $this->postForm('/apps/' . $orphan['id'] . '/limits', [
             'limits' => ['web' => ['cpus' => '1', 'memory_mb' => '256']],
         ]);
-        $response = (new AppController())->saveLimits($request, $orphan['id'], $this->fakeLauncher());
+        $response = (new ContainerController())->saveLimits($request, $orphan['id'], $this->fakeLauncher());
 
         $this->assertSame(302, $response->getStatusCode());
         $flash = $GLOBALS['RAMES_FLASH'];
@@ -1250,7 +1259,7 @@ class AppControllerServerScopeTest extends TestCase
             'primary_service' => 'web',
         ];
 
-        $controller = new class extends AppController {
+        $controller = new class extends InfoController {
             public bool $called = false;
 
             protected function agentAppServices(array $app): array
@@ -1306,7 +1315,7 @@ class AppControllerServerScopeTest extends TestCase
             'primary_service' => 'db',
         ];
 
-        $controller = new class extends AppController {
+        $controller = new class extends InfoController {
             protected function agentAppServices(array $app): array
             {
                 throw new AgentError(
@@ -1326,6 +1335,483 @@ class AppControllerServerScopeTest extends TestCase
         $this->assertStringNotContainsString(self::AGENT_TOKEN, $context['error']);
         $this->assertStringNotContainsString('F2/F3', $context['error']);
         $this->assertStringContainsString('server agent', $context['error']);
+    }
+
+    // ==================================================================
+    // (3d) Port container (host tetap, container boleh diedit) — lokal & agent
+    // ==================================================================
+
+    /**
+     * Status `deploying` ditolak **sebelum** apa pun: worker lain sedang menulis
+     * container app ini, jadi menyimpan port sekarang akan bertabrakan. Tidak ada
+     * berkas override, metadata, worker, atau recreate container.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSavePortsIsRejectedWhileAppIsDeploying(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = (new AppStore())->create([
+            'name' => 'lokal-port-busy',
+            'server_id' => ServerStore::LOCAL_ID,
+            'status' => 'deploying',
+            'compose_files' => ['docker-compose.yml'],
+        ]);
+        $this->writeCompose('lokal-port-busy', "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"31500:3000\"\n");
+
+        $controller = new class extends ContainerController {
+            public int $applied = 0;
+
+            protected function applyPortsToApp(array $app): array
+            {
+                $this->applied++;
+
+                return $app;
+            }
+        };
+
+        $response = $controller->savePorts(
+            $this->postForm('/apps/' . $app['id'] . '/ports', ['ports' => ['web' => ['31500' => '3000']]]),
+            $app['id'],
+            $this->fakeLauncher()
+        );
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('sedang diproses', $flash[0]['message']);
+
+        $this->assertFileDoesNotExist($this->tmp . '/apps/lokal-port-busy/docker-compose.override.ports.yml');
+        $this->assertFileDoesNotExist($this->tmp . '/apps/lokal-port-busy/docker-compose.override.yml');
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(['docker-compose.yml'], $stored['compose_files'] ?? null);
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'status deploying ⇒ tanpa worker');
+        $this->assertSame(0, $controller->applied, 'status deploying ⇒ tanpa recreate container');
+    }
+
+    /**
+     * Validasi **sebelum** efek samping: port container di luar 1-65535 ditolak
+     * tanpa menulis override, tanpa mengubah `compose_files`, tanpa spawn worker,
+     * dan tanpa memanggil seam `applyPortsToApp()` (tidak ada recreate container).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSavePortsLocalRejectsOutOfRangePortWithoutSideEffects(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = (new AppStore())->create([
+            'name' => 'lokal-port-invalid',
+            'server_id' => ServerStore::LOCAL_ID,
+            'status' => 'running',
+            'compose_files' => ['docker-compose.yml'],
+        ]);
+        $this->writeCompose('lokal-port-invalid', "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"31500:3000\"\n");
+
+        $controller = new class extends ContainerController {
+            public int $applied = 0;
+
+            protected function applyPortsToApp(array $app): array
+            {
+                $this->applied++;
+
+                return $app;
+            }
+        };
+
+        $response = $controller->savePorts(
+            $this->postForm('/apps/' . $app['id'] . '/ports', ['ports' => ['web' => ['31500' => '70000']]]),
+            $app['id'],
+            $this->fakeLauncher()
+        );
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('rentang', $flash[0]['message']);
+
+        $this->assertFileDoesNotExist($this->tmp . '/apps/lokal-port-invalid/docker-compose.override.ports.yml');
+        $this->assertFileDoesNotExist($this->tmp . '/apps/lokal-port-invalid/docker-compose.override.yml');
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(['docker-compose.yml'], $stored['compose_files'] ?? null);
+        $this->assertSame('running', $stored['status'] ?? null);
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'validasi gagal ⇒ tanpa worker');
+        $this->assertSame(0, $controller->applied, 'validasi gagal ⇒ tanpa recreate container');
+    }
+
+    /**
+     * Jalur lokal sukses: dua lapis override ditulis (reset + port final dengan
+     * host port **tetap**), `compose_files` memuat keduanya tepat sekali pada
+     * urutan kanonik, `primary_port` mengikuti port container baru karena baris
+     * 31500 adalah mapping yang di-proxy, lalu container hasil
+     * `applyPortsToApp()` disimpan & status kembali `running`.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSavePortsLocalWritesOverridesAndRecreatesContainer(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = (new AppStore())->create([
+            'name' => 'lokal-port',
+            'server_id' => ServerStore::LOCAL_ID,
+            'status' => 'running',
+            'compose_files' => ['docker-compose.yml'],
+            'primary_service' => 'web',
+            'primary_port' => 3000,
+            'containers' => [[
+                'service_name' => 'web',
+                'container_name' => 'lokal-port_web_1',
+                'host_port' => 31500,
+                'internal_port' => 3000,
+                'ports' => [['host' => 31500, 'container' => 3000]],
+            ]],
+        ]);
+        $this->writeCompose('lokal-port', "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"31500:3000\"\n");
+
+        $controller = new class extends ContainerController {
+            public int $applied = 0;
+
+            protected function applyPortsToApp(array $app): array
+            {
+                $this->applied++;
+                $app['containers'] = [[
+                    'service_name' => 'web',
+                    'container_name' => 'x_web_1',
+                    'host_port' => 31500,
+                    'internal_port' => 8080,
+                    'ports' => [['host' => 31500, 'container' => 8080]],
+                ]];
+
+                return $app;
+            }
+        };
+
+        $response = $controller->savePorts(
+            $this->postForm('/apps/' . $app['id'] . '/ports', ['ports' => ['web' => ['31500' => '8080']]]),
+            $app['id'],
+            $this->fakeLauncher()
+        );
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('success', $flash[0]['type']);
+        $this->assertStringContainsString('Port container disimpan', $flash[0]['message']);
+
+        $dir = $this->tmp . '/apps/lokal-port';
+        $this->assertStringContainsString(
+            '31500:8080',
+            (string) file_get_contents($dir . '/docker-compose.override.ports.yml'),
+            'host port tetap, port container hasil edit ditulis ke lapis 2'
+        );
+        $this->assertStringContainsString(
+            '!reset',
+            (string) file_get_contents($dir . '/docker-compose.override.yml'),
+            'port bawaan repo dibuang lewat lapis reset'
+        );
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $files = (array) ($stored['compose_files'] ?? []);
+        $this->assertSame(1, count(array_keys($files, 'docker-compose.override.yml', true)), 'reset tepat sekali');
+        $this->assertSame(1, count(array_keys($files, 'docker-compose.override.ports.yml', true)), 'ports tepat sekali');
+        $this->assertLessThan(
+            (int) array_search('docker-compose.override.ports.yml', $files, true),
+            (int) array_search('docker-compose.override.yml', $files, true),
+            'reset ditulis sebelum ports (urutan kanonik compose)'
+        );
+
+        $this->assertSame(
+            'x_web_1',
+            (string) ($stored['containers'][0]['container_name'] ?? ''),
+            'containers hasil recreate disimpan'
+        );
+        $this->assertSame(31500, (int) ($stored['containers'][0]['host_port'] ?? 0));
+        $this->assertSame(8080, (int) ($stored['primary_port'] ?? 0), 'primary_port ikut port container baru (host tetap)');
+        $this->assertSame(31500, (int) ($stored['containers'][0]['ports'][0]['host'] ?? 0), 'host port tidak berubah');
+        $this->assertSame('running', $stored['status'] ?? null);
+        $this->assertSame(1, $controller->applied);
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'jalur lokal sinkron (tanpa worker)');
+    }
+
+    /**
+     * Baris yang **tidak** mempublikasikan port ke host (`ports: ["443"]`,
+     * `host === null`) tidak punya identitas untuk form (identitas = host port),
+     * jadi ditolak sebelum berkas override ditulis.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSavePortsLocalRejectsRowWithoutHostPort(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = (new AppStore())->create([
+            'name' => 'lokal-port-tanpa-host',
+            'server_id' => ServerStore::LOCAL_ID,
+            'status' => 'running',
+            'compose_files' => ['docker-compose.yml'],
+        ]);
+        $this->writeCompose('lokal-port-tanpa-host', "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"443\"\n");
+
+        $controller = new class extends ContainerController {
+            public int $applied = 0;
+
+            protected function applyPortsToApp(array $app): array
+            {
+                $this->applied++;
+
+                return $app;
+            }
+        };
+
+        $response = $controller->savePorts(
+            $this->postForm('/apps/' . $app['id'] . '/ports', ['ports' => ['web' => ['443' => '8443']]]),
+            $app['id'],
+            $this->fakeLauncher()
+        );
+
+        $this->assertSame(302, $response->getStatusCode());
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('443', $flash[0]['message']);
+        $this->assertStringContainsString('tidak dipublikasikan ke host', $flash[0]['message']);
+        $this->assertStringContainsString('host port', $flash[0]['message']);
+
+        $dir = $this->tmp . '/apps/lokal-port-tanpa-host';
+        $this->assertFileDoesNotExist($dir . '/docker-compose.override.ports.yml');
+        $this->assertFileDoesNotExist($dir . '/docker-compose.override.yml');
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(['docker-compose.yml'], $stored['compose_files'] ?? null);
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN']);
+        $this->assertSame(0, $controller->applied, 'baris tanpa host port ⇒ tanpa recreate container');
+    }
+
+    /**
+     * Jalur server **agent**: hanya metadata (`host_ports` + `compose_files`)
+     * yang berubah di control plane — host port tetap, port container baru
+     * menggantikan yang lama dan `primary_port` mengikuti — lalu worker
+     * `apply_ports` dipicu, tanpa membuat direktori artefak app di host ini.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSavePortsOnAgentPersistsMetadataAndSpawnsApplyPortsWorker(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-port',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+            'compose_files' => ['docker-compose.yml'],
+            'primary_service' => 'web',
+            'primary_port' => 3000,
+            'containers' => [[
+                'service_name' => 'web',
+                'ports' => [['host' => 31500, 'container' => 3000]],
+            ]],
+            'host_ports' => [['service' => 'web', 'container' => 3000, 'host' => 31500]],
+        ]);
+
+        $response = (new ContainerController())->savePorts(
+            $this->postForm('/apps/' . $app['id'] . '/ports', ['ports' => ['web' => ['31500' => '8080']]]),
+            $app['id'],
+            $this->fakeLauncher()
+        );
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('/apps/' . $app['id'], $response->getHeader('Location'));
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(
+            [['service' => 'web', 'container' => 8080, 'host' => 31500]],
+            $stored['host_ports'] ?? null,
+            'host port tetap, port container baru disimpan sebagai metadata'
+        );
+        $this->assertSame(8080, (int) ($stored['primary_port'] ?? 0), 'primary_port ikut port container baru');
+
+        $files = (array) ($stored['compose_files'] ?? []);
+        $this->assertSame(1, count(array_keys($files, 'docker-compose.override.yml', true)));
+        $this->assertSame(1, count(array_keys($files, 'docker-compose.override.ports.yml', true)));
+        $this->assertLessThan(
+            (int) array_search('docker-compose.override.ports.yml', $files, true),
+            (int) array_search('docker-compose.override.yml', $files, true),
+            'urutan kanonik: reset sebelum ports'
+        );
+
+        $this->assertSame('deploying', $stored['status'] ?? null);
+        $this->assertSame('queued', $stored['stage'] ?? null);
+        $this->assertStringContainsString('server agent', (string) ($stored['message'] ?? ''));
+        $this->assertNull($stored['error'] ?? null);
+
+        $this->assertCount(1, $GLOBALS['RAMES_SPAWN']);
+        $this->assertSame($app['id'], $GLOBALS['RAMES_SPAWN'][0][2]);
+        $this->assertSame('apply_ports', $GLOBALS['RAMES_SPAWN'][0][3]);
+
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-port', 'tanpa artefak lokal untuk app agent');
+        $this->assertSame('success', $GLOBALS['RAMES_FLASH'][0]['type'] ?? null);
+    }
+
+    /**
+     * Agent yang melaporkan capability tanpa `apply_ports` ditolak **sebelum**
+     * metadata berubah & tanpa spawn (fail-fast, bukan job yang pasti ditolak).
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSavePortsOnAgentWithoutApplyPortsCapabilityIsRejected(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID, ['capabilities' => ['deploy', 'apply_limits']]);
+        $app = (new AppStore())->create([
+            'name' => 'agen-port-lama',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+            'host_ports' => [['service' => 'web', 'container' => 3000, 'host' => 31500]],
+        ]);
+
+        $response = (new ContainerController())->savePorts(
+            $this->postForm('/apps/' . $app['id'] . '/ports', ['ports' => ['web' => ['31500' => '8080']]]),
+            $app['id'],
+            $this->fakeLauncher()
+        );
+
+        $this->assertSame(302, $response->getStatusCode());
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('perbarui agent', $flash[0]['message']);
+        $this->assertStringContainsString('port container', $flash[0]['message']);
+        $this->assertStringNotContainsString(self::AGENT_TOKEN, $flash[0]['message']);
+        $this->assertStringNotContainsString('internal.test', $flash[0]['message']);
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(
+            [['service' => 'web', 'container' => 3000, 'host' => 31500]],
+            $stored['host_ports'] ?? null,
+            'metadata tidak boleh berubah'
+        );
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'tanpa worker');
+    }
+
+    /**
+     * App agent yang **hanya** mengekspos port di jaringan container (semua baris
+     * `host === null`) tidak punya identitas baris untuk form "Port container",
+     * jadi ditolak sebelum metadata berubah & tanpa spawn.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSavePortsOnAgentWithoutHostMappingIsRejected(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->agent(self::AGENT_ID);
+        $app = (new AppStore())->create([
+            'name' => 'agen-port-tanpa-host',
+            'server_id' => self::AGENT_ID,
+            'status' => 'running',
+            'host_ports' => [['service' => 'web', 'container' => 3000, 'host' => null]],
+        ]);
+
+        $response = (new ContainerController())->savePorts(
+            $this->postForm('/apps/' . $app['id'] . '/ports', ['ports' => ['web' => ['3000' => '8080']]]),
+            $app['id'],
+            $this->fakeLauncher()
+        );
+
+        $this->assertSame(302, $response->getStatusCode());
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('tidak memublikasikan port ke host', $flash[0]['message']);
+        $this->assertStringContainsString('port container', $flash[0]['message']);
+
+        $stored = (new AppStore())->find($app['id']) ?? [];
+        $this->assertSame(
+            [['service' => 'web', 'container' => 3000, 'host' => null]],
+            $stored['host_ports'] ?? null,
+            'metadata tidak boleh berubah'
+        );
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN'], 'tanpa worker');
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/agen-port-tanpa-host');
+    }
+
+    /**
+     * App impor (project compose eksternal) ditolak `ImportedApp::assertManageable()`
+     * — Rames tidak menulis override port di direktori proyek user.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSavePortsOnImportedAppIsRejected(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = (new AppStore())->create([
+            'name' => 'impor-port',
+            'server_id' => ServerStore::LOCAL_ID,
+            'status' => 'running',
+            'origin' => ComposeSource::ORIGIN_IMPORTED,
+            'compose_dir' => '/srv/proyek-user',
+        ]);
+
+        $response = (new ContainerController())->savePorts(
+            $this->postForm('/apps/' . $app['id'] . '/ports', ['ports' => ['web' => ['31500' => '8080']]]),
+            $app['id'],
+            $this->fakeLauncher()
+        );
+
+        $this->assertSame(302, $response->getStatusCode());
+
+        $flash = $GLOBALS['RAMES_FLASH'];
+        $this->assertCount(1, $flash);
+        $this->assertSame('error', $flash[0]['type']);
+        $this->assertStringContainsString('Port container tidak tersedia untuk app yang diimpor', $flash[0]['message']);
+
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN']);
+        $this->assertDirectoryDoesNotExist($this->tmp . '/apps/impor-port');
+    }
+
+    /**
+     * Gerbang ability: endpoint memakai ability `compose` (operator+) — `viewer`
+     * ditolak lewat `AppAccessDenied` yang dirender **404** (bukan 403), tanpa
+     * efek samping apa pun.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSavePortsRequiresComposeAbilityAndViewerGets404(): void
+    {
+        $viewer = ['id' => 'u3', 'username' => 'pengamat', 'role' => 'member'];
+        $this->installStubs($viewer);
+        $app = (new AppStore())->create([
+            'name' => 'app-viewer-port',
+            'server_id' => ServerStore::LOCAL_ID,
+            'status' => 'running',
+            'owner_id' => 'u-pemilik',
+            'members' => ['u3' => ['role' => 'viewer']],
+            'compose_files' => ['docker-compose.yml'],
+        ]);
+        $this->writeCompose('app-viewer-port', "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"31500:3000\"\n");
+
+        $request = $this->postForm('/apps/' . $app['id'] . '/ports', ['ports' => ['web' => ['31500' => '8080']]]);
+
+        try {
+            (new ContainerController())->savePorts($request, $app['id'], $this->fakeLauncher());
+            $this->fail('viewer tidak boleh mengubah port container (ability `compose` = operator+)');
+        } catch (AppAccessDenied $e) {
+            $rendered = $e->render($request);
+            $this->assertNotNull($rendered, 'penolakan wajib dirender');
+            $this->assertSame(404, $rendered->getStatusCode(), 'akses tidak sah = 404, bukan 403');
+        }
+
+        $this->assertFileDoesNotExist($this->tmp . '/apps/app-viewer-port/docker-compose.override.ports.yml');
+        $this->assertSame([], $GLOBALS['RAMES_SPAWN']);
     }
 
     /**
@@ -1351,7 +1837,7 @@ class AppControllerServerScopeTest extends TestCase
         $GLOBALS['RAMES_FLASH'] = [];
 
         $request = new Request("POST /apps/{$app['id']}/delete HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        $response = (new AppController())->delete($request, $app['id']);
+        $response = (new DeploymentController())->delete($request, $app['id']);
 
         $this->assertSame(302, $response->getStatusCode());
         $this->assertSame('/apps', $response->getHeader('Location'));
@@ -1384,7 +1870,7 @@ class AppControllerServerScopeTest extends TestCase
             'status' => 'running',
         ]);
 
-        $controller = new class extends AppController {
+        $controller = new class extends InfoController {
             /** @var array<string,mixed> */
             public array $rendered = [];
 
@@ -1432,7 +1918,7 @@ class AppControllerServerScopeTest extends TestCase
         // Jalur controller untuk app lokal dengan direktori hilang: pesan & tujuan sama.
         $GLOBALS['RAMES_FLASH'] = [];
         $request = new Request("POST /apps/{$local['id']}/env HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        $response = (new AppController())->saveEnv($request, $local['id']);
+        $response = (new EnvironmentController())->saveEnv($request, $local['id']);
         $this->assertSame(302, $response->getStatusCode());
         $this->assertSame('/apps/' . $local['id'], $response->getHeader('Location'));
         $this->assertSame(
@@ -1756,7 +2242,7 @@ class AppControllerServerScopeTest extends TestCase
         $git = new AppControllerServerFakeGit();
         $name = 'app-repo-agent';
 
-        $response = (new AppController())->createPreview($this->postForm('/apps/create', [
+        $response = (new CreateController())->createPreview($this->postForm('/apps/create', [
             'name' => $name,
             'repo_url' => 'https://example.test/app.git',
             'branch' => 'main',
@@ -1788,7 +2274,7 @@ class AppControllerServerScopeTest extends TestCase
         $git = new AppControllerServerFakeGit();
         $name = 'app-repo-lokal';
 
-        $response = (new AppController())->createPreview($this->postForm('/apps/create', [
+        $response = (new CreateController())->createPreview($this->postForm('/apps/create', [
             'name' => $name,
             'repo_url' => 'https://example.test/app.git',
             'branch' => 'main',
@@ -1862,6 +2348,60 @@ class AppControllerServerScopeTest extends TestCase
         $this->assertSame($app['id'], $body['app']['id'] ?? null);
         $this->assertArrayNotHasKey('env', (array) $body['app']);
         $this->assertArrayNotHasKey('ssh_key', (array) $body['app']);
+    }
+
+    /**
+     * Protokol port ikut metadata `host_ports` jalur create app di server agent:
+     * entri TCP tetap ringkas `{service,container,host}` (kompatibel dengan data
+     * lama), port UDP membawa `protocol` — tanpa itu `apply_ports` merender ulang
+     * `53/udp` sebagai TCP dan app kehilangan datagram.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAgentRepoAppCreateKeepsProtocolInHostPortsMetadata(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $server = $this->agent(self::AGENT_ID);
+        $name = 'app-repo-udp';
+
+        $preflight = new AppControllerServerFakeAgent();
+        $preflight->reply(200, (string) json_encode([
+            'code' => 0,
+            'op' => 'app_check',
+            'available' => true,
+            'state' => 'free',
+            'message' => '',
+        ]));
+
+        $services = [
+            'web' => ['internal_port' => 80, 'host_port' => 31500, 'ports' => [['host' => 31500, 'container' => 80, 'protocol' => 'tcp']]],
+            'dns' => ['internal_port' => 53, 'host_port' => 31501, 'ports' => [['host' => 31501, 'container' => 53, 'protocol' => 'udp']]],
+        ];
+        $pending = $this->repoPending($name, self::AGENT_ID);
+        $pending['services'] = $services;
+
+        $result = $this->invoke('createAndDeploy', [
+            $pending,
+            $services,
+            'web',
+            31500,
+            '',
+            [],
+            null,
+            [],
+            null,
+            $this->fakeLauncher(),
+            new AgentClient($server, $preflight, 25, new TlsPinMaterializer($this->tmp . '/agent-tls')),
+        ]);
+
+        $this->assertSame(
+            [
+                ['service' => 'web', 'container' => 80, 'host' => 31500],
+                ['service' => 'dns', 'container' => 53, 'host' => 31501, 'protocol' => 'udp'],
+            ],
+            $result['app']['host_ports'],
+            'protocol hanya untuk non-tcp; entri tcp tetap {service,container,host}'
+        );
     }
 
     /**
@@ -1974,7 +2514,7 @@ class AppControllerServerScopeTest extends TestCase
         ]);
 
         $content = "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"80\"\n";
-        $response = (new AppController())->saveCompose(
+        $response = (new ComposeController())->saveCompose(
             $this->postForm('/apps/' . $app['id'] . '/compose', [
                 'compose' => $content,
             ]),
@@ -2068,7 +2608,7 @@ class AppControllerServerScopeTest extends TestCase
             ": :\n",                                   // YAML rusak
         ] as $invalid) {
             $GLOBALS['RAMES_FLASH'] = [];
-            $response = (new AppController())->saveCompose(
+            $response = (new ComposeController())->saveCompose(
                 $this->postForm('/apps/' . $app['id'] . '/compose', ['compose' => $invalid]),
                 (string) $app['id'],
                 $this->fakeLauncher()
@@ -2106,7 +2646,7 @@ class AppControllerServerScopeTest extends TestCase
         ]);
 
         $content = "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"80\"\n";
-        (new AppController())->saveCompose(
+        (new ComposeController())->saveCompose(
             $this->postForm('/apps/' . $app['id'] . '/compose', ['compose' => $content]),
             (string) $app['id'],
             $this->fakeLauncher()
@@ -2155,7 +2695,7 @@ class AppControllerServerScopeTest extends TestCase
         ]);
 
         $content = "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"80\"\n  api:\n    image: busybox\n    ports:\n      - \"8080\"\n";
-        (new AppController())->saveCompose(
+        (new ComposeController())->saveCompose(
             $this->postForm('/apps/' . $app['id'] . '/compose', ['compose' => $content]),
             (string) $app['id'],
             $this->fakeLauncher()
@@ -2338,7 +2878,7 @@ class AppControllerServerScopeTest extends TestCase
         // urutan kegagalan berubah (fail-fast resolve tetap terjadi lebih dulu).
         $git = new AppControllerServerFakeGit();
 
-        $html = $this->renderBody((new AppController())->createPreview($this->postForm('/apps/create', [
+        $html = $this->renderBody((new CreateController())->createPreview($this->postForm('/apps/create', [
             'name' => 'app-git-ssh',
             'repo_url' => 'git@example.test:user/app.git',
             'branch' => 'main',
@@ -2347,14 +2887,14 @@ class AppControllerServerScopeTest extends TestCase
         ]), $git));
         $this->assertFailureRerenderKeepsAgent($html, 'createPreview (git, cabang SSH)');
 
-        $html = $this->renderBody((new AppController())->composePreview($this->postForm('/apps/create/compose', [
+        $html = $this->renderBody((new CreateController())->composePreview($this->postForm('/apps/create/compose', [
             'name' => 'app-compose',
             'compose' => "services:\n  web:\n    image: nginx:alpine\n",
             'server_id' => self::AGENT_ID,
         ])));
         $this->assertFailureRerenderKeepsAgent($html, 'composePreview');
 
-        $html = $this->renderBody((new AppController())->templateDeploy(
+        $html = $this->renderBody((new TemplateController())->templateDeploy(
             $this->postForm('/apps/create/template/demo', ['name' => 'app-tpl', 'server_id' => self::AGENT_ID]),
             'demo'
         ));
@@ -2365,7 +2905,7 @@ class AppControllerServerScopeTest extends TestCase
         // — bukan diam-diam kembali ke server lokal. POST-nya tetap ditolak
         // `resolveCreateServer()` (fail-fast), jadi target deploy tidak berubah.
         $this->agent('srv-mati', ['enabled' => false, 'status' => 'offline']);
-        $html = $this->renderBody((new AppController())->composePreview($this->postForm('/apps/create/compose', [
+        $html = $this->renderBody((new CreateController())->composePreview($this->postForm('/apps/create/compose', [
             'name' => 'app-compose-mati',
             'compose' => "services:\n  web:\n    image: nginx:alpine\n",
             'server_id' => 'srv-mati',
@@ -2462,14 +3002,13 @@ class AppControllerServerScopeTest extends TestCase
         $this->tempTemplate('demo');
         $this->writeDeployKey('app-git-ssh');
 
-        $source = (string) file_get_contents(dirname(__DIR__) . '/app/controller/AppController.php');
         $git = new AppControllerServerFakeGit();
         $report = [];
 
         // M1: createPreview (cabang SSH) kembali memakai default server lokal.
         $report[] = $this->mutantCaught(
             'M1-createpreview-selected-server',
-            $source,
+            'CreateController',
             "                ] + \$this->serverFormContext(current_user(), \$this->requestedServerId(\$request)));\n            }\n            if (\$generatedKey) {",
             "                ] + \$this->serverFormContext(current_user()));\n            }\n            if (\$generatedKey) {",
             function (object $controller): void {
@@ -2487,9 +3026,9 @@ class AppControllerServerScopeTest extends TestCase
         // M2: composePreview kembali memakai default server lokal.
         $report[] = $this->mutantCaught(
             'M2-composepreview-selected-server',
-            $source,
-            "            ] + \$this->serverFormContext(current_user(), \$this->requestedServerId(\$request)));\n        }\n    }\n\n    // ==================================================================\n    // Wizard create — mode Template",
-            "            ] + \$this->serverFormContext(current_user()));\n        }\n    }\n\n    // ==================================================================\n    // Wizard create — mode Template",
+            'CreateController',
+            "            ] + \$this->serverFormContext(current_user(), \$this->requestedServerId(\$request)));\n        }\n    }",
+            "            ] + \$this->serverFormContext(current_user()));\n        }\n    }",
             function (object $controller): void {
                 $html = $this->renderBody($controller->composePreview($this->postForm('/apps/create/compose', [
                     'name' => 'app-compose',
@@ -2503,7 +3042,7 @@ class AppControllerServerScopeTest extends TestCase
         // M3: templateDeploy fase-1 kembali memakai default server lokal.
         $report[] = $this->mutantCaught(
             'M3-templatedeploy-selected-server',
-            $source,
+            'TemplateController',
             "            return view('app/template', \$this->serverFormContext(\n                current_user(),\n                \$this->requestedServerId(\$request)\n            ) + [",
             "            return view('app/template', \$this->serverFormContext(\n                current_user()\n            ) + [",
             function (object $controller): void {
@@ -2518,7 +3057,7 @@ class AppControllerServerScopeTest extends TestCase
         // M4: parameter `server_id` di Location dibuang.
         $report[] = $this->mutantCaught(
             'M4-location-server-query',
-            $source,
+            'CreateController',
             "            \$serverQuery = \$mayPickServer ? '?server_id=' . rawurlencode(\$requestedServerId) : '';",
             "            \$serverQuery = '';",
             function (object $controller) use ($git): void {
@@ -2586,7 +3125,7 @@ class AppControllerServerScopeTest extends TestCase
      */
     private function failureLocation(array $fields, GitService $git): string
     {
-        $response = (new AppController())->createPreview($this->postForm('/apps/create', $fields), $git);
+        $response = (new CreateController())->createPreview($this->postForm('/apps/create', $fields), $git);
 
         self::assertSame(302, $response->getStatusCode(), 'kegagalan wizard git wajib redirect ke form create');
 
@@ -2611,21 +3150,29 @@ class AppControllerServerScopeTest extends TestCase
      * Muat salinan controller bermutasi (namespace unik, di temp) lalu buktikan
      * assert yang sama **gagal** untuk mutan tersebut.
      */
-    private function mutantCaught(string $name, string $source, string $from, string $to, callable $assert): string
+    private function mutantCaught(string $name, string $class, string $from, string $to, callable $assert): string
     {
+        $source = (string) file_get_contents(dirname(__DIR__) . '/app/controller/app/' . $class . '.php');
         self::assertStringContainsString($from, $source, 'anchor mutasi tidak ditemukan: ' . $name);
 
         $namespace = 'RamesMutant' . str_replace('-', '', ucwords($name, '-'));
-        $class = $namespace . '\\AppController';
+        $parent = preg_match('/^class \w+ extends (\w+)/m', $source, $m) === 1 ? $m[1] : '';
+        $header = 'namespace ' . $namespace . ';'
+            . ($parent !== '' ? "\n\nuse app\\controller\\app\\{$parent};" : '');
         file_put_contents(
             $this->tmp . '/' . $namespace . '.php',
-            str_replace('namespace app\controller;', 'namespace ' . $namespace . ';', str_replace($from, $to, $source))
+            str_replace(
+                ['namespace app\controller\app;', $from],
+                [$header, $to],
+                $source
+            )
         );
         require $this->tmp . '/' . $namespace . '.php';
 
+        $fqcn = $namespace . '\\' . $class;
         $caught = 'TIDAK tertangkap';
         try {
-            $assert(new $class());
+            $assert(new $fqcn());
         } catch (AssertionFailedError $failure) {
             $caught = 'tertangkap (' . $this->shorten($failure->getMessage()) . ')';
         }
@@ -2724,7 +3271,7 @@ class AppControllerServerScopeTest extends TestCase
 
     /**
      * Sisa direktori clone **analisis sementara** milik app ini (nama sama dengan
-     * konstanta `AppController::REPO_ANALYSIS_DIR`; dikutip literal karena
+     * konstanta `CreateController::REPO_ANALYSIS_DIR`; dikutip literal karena
      * konstanta itu privat).
      *
      * @return array<int,string>
@@ -2845,10 +3392,7 @@ class AppControllerServerScopeTest extends TestCase
      */
     private function invoke(string $method, array $args): mixed
     {
-        $reflection = new ReflectionMethod(AppController::class, $method);
-        $reflection->setAccessible(true);
-
-        return $reflection->invoke(new AppController(), ...$args);
+        return AppControllerLocator::invoke($method, $args);
     }
 
     /**
@@ -2857,9 +3401,9 @@ class AppControllerServerScopeTest extends TestCase
      *
      * @param array<int,mixed> $args
      */
-    private function invokeOn(AppController $controller, string $method, array $args): mixed
+    private function invokeOn(AppControllerBase $controller, string $method, array $args): mixed
     {
-        $reflection = new ReflectionMethod(AppController::class, $method);
+        $reflection = new ReflectionMethod($controller, $method);
         $reflection->setAccessible(true);
 
         return $reflection->invoke($controller, ...$args);
@@ -2868,7 +3412,7 @@ class AppControllerServerScopeTest extends TestCase
     /** Isi berkas satu method controller (untuk pemeriksaan kontrak statik). */
     private function methodBody(string $method): string
     {
-        $reflection = new ReflectionMethod(AppController::class, $method);
+        $reflection = new ReflectionMethod(AppControllerLocator::classFor($method), $method);
         $lines = (array) file((string) $reflection->getFileName());
 
         return implode('', array_slice(

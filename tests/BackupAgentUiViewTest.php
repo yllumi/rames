@@ -448,7 +448,7 @@ class BackupAgentUiViewTest extends TestCase
     }
 
     /**
-     * Variabel sesuai kontrak `AppController::detail()` (partial tab lain ikut
+     * Variabel sesuai kontrak `InfoController::detail()` (partial tab lain ikut
      * render di berkas yang sama, jadi semua konteks opsionalnya diisi minimal).
      *
      * @param array<string,mixed> $app

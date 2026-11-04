@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
+use app\controller\app\DomainSettingsController;
 use app\library\Deploy\ServerResolver;
 use app\library\Nginx\NginxReloader;
 use app\library\Storage\AppStore;
@@ -165,7 +165,7 @@ class AppControllerServerAddressFlashTest extends TestCase
         $app = $this->localApp('app-flash-alamat');
         $reloader = new AppServerAddressFlashReloader();
 
-        $response = (new AppController())->setDomain(
+        $response = (new DomainSettingsController())->setDomain(
             $this->post('domain=baru.example.com'),
             $app['id'],
             $reloader
@@ -214,7 +214,7 @@ class AppControllerServerAddressFlashTest extends TestCase
         $app = $this->localApp('app-flash-tanpa-alamat');
         $reloader = new AppServerAddressFlashReloader();
 
-        $response = (new AppController())->setDomain(
+        $response = (new DomainSettingsController())->setDomain(
             $this->post('domain=baru.example.com'),
             $app['id'],
             $reloader

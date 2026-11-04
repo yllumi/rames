@@ -17,7 +17,7 @@ if (!defined('BASE_PATH')) {
 
 /**
  * `DeployWorkerLauncher` (misi F1 multi-server) — ekstraksi spawn worker
- * `cli/deploy.php` dari `AppController::spawnWorker()` agar dipakai bersama
+ * `cli/deploy.php` dari `AppControllerBase::spawnWorker()` agar dipakai bersama
  * dashboard **dan** `AgentJobController`.
  *
  * Yang dikunci:
@@ -28,7 +28,7 @@ if (!defined('BASE_PATH')) {
  *  3. mode tak dikenal / appId kosong ⇒ **tidak** diluncurkan (tanpa proses mubazir);
  *  4. SIGCHLD dijaga `SigchldGuard`: `SIG_IGN` (fire-and-forget) dilonggarkan
  *     selama fork supaya anak mewarisi disposisi normal, lalu dipulihkan;
- *  5. `AppController::spawnWorker()` hanya mendelegasi (tidak ada salinan kedua
+ *  5. `AppControllerBase::spawnWorker()` hanya mendelegasi (tidak ada salinan kedua
  *     mekanisme spawn di controller).
  *
  * Semua uji memakai direktori `/tmp` dan seam spawn — **tidak pernah** membuat
@@ -205,14 +205,17 @@ class DeployWorkerLauncherTest extends TestCase
 
     /**
      * Controller hanya boleh mendelegasi: tidak ada salinan kedua mekanisme
-     * spawn (`pcntl_fork`/`pcntl_exec`) di `AppController`.
+     * spawn (`pcntl_fork`/`pcntl_exec`) di controller app.
      */
     public function testAppControllerSpawnWorkerDelegatesToLauncher(): void
     {
-        $source = (string) file_get_contents(dirname(__DIR__) . '/app/controller/AppController.php');
+        $source = '';
+        foreach (glob(dirname(__DIR__) . '/app/controller/app/*.php') ?: [] as $file) {
+            $source .= (string) file_get_contents($file);
+        }
 
-        $start = strpos($source, 'private function spawnWorker(');
-        $this->assertNotFalse($start, 'AppController::spawnWorker() tidak ditemukan');
+        $start = strpos($source, 'function spawnWorker(');
+        $this->assertNotFalse($start, 'AppControllerBase::spawnWorker() tidak ditemukan');
         $body = substr($source, $start, (int) strpos($source, "\n    }", (int) $start) - (int) $start);
 
         $this->assertStringContainsString('DeployWorkerLauncher', $body, 'spawnWorker wajib memakai launcher bersama');

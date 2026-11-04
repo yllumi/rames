@@ -98,7 +98,7 @@ class AppStopper
     /**
      * Hentikan app yang **akan berjalan tanpa akrual** karena pengalihan
      * kepemilikan: app masih hidup dipindahkan dari pemilik yang ditagih (member)
-     * ke pemilik bebas tagihan (admin). Dipakai `AppController::transferOwner()`.
+     * ke pemilik bebas tagihan (admin). Dipakai `AccessController::transferOwner()`.
      *
      * Tanpa aturan ini, anggota bisa "bebas biaya" dengan memindahkan app yang
      * sedang berjalan ke user admin (meteran hanya mengakru app milik member).

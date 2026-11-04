@@ -3,11 +3,11 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupStatusController;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Test `BackupController::publicStatus()` — daftar-putih status run untuk
+ * Test `BackupStatusController::publicStatus()` — daftar-putih status run untuk
  * **semua** user login.
  *
  * `readStatus()` memuat `volumes[]` (hasil run terakhir) & `error` yang bisa
@@ -21,7 +21,7 @@ class BackupPublicStatusTest extends TestCase
 {
     public function testDropsVolumesAndErrorKeepsWhitelist(): void
     {
-        $out = BackupController::publicStatus([
+        $out = BackupStatusController::publicStatus([
             'run_id' => 'r1',
             'trigger' => 'schedule',
             'host' => 'rames',
@@ -55,12 +55,12 @@ class BackupPublicStatusTest extends TestCase
 
     public function testEmptyStatusYieldsEmptyArray(): void
     {
-        $this->assertSame([], BackupController::publicStatus([]));
+        $this->assertSame([], BackupStatusController::publicStatus([]));
     }
 
     public function testOnlySensitiveKeysYieldEmptyArray(): void
     {
-        $out = BackupController::publicStatus([
+        $out = BackupStatusController::publicStatus([
             'volumes' => [['name' => 'a']],
             'error' => 'x',
         ]);
@@ -70,7 +70,7 @@ class BackupPublicStatusTest extends TestCase
 
     public function testKeepsPresentKeysOnly(): void
     {
-        $out = BackupController::publicStatus(['running' => true, 'volumes' => []]);
+        $out = BackupStatusController::publicStatus(['running' => true, 'volumes' => []]);
 
         $this->assertSame(['running' => true], $out);
     }

@@ -18,7 +18,7 @@ use RuntimeException;
  *
  * Alur: `start()` = preflight → tulis kerangka status (`TemplatePullState`) →
  * spawn worker `cli/pull.php` detached (`DetachedWorker`, pola sama dengan
- * `AppController::spawnWorker()`) → request HTTP langsung kembali; progres
+ * `AppControllerBase::spawnWorker()`) → request HTTP langsung kembali; progres
  * dipantau `panel()`. Controller hanya mediator — logika ada di sini.
  *
  * Worker di-spawn **tanpa env tambahan** ⇒ `DetachedWorker` mewariskan seluruh

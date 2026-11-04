@@ -102,6 +102,13 @@ class FakeCliDeployer implements DeployerInterface
         return $this->finish($app, 'apply-limits');
     }
 
+    public function applyPorts(array $app, callable $logger): array
+    {
+        $this->note('apply-ports');
+
+        return $this->finish($app, 'apply-ports');
+    }
+
     /**
      * @param array<int,string>|null $preserveVolumes
      */

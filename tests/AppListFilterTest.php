@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
+use app\controller\app\ListController;
 use app\library\Auth\UserStore;
 use app\library\Deploy\ServerResolver;
 use app\library\Storage\AppStore;
@@ -16,10 +16,10 @@ use Webman\Config;
 use Webman\Http\Response;
 
 /**
- * `AppController` dengan seam uji: renderer view disuntikkan (tanpa konteks
+ * `ListController` (`/apps`) dengan seam uji: renderer view disuntikkan (tanpa konteks
  * HTTP) sehingga variabel view dapat diperiksa langsung.
  */
-final class AppListFilterController extends AppController
+final class AppListFilterController extends ListController
 {
     /** @var list<array{template:string,vars:array<string,mixed>}> */
     public array $rendered = [];

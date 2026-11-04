@@ -3,8 +3,9 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
-use app\controller\BackupController;
+use app\controller\app\DomainSettingsController;
+use app\controller\backup\BackupDbController;
+use app\controller\backup\BackupOverviewController;
 use app\controller\FileController;
 use app\controller\LogController;
 use app\controller\MonitorController;
@@ -57,7 +58,7 @@ class AgentErrorRedactionControllersTest extends TestCase
     private const APP_ID = 'a1b2c3d4e5f60718';
     private const ADMIN = ['id' => 'u9', 'username' => 'admin', 'role' => 'admin'];
 
-    /** Stub helper global untuk `AppController` (dimuat di proses anak). */
+    /** Stub helper global untuk `DomainSettingsController` (dimuat di proses anak). */
     private const APP_STUB_SOURCE = <<<'PHP'
         <?php
         namespace {
@@ -240,7 +241,7 @@ class AgentErrorRedactionControllersTest extends TestCase
 
     public function testBackupDumpDownloadHidesAgentIdentityInErrorMessage(): void
     {
-        $controller = new AgentRedactionBackupController($this->app(), $this->deployerWithTransportFailure());
+        $controller = new AgentRedactionBackupDbController($this->app(), $this->deployerWithTransportFailure());
 
         $body = $this->json($controller->downloadDumpSql(
             $this->get('/backups/dump/sql?volume=demo_data&server_id=srv-x')
@@ -255,16 +256,16 @@ class AgentErrorRedactionControllersTest extends TestCase
     // ==================================================================
 
     /**
-     * `AppController::setSubdomain()` — galat `nginx_write` di agent memuat
+     * `DomainSettingsController::setSubdomain()` — galat `nginx_write` di agent memuat
      * `base_url`/host; flash ke user wajib sudah teredaksi.
      */
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
-    public function testAppControllerHidesAgentIdentityInErrorMessage(): void
+    public function testDomainSettingsControllerHidesAgentIdentityInErrorMessage(): void
     {
         $this->installAppStubs();
 
-        $response = (new AppController())->setSubdomain(
+        $response = (new DomainSettingsController())->setSubdomain(
             $this->post(['subdomain' => 'baru'], '/apps/' . self::APP_ID . '/subdomain'),
             self::APP_ID,
             null,
@@ -295,12 +296,12 @@ class AgentErrorRedactionControllersTest extends TestCase
     }
 
     /**
-     * `BackupController::snapshots()` cabang agent — galat
+     * `BackupOverviewController::snapshots()` cabang agent — galat
      * `AgentDeployer::backupSnapshots()` membawa `base_url`/host.
      */
     public function testBackupSnapshotsHidesAgentIdentityInErrorMessage(): void
     {
-        $controller = new AgentRedactionBackupController($this->app(), $this->deployerWithTransportFailure());
+        $controller = new AgentRedactionBackupSnapshotsController($this->app(), $this->deployerWithTransportFailure());
 
         $body = $this->json($controller->snapshots(
             $this->get('/api/backups/snapshots?volume=demo_data&server_id=srv-x')
@@ -427,7 +428,7 @@ class AgentErrorRedactionControllersTest extends TestCase
     }
 
     /**
-     * Stub helper global untuk `AppController` (hanya dipakai di proses anak).
+     * Stub helper global untuk `DomainSettingsController` (hanya dipakai di proses anak).
      * `app/functions.php` dimuat setelah stub agar `current_user`/`flash_set`
      * tidak menuntut session HTTP.
      */
@@ -775,11 +776,23 @@ final class AgentRedactionMonitorController extends MonitorController
     }
 }
 
-/** `BackupController` dengan seam uji: target agent tetap, tanpa Docker lokal. */
-final class AgentRedactionBackupController extends BackupController
+/**
+ * Seam uji bersama controller backup: target agent tetap, tanpa Docker lokal.
+ *
+ * Dipakai dua controller hasil pemecahan (`BackupDbController` untuk unduhan
+ * dump, `BackupOverviewController` untuk daftar snapshot) — satu perilaku uji,
+ * dua kelas konkret.
+ */
+trait AgentRedactionBackupSeam
 {
-    public function __construct(private array $appRow, private ?AgentDeployer $deployer)
+    private array $appRow;
+
+    private ?AgentDeployer $deployer;
+
+    public function __construct(array $appRow, ?AgentDeployer $deployer)
     {
+        $this->appRow = $appRow;
+        $this->deployer = $deployer;
     }
 
     protected function currentUser(): ?array
@@ -813,6 +826,18 @@ final class AgentRedactionBackupController extends BackupController
     {
         return AgentRedactionApps::resolver();
     }
+}
+
+/** `BackupDbController` dengan seam uji (`downloadDumpSql()` cabang agent). */
+final class AgentRedactionBackupDbController extends BackupDbController
+{
+    use AgentRedactionBackupSeam;
+}
+
+/** `BackupOverviewController` dengan seam uji (`snapshots()` cabang agent). */
+final class AgentRedactionBackupSnapshotsController extends BackupOverviewController
+{
+    use AgentRedactionBackupSeam;
 }
 
 /** Docker Engine tiruan (tanpa socket). */

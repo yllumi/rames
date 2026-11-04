@@ -21,7 +21,7 @@ use PHPUnit\Framework\TestCase;
  *  - `/monitor`      → `MonitorController::index()` (+ `data.servers[]` dari `overview()`);
  *  - `/networks`     → `NetworkController::index()` (`$rows`/`$servers`/`$serverId`/`$serverName`);
  *  - `/database`     → `DatabaseController::index()` (baris lokal tanpa `server_id`, baris agent memilikinya);
- *  - detail app      → `AppController::show()` (`$app['server_id']`, opsional `$serverName`).
+ *  - detail app      → `InfoController::detail()` (`$app['server_id']`, opsional `$serverName`).
  *
  * Yang dibuktikan:
  *  (i)   `/monitor`: kartu "Semua Server" + template baris ber-badge
@@ -621,7 +621,7 @@ class MultiServerViewTest extends TestCase
     }
 
     /**
-     * Variabel sesuai kontrak `AppController::show()` (partial tab lain ikut render
+     * Variabel sesuai kontrak `InfoController::detail()` (partial tab lain ikut render
      * di berkas yang sama, jadi semua konteks opsionalnya diisi minimal).
      *
      * @param array<string,mixed> $app

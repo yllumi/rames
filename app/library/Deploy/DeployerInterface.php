@@ -104,6 +104,27 @@ interface DeployerInterface
     public function applyLimits(array $app, callable $logger): array;
 
     /**
+     * Terapkan perubahan **host port** (mapping host:container) app tanpa rebuild
+     * source: sinkronkan override port yang ada (ditulis pemanggil lewat
+     * `PortOverrides`), lalu `docker compose up -d` (tanpa `--build`) — hanya
+     * container yang portnya berubah yang diciptakan ulang. Sesudah itu daftar
+     * container dikumpulkan ulang dan config Nginx **ditulis ulang** supaya
+     * `proxy_pass` mengikuti host port baru.
+     *
+     * Perubahan env/limits/network/nama container **tidak** diubah di sini: op
+     * ini hanya menyegarkan container dari override port yang sudah ada di disk
+     * (jalur env/limits punya `applyEnv()`/`applyLimits()` sendiri).
+     *
+     * Di server agent, op ini dijalankan sebagai job `apply_ports` (worker
+     * membaca metadata `host_ports`/`compose_files` dari proyeksi app agent).
+     *
+     * @param array    $app
+     * @param callable $logger callable(string $stage, string $message): void
+     * @return array app yang diperbarui (containers + status)
+     */
+    public function applyPorts(array $app, callable $logger): array;
+
+    /**
      * Teardown: down container + hapus config Nginx.
      *
      * Bila $preserveVolumes === null → `down -v` (hapus SEMUA volume termasuk

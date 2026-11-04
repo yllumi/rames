@@ -4,10 +4,9 @@ declare(strict_types=1);
 namespace app\library\Agent;
 
 use app\library\Deploy\ComposeSource;
+use app\library\Deploy\PortOverrides;
 use app\library\Git\SshKeyManager;
 use RuntimeException;
-use Symfony\Component\Yaml\Tag\TaggedValue;
-use Symfony\Component\Yaml\Yaml;
 
 /**
  * Kumpulkan **artefak app** di sisi **control plane** untuk dikirim bersama
@@ -46,7 +45,7 @@ use Symfony\Component\Yaml\Yaml;
  *
  * **Pemilihan `compose`: master control plane lebih dulu.** App mode compose bisa
  * disunting dari tab Compose di dashboard (termasuk untuk app di server agent,
- * `AppController::saveCompose()`); master-nya disimpan di metadata app
+ * `ComposeController::saveCompose()`); master-nya disimpan di metadata app
  * (`compose_content`) sehingga tidak bergantung pada keberadaan direktori
  * artefak di host ini. Bila metadata itu kosong (app lama / dibuat wizard yang
  * memang menulis master ke `apps/<name>/`), berkas di disk yang dipakai.
@@ -85,7 +84,7 @@ use Symfony\Component\Yaml\Yaml;
  * **Batas yang diketahui fase ini** (bukan bug yang disembunyikan):
  *  - berkas pendukung app mode compose (mis. `nginx.conf` yang di-bind mount)
  *    belum dikirim — hanya file compose utama; jalur upload/hapus berkas
- *    pendukung untuk app di server agent ditolak eksplisit di `AppController`
+ *    pendukung untuk app di server agent ditolak eksplisit di controller
  *    (bukan dibuang diam-diam);
  *  - berkas non-UTF-8 tidak didukung (payload JSON); materi seperti itu ditolak
  *    di sini, bukan dikirim korup oleh `JSON_INVALID_UTF8_SUBSTITUTE`.
@@ -227,7 +226,7 @@ final class AgentArtifactPackager
 
     /**
      * Berkas override port app — dua lapis sesuai kontrak jalur lokal
-     * (`AppController::writeOverride()`): `docker-compose.override.yml` berisi
+     * (`AppArtifactControllerBase::writeOverride()`): `docker-compose.override.yml` berisi
      * `ports: !reset []` per service (menghapus port bawaan repo) lalu
      * `docker-compose.override.ports.yml` berisi port final `host:container`.
      *
@@ -275,15 +274,20 @@ final class AgentArtifactPackager
 
     /**
      * Rencana host port app dari metadata `host_ports` (bentuk kanonik:
-     * daftar `{service, container, host}`; `host` boleh `null` untuk port yang
-     * hanya diekspos tanpa publish ke host).
+     * daftar `{service, container, host, protocol}`; `host` boleh `null` untuk
+     * port yang hanya diekspos tanpa publish ke host; `protocol` opsional —
+     * absen = `tcp`, entri lama tetap sah).
+     *
+     * Protokol dinormalisasi lowercase dan **wajib** `tcp`/`udp`/`sctp`: nilai
+     * lain melempar, karena rencana dengan protokol salah akan membuat app
+     * kehilangan datagram (mis. DNS `53/udp` ditulis ulang jadi TCP).
      *
      * Murni + defensif: entri yang tidak berbentuk map/angka ditolak
      * (`RuntimeException`), karena rencana yang salah akan menulis port yang
      * salah ke server app — lebih baik job tidak dikirim.
      *
      * @param array<string,mixed> $app
-     * @return array<int,array{service:string,container:int,host:?int}>
+     * @return array<int,array{service:string,container:int,host:?int,protocol:string}>
      * @throws RuntimeException bentuk `host_ports` tidak sah
      */
     public static function hostPortPlan(array $app): array
@@ -305,6 +309,19 @@ final class AgentArtifactPackager
             $container = (int) (is_scalar($entry['container'] ?? null) ? $entry['container'] : 0);
             $rawHost = $entry['host'] ?? null;
             $host = $rawHost === null ? null : (int) (is_scalar($rawHost) ? $rawHost : 0);
+            $protocol = PortOverrides::DEFAULT_PROTOCOL;
+            $rawProtocol = $entry['protocol'] ?? null;
+            if ($rawProtocol !== null && $rawProtocol !== '') {
+                $candidate = is_scalar($rawProtocol) ? strtolower(trim((string) $rawProtocol)) : '';
+                if (!in_array($candidate, PortOverrides::PROTOCOLS, true)) {
+                    throw new RuntimeException(
+                        'Rencana port app (`host_ports`) memuat protokol port yang tidak dikenal ('
+                        . (is_scalar($rawProtocol) ? (string) $rawProtocol : gettype($rawProtocol))
+                        . '); deploy dibatalkan (perbaiki lewat tab Container lalu simpan ulang).'
+                    );
+                }
+                $protocol = $candidate;
+            }
 
             if ($service === '' || preg_match('/^[A-Za-z0-9._-]{1,128}$/', $service) !== 1
                 || $container <= 0 || $container > 65535
@@ -315,37 +332,33 @@ final class AgentArtifactPackager
                 );
             }
 
-            $plan[] = ['service' => $service, 'container' => $container, 'host' => $host];
+            $plan[] = [
+                'service' => $service,
+                'container' => $container,
+                'host' => $host,
+                'protocol' => $protocol,
+            ];
         }
 
         return $plan;
     }
 
     /**
-     * Render dua lapis override port dari rencana (dump YAML **identik** dengan
-     * jalur lokal `AppController::writeOverride()`: `TaggedValue('reset', [])`
-     * + `Yaml::dump(…, 4, 2)`), supaya berkas di server agent sama persis dengan
-     * yang akan ditulis host ini untuk app lokal.
+     * Render dua lapis override port dari rencana — **delegasi** ke
+     * {@see PortOverrides::render()} supaya app lokal dan app di server agent
+     * menerima isi berkas yang identik (satu renderer, termasuk sufiks `/proto`
+     * untuk port non-tcp).
      *
-     * @param array<int,array{service:string,container:int,host:?int}> $plan
+     * @param array<int,array{service:string,container:int,host:?int,protocol?:string}> $plan
      * @return array<string,string> [reset => yaml, ports => yaml]
      */
     private static function renderPortOverrides(array $plan): array
     {
-        $reset = ['services' => []];
-        $ports = ['services' => []];
-
-        foreach ($plan as $entry) {
-            $service = $entry['service'];
-            $reset['services'][$service]['ports'] = new TaggedValue('reset', []);
-            $ports['services'][$service]['ports'][] = $entry['host'] !== null
-                ? $entry['host'] . ':' . $entry['container']
-                : (string) $entry['container'];
-        }
+        $rendered = PortOverrides::render(PortOverrides::rows(['host_ports' => $plan]));
 
         return [
-            ComposeSource::RESET_OVERRIDE_FILE => Yaml::dump($reset, 4, 2),
-            ComposeSource::PORTS_OVERRIDE_FILE => Yaml::dump($ports, 4, 2),
+            ComposeSource::RESET_OVERRIDE_FILE => $rendered['reset'],
+            ComposeSource::PORTS_OVERRIDE_FILE => $rendered['ports'],
         ];
     }
 
@@ -485,7 +498,7 @@ final class AgentArtifactPackager
 
     /**
      * Apakah app membawa master compose hasil suntingan dashboard
-     * (`compose_content`, ditulis `AppController::saveComposeOnAgent()`)?
+     * (`compose_content`, ditulis `ComposeController::saveComposeOnAgent()`)?
      *
      * Metadata ini hanya terisi untuk app di server agent (host control plane
      * tidak menyimpan direktori artefaknya), jadi keberadaannya menandakan user

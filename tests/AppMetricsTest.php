@@ -536,6 +536,11 @@ final class AppMetricsLocalDeployer implements DeployerInterface
         return $app;
     }
 
+    public function applyPorts(array $app, callable $logger): array
+    {
+        return $app;
+    }
+
     public function teardown(array $app, ?array $preserveVolumes = null): void
     {
     }

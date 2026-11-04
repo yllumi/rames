@@ -898,7 +898,7 @@ class AgentJobController
         // untuk `detect()` (mis. nilai legacy/modern berbeda). Tanpa pemisahan
         // ini, form menampilkan "Daftar service tidak tersedia" dan **menolak
         // simpan** padahal daftar service valid — paritas dengan jalur lokal
-        // (`AppController::limitsContext()`).
+        // (`AppArtifactControllerBase::limitsContext()`).
         $repo = [];
         $error = null;
         try {
@@ -969,7 +969,7 @@ class AgentJobController
      * `POST /apps/check` (F1 lanjutan) — preflight **ketersediaan nama app**:
      * apakah direktori artefak `apps/<name>` di server ini bisa dipakai app yang
      * akan dibuat, dipakai `AgentDeployer::assertAppTargetAvailable()` dari
-     * `AppController::createAndDeploy()` **sebelum** record app ditulis.
+     * `CreateDeployController::createAndDeploy()` **sebelum** record app ditulis.
      *
      * Bukan job, dan memang tidak boleh jadi job: tidak ada proyeksi app
      * (app-nya belum ada di control plane), tidak ada worker untuk di-spawn, dan

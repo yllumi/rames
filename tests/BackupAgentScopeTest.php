@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupRunController;
+use app\controller\backup\BackupStatusController;
 use app\library\Agent\AgentClient;
 use app\library\Agent\TlsPinMaterializer;
 use app\library\Auth\AppAccessDenied;
@@ -23,7 +24,7 @@ if (!defined('BASE_PATH')) {
 }
 
 /**
- * Cakupan server pada jalur **agent** `BackupController` (multi-server §9.3).
+ * Cakupan server pada jalur **agent** controller backup (`app\controller\backup\*`, multi-server §9.3).
  *
  * Invarian yang dibuktikan di sini:
  *  1. server di luar jangkauan user **tidak pernah dihubungi** — bukan sekadar
@@ -265,7 +266,7 @@ class BackupAgentScopeTest extends TestCase
             ['name' => 'demo-a_data', 'project' => 'demo-a', 'app_id' => self::APP_A, 'orphaned' => false, 'server_id' => 'srv-c'],
         ]);
 
-        $controller = $this->controller(self::ADMIN, [], $service);
+        $controller = $this->statusController(self::ADMIN, [], $service);
         $response = $controller->status(new Request("GET /api/backups/status HTTP/1.1\r\nHost: localhost\r\n\r\n"));
         $payload = json_decode($response->rawBody(), true, 512, JSON_THROW_ON_ERROR);
 
@@ -289,7 +290,7 @@ class BackupAgentScopeTest extends TestCase
             ['name' => 'demo-b_data', 'project' => 'demo-b', 'app_id' => self::APP_B, 'orphaned' => false],
         ]);
 
-        $controller = $this->controller(self::ADMIN, [], $service);
+        $controller = $this->statusController(self::ADMIN, [], $service);
         $response = $controller->status(new Request("GET /api/backups/status HTTP/1.1\r\nHost: localhost\r\n\r\n"));
         $payload = json_decode($response->rawBody(), true, 512, JSON_THROW_ON_ERROR);
 
@@ -333,7 +334,7 @@ class BackupAgentScopeTest extends TestCase
             ],
         ];
 
-        $out = BackupController::withRegistryFallback($rows, $registry);
+        $out = BackupStatusController::withRegistryFallback($rows, $registry);
 
         $this->assertSame('2026-11-03T20:00:00+07:00', $out[0]['last_run_at']);
         $this->assertTrue($out[0]['last_ok']);
@@ -365,7 +366,7 @@ class BackupAgentScopeTest extends TestCase
             ['name' => 'demo-a_data', 'project' => 'demo-a', 'app_id' => self::APP_A, 'orphaned' => false],
         ]));
 
-        $controller = $this->controller(self::ADMIN, ['srv-a' => $handler], $service);
+        $controller = $this->statusController(self::ADMIN, ['srv-a' => $handler], $service);
         $first = json_decode(
             (string) $controller->status(new Request("GET /api/backups/status HTTP/1.1\r\nHost: localhost\r\n\r\n"))->rawBody(),
             true,
@@ -405,6 +406,17 @@ class BackupAgentScopeTest extends TestCase
         ?VolumeBackupService $service = null,
     ): BackupAgentScopeFakeController {
         return new BackupAgentScopeFakeController($user, $this->tmp, $handlers, $service);
+    }
+
+    /**
+     * @param array<string,BackupAgentScopeFakeHandler> $handlers serverId ⇒ handler
+     */
+    private function statusController(
+        array $user,
+        array $handlers,
+        ?VolumeBackupService $service = null,
+    ): BackupAgentScopeFakeStatusController {
+        return new BackupAgentScopeFakeStatusController($user, $this->tmp, $handlers, $service);
     }
 
     /** @param array<int,array<string,mixed>> $volumes */
@@ -505,7 +517,7 @@ class BackupAgentScopeTest extends TestCase
  * (klien HTTP tiruan), service backup, dan worker di-inject — mediator diuji tanpa
  * Docker/jaringan/proses nyata.
  */
-final class BackupAgentScopeFakeController extends BackupController
+trait BackupAgentScopeSeam
 {
     /** @var array<int,string> server id yang benar-benar dihubungi */
     public array $contacted = [];
@@ -517,16 +529,25 @@ final class BackupAgentScopeFakeController extends BackupController
 
     private ?ServerResolver $resolver = null;
 
+    private ?array $user = null;
+
+    private string $tmp = '';
+
+    /** @var array<string,BackupAgentScopeFakeHandler> */
+    private array $handlers = [];
+
+    private ?VolumeBackupService $service = null;
+
     /**
      * @param array<string,mixed>|null                  $user
      * @param array<string,BackupAgentScopeFakeHandler> $handlers
      */
-    public function __construct(
-        private ?array $user,
-        private string $tmp,
-        private array $handlers,
-        private ?VolumeBackupService $service,
-    ) {
+    public function __construct(?array $user, string $tmp, array $handlers, ?VolumeBackupService $service)
+    {
+        $this->user = $user;
+        $this->tmp = $tmp;
+        $this->handlers = $handlers;
+        $this->service = $service;
     }
 
     protected function currentUser(): ?array
@@ -608,17 +629,29 @@ final class BackupAgentScopeFakeController extends BackupController
         return $this->resolver;
     }
 
+    /** @return array<int,array<string,mixed>> */
+    public function targets(): array
+    {
+        return $this->volumeTargets();
+    }
+}
+
+/** Jalur aksi (`run()`) — seam bersama di atas. */
+final class BackupAgentScopeFakeController extends BackupRunController
+{
+    use BackupAgentScopeSeam;
+}
+
+/** Jalur status (`status()`) — seam bersama + hitungan pembacaan nama server. */
+final class BackupAgentScopeFakeStatusController extends BackupStatusController
+{
+    use BackupAgentScopeSeam;
+
     protected function serverNames(): array
     {
         $this->serverNamesReads++;
 
         return parent::serverNames();
-    }
-
-    /** @return array<int,array<string,mixed>> */
-    public function targets(): array
-    {
-        return $this->volumeTargets();
     }
 }
 

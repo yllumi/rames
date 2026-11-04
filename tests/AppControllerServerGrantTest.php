@@ -3,19 +3,18 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
 use app\library\Deploy\ServerResolver;
 use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteDatabase;
 use PHPUnit\Framework\TestCase;
-use ReflectionMethod;
 use ReflectionProperty;
 use RuntimeException;
+use Tests\Support\AppControllerLocator;
 use Webman\Config;
 
 /**
  * Grant pemilihan server per user di jalur create app — **satu pintu**
- * `ServerAccess::maySelect()` pada `AppController::resolveCreateServer()`,
+ * `ServerAccess::maySelect()` pada `CreateController::resolveCreateServer()`,
  * daftar pilihan `serverFormContext()`, filter `serverFilterOptions()`, serta
  * tarif per server pada `billingContext()`.
  *
@@ -116,10 +115,7 @@ class AppControllerServerGrantTest extends TestCase
 
     private function invoke(string $method, array $args): mixed
     {
-        $reflection = new ReflectionMethod(AppController::class, $method);
-        $reflection->setAccessible(true);
-
-        return $reflection->invoke(new AppController(), ...$args);
+        return AppControllerLocator::invoke($method, $args);
     }
 
     private function resolve(?array $user, string $serverId): array

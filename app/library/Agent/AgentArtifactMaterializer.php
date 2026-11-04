@@ -57,7 +57,7 @@ use RuntimeException;
  *  - **saat app dihapus di control plane**, worker agent memanggil
  *    {@see self::forget()} (penanda `forget` di payload job `teardown`):
  *    direktori app + deploy key + managed env file dibuang, sama seperti
- *    `AppController::delete()` di host lokal (cleanupDir + `SshKeyManager::remove()`
+ *    `DeploymentController::delete()` di host lokal (cleanupDir + `SshKeyManager::remove()`
  *    + `EnvManager::remove()`). Tanpa ini nama app tetap "terpakai" oleh
  *    direktorinya dan app berikutnya dengan nama sama tidak bisa dibuat;
  *  - **direktori sisa app yang sudah dihapus** di server agent (instalasi lama /
@@ -831,7 +831,7 @@ final class AgentArtifactMaterializer
      * direktori, nama app tetap "terpakai" di server ini dan create berikutnya
      * dengan nama sama ditolak penanda kepemilikan (GOTCHA §8 no. 35).
      *
-     * Cermin dari pembersihan jalur lokal (`AppController::delete()`:
+     * Cermin dari pembersihan jalur lokal (`DeploymentController::delete()`:
      * `cleanupDir()` + `SshKeyManager::remove()` + `EnvManager::remove()`) —
      * sengaja memakai path yang sama dengan penulisnya ({@see self::keyPath()},
      * `{database_path}/env`), bukan path yang ditebak.

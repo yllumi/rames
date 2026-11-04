@@ -92,7 +92,7 @@ class DeployerFactory
 
     /**
      * Preflight **ketersediaan nama app di server target** sebelum record app
-     * dibuat (`AppController::createAndDeploy()` — satu-satunya jalur create app).
+     * dibuat (`CreateDeployController::createAndDeploy()` — satu-satunya jalur create app).
      *
      * Kenapa di factory: pemilihan perilaku per `kind` harus berada di pintu yang
      * sama dengan pemilihan deployer ({@see self::createFor()}), supaya tidak ada

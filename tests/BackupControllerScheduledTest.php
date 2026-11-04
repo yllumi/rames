@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupStatusController;
 use app\library\Backup\BackupRegistry;
 use app\library\Backup\BackupSelection;
 use app\library\Billing\BackupUsage;
@@ -20,7 +20,7 @@ use Webman\Config;
 
 /**
  * Test pemetaan baris volume respons `/backups` (status & refresh) —
- * `BackupController::withScheduled()`.
+ * `BackupStatusController::withScheduled()`.
  *
  * Murni data (tanpa Docker/restic/berkas runtime nyata): `BackupSelection` &
  * `BackupRegistry` diarahkan ke basis data SQLite temp, dan config dimuat dari
@@ -187,7 +187,7 @@ class BackupControllerScheduledTest extends TestCase
             ['name' => 'ghost_data', 'project' => 'ghost', 'app_id' => null, 'orphaned' => true, 'server_id' => ''],
         ];
 
-        $out = BackupController::withScheduled(
+        $out = BackupStatusController::withScheduled(
             $rows,
             new BackupSelection($this->path),
             $this->apps(),
@@ -209,7 +209,7 @@ class BackupControllerScheduledTest extends TestCase
     {
         $selection = new BackupSelection($this->path);
 
-        $out = BackupController::withScheduled($this->rows(), $selection, $this->apps(), self::STRANGER, $this->usage());
+        $out = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), self::STRANGER, $this->usage());
 
         $this->assertCount(3, $out);
         foreach ($out as $row) {
@@ -223,7 +223,7 @@ class BackupControllerScheduledTest extends TestCase
         $selection->setScheduled('tonidata_data', false, 'u1');
         $selection->setScheduled('waha_data', true, 'u1');
 
-        $out = BackupController::withScheduled($this->rows(), $selection, $this->apps(), self::STRANGER, $this->usage());
+        $out = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), self::STRANGER, $this->usage());
 
         $this->assertSame('tonidata_data', $out[0]['name']);
         $this->assertSame('waha_data', $out[1]['name']);
@@ -244,18 +244,18 @@ class BackupControllerScheduledTest extends TestCase
         $selection = new BackupSelection($this->path);
         $selection->setScheduled('tonidata_data', true, 'u1');
 
-        $first = BackupController::withScheduled($this->rows(), $selection, $this->apps(), self::STRANGER, $this->usage());
+        $first = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), self::STRANGER, $this->usage());
         $this->assertTrue($first[0]['scheduled']);
 
         // Mutasi setelah pemetaan pertama harus terbaca pada pemetaan berikutnya
         // (tidak ada salinan basi di controller).
         $selection->setScheduled('tonidata_data', false, 'u1');
-        $second = BackupController::withScheduled($this->rows(), $selection, $this->apps(), self::STRANGER, $this->usage());
+        $second = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), self::STRANGER, $this->usage());
         $this->assertFalse($second[0]['scheduled']);
 
         // Instance baru (reload dari berkas) juga konsisten.
         $reloaded = new BackupSelection($this->path);
-        $third = BackupController::withScheduled($this->rows(), $reloaded, $this->apps(), self::STRANGER, $this->usage());
+        $third = BackupStatusController::withScheduled($this->rows(), $reloaded, $this->apps(), self::STRANGER, $this->usage());
         $this->assertFalse($third[0]['scheduled']);
     }
 
@@ -263,7 +263,7 @@ class BackupControllerScheduledTest extends TestCase
     {
         $selection = new BackupSelection($this->path);
 
-        $this->assertSame([], BackupController::withScheduled([], $selection, $this->apps(), null, $this->usage()));
+        $this->assertSame([], BackupStatusController::withScheduled([], $selection, $this->apps(), null, $this->usage()));
     }
 
     /**
@@ -277,21 +277,21 @@ class BackupControllerScheduledTest extends TestCase
         $apps = $this->apps();
         $usage = $this->usage();
 
-        $owner = BackupController::withScheduled($rows, $selection, $apps, self::OWNER, $usage);
+        $owner = BackupStatusController::withScheduled($rows, $selection, $apps, self::OWNER, $usage);
         $this->assertTrue($owner[0]['can_schedule'], 'owner app1 boleh');
         $this->assertFalse($owner[1]['can_schedule'], 'app2 bukan miliknya');
         $this->assertFalse($owner[2]['can_schedule'], 'volume yatim bukan admin');
 
-        $operator = BackupController::withScheduled($rows, $selection, $apps, self::OPERATOR, $usage);
+        $operator = BackupStatusController::withScheduled($rows, $selection, $apps, self::OPERATOR, $usage);
         $this->assertTrue($operator[0]['can_schedule'], 'operator (share) boleh');
 
-        $viewer = BackupController::withScheduled($rows, $selection, $apps, self::VIEWER, $usage);
+        $viewer = BackupStatusController::withScheduled($rows, $selection, $apps, self::VIEWER, $usage);
         $this->assertFalse($viewer[0]['can_schedule'], 'viewer tidak boleh');
 
-        $stranger = BackupController::withScheduled($rows, $selection, $apps, self::STRANGER, $usage);
+        $stranger = BackupStatusController::withScheduled($rows, $selection, $apps, self::STRANGER, $usage);
         $this->assertFalse($stranger[0]['can_schedule'], 'member lain tidak boleh');
 
-        $admin = BackupController::withScheduled($rows, $selection, $apps, self::ADMIN, $usage);
+        $admin = BackupStatusController::withScheduled($rows, $selection, $apps, self::ADMIN, $usage);
         $this->assertTrue($admin[0]['can_schedule']);
         $this->assertTrue($admin[1]['can_schedule']);
         $this->assertTrue($admin[2]['can_schedule'], 'admin boleh volume yatim');
@@ -305,7 +305,7 @@ class BackupControllerScheduledTest extends TestCase
     {
         $selection = new BackupSelection($this->path);
 
-        $out = BackupController::withScheduled($this->rows(), $selection, $this->apps(), self::ADMIN, $this->usage());
+        $out = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), self::ADMIN, $this->usage());
 
         $this->assertEqualsWithDelta(2.5, $out[0]['backup_gb'], 0.0001, 'app 2,5 GB ditagih apa adanya');
         $this->assertEqualsWithDelta(1.0, $out[1]['backup_gb'], 0.0001, 'app 0,3 GB di-floor-kan 1 GB');
@@ -324,7 +324,7 @@ class BackupControllerScheduledTest extends TestCase
     {
         $selection = new BackupSelection($this->path);
 
-        $out = BackupController::withScheduled($this->rows(), $selection, $this->apps(), null, $this->usage());
+        $out = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), null, $this->usage());
 
         foreach ($out as $row) {
             $this->assertArrayHasKey('can_schedule', $row);
@@ -366,7 +366,7 @@ class BackupControllerScheduledTest extends TestCase
         $usage = $this->usage();
 
         [$out, $reads] = $this->countRegistryReads(
-            fn (): array => BackupController::withScheduled($rows, $selection, $apps, self::ADMIN, $usage)
+            fn (): array => BackupStatusController::withScheduled($rows, $selection, $apps, self::ADMIN, $usage)
         );
 
         $this->assertSame(1, $reads, 'registry dibaca SEKALI untuk 400 baris');
@@ -391,7 +391,7 @@ class BackupControllerScheduledTest extends TestCase
         $usage = $this->usage();
 
         [$out, $reads] = $this->countRegistryReads(
-            fn (): array => BackupController::withScheduled([], $selection, $apps, self::ADMIN, $usage)
+            fn (): array => BackupStatusController::withScheduled([], $selection, $apps, self::ADMIN, $usage)
         );
 
         $this->assertSame([], $out);

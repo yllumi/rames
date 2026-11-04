@@ -3,18 +3,17 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
 use app\library\Deploy\ComposeSource;
 use app\library\Deploy\ContainerNames;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\NetworkManager;
 use app\library\Deploy\ResourceLimits;
 use PHPUnit\Framework\TestCase;
-use ReflectionMethod;
+use Tests\Support\AppControllerLocator;
 use RuntimeException;
 
 /**
- * Unit test helper validasi batas CPU/memori di AppController — tanpa HTTP server.
+ * Unit test helper validasi batas CPU/memori di controller app (`app\controller\app\`) — tanpa HTTP server.
  *
  * Yang diuji adalah kontrak yang tidak bisa diuji dari ResourceLimits saja:
  * whitelist service (tolak service di luar base compose), pembuangan entri tanpa
@@ -40,10 +39,7 @@ class AppControllerLimitsTest extends TestCase
 
     private function invoke(string $method, array $args): mixed
     {
-        $reflection = new ReflectionMethod(AppController::class, $method);
-        $reflection->setAccessible(true);
-
-        return $reflection->invoke(new AppController(), ...$args);
+        return AppControllerLocator::invoke($method, $args);
     }
 
     public function testResolveLimitsMenolakServiceTidakDikenal(): void

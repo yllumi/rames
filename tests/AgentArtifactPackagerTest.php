@@ -321,6 +321,82 @@ class AgentArtifactPackagerTest extends TestCase
     }
 
     /**
+     * Protokol non-tcp ikut dirender (`host:container/udp`) — tanpa itu port UDP
+     * app agent (`53/udp`) berubah jadi TCP setelah `apply_ports`.
+     */
+    public function testHostPortPlanRendersNonTcpProtocol(): void
+    {
+        file_put_contents($this->tmp . '/apps/demo/docker-compose.yml', "services:\n  dns:\n    image: coredns\n");
+
+        $artifacts = $this->packager->pack($this->app([
+            'source' => 'compose',
+            'compose_files' => ['docker-compose.yml'],
+            'host_ports' => [['service' => 'dns', 'container' => 53, 'host' => 3053, 'protocol' => 'UDP']],
+        ]));
+
+        $ports = $artifacts['files'][ComposeSource::PORTS_OVERRIDE_FILE];
+        $this->assertStringContainsString('3053:53/udp', $ports, 'protokol dinormalisasi lowercase');
+        $this->assertSame(['3053:53/udp'], Yaml::parse($ports)['services']['dns']['ports']);
+
+        $resetParsed = Yaml::parse($artifacts['files'][ComposeSource::RESET_OVERRIDE_FILE], Yaml::PARSE_CUSTOM_TAGS);
+        $this->assertInstanceOf(TaggedValue::class, $resetParsed['services']['dns']['ports'] ?? null);
+        $this->assertSame('reset', $resetParsed['services']['dns']['ports']->getTag());
+    }
+
+    /** Rencana TCP tetap dirender persis seperti perilaku lama (tanpa sufiks `/proto`). */
+    public function testTcpPlanRendersLegacyYamlIdentically(): void
+    {
+        $plan = [
+            ['service' => 'web', 'container' => 80, 'host' => 30500, 'protocol' => 'tcp'],
+            ['service' => 'api', 'container' => 8080, 'host' => 30501],
+        ];
+        $legacy = "services:\n  web:\n    ports: !reset\n      {  }\n  api:\n    ports: !reset\n      {  }";
+        $legacyPorts = "services:\n  web:\n    ports:\n      - '30500:80'\n  api:\n    ports:\n      - '30501:8080'\n";
+
+        file_put_contents($this->tmp . '/apps/demo/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n");
+
+        $artifacts = $this->packager->pack($this->app([
+            'source' => 'compose',
+            'compose_files' => ['docker-compose.yml'],
+            'host_ports' => $plan,
+        ]));
+
+        $this->assertSame($legacy, $artifacts['files'][ComposeSource::RESET_OVERRIDE_FILE]);
+        $this->assertSame($legacyPorts, $artifacts['files'][ComposeSource::PORTS_OVERRIDE_FILE]);
+    }
+
+    /**
+     * Rencana internal memuat `protocol` (default `tcp`), dan protokol tak dikenal
+     * **ditolak** — job dengan protokol salah lebih berbahaya daripada job gagal.
+     */
+    public function testHostPortPlanCarriesProtocolAndRejectsUnknown(): void
+    {
+        $this->assertSame(
+            [['service' => 'web', 'container' => 80, 'host' => 30500, 'protocol' => 'tcp']],
+            AgentArtifactPackager::hostPortPlan([
+                'host_ports' => [['service' => 'web', 'container' => 80, 'host' => 30500]],
+            ]),
+            'entri lama tanpa protocol = tcp'
+        );
+
+        try {
+            AgentArtifactPackager::hostPortPlan([
+                'host_ports' => [['service' => 'dns', 'container' => 53, 'host' => 3053, 'protocol' => 'icmp']],
+            ]);
+            $this->fail('protokol tak dikenal harus ditolak');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('host_ports', $e->getMessage());
+            $this->assertStringContainsString('protokol', $e->getMessage());
+        }
+
+        // Jalur deploy (`pack()`) juga menolak, bukan diam-diam menormalkan ke tcp.
+        $this->expectException(RuntimeException::class);
+        $this->packager->pack($this->app([
+            'host_ports' => [['service' => 'dns', 'container' => 53, 'host' => 3053, 'protocol' => 'icmp']],
+        ]));
+    }
+
+    /**
      * Tanpa rencana di metadata, berkas override yang **sudah** ditulis jalur
      * lokal (app compose/template lama) tetap diteruskan ke agent — kalau tidak,
      * app itu kehilangan port pilihan user saat pindah ke agent.

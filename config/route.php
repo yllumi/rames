@@ -24,7 +24,11 @@ use app\controller\AgentNetworkController;
 use app\controller\AgentTerminalController;
 use app\controller\AppMetricsController;
 use app\controller\AuthController;
-use app\controller\BackupController;
+use app\controller\backup\BackupArchiveController;
+use app\controller\backup\BackupDbController;
+use app\controller\backup\BackupOverviewController;
+use app\controller\backup\BackupRunController;
+use app\controller\backup\BackupStatusController;
 use app\controller\BrandingController;
 use app\controller\CreditController;
 use app\controller\IndexController;
@@ -32,7 +36,17 @@ use app\controller\LogController;
 use app\controller\MonitorController;
 use app\controller\NetworkController;
 use app\controller\NginxController;
-use app\controller\AppController;
+use app\controller\app\AccessController;
+use app\controller\app\ComposeController;
+use app\controller\app\ContainerController;
+use app\controller\app\CreateController;
+use app\controller\app\CreateDeployController;
+use app\controller\app\DeploymentController;
+use app\controller\app\DomainSettingsController;
+use app\controller\app\EnvironmentController;
+use app\controller\app\InfoController;
+use app\controller\app\ListController;
+use app\controller\app\TemplateController;
 use app\controller\DatabaseController;
 use app\controller\DomainController;
 use app\controller\ErrorController;
@@ -259,28 +273,28 @@ Route::post('/payments/duitku/callback', [PaymentController::class, 'callback'])
 |--------------------------------------------------------------------------
 */
 Route::get('/', [IndexController::class, 'index']);
-Route::get('/apps', [AppController::class, 'index']);
+Route::get('/apps', [ListController::class, 'index']);
 
 // Wizard create app
-Route::get('/apps/create', [AppController::class, 'createForm']);
-Route::post('/apps/create', [AppController::class, 'createPreview']);
+Route::get('/apps/create', [CreateController::class, 'createForm']);
+Route::post('/apps/create', [CreateController::class, 'createPreview']);
 // Mode compose: paste/upload docker-compose.yml tanpa repo Git
-Route::post('/apps/create/compose', [AppController::class, 'composePreview']);
+Route::post('/apps/create/compose', [CreateController::class, 'composePreview']);
 // Mode template: deploy app dari template siap-pakai (compose prebuilt)
-Route::get('/apps/create/template/{slug}', [AppController::class, 'templateForm']);
-Route::post('/apps/create/template/{slug}', [AppController::class, 'templateDeploy']);
-Route::get('/apps/create/confirm', [AppController::class, 'confirmForm']);
-Route::post('/apps/create/confirm', [AppController::class, 'confirmCreate']);
+Route::get('/apps/create/template/{slug}', [TemplateController::class, 'templateForm']);
+Route::post('/apps/create/template/{slug}', [TemplateController::class, 'templateDeploy']);
+Route::get('/apps/create/confirm', [CreateDeployController::class, 'confirmForm']);
+Route::post('/apps/create/confirm', [CreateDeployController::class, 'confirmCreate']);
 
 // Impor project docker compose yang SUDAH berjalan (admin-only). WAJIB
 // didaftarkan SEBELUM pola `/apps/{id}` agar tidak tertangkap sebagai id app.
-Route::get('/apps/import', [AppController::class, 'importForm']);
-Route::post('/apps/import', [AppController::class, 'importStore']);
+Route::get('/apps/import', [ListController::class, 'importForm']);
+Route::post('/apps/import', [ListController::class, 'importStore']);
 
 // Detail & polling
-Route::get('/apps/{id}', [AppController::class, 'detail']);
-Route::get('/apps/{id}/versions', [AppController::class, 'versions']);
-Route::get('/api/apps/{id}/status', [AppController::class, 'status']);
+Route::get('/apps/{id}', [InfoController::class, 'detail']);
+Route::get('/apps/{id}/versions', [InfoController::class, 'versions']);
+Route::get('/api/apps/{id}/status', [InfoController::class, 'status']);
 // Log container app (popup modal di detail app)
 Route::get('/api/apps/{id}/logs', [LogController::class, 'index']);
 // Log deploy app (popup modal; output build live + tahap worker)
@@ -289,45 +303,50 @@ Route::get('/api/apps/{id}/deploy-log', [LogController::class, 'deployLog']);
 Route::get('/api/apps/{id}/metrics', [AppMetricsController::class, 'show']);
 
 // Aksi app
-Route::post('/apps/{id}/rebuild', [AppController::class, 'rebuild']);
+Route::post('/apps/{id}/rebuild', [DeploymentController::class, 'rebuild']);
 // Batalkan deploy/build yang sedang berjalan (hentikan worker + grup proses)
-Route::post('/apps/{id}/deploy/cancel', [AppController::class, 'cancelDeploy']);
-Route::post('/apps/{id}/rollback', [AppController::class, 'rollback']);
-Route::post('/apps/{id}/stop', [AppController::class, 'stop']);
-Route::post('/apps/{id}/start', [AppController::class, 'start']);
-Route::post('/apps/{id}/delete', [AppController::class, 'delete']);
+Route::post('/apps/{id}/deploy/cancel', [DeploymentController::class, 'cancelDeploy']);
+Route::post('/apps/{id}/rollback', [DeploymentController::class, 'rollback']);
+Route::post('/apps/{id}/stop', [DeploymentController::class, 'stop']);
+Route::post('/apps/{id}/start', [DeploymentController::class, 'start']);
+Route::post('/apps/{id}/delete', [DeploymentController::class, 'delete']);
 
 // Custom domain
-Route::post('/apps/{id}/domain/set', [AppController::class, 'setDomain']);
-Route::post('/apps/{id}/domain/remove', [AppController::class, 'removeDomain']);
+Route::post('/apps/{id}/domain/set', [DomainSettingsController::class, 'setDomain']);
+Route::post('/apps/{id}/domain/remove', [DomainSettingsController::class, 'removeDomain']);
 
 // Subdomain app (field apps.json `subdomain`; ability `domain`, operator+)
-Route::post('/apps/{id}/subdomain', [AppController::class, 'setSubdomain']);
+Route::post('/apps/{id}/subdomain', [DomainSettingsController::class, 'setSubdomain']);
 
 // Rute proxy tambahan per app (field apps.json `nginx_routes`, Lapis A)
-Route::post('/apps/{id}/routes', [AppController::class, 'saveRoutes']);
+Route::post('/apps/{id}/routes', [DomainSettingsController::class, 'saveRoutes']);
 
 // Environment variables per app
-Route::post('/apps/{id}/env', [AppController::class, 'saveEnv']);
-Route::post('/apps/{id}/env/import', [AppController::class, 'importEnv']);
-Route::post('/apps/{id}/env/upload', [AppController::class, 'uploadEnv']);
+Route::post('/apps/{id}/env', [EnvironmentController::class, 'saveEnv']);
+Route::post('/apps/{id}/env/import', [EnvironmentController::class, 'importEnv']);
+Route::post('/apps/{id}/env/upload', [EnvironmentController::class, 'uploadEnv']);
 
 // Compose (app mode compose: edit docker-compose.yml + file pendukung)
-Route::post('/apps/{id}/compose', [AppController::class, 'saveCompose']);
+Route::post('/apps/{id}/compose', [ComposeController::class, 'saveCompose']);
 
 // External network per app (shared network lintas-app)
-Route::post('/apps/{id}/network', [AppController::class, 'saveNetworks']);
+Route::post('/apps/{id}/network', [ContainerController::class, 'saveNetworks']);
 
 // Nama container per app (override container_name via compose override)
-Route::post('/apps/{id}/container-names', [AppController::class, 'saveContainerNames']);
+Route::post('/apps/{id}/container-names', [ContainerController::class, 'saveContainerNames']);
+
+// Port container per app (mapping host:container — override port + op apply_ports).
+// Ability `compose` (operator+); app impor ditolak (project compose eksternal
+// dikelola user sendiri), server agent menerima metadata `host_ports` + worker.
+Route::post('/apps/{id}/ports', [ContainerController::class, 'savePorts']);
 
 // Batas maksimum CPU/memori per service (admin; override compose terpisah)
-Route::post('/apps/{id}/limits', [AppController::class, 'saveLimits']);
+Route::post('/apps/{id}/limits', [ContainerController::class, 'saveLimits']);
 
 // Kepemilikan & sharing app (owner + members)
-Route::post('/apps/{id}/members', [AppController::class, 'addMember']);
-Route::post('/apps/{id}/members/{userId}/remove', [AppController::class, 'removeMember']);
-Route::post('/apps/{id}/owner', [AppController::class, 'transferOwner']);
+Route::post('/apps/{id}/members', [AccessController::class, 'addMember']);
+Route::post('/apps/{id}/members/{userId}/remove', [AccessController::class, 'removeMember']);
+Route::post('/apps/{id}/owner', [AccessController::class, 'transferOwner']);
 
 // Halaman & reload Nginx host (global — berlaku untuk semua app)
 Route::get('/nginx', [NginxController::class, 'index']);
@@ -416,34 +435,34 @@ Route::post('/volumes/purge', [VolumeController::class, 'purge']);
 Route::get('/api/volumes/usage', [VolumeController::class, 'usage']);
 
 // Backup volume harian ke S3 via restic (PLAN_VOLUME_BACKUP.md §4.1)
-Route::get('/backups', [BackupController::class, 'index']);
+Route::get('/backups', [BackupOverviewController::class, 'index']);
 // Panduan setup Restic (admin-only) — merender Markdown repo `host/restic-setup.md`
-Route::get('/backups/guide', [BackupController::class, 'guide']);
-Route::get('/api/backups/status', [BackupController::class, 'status']);
-Route::get('/api/backups/snapshots', [BackupController::class, 'snapshots']);
-Route::post('/backups/run', [BackupController::class, 'run']);
-Route::post('/backups/restore', [BackupController::class, 'restore']);
+Route::get('/backups/guide', [BackupOverviewController::class, 'guide']);
+Route::get('/api/backups/status', [BackupStatusController::class, 'status']);
+Route::get('/api/backups/snapshots', [BackupOverviewController::class, 'snapshots']);
+Route::post('/backups/run', [BackupRunController::class, 'run']);
+Route::post('/backups/restore', [BackupRunController::class, 'restore']);
 // Dump logis DB sebuah volume (multi-server F4: di server agent dijalankan **di
 // server itu** lewat job `db_dump`; volume lokal memakai jalur worker setempat).
-Route::post('/backups/db-dump', [BackupController::class, 'dbDump']);
+Route::post('/backups/db-dump', [BackupDbController::class, 'dbDump']);
 // Unduh berkas `.sql` hasil `db_dump` (staging) sebuah volume — ability `backup`
 // (operator+). Multi-server F4: volume server agent diunduh **dari server itu**
 // (potongan bertahap), volume lokal dari staging host ini.
-Route::get('/backups/dump/sql', [BackupController::class, 'downloadDumpSql']);
+Route::get('/backups/dump/sql', [BackupDbController::class, 'downloadDumpSql']);
 // Segarkan cache status (live Engine/restic) & seleksi backup berkala per volume
-Route::post('/backups/refresh', [BackupController::class, 'refresh']);
-Route::post('/backups/schedule', [BackupController::class, 'setScheduled']);
+Route::post('/backups/refresh', [BackupStatusController::class, 'refresh']);
+Route::post('/backups/schedule', [BackupOverviewController::class, 'setScheduled']);
 // Aksi arsip — volume yang sudah dihapus (admin-only, PLAN §8h): daftar snapshot,
 // restore ke volume baru (nama diisi user), unduh dump SQL.
-Route::get('/api/backups/archive/snapshots', [BackupController::class, 'archivedSnapshots']);
-Route::post('/backups/archive/restore', [BackupController::class, 'restoreArchived']);
-Route::get('/backups/archive/sql', [BackupController::class, 'downloadArchiveSql']);
+Route::get('/api/backups/archive/snapshots', [BackupArchiveController::class, 'archivedSnapshots']);
+Route::post('/backups/archive/restore', [BackupArchiveController::class, 'restoreArchived']);
+Route::get('/backups/archive/sql', [BackupArchiveController::class, 'downloadArchiveSql']);
 // Database dashboard (SQLite) — snapshot/unduh/restore DB dashboard sendiri
 // (admin-only, 404 untuk non-admin). Bukan bagian restic/S3.
-Route::post('/backups/db/run', [BackupController::class, 'dbRun']);
-Route::post('/backups/db/prune', [BackupController::class, 'dbPrune']);
-Route::post('/backups/db/restore', [BackupController::class, 'dbRestore']);
-Route::get('/backups/db/download', [BackupController::class, 'dbDownload']);
+Route::post('/backups/db/run', [BackupDbController::class, 'dbRun']);
+Route::post('/backups/db/prune', [BackupDbController::class, 'dbPrune']);
+Route::post('/backups/db/restore', [BackupDbController::class, 'dbRestore']);
+Route::get('/backups/db/download', [BackupDbController::class, 'dbDownload']);
 
 // Network Docker (lihat, buat, hubungkan/putuskan container, hapus)
 Route::get('/networks', [NetworkController::class, 'index']);

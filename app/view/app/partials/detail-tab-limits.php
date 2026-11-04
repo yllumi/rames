@@ -1,6 +1,6 @@
   <!-- ============ Tab: Sumber Daya (batas maksimum CPU/memori per service) ============ -->
   <?php
-  // Kontrak AppController::limitsContext() — `$resourceLimits` bisa null/kosong
+  // Kontrak AppArtifactControllerBase::limitsContext() — `$resourceLimits` bisa null/kosong
   // (mis. base compose belum terbaca); view wajib tetap render normal.
   $limitsCtx = is_array($resourceLimits ?? null) ? $resourceLimits : [];
   $limitsCanManage = (bool) ($limitsCtx['canManage'] ?? false);
@@ -16,7 +16,7 @@
   }
   $limitsMinMemory = \app\library\Deploy\ResourceLimits::MIN_MEMORY_MB;
   // Estimasi kredit baca-saja dari limit app (dihitung `Pricing` di server;
-  // lihat AppController::billingEstimateFor()). `applies` mengikuti **pemilik
+  // lihat InfoController::billingEstimateFor()). `applies` mengikuti **pemilik
   // app** (penanggung biaya), bukan penonton: app milik admin ⇒ bebas kredit
   // (tanpa angka estimasi & tanpa plafon); app milik member ⇒ ditagih.
   $billingEstimate = is_array($billingEstimate ?? null) ? $billingEstimate : [];

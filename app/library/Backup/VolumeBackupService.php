@@ -229,7 +229,7 @@ class VolumeBackupService
     }
 
     /**
-     * Cache ringkasan (seam baca/tulis). `BackupController::status()` memakainya
+     * Cache ringkasan (seam baca/tulis). `BackupStatusController::status()` memakainya
      * untuk menyinkronkan baris volume server agent (TTL) — instance yang sama
      * dengan service, sehingga tes yang menyuntikkan cache temp tidak menyentuh
      * `runtime/` nyata.

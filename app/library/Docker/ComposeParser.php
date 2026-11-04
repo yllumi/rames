@@ -13,6 +13,9 @@ use Symfony\Component\Yaml\Yaml;
  */
 class ComposeParser
 {
+    /** Protokol port yang dikenali compose; sufiks `/proto` lain diabaikan. */
+    private const PROTOCOLS = ['tcp', 'udp', 'sctp'];
+
     /**
      * @return array{services: array<string, array{internal_port:?int, host_port:?int, ports:array<int,array{host:?int,container:int,protocol:string}>}>}
      */
@@ -84,6 +87,13 @@ class ComposeParser
     }
 
     /**
+     * Parse sintaks pendek `[ip:][host:]container[/proto]`.
+     *
+     * Sufiks `/proto` (`tcp`/`udp`/`sctp`, tanpa peduli huruf besar/kecil) ikut
+     * dipertahankan: port UDP tanpa protokol akan ditulis ulang sebagai TCP oleh
+     * jalur override port, sehingga datagram app (mis. DNS `53/udp`) berhenti
+     * diteruskan. Sufiks lain diabaikan (protokol tetap `tcp`, perilaku lama).
+     *
      * @return array{host:?int,container:int,protocol:string}|null
      */
     private function parseShortSyntax(string $raw): ?array
@@ -91,6 +101,15 @@ class ComposeParser
         $raw = trim($raw);
         if ($raw === '') {
             return null;
+        }
+
+        $protocol = 'tcp';
+        if (preg_match('#^(?<rest>.+)/(?<proto>[A-Za-z]+)$#', $raw, $match) === 1) {
+            $candidate = strtolower($match['proto']);
+            if (in_array($candidate, self::PROTOCOLS, true)) {
+                $protocol = $candidate;
+                $raw = trim($match['rest']);
+            }
         }
 
         $parts = explode(':', $raw);
@@ -109,6 +128,6 @@ class ComposeParser
             }
         }
 
-        return ['host' => $host, 'container' => $container, 'protocol' => 'tcp'];
+        return ['host' => $host, 'container' => $container, 'protocol' => $protocol];
     }
 }

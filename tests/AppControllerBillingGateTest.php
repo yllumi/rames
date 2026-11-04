@@ -3,19 +3,19 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
 use app\library\Auth\UserStore;
 use app\library\Billing\BillingGate;
 use app\library\Billing\BillingStore;
 use app\library\Billing\CreditAccount;
 use app\library\Billing\InsufficientCredits;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\AppControllerLocator;
 use ReflectionMethod;
 use support\Request;
 use Tests\Support\SqliteFixture;
 
 /**
- * Test gerbang kredit di AppController — helper mediator:
+ * Test gerbang kredit di controller app — helper mediator:
  *  - `billingAssertCanCreate()` / `billingAssertCanStart()` (admin & null-user
  *    bebas, member saldo kurang → InsufficientCredits),
  *  - `billingBlocked()` (bentuk respons 402 JSON vs flash+redirect `/credits`),
@@ -68,10 +68,7 @@ class AppControllerBillingGateTest extends TestCase
 
     private function invoke(string $method, array $args): mixed
     {
-        $reflection = new ReflectionMethod(AppController::class, $method);
-        $reflection->setAccessible(true);
-
-        return $reflection->invoke(new AppController(), ...$args);
+        return AppControllerLocator::invoke($method, $args);
     }
 
     // ------------------------------------------------------------------
@@ -213,12 +210,12 @@ class AppControllerBillingGateTest extends TestCase
             self::assertStringContainsString(
                 $gateCall,
                 $body,
-                "AppController::{$method}() tidak memanggil {$gateCall}()"
+                "{$method}() tidak memanggil {$gateCall}()"
             );
             self::assertStringContainsString(
                 'InsufficientCredits $e',
                 $body,
-                "AppController::{$method}() tidak menangani InsufficientCredits"
+                "{$method}() tidak menangani InsufficientCredits"
             );
         }
     }
@@ -237,10 +234,11 @@ class AppControllerBillingGateTest extends TestCase
         }
     }
 
+    /** Isi method pemiliknya (berkas sumber dibaca via refleksi). */
     private function methodBody(string $method): string
     {
-        $reflection = new ReflectionMethod(AppController::class, $method);
-        $lines = file(dirname(__DIR__) . '/app/controller/AppController.php') ?: [];
+        $reflection = new ReflectionMethod(AppControllerLocator::classFor($method), $method);
+        $lines = file((string) $reflection->getFileName()) ?: [];
         $length = $reflection->getEndLine() - $reflection->getStartLine() + 1;
 
         return implode('', array_slice($lines, $reflection->getStartLine() - 1, $length));

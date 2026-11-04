@@ -24,7 +24,7 @@ use RuntimeException;
  *    jelas (pemanggil memutuskan cara melaporkannya; tidak ada "sukses palsu").
  *
  * Kegagalan revoke **dilempar**, bukan ditelan: pemanggil lama
- * (`AppController::setDomain()`/`removeDomain()`) memang sudah menangkapnya untuk
+ * (`DomainSettingsController::setDomain()`/`removeDomain()`) memang sudah menangkapnya untuk
  * memberi peringatan ke user, dan perilaku itu dipertahankan.
  *
  * Tanpa state lintas-request; seam uji: resolver server, klien agent, & issuer

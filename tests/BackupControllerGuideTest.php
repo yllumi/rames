@@ -3,11 +3,11 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupOverviewController;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Test `BackupController::guideHtml()` — pembacaan + render aman Markdown panduan
+ * Test `BackupOverviewController::guideHtml()` — pembacaan + render aman Markdown panduan
  * setup Restic (`host/restic-setup.md`) untuk halaman `/backups/guide`.
  *
  * Fail-safe: berkas tak ada / kosong / whitespace-only → `''` (halaman tetap
@@ -45,7 +45,7 @@ class BackupControllerGuideTest extends TestCase
     {
         $path = $this->writeFile('guide.md', "# Judul\n\nIsi panduan.");
 
-        $html = BackupController::guideHtml($path);
+        $html = BackupOverviewController::guideHtml($path);
 
         $this->assertStringContainsString('<h1>Judul</h1>', $html);
         $this->assertStringContainsString('Isi panduan.', $html);
@@ -55,7 +55,7 @@ class BackupControllerGuideTest extends TestCase
     {
         $path = $this->writeFile('guide.md', "<script>alert(1)</script>\n\n# Aman");
 
-        $html = BackupController::guideHtml($path);
+        $html = BackupOverviewController::guideHtml($path);
 
         $this->assertStringNotContainsString('<script>', $html);
         $this->assertStringContainsString('&lt;script&gt;', $html);
@@ -63,20 +63,20 @@ class BackupControllerGuideTest extends TestCase
 
     public function testMissingFileReturnsEmptyString(): void
     {
-        $this->assertSame('', BackupController::guideHtml($this->dir . '/tidak-ada.md'));
+        $this->assertSame('', BackupOverviewController::guideHtml($this->dir . '/tidak-ada.md'));
     }
 
     public function testEmptyFileReturnsEmptyString(): void
     {
         $path = $this->writeFile('empty.md', '');
 
-        $this->assertSame('', BackupController::guideHtml($path));
+        $this->assertSame('', BackupOverviewController::guideHtml($path));
     }
 
     public function testWhitespaceOnlyFileReturnsEmptyString(): void
     {
         $path = $this->writeFile('blank.md', "   \n\t  \n");
 
-        $this->assertSame('', BackupController::guideHtml($path));
+        $this->assertSame('', BackupOverviewController::guideHtml($path));
     }
 }

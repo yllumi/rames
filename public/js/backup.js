@@ -136,7 +136,7 @@
   // BEGIN PURE dump-sql block (diextrak tes `node` — jangan hapus penanda)
   // Blok murni (tanpa DOM/jaringan) untuk tautan **"Unduh .sql"** volume server
   // agent. Aturannya HARUS tetap sinkron dengan
-  // `BackupController::downloadDumpSql()` (`GET /backups/dump/sql`, ability
+  // `BackupDbController::downloadDumpSql()` (`GET /backups/dump/sql`, ability
   // `backup`):
   //  - hanya volume **server agent** (`server_id` diisi & bukan `local`) —
   //    volume server lokal diperlakukan seperti sebelumnya (tanpa kontrol baru);

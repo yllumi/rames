@@ -141,7 +141,7 @@ final class ServerAccess
 
     /**
      * **Satu pintu validasi** id server yang dipilih user (dipakai
-     * `AppController::resolveCreateServer()`).
+     * `CreateController::resolveCreateServer()`).
      *
      * - admin ⇒ boleh id apa pun (id tak dikenal tetap ditolak `ServerResolver`);
      * - id kosong / `local` ⇒ selalu boleh;

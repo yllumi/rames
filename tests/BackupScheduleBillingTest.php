@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupOverviewController;
+use app\controller\backup\BackupStatusController;
 use app\library\Auth\AppAccessDenied;
 use app\library\Auth\UserStore;
 use app\library\Backup\BackupRegistry;
@@ -23,7 +24,7 @@ use Throwable;
 use Webman\Config;
 
 /**
- * Test mediator `BackupController::setScheduled()` (POST /backups/schedule) —
+ * Test mediator `BackupOverviewController::setScheduled()` (POST /backups/schedule) —
  * matriks hak `backup` + gerbang kredit (PLAN_VOLUME_BACKUP.md §4.2, §7.12).
  *
  * Tanpa HTTP, tanpa Docker: target Engine di-override lewat seam
@@ -501,7 +502,7 @@ class BackupScheduleBillingTest extends TestCase
             self::assertStringContainsString(
                 'self::withScheduled($visible, null, $apps, $user)',
                 $body,
-                "BackupController::{$method}() tidak meneruskan app + user ke withScheduled()"
+                "BackupStatusController::{$method}() tidak meneruskan app + user ke withScheduled()"
             );
             self::assertStringContainsString('$this->currentUser()', $body);
         }
@@ -528,8 +529,11 @@ class BackupScheduleBillingTest extends TestCase
 
     private function methodBody(string $method): string
     {
-        $reflection = new ReflectionMethod(BackupController::class, $method);
-        $lines = file(dirname(__DIR__) . '/app/controller/BackupController.php') ?: [];
+        $class = in_array($method, ['status', 'refresh'], true)
+            ? BackupStatusController::class
+            : BackupOverviewController::class;
+        $reflection = new ReflectionMethod($class, $method);
+        $lines = file((string) $reflection->getFileName()) ?: [];
         $length = $reflection->getEndLine() - $reflection->getStartLine() + 1;
 
         return implode('', array_slice($lines, $reflection->getStartLine() - 1, $length));
@@ -655,7 +659,7 @@ class BackupScheduleBillingTest extends TestCase
  * (volume → app) di-override sehingga matriks hak & gerbang kredit teruji
  * **tanpa** Docker Engine nyata (pola `FakeCreditController`/`FakeBackupDbController`).
  */
-class FakeBackupScheduleController extends BackupController
+class FakeBackupScheduleController extends BackupOverviewController
 {
     public ?array $user = null;
 

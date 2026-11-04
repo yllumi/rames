@@ -30,7 +30,7 @@ use Symfony\Component\Yaml\Yaml;
  *
  * {@see resolveValues()} memvalidasi isian form create dan mengembalikan map
  * KEY => value yang siap dipakai {@see EnvManager}
- * (lihat `AppController::confirmCreate()`).
+ * (lihat `CreateDeployController::confirmCreate()`).
  */
 class EnvTemplate
 {

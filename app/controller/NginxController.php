@@ -369,7 +369,7 @@ class NginxController
 
     /**
      * Deployer agent untuk satu dokumen server (seam uji) — pola yang sama
-     * dengan `BackupController::agentDeployerForServer()`.
+     * dengan `BackupControllerBase::agentDeployerForServer()`.
      *
      * @param array<string,mixed> $server
      */

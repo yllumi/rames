@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use app\library\Deploy\ComposeSource;
 use app\library\Deploy\EnvManager;
 use app\library\Deploy\LocalDeployer;
 use app\library\Deploy\NetworkManager;
@@ -310,6 +311,51 @@ class LocalDeployerNoPortTest extends TestCase
         $this->assertStringContainsString('cpus: 1.5', $override);
         $this->assertStringContainsString('mem_limit: 512m', $override);
         $this->assertStringNotContainsString('db:', $override, 'service tanpa limit tidak ditulis');
+    }
+
+    /**
+     * `applyPorts()` (host port app agent): override port yang sudah ditulis
+     * `PortOverrides` dipakai apa adanya (tidak ditimpa sync), `up -d` tanpa
+     * build, dan vhost Nginx ditulis ulang agar `proxy_pass` mengikuti host
+     * port baru. Tanpa entri `deploy_history` (seperti applyEnv/applyLimits).
+     */
+    public function testApplyPortsRecreatesWithoutBuildAndRewritesVhost(): void
+    {
+        $dir = $this->appsPath . '/dbsaya';
+        file_put_contents($dir . '/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n");
+        // Override port ditulis pemanggil (PortOverrides::persist) sebelum op ini.
+        file_put_contents(
+            $dir . '/' . ComposeSource::RESET_OVERRIDE_FILE,
+            "services:\n  web:\n    ports: !reset\n      {  }"
+        );
+        file_put_contents(
+            $dir . '/' . ComposeSource::PORTS_OVERRIDE_FILE,
+            "services:\n  web:\n    ports:\n      - '8200:80'\n"
+        );
+        $this->docker->containers = [$this->container('web', [['host' => 8200, 'container' => 80]])];
+
+        $app = $this->app([
+            'compose_files' => [
+                'docker-compose.yml',
+                ComposeSource::RESET_OVERRIDE_FILE,
+                ComposeSource::PORTS_OVERRIDE_FILE,
+            ],
+        ]);
+
+        $result = $this->deployer->applyPorts($app, $this->logger());
+
+        $this->assertSame('running', $result['status']);
+        $this->assertFalse($this->compose->upCalls[0]['build'], 'applyPorts tidak boleh build');
+        $this->assertContains(ComposeSource::PORTS_OVERRIDE_FILE, $this->compose->upCalls[0]['files']);
+        $this->assertContains('write', $this->nginx->calls, 'vhost ditulis ulang mengikuti host port baru');
+        $this->assertSame(
+            "services:\n  web:\n    ports:\n      - '8200:80'\n",
+            (string) file_get_contents($dir . '/' . ComposeSource::PORTS_OVERRIDE_FILE),
+            'override port milik pemanggil tidak ditulis ulang'
+        );
+        $this->assertSame(8200, $result['containers'][0]['host_port']);
+        $this->assertSame('Port container diterapkan.', $this->stageMessage('done'));
+        $this->assertArrayNotHasKey('deploy_history', $result);
     }
 
     /**

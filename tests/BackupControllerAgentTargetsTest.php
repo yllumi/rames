@@ -3,7 +3,10 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupArchiveController;
+use app\controller\backup\BackupDbController;
+use app\controller\backup\BackupRunController;
+use app\controller\backup\BackupStatusController;
 use app\library\Agent\AgentClient;
 use app\library\Agent\TlsPinMaterializer;
 use app\library\Backup\BackupRegistry;
@@ -22,7 +25,7 @@ if (!defined('BASE_PATH')) {
 }
 
 /**
- * `BackupController` multi-server F4 — mediator: target volume server agent ikut
+ * Controller backup multi-server F4 (`app\controller\backup\*`) — mediator: target volume server agent ikut
  * terlihat (`volumeTargets()`/`agentVolumeRows()`) dan pekerjaannya diteruskan ke
  * worker dengan `server_id` yang benar (worker → `BackupDispatcher` → job agent),
  * sedangkan volume lokal memakai bentuk argv **lama** (regresi).
@@ -111,7 +114,7 @@ class BackupControllerAgentTargetsTest extends TestCase
 
     public function testDbDumpOnAgentVolumeForwardsServerId(): void
     {
-        $controller = $this->controller($this->owner());
+        $controller = $this->dbController($this->owner());
 
         $response = $controller->dbDump($this->post(['volume' => 'demo_data']));
         $this->assertSame(200, $response->getStatusCode(), $response->rawBody());
@@ -154,7 +157,7 @@ class BackupControllerAgentTargetsTest extends TestCase
 
     public function testAgentVolumeRowsAreMergedForTheStatusPage(): void
     {
-        $controller = $this->controller($this->owner());
+        $controller = $this->statusController($this->owner());
 
         $targets = $controller->targets();
         $this->assertSame('srv-a', $targets[0]['server_id']);
@@ -294,6 +297,46 @@ class BackupControllerAgentTargetsTest extends TestCase
         array $capabilities = ['deploy', 'backup_run', 'restore', 'db_dump'],
     ): BackupControllerAgentTargetsFake {
         return new BackupControllerAgentTargetsFake(
+            $user,
+            $localOnly,
+            $ambiguous,
+            $capabilities,
+            new AppStore($this->tmp . '/rames.sqlite'),
+            $this->tmp
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $user
+     * @param array<int,string>   $capabilities
+     */
+    private function dbController(
+        array $user,
+        bool $localOnly = false,
+        bool $ambiguous = false,
+        array $capabilities = ['deploy', 'backup_run', 'restore', 'db_dump'],
+    ): BackupControllerAgentTargetsDbFake {
+        return new BackupControllerAgentTargetsDbFake(
+            $user,
+            $localOnly,
+            $ambiguous,
+            $capabilities,
+            new AppStore($this->tmp . '/rames.sqlite'),
+            $this->tmp
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $user
+     * @param array<int,string>   $capabilities
+     */
+    private function statusController(
+        array $user,
+        bool $localOnly = false,
+        bool $ambiguous = false,
+        array $capabilities = ['deploy', 'backup_run', 'restore', 'db_dump'],
+    ): BackupControllerAgentTargetsStatusFake {
+        return new BackupControllerAgentTargetsStatusFake(
             $user,
             $localOnly,
             $ambiguous,
@@ -460,21 +503,44 @@ class BackupControllerAgentTargetsTest extends TestCase
  * resolver server disuntikkan sehingga mediator dapat diuji tanpa Docker,
  * jaringan, maupun proses nyata.
  */
-final class BackupControllerAgentTargetsFake extends BackupController
+trait BackupControllerAgentTargetsSeam
 {
     /** @var array<int,array<int,string>> */
     public array $spawned = [];
 
     private ?ServerResolver $resolver = null;
 
+    private array $user;
+
+    private bool $localOnly;
+
+    private bool $ambiguous;
+
+    /** @var array<int,string> */
+    private array $capabilities;
+
+    private AppStore $apps;
+
+    private string $tmp;
+
+    /**
+     * @param array<string,mixed> $user
+     * @param array<int,string>   $capabilities
+     */
     public function __construct(
-        private array $user,
-        private bool $localOnly,
-        private bool $ambiguous,
-        private array $capabilities,
-        private AppStore $apps,
-        private string $tmp,
+        array $user,
+        bool $localOnly,
+        bool $ambiguous,
+        array $capabilities,
+        AppStore $apps,
+        string $tmp,
     ) {
+        $this->user = $user;
+        $this->localOnly = $localOnly;
+        $this->ambiguous = $ambiguous;
+        $this->capabilities = $capabilities;
+        $this->apps = $apps;
+        $this->tmp = $tmp;
     }
 
     protected function currentUser(): ?array
@@ -530,16 +596,6 @@ final class BackupControllerAgentTargetsFake extends BackupController
         ]];
     }
 
-    protected function agentVolumeRows(): array
-    {
-        $row = $this->agentVolumeTargets()[0];
-        $row['strategy'] = 'snapshot';
-        $row['container_state'] = 'running';
-        $row['snapshots'] = 2;
-
-        return [$row];
-    }
-
     protected function agentDeployerForServer(array $server): ?AgentDeployer
     {
         return null;
@@ -578,6 +634,34 @@ final class BackupControllerAgentTargetsFake extends BackupController
     public function targets(): array
     {
         return $this->volumeTargets();
+    }
+}
+
+/** Seam yang sama, dipakai controller yang mengurus `run()`/`restore()`. */
+final class BackupControllerAgentTargetsFake extends BackupRunController
+{
+    use BackupControllerAgentTargetsSeam;
+}
+
+/** Seam yang sama, dipakai controller yang mengurus `dbDump()`. */
+final class BackupControllerAgentTargetsDbFake extends BackupDbController
+{
+    use BackupControllerAgentTargetsSeam;
+}
+
+/** Seam yang sama, dipakai controller yang mengurus baris status volume agent. */
+final class BackupControllerAgentTargetsStatusFake extends BackupStatusController
+{
+    use BackupControllerAgentTargetsSeam;
+
+    protected function agentVolumeRows(): array
+    {
+        $row = $this->agentVolumeTargets()[0];
+        $row['strategy'] = 'snapshot';
+        $row['container_state'] = 'running';
+        $row['snapshots'] = 2;
+
+        return [$row];
     }
 
     public function agentRows(): array
@@ -626,7 +710,7 @@ final class BackupControllerDumpHandler
 }
 
 /** Controller tiruan untuk `restoreArchived()` (admin, tanpa Engine nyata). */
-final class BackupControllerArchiveFake extends BackupController
+final class BackupControllerArchiveFake extends BackupArchiveController
 {
     /** @var array<int,array<int,string>> */
     public array $spawned = [];
@@ -699,7 +783,7 @@ final class BackupControllerArchiveFake extends BackupController
 }
 
 /** Controller tiruan untuk `downloadDumpSql()` (lokal & agent). */
-final class BackupControllerDumpDownloadFake extends BackupController
+final class BackupControllerDumpDownloadFake extends BackupDbController
 {
     public bool $localReadUsed = false;
 

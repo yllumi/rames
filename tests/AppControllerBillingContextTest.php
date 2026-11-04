@@ -3,17 +3,16 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
 use app\library\Auth\UserStore;
 use app\library\Billing\BillingGate;
 use app\library\Billing\BillingStore;
 use app\library\Billing\CreditAccount;
 use PHPUnit\Framework\TestCase;
-use ReflectionMethod;
+use Tests\Support\AppControllerLocator;
 use Tests\Support\SqliteFixture;
 
 /**
- * Unit test konteks billing **baca-saja** di AppController (misi Frontend UI #8):
+ * Unit test konteks billing **baca-saja** di controller app (misi Frontend UI #8):
  *  - `billingContext()` — payload kartu limit create/confirm/template
  *    (member: plafon + estimasi + saldo + deposit minimum; admin: bebas),
  *  - `billingEstimateFor()` — estimasi tab "Sumber Daya" dari limit app,
@@ -58,10 +57,7 @@ class AppControllerBillingContextTest extends TestCase
 
     private function invoke(string $method, array $args): mixed
     {
-        $reflection = new ReflectionMethod(AppController::class, $method);
-        $reflection->setAccessible(true);
-
-        return $reflection->invoke(new AppController(), ...$args);
+        return AppControllerLocator::invoke($method, $args);
     }
 
     /** @return array<string,mixed> */

@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
+use app\controller\app\DomainSettingsController;
+use app\controller\app\InfoController;
 use app\library\Agent\AgentClient;
 use app\library\Agent\TlsPinMaterializer;
 use app\library\Docker\DockerClient;
@@ -479,9 +480,9 @@ class AppControllerAgentHostIsolationTest extends TestCase
             ['Name' => 'shared-net', 'Labels' => []],
         ];
 
-        $method = new ReflectionMethod(AppController::class, 'availableNetworksFor');
+        $method = new ReflectionMethod(InfoController::class, 'availableNetworksFor');
         $method->setAccessible(true);
-        $controller = $this->controller();
+        $controller = new InfoController();
 
         // App agent (F3c): kandidat network dibaca **dari server agent**, bukan
         // dari daemon host control plane. Server agent yang konfigurasinya cacat
@@ -510,9 +511,9 @@ class AppControllerAgentHostIsolationTest extends TestCase
     // Helper
     // ==================================================================
 
-    private function controller(): AppController
+    private function controller(): DomainSettingsController
     {
-        return new AppController();
+        return new DomainSettingsController();
     }
 
     private function post(string $body = ''): Request

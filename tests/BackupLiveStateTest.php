@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupStatusController;
 use app\library\Backup\BackupCatalog;
 use app\library\Backup\BackupRegistry;
 use app\library\Backup\BackupReport;
@@ -36,7 +36,7 @@ use Webman\Config;
  *  - **satu** panggilan Engine untuk berapa pun barisnya; **nol** baris ⇒ nol
  *    panggilan;
  *  - Engine gagal ⇒ baris cache dipertahankan, tanpa exception yang lolos;
- *  - `BackupController::status()` (via seam `backupService()`) memakai overlay;
+ *  - `BackupStatusController::status()` (via seam `backupService()`) memakai overlay;
  *  - `DockerClient::listContainers()` meneruskan timeout per-request ke opsi
  *    Guzzle `timeout` hanya bila diberikan.
  *
@@ -358,7 +358,7 @@ class BackupLiveStateTest extends TestCase
     }
 
     /**
-     * Panggil `BackupController::status()` dengan service palsu + cache terisi.
+     * Panggil `BackupStatusController::status()` dengan service palsu + cache terisi.
      *
      * @param array<int,array<string,mixed>> $cachedRows
      * @return array<string,mixed> payload JSON
@@ -370,7 +370,7 @@ class BackupLiveStateTest extends TestCase
         $catalog->write($cachedRows);
         $this->setCachedAt('2026-10-13T21:41:43+07:00');
 
-        $controller = new FakeLiveStateBackupController($this->service($docker, $catalog), self::ADMIN);
+        $controller = new FakeLiveStateStatusController($this->service($docker, $catalog), self::ADMIN);
         $response = $controller->status(new Request("GET /api/backups/status HTTP/1.1\r\nHost: localhost\r\n\r\n"));
 
         return json_decode($response->rawBody(), true, 512, JSON_THROW_ON_ERROR);
@@ -452,7 +452,7 @@ class BackupLiveStateTest extends TestCase
  * user lewat `currentUser()` sehingga `status()` teruji tanpa session/Engine nyata
  * (pola `FakeBackupScheduleController`).
  */
-class FakeLiveStateBackupController extends BackupController
+class FakeLiveStateStatusController extends BackupStatusController
 {
     public function __construct(private VolumeBackupService $service, private ?array $user)
     {

@@ -2,7 +2,7 @@
 <?php $pendingSource = ($pending['source'] ?? 'git') === 'compose' ? 'compose' : 'git'; ?>
 <?php
 // Pemilih server tujuan (multi-server: docs/SPECS.md §2a, docs/ARCHITECTURE.md §5.22).
-// Payload dari `AppController::serverFormContext()`: `servers`,
+// Payload dari `CreateController::serverFormContext()`: `servers`,
 // `selectedServerId`, `canSelectServer`. View hanya merender — server tetap
 // sumber kebenaran (`confirmCreate()` memvalidasi ulang `server_id`).
 // Nilai teks aman dari payload: hanya scalar yang dipakai (array/objek
@@ -343,7 +343,7 @@ $breadcrumbs = [
   <?php
   // Batas CPU/memori opsional saat create — owner/member boleh memilih (D2=a),
   // dibatasi plafon billing (divalidasi `Pricing::assertWithinCaps()` di server).
-  // Gerbang kartu memakai flag `canManage` dari AppController (bukan `is_admin()`
+  // Gerbang kartu memakai flag `canManage` dari controller app (bukan `is_admin()`
   // langsung) — admin tetap `canManage=true` dan tidak dibatasi plafon.
   $limitsCtx = is_array($resourceLimits ?? null) ? $resourceLimits : [];
   $limitsServices = [];

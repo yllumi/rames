@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\AppController;
+use app\controller\app\ListController;
 use app\library\Deploy\ServerResolver;
 use app\library\Storage\AppStore;
 use app\library\Storage\ServerStore;
@@ -15,14 +15,14 @@ use Webman\Config;
 use Webman\Http\Response;
 
 /**
- * `AppController` dengan seam uji: renderer view disuntikkan (tanpa konteks
+ * `ListController` (`/apps`) dengan seam uji: renderer view disuntikkan (tanpa konteks
  * HTTP) dan jumlah resolusi registry server dihitung — bukti kolom Server tidak
  * di-resolve ulang per baris (bukan N+1).
  *
  * Store tetap memakai `config()` (path temp di proses anak) supaya perilaku
  * produksi `new AppStore()`/`new ServerResolver()` ikut teruji.
  */
-final class AppListScopeController extends AppController
+final class AppListScopeController extends ListController
 {
     /** @var list<array{template:string,vars:array<string,mixed>}> */
     public array $rendered = [];

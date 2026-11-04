@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupDbController;
 use app\library\Storage\DbBackup;
 use app\library\Storage\SqliteDatabase;
 use app\middleware\CsrfMiddleware;
@@ -14,7 +14,7 @@ use Webman\Config;
 use Webman\Http\Response;
 
 /**
- * Test mediator kartu "Database dashboard (SQLite)" di `BackupController`:
+ * Test mediator kartu "Database dashboard (SQLite)" di `BackupDbController`:
  *  - admin-only 404 untuk non-admin (tanpa mutasi berkas);
  *  - POST tanpa token CSRF ditolak `CsrfMiddleware` (419);
  *  - restore tanpa `confirm=RESTORE` ditolak TANPA menyentuh berkas DB;
@@ -306,7 +306,7 @@ class DbBackupUiTest extends TestCase
  * Subclass uji: seam `isAdmin()`/`flash()` menggantikan session Webman
  * (butuh konteks HTTP) - pola `FakeCreditController`.
  */
-class FakeBackupDbController extends BackupController
+class FakeBackupDbController extends BackupDbController
 {
     public bool $admin = false;
 

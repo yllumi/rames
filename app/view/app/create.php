@@ -26,7 +26,7 @@ $formCompose = $form_compose ?? '';
 $composeError = $compose_error ?? null;
 
 // Pemilih server tujuan (multi-server: docs/SPECS.md §2a, docs/ARCHITECTURE.md §5.22).
-// Payload dari `AppController::serverFormContext()`: `servers`,
+// Payload dari `CreateController::serverFormContext()`: `servers`,
 // `selectedServerId`, `canSelectServer`. View hanya merender — server tetap
 // sumber kebenaran (`resolveCreateServer()` memvalidasi ulang `server_id`).
 // Nilai teks aman dari payload: hanya scalar yang dipakai (array/objek

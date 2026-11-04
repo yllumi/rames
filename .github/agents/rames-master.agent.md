@@ -100,11 +100,12 @@ Sampaikan format singkat: **Apa yang berubah → File → Cara verifikasi → Ri
 - **DILARANG** menyentuh data runtime nyata saat menguji (`database/apps.json`, `database/auth.json`, `apps/`) — gunakan path temp.
 
 ## Prinsip Kerja
-1. **Satu sumber kebenaran**: otorisasi hanya lewat `AppAccess`; port hanya lewat `AppPorts`; create app hanya lewat `AppController::createAndDeploy()`; `template_logo_map()` (peta logo `public/images/templates/` → slug, dipakai galeri create-app — tile + judul modal detail —, tab Template, & form deploy — jangan glob logo di view); keputusan deploy hanya lewat `DeployerInterface`.
-2. **Jangan duplikasi logika** yang sudah ada di `app/library/`.
-3. **Fail-fast dengan pesan jelas** sebelum efek samping.
-4. **Dokumentasi ikut berubah**: fitur/perilaku baru wajib tercermin di `docs/ARCHITECTURE.md`/`docs/SPECS.md` (tugaskan *Rames Assure*).
-5. **Bukti, bukan klaim**: setiap "selesai" harus punya hasil perintah yang bisa ditunjukkan.
+1. **Satu sumber kebenaran**: otorisasi hanya lewat `AppAccess`; port (resolusi/baca) hanya lewat `AppPorts`, render/tulis override port (`host:container`; **host port tetap**, yang diedit user adalah port container) hanya lewat `PortOverrides` (satu renderer, §5.12b); create app hanya lewat `CreateDeployController::createAndDeploy()`; `template_logo_map()` (peta logo `public/images/templates/` → slug, dipakai galeri create-app — tile + judul modal detail —, tab Template, & form deploy — jangan glob logo di view); keputusan deploy hanya lewat `DeployerInterface`.
+2. **Controller per fitur**: tempatkan controller domain di `app/controller/<domain>/` (namespace `app\controller\<domain>`), **helper lintas-controller hanya di base abstract**; jangan menambah logika bisnis di controller (logika tetap di `app/library/`).
+3. **Jangan duplikasi logika** yang sudah ada di `app/library/`.
+4. **Fail-fast dengan pesan jelas** sebelum efek samping.
+5. **Dokumentasi ikut berubah**: fitur/perilaku baru wajib tercermin di `docs/ARCHITECTURE.md`/`docs/SPECS.md` (tugaskan *Rames Assure*).
+6. **Bukti, bukan klaim**: setiap "selesai" harus punya hasil perintah yang bisa ditunjukkan.
 
 ## Format Output
 ```

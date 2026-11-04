@@ -624,7 +624,7 @@ class CreditController
     }
 
     /**
-     * Respons 404 polos (bukan 403) — pola `BackupController::notFound()`.
+     * Respons 404 polos (bukan 403) — pola `BackupControllerBase::notFound()`.
      */
     private function notFound(): Response
     {

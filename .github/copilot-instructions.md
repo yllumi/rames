@@ -49,7 +49,7 @@ Baca `docs/SPECS.md` (kebutuhan produk) dan `docs/ARCHITECTURE.md` (struktur kod
 
 | Lokasi | Tanggung jawab |
 |---|---|
-| `app/controller/` | Mediator HTTP: validasi input, panggil library, kembalikan respons. Tanpa logika bisnis & tanpa state. `DomainController` = **satu halaman `/domains`** untuk domain **app + parkir + SSL** (dua tab; baris app disaring `AppAccess`, pengelolaan/SSL parkir admin-only; `GET /ssl` ⇒ 302). |
+| `app/controller/` | Mediator HTTP: validasi input, panggil library, kembalikan respons. Tanpa logika bisnis & tanpa state. **Satu domain fitur = satu direktori namespace** (`app/controller/<domain>/`, mis. `app/` & `backup/`); helper lintas-controller hanya di base abstract domain itu, helper khusus tetap di controller fitur. `DomainController` = **satu halaman `/domains`** untuk domain **app + parkir + SSL** (dua tab; baris app disaring `AppAccess`, pengelolaan/SSL parkir admin-only; `GET /ssl` ⇒ 302). |
 | `app/middleware/` | `CsrfMiddleware` (semua POST/PUT/PATCH/DELETE) → `AuthMiddleware` (login + sinkronisasi session↔`auth.json`) → `StaticFile`. |
 | `app/library/` | **Semua logika bisnis**: `Storage` (`JsonStore`, `AppStore`, `ParkedDomainStore`), `Auth` (`UserStore`, `AppAccess`, `AppAccessDenied`), `Support` (`ProcessRunner`, `SigchldGuard`, `LogChunkReader`), `Domain` (`ParkedDomainValidator`, `ParkedDomainContent`, `ParkedDomainManager` — domain parking `/domains`, SPECS §8j), `Docker` (`DockerClient`, `ComposeDiscovery` — deteksi project compose eksternal untuk impor, `AppPorts`, `AppContainers`, `ContainerLogs`, `ContainerStats`, `DockerComposeRunner`, `DockerExec`), `Deploy` (`DeployerInterface`, `LocalDeployer`, `ComposeSource`, `ComposeBinds`, `ContainerNames`, `ComposeImporter`/`ImportedApp` — impor project compose manual (tanpa orkestrasi compose), `SubdomainManager`, `DeployLog` — log deploy on-demand, `DeployCanceller` — hentikan worker + grup build), `Files` (`ContainerFiles`, `PathGuard`, `TextContent`, `ArchiveGuard`, `ListingParser`, `FilesInput`, `FileError`), `Adminer` (`AdminerHelper`, `AdminerProxy`, `LimitedTempSink`, `AdminerProxyError`, `AdminerProxyLimitExceeded` — helper + reverse proxy halaman `/database`), `Nginx` (`NginxConfigGenerator`, `ParkedNginxConfig` — vhost domain parkir termasuk 443), `SSL` (`SslIssuer`, `SslDomainRows` — bentuk baris tabel domain, `ParkedSslIssuer`, `ParkedSslEnabler` — SSL domain parkir), `Update`, `Db` (`DbContainerDetector`, `DbConnectionResolver`, `DbCredentialResolver`, `DbDump` — backup & profil koneksi), `Monitor`, `System`, `Template`, `Git`. |
 | `cli/*.php` | Worker **detached** (`deploy.php`, `ssl.php`, `parked-ssl.php` — SSL domain parkir) + skrip helper self-update (`self-update.sh`, `update-report.php`). |
@@ -58,7 +58,7 @@ Baca `docs/SPECS.md` (kebutuhan produk) dan `docs/ARCHITECTURE.md` (struktur kod
 | `database/`, `apps/`, `runtime/`, `nginx-status/` | **Data runtime** (gitignored) — lihat larangan #15/#16. |
 
 **Satu sumber kebenaran** — jangan menduplikasi logika:
-`AppAccess` (otorisasi) · `ProcessRunner`+`SigchldGuard` (eksekusi proses) · `AppPorts` (port & dedupe) · `AppContainers` (validasi nama container) · `JsonStore` (mutasi JSON) · `app_subdomain_of()` (resolusi subdomain efektif — jangan menebak dari `name`) · `SubdomainManager` (kebijakan subdomain) · `ParkedDomainValidator` (keunikan FQDN domain parking — dipakai dua arah dengan `SubdomainManager`/`AppController::assertDomainUnique()`) · `AppController::createAndDeploy()` (jalur create app) · `template_logo_map()` (peta logo `public/images/templates/` → slug, dipakai galeri create-app — tile + judul modal detail —, tab Template, & form deploy — jangan glob logo di view) · `DeployerFactory`/`DeployerInterface` (keputusan deploy) · `EnvManager`/`NetworkManager`/`ContainerNames` (file override compose).
+`AppAccess` (otorisasi) · `ProcessRunner`+`SigchldGuard` (eksekusi proses) · `AppPorts` (port & dedupe) · `AppContainers` (validasi nama container) · `JsonStore` (mutasi JSON) · `app_subdomain_of()` (resolusi subdomain efektif — jangan menebak dari `name`) · `SubdomainManager` (kebijakan subdomain) · `ParkedDomainValidator` (keunikan FQDN domain parking — dipakai dua arah dengan `SubdomainManager`/`DomainSettingsController::assertDomainUnique()`) · `CreateDeployController::createAndDeploy()` (jalur create app) · `template_logo_map()` (peta logo `public/images/templates/` → slug, dipakai galeri create-app — tile + judul modal detail —, tab Template, & form deploy — jangan glob logo di view) · `DeployerFactory`/`DeployerInterface` (keputusan deploy) · `EnvManager`/`NetworkManager`/`ContainerNames` (file override compose).
 
 ---
 
@@ -68,12 +68,12 @@ Baca `docs/SPECS.md` (kebutuhan produk) dan `docs/ARCHITECTURE.md` (struktur kod
 
 | Entitas | Gaya | Contoh |
 |---------|------|--------|
-| **Class** | `PascalCase` | `AppController`, `LocalDeployer`, `NginxConfigGenerator` |
+| **Class** | `PascalCase` | `ContainerController`, `LocalDeployer`, `NginxConfigGenerator` |
 | **Method & Function** | `camelCase` | `createAndDeploy()`, `orderComposeFiles()`, `findOwningApp()` |
 | **Property & Variable** | `camelCase` | `$this->composeFiles`, `$appId`, `$hostPort` |
 | **Field JSON / kolom DB** | `snake_case` | `owner_id`, `primary_port`, `container_prefix`, `compose_files`, `deploy_history` |
 | **Namespace** | huruf kecil mengikuti path | `app\library\Deploy`, `app\library\Auth`, `app\library\Support` |
-| **File** | `PascalCase` sesuai class | `AppController.php`, `ProcessRunner.php`; view: `app/view/<folder>/<nama>.php` |
+| **File** | `PascalCase` sesuai class | `ContainerController.php`, `ProcessRunner.php`; view: `app/view/<folder>/<nama>.php` |
 | **Key env/config** | `UPPER_SNAKE` | `MONITOR_POLL_MS`, `HOST_PROC_PATH`, `TEMPLATES_PATH`, `UPDATE_BRANCH` |
 | **Ability** | lowercase, satu kata | `view`, `logs`, `deploy`, `env`, `compose`, `terminal`, `database`, `sharing`, `delete` |
 | **Route/URL & slug app** | lowercase, kebab-case | `/apps/{id}/versions`, `/api/monitor/overview`, `/healthz`, slug `[a-z0-9-]` |

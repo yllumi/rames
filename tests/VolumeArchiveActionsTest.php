@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\controller\BackupController;
+use app\controller\backup\BackupArchiveController;
+use app\controller\backup\BackupControllerBase;
 use app\library\Backup\ResticRunner;
 use app\library\Backup\VolumeRestoreService;
 use app\library\Backup\VolumeStateGuard;
@@ -219,7 +220,7 @@ class VolumeArchiveActionsTest extends TestCase
 
     public function testSafeDownloadNameSanitizesTraversal(): void
     {
-        $name = BackupController::safeDownloadName('../../etc/passwd', 'abc"def');
+        $name = BackupControllerBase::safeDownloadName('../../etc/passwd', 'abc"def');
 
         $this->assertSame('passwd-abc_def.sql', $name);
         $this->assertStringNotContainsString('/', $name);
@@ -229,7 +230,7 @@ class VolumeArchiveActionsTest extends TestCase
 
     public function testSafeDownloadNameFallsBackWhenEmpty(): void
     {
-        $this->assertSame('backup-backup.sql', BackupController::safeDownloadName('///', '&&'));
+        $this->assertSame('backup-backup.sql', BackupControllerBase::safeDownloadName('///', '&&'));
     }
 
     /**
@@ -239,7 +240,7 @@ class VolumeArchiveActionsTest extends TestCase
     {
         $this->assertSame(
             'shop_data-1a2b3c4d5e6f.sql',
-            BackupController::safeDownloadName('shop_data', '1a2b3c4d5e6f')
+            BackupControllerBase::safeDownloadName('shop_data', '1a2b3c4d5e6f')
         );
     }
 
@@ -249,13 +250,13 @@ class VolumeArchiveActionsTest extends TestCase
      */
     public function testSafeDownloadNameStripsControlAndPathChars(): void
     {
-        $name = BackupController::safeDownloadName("vol\r\n", "snap\0id");
+        $name = BackupControllerBase::safeDownloadName("vol\r\n", "snap\0id");
 
         $this->assertSame('vol-snap_id.sql', $name);
         $this->assertDoesNotMatchRegularExpression('/[\x00-\x1F\x7F]/', $name, 'tak boleh ada karakter kontrol');
         $this->assertSame(1, preg_match('/^[A-Za-z0-9._-]+\.sql$/', $name), 'bentuk aman + suffix .sql');
 
-        $slashed = BackupController::safeDownloadName('foo/bar', 'a"b');
+        $slashed = BackupControllerBase::safeDownloadName('foo/bar', 'a"b');
         $this->assertSame('bar-a_b.sql', $slashed);
         $this->assertStringNotContainsString('/', $slashed);
         $this->assertStringNotContainsString('"', $slashed);
@@ -268,10 +269,10 @@ class VolumeArchiveActionsTest extends TestCase
             ['Name' => 'myapp_data'],
         ];
 
-        $this->assertTrue(BackupController::volumeListed($volumes, 'myapp_data'));
-        $this->assertFalse(BackupController::volumeListed($volumes, 'myapp_data_missing'));
-        $this->assertFalse(BackupController::volumeListed([], 'myapp_data'));
-        $this->assertFalse(BackupController::volumeListed([['Driver' => 'local']], 'myapp_data'));
+        $this->assertTrue(BackupArchiveController::volumeListed($volumes, 'myapp_data'));
+        $this->assertFalse(BackupArchiveController::volumeListed($volumes, 'myapp_data_missing'));
+        $this->assertFalse(BackupArchiveController::volumeListed([], 'myapp_data'));
+        $this->assertFalse(BackupArchiveController::volumeListed([['Driver' => 'local']], 'myapp_data'));
     }
 
     public function testVolumeNameGateRejectsTraversal(): void

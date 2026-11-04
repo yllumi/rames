@@ -372,6 +372,51 @@ class LocalDeployer implements DeployerInterface
     }
 
     /**
+     * Terapkan perubahan **port container** app (mapping host:container) tanpa
+     * rebuild source: berkas override port sudah ditulis pemanggil lewat
+     * {@see PortOverrides::persist()} / `PortOverrides::write()` — jadi di sini
+     * hanya override lain (env/network/nama container/limits) yang disinkronkan,
+     * lalu `up -d` tanpa build. Override port **tidak** ditulis ulang di sini:
+     * `syncManagedOverrides()` tidak menyentuhnya dan menimpanya akan
+     * menghapus pilihan user yang baru saja disimpan.
+     *
+     * **Host port tidak berubah** (target `proxy_pass` Nginx; unik se-host),
+     * jadi config Nginx ditulis ulang secara **idempoten** — hasilnya sama
+     * selama host port tetap, tetapi tetap ditulis agar konsisten bila data
+     * container berubah (mis. mapping yang di-proxy berganti port container →
+     * `primary_port`). Tanpa penulisan ini vhost bisa menunjuk host port lama
+     * bila host port memang berubah lewat jalur lain (compose di-edit user).
+     *
+     * Tanpa `recordHistory()` — sama seperti `applyEnv()`/`applyLimits()`:
+     * perubahan port bukan deploy baru, jadi tidak boleh menjadi kandidat rollback.
+     */
+    public function applyPorts(array $app, callable $logger): array
+    {
+        ImportedApp::assertManageable($app, 'Terapkan port');
+
+        $project = (string) $app['name'];
+        $dir = $this->appDir($app);
+        $files = $this->resolveComposeFiles($app, $dir);
+        $this->ensureNginxPrecondition($app, $dir, $files);
+
+        // Sinkronkan override terkelola (env/network/nama/limits) lalu hitung
+        // ulang daftar file: di server agent entri override env/limits sudah ada
+        // di metadata app padahal berkasnya baru ditulis di sini.
+        $files = $this->syncManagedOverrides($app, $dir, $files);
+
+        $logger('build', 'Menciptakan ulang container dengan port baru ...');
+        $this->upCompose($project, $app, $dir, $files, false, $logger);
+
+        $app['containers'] = $this->getContainers($project);
+        $this->writeNginxConfigStep($app, $logger);
+
+        $app['status'] = 'running';
+        $logger('done', 'Port container diterapkan.');
+
+        return $app;
+    }
+
+    /**
      * @param callable|null $logger opsional — callable(string $stage, string $message): void.
      *        Tidak ada di DeployerInterface (kontrak lama): dipakai test & pemanggil
      *        yang ingin menangkap peringatan non-fatal; tanpa logger, peringatan
@@ -441,8 +486,9 @@ class LocalDeployer implements DeployerInterface
      *     muncul agar compose memberi error yang jelas (fail-fast).
      *
      * Karena semua jalur compose lewat method ini — `deploy`, `rebuild`,
-     * `rollback`, `apply`, `applyEnv`, `stop`, `start` — seluruhnya otomatis
-     * terlindungi dari override generated yang hilang.
+     * `rollback`, `apply`, `applyEnv`, `applyLimits`, `applyPorts`, `stop`,
+     * `start` — seluruhnya otomatis terlindungi dari override generated yang
+     * hilang.
      *
      * @return array<int,string> tidak pernah kosong
      */
@@ -666,7 +712,7 @@ class LocalDeployer implements DeployerInterface
             } catch (\Throwable $e) {
                 // Docker menolak (mis. 403 "Resource is still in use") selama
                 // masih ada container menempel. Penghapusan app TIDAK dibatalkan
-                // — AppController menandai exception sebagai "Gagal menghapus"
+                // — `DeploymentController` menandai exception sebagai "Gagal menghapus"
                 // dan tidak menghapus record app — tetapi kegagalan ini TIDAK
                 // boleh diam: catat peringatan jelas + sisa yang perlu dibereskan
                 // manual, tanpa mengklaim network sudah terhapus.
@@ -820,7 +866,7 @@ class LocalDeployer implements DeployerInterface
      *
      * Teardown dipanggil sinkron dari request HTTP (tanpa logger) maupun dari
      * worker async (dengan logger). Peringatan sisa resource TIDAK boleh
-     * menggagalkan penghapusan app: AppController menandai exception sebagai
+     * menggagalkan penghapusan app: `DeploymentController` menandai exception sebagai
      * "Gagal menghapus" dan membatalkan penghapusan record app — app yang
      * container-nya sudah dibersihkan akan tertinggal setengah mati. Karena itu
      * kegagalan pembersihan network dicatat (dengan prefix "PERINGATAN:") ke

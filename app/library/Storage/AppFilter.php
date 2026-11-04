@@ -8,7 +8,7 @@ namespace app\library\Storage;
  * `domain`, `owner`.
  *
  * Statik murni — tanpa I/O, tanpa state, **tanpa otorisasi**. Kelas ini tidak
- * tahu siapa pemanggilnya: `AppController::index()` yang memutuskan filter mana
+ * tahu siapa pemanggilnya: `ListController::index()` yang memutuskan filter mana
  * yang berhak dihormati (mis. `owner` hanya untuk admin) dan sudah menyaring
  * daftar app lewat `AppAccess::visible()` sebelum masuk ke sini.
  *
