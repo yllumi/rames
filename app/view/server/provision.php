@@ -72,6 +72,26 @@ $agentKeySlot = (string) ($agentKey['slot'] ?? 'rames-agent-key');
 $agentKeyPublic = (string) ($agentKey['public_key'] ?? '');
 $agentKeyFingerprint = (string) ($agentKey['fingerprint'] ?? '');
 
+// Daftar job provisioning (payload `jobs` + `active_job`) supaya status tetap
+// terlihat setelah halaman direfresh / dibuka dari tautan `/servers`.
+$provisionJobs = is_array($jobs ?? null) ? array_values(array_filter($jobs, 'is_array')) : [];
+$activeJob = is_array($active_job ?? null) ? $active_job : [];
+$activeJobId = (string) ($activeJob['id'] ?? '');
+$jobStatusLabel = [
+    'queued' => 'menunggu',
+    'running' => 'berjalan',
+    'done' => 'selesai',
+    'error' => 'gagal',
+    'cancelled' => 'dibatalkan',
+];
+$jobStatusBadge = [
+    'queued' => 'text-bg-secondary',
+    'running' => 'text-bg-primary',
+    'done' => 'text-bg-success',
+    'error' => 'text-bg-danger',
+    'cancelled' => 'text-bg-warning',
+];
+
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
     ['label' => 'Servers', 'href' => '/servers'],
@@ -133,7 +153,8 @@ $breadcrumbs = [
     <h2 class="h6 mb-0">Detail server tujuan &amp; agent</h2>
   </div>
   <div class="card-body">
-    <form id="provision-form" method="post" action="/servers/provision" autocomplete="off">
+    <form id="provision-form" method="post" action="/servers/provision" autocomplete="off"
+          data-provision-active-job="<?= e($activeJobId) ?>">
       <?= csrf_field() ?>
 
       <div class="row g-3">
@@ -300,6 +321,58 @@ $breadcrumbs = [
   </div>
 </section>
 
+<?php if ($provisionJobs !== []): ?>
+<section class="card mb-4">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <h2 class="h6 mb-0">Job provisioning terakhir</h2>
+    <span class="text-muted small">status tetap tersedia setelah halaman direfresh</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead>
+        <tr>
+          <th scope="col">Server</th>
+          <th scope="col">Tahap</th>
+          <th scope="col">Status</th>
+          <th scope="col">Pesan / galat</th>
+          <th scope="col">Dibuat</th>
+          <th scope="col" class="text-end">Aksi</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach ($provisionJobs as $__job): ?>
+          <?php
+          $__jobId = (string) ($__job['id'] ?? '');
+          $__jobStatus = (string) ($__job['status'] ?? '');
+          $__jobMessage = trim((string) ($__job['error'] ?? ''));
+          if ($__jobMessage === '') {
+              $__jobMessage = trim((string) ($__job['message'] ?? ''));
+          }
+          ?>
+          <tr>
+            <td class="mono small"><?= e((string) ($__job['name'] ?? '')) ?> → <?= e((string) ($__job['host'] ?? '')) ?></td>
+            <td class="small"><?= e((string) ($__job['stage'] ?? '')) ?></td>
+            <td>
+              <span class="badge <?= e($jobStatusBadge[$__jobStatus] ?? 'text-bg-secondary') ?>">
+                <?= e($jobStatusLabel[$__jobStatus] ?? $__jobStatus) ?>
+              </span>
+            </td>
+            <td class="small text-muted"><?= e($__jobMessage !== '' ? $__jobMessage : '—') ?></td>
+            <td class="small text-muted"><?= e((string) ($__job['created_at'] ?? '—')) ?></td>
+            <td class="text-end">
+              <?php if ($__jobId !== ''): ?>
+                <a class="btn btn-outline-primary btn-sm"
+                   href="/servers/provision?job=<?= e(rawurlencode($__jobId)) ?>">Pantau</a>
+              <?php endif; ?>
+            </td>
+          </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+</section>
+<?php endif; ?>
+
 <section class="card mb-4" data-provision-panel hidden>
   <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
     <h2 class="h6 mb-0">Status provisioning</h2>
@@ -316,6 +389,6 @@ $breadcrumbs = [
   </div>
 </section>
 
-<script src="/js/provision.js?v=2"></script>
+<script src="/js/provision.js?v=3"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

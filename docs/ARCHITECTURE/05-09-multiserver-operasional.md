@@ -66,7 +66,8 @@ flowchart TB
 
 | Route | Metode | Perilaku | Guard |
 |---|---|---|---|
-| `/servers/provision` | GET | Render form + panel **Kunci SSH provisioning** (`agent_key`: `exists/slot/public_key/fingerprint/public_path`; default dari `config('deploy.port_range')`, `agent_port` 8443, `bind` `0.0.0.0:8443`) | admin-only ⇒ **404** |
+| `/servers/provision` | GET | Render form + panel **Kunci SSH provisioning** + tabel **job terakhir** dan atribut `data-provision-active-job` (pemantauan dilanjutkan otomatis setelah refresh; `?job=<id>` memantau job tertentu) (`agent_key`: `exists/slot/public_key/fingerprint/public_path`; default dari `config('deploy.port_range')`, `agent_port` 8443, `bind` `0.0.0.0:8443`) | admin-only ⇒ **404** |
+| `/servers/provision/jobs` | GET | Daftar job terbaru (`{code:0,jobs:[…]}`, `can_cancel` turunan status) — dipakai panel **Provisioning server** di `/servers` (polling 3 dtk) dan tabel job di halaman provision; **tanpa** rahasia | admin-only ⇒ 404 |
 | `/servers/provision/keypair` | POST | `ProvisionAgentKey::ensure()` — buat kunci bersama bila belum ada (idempoten, kunci lama tidak diregenerasi); respons `{code:0,public_key,fingerprint,created}`. **Private key tidak pernah dikirim** | admin-only ⇒ 404; **CSRF global** |
 | `/servers/provision` | POST | Validasi → cek kunci bersama (**422** bila belum ada) → job → spawn worker; sukses `{code:0,job_id,status_url}`, input tidak sah **422** (JSON) / form + `errors`, gagal spawn **500** | admin-only ⇒ **404**; **CSRF global** |
 | `/servers/provision/status?job=&offset=` | GET | Kolom job + potongan log baru; `offset` = offset lanjutan | admin-only ⇒ 404; id/job tak dikenal ⇒ **404 JSON** |

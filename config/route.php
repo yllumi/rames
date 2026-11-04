@@ -414,6 +414,8 @@ Route::get('/servers/provision', [ProvisionController::class, 'form']);
 Route::post('/servers/provision', [ProvisionController::class, 'store']);
 // Buat/baca kunci provisioning bersama (`rames-agent-key`, public key saja).
 Route::post('/servers/provision/keypair', [ProvisionController::class, 'keypair']);
+// Daftar job provisioning terbaru (JSON) — dipantau dari `/servers` & `/servers/provision`.
+Route::get('/servers/provision/jobs', [ProvisionController::class, 'jobList']);
 Route::get('/servers/provision/status', [ProvisionController::class, 'status']);
 Route::post('/servers/provision/cancel', [ProvisionController::class, 'cancel']);
 

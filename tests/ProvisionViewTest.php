@@ -21,7 +21,8 @@ use PHPUnit\Framework\TestCase;
  *        rentang port, agent_port/bind/ip/control_plane_ips/manage_firewall/
  *        playbook/ssl_*), nilai default dari payload;
  *  (ii)  area status (`[data-provision-status]`, `[data-provision-log]`,
- *        `[data-provision-cancel]`) + skrip `/js/provision.js?v=2`;
+ *        `[data-provision-cancel]`, `[data-provision-pubkey]`) + tabel job
+ *        terakhir (status bertahan setelah refresh) + skrip `/js/provision.js?v=3`;
  *  (iii) peringatan keamanan (kunci 0600, host key TOFU, egress image Ansible);
  *  (iv)  input lama ter-escape & pesan galat tampil; `private_key` tidak pernah
  *        dirender ulang;
@@ -182,7 +183,7 @@ class ProvisionViewTest extends TestCase
         $this->assertStringContainsString('data-provision-status', $html);
         $this->assertStringContainsString('data-provision-log', $html);
         $this->assertStringContainsString('data-provision-cancel', $html);
-        $this->assertStringContainsString('src="/js/provision.js?v=2"', $html);
+        $this->assertStringContainsString('src="/js/provision.js?v=3"', $html);
 
         // Peringatan keamanan yang wajib terlihat operator.
         $this->assertStringContainsString('0600', $html);
@@ -245,6 +246,52 @@ class ProvisionViewTest extends TestCase
         $this->assertNoSecretLeak($html);
     }
 
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testJobHistoryAndResumeAttributeAreRendered(): void
+    {
+        $payload = $this->payload();
+        $payload['active_job'] = ['id' => 'job-aktif-1', 'status' => 'running', 'stage' => 'run'];
+        $payload['jobs'] = [
+            [
+                'id' => 'job-aktif-1',
+                'name' => 'agent-133',
+                'host' => '103.82.92.133',
+                'stage' => 'run',
+                'status' => 'running',
+                'message' => 'Menjalankan playbook provision-agent …',
+                'error' => null,
+                'created_at' => '2026-11-05T04:00:00Z',
+                'can_cancel' => true,
+            ],
+            [
+                'id' => 'job-lama',
+                'name' => 'agent-01',
+                'host' => '10.0.0.5',
+                'stage' => 'done',
+                'status' => 'done',
+                'message' => 'Provisioning selesai.',
+                'error' => null,
+                'created_at' => '2026-11-04T10:00:00Z',
+                'can_cancel' => false,
+            ],
+        ];
+
+        $html = $this->renderView('server/provision.php', $payload);
+
+        // Status bertahan setelah refresh: daftar job + tautan pantau.
+        $this->assertStringContainsString('Job provisioning terakhir', $html);
+        $this->assertStringContainsString('agent-133', $html);
+        $this->assertStringContainsString('/servers/provision?job=job-aktif-1', $html);
+        $this->assertStringContainsString('berjalan', $html);
+        $this->assertStringContainsString('selesai', $html);
+
+        // Pemantauan dilanjutkan otomatis untuk job aktif terbaru.
+        $this->assertStringContainsString('data-provision-active-job="job-aktif-1"', $html);
+
+        $this->assertNoSecretLeak($html);
+    }
+
     // ------------------------------------------------------------------
     // Helper
     // ------------------------------------------------------------------
@@ -255,6 +302,8 @@ class ProvisionViewTest extends TestCase
     private function payload(): array
     {
         return [
+            'jobs' => [],
+            'active_job' => null,
             'defaults' => [
                 'name' => '',
                 'host' => '',

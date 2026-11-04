@@ -65,6 +65,12 @@ class ProvisionControllerAccessTest extends TestCase
             'POST /servers/provision/cancel' => fn (): Response => $controller->cancel(
                 $this->post('/servers/provision/cancel', ['job' => 'abc123'], true)
             ),
+            'POST /servers/provision/keypair' => fn (): Response => $controller->keypair(
+                $this->post('/servers/provision/keypair', [], true)
+            ),
+            'GET /servers/provision/jobs' => fn (): Response => $controller->jobList(
+                $this->get('/servers/provision/jobs', true)
+            ),
         ];
 
         $allowed = [];
@@ -103,6 +109,24 @@ class ProvisionControllerAccessTest extends TestCase
         $this->assertSame(['provision-agent', 'verify-agent'], $defaults['playbooks'] ?? null);
         $this->assertArrayNotHasKey('private_key', $defaults, 'Defaults tidak boleh memuat rahasia');
         $this->assertSame([], $controller->rendered['vars']['errors'] ?? null);
+        // Status job ikut dirender supaya tidak hilang setelah refresh.
+        $this->assertSame([], $controller->rendered['vars']['jobs'] ?? null);
+        $this->assertArrayHasKey('active_job', $controller->rendered['vars']);
+        // Kunci privat tidak pernah sampai ke view.
+        $this->assertArrayNotHasKey('private_key', $controller->rendered['vars']['agent_key'] ?? []);
+    }
+
+    public function testAdminJobListReturnsJobsWithoutSecrets(): void
+    {
+        $controller = $this->controller(['id' => 'u1', 'username' => 'admin', 'role' => 'admin']);
+
+        // Kosong: tetap respons JSON sah (panel di `/servers` menyembunyikan diri).
+        $response = $controller->jobList($this->get('/servers/provision/jobs', true));
+        $this->assertSame(200, $response->getStatusCode());
+        $decoded = json_decode((string) $response->rawBody(), true);
+        $this->assertIsArray($decoded);
+        $this->assertSame(0, $decoded['code'] ?? null);
+        $this->assertSame([], $decoded['jobs'] ?? null);
     }
 
     public function testAdminStatusForUnknownJobIs404Json(): void

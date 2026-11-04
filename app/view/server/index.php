@@ -81,6 +81,28 @@ $breadcrumbs = [
 <?php $__infoHtml = (string) ob_get_clean(); $__infoId = 'servers-info'; $__infoTitle = 'Tentang Servers'; ?>
 <?php include app_path() . '/view/partials/page-info-modal.php'; ?>
 
+<section class="card mb-4" data-provision-jobs hidden>
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <h2 class="h6 mb-0">Provisioning server</h2>
+    <a class="btn btn-outline-secondary btn-sm" href="/servers/provision">Buka halaman Provision</a>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead>
+        <tr>
+          <th scope="col">Server</th>
+          <th scope="col">Tahap</th>
+          <th scope="col">Status</th>
+          <th scope="col">Pesan</th>
+          <th scope="col">Dimulai</th>
+          <th scope="col" class="text-end">Aksi</th>
+        </tr>
+      </thead>
+      <tbody data-provision-jobs-body></tbody>
+    </table>
+  </div>
+</section>
+
 <?php if ($agentCount === 0): ?>
 <section class="card mb-4">
   <div class="card-header d-flex justify-content-between align-items-center">
@@ -343,5 +365,6 @@ $breadcrumbs = [
 </section>
 
 <script src="/js/server.js?v=6"></script>
+<script src="/js/provision-jobs.js?v=1"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

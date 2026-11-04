@@ -118,6 +118,9 @@ class ProvisionController
             'values' => [],
             'errors' => [],
             'agent_key' => $this->agentKeyState(),
+            // Daftar job supaya status tetap terlihat setelah reload/tab baru.
+            'jobs' => $this->recentJobs(),
+            'active_job' => $this->latestActiveJob(),
             'active' => 'servers',
         ]);
     }
@@ -215,6 +218,23 @@ class ProvisionController
             'job_id' => $jobId,
             'status_url' => '/servers/provision/status?job=' . rawurlencode($jobId),
         ]);
+    }
+
+    /**
+     * `GET /servers/provision/jobs` — daftar job provisioning terbaru (JSON).
+     *
+     * Dipakai halaman `/servers` untuk memantau job yang belum punya baris server
+     * (job berjalan SEBELUM registrasi). Admin-only ⇒ 404; tidak ada rahasia di
+     * payload (kolom `provision_jobs` saja).
+     */
+    public function jobList(Request $request): Response
+    {
+        $denied = $this->guard($request);
+        if ($denied !== null) {
+            return $denied;
+        }
+
+        return json(['code' => 0, 'jobs' => $this->recentJobs()]);
     }
 
     /**
@@ -406,6 +426,47 @@ class ProvisionController
             $this->jobs()->markError($jobId, $message);
         } catch (Throwable) {
             // baris job bisa saja sudah dihapus operator
+        }
+    }
+
+    /**
+     * Job terbaru yang aman ditampilkan (tanpa kolom rahasia — tabelnya memang
+     * tidak punya kolom rahasia) + `can_cancel` agar UI tidak menawarkan batal
+     * pada job yang sudah terminal.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function recentJobs(int $limit = 10): array
+    {
+        try {
+            $jobs = $this->jobs()->recent($limit);
+        } catch (Throwable) {
+            // Halaman utama tidak boleh gagal hanya karena daftar job bermasalah.
+            return [];
+        }
+
+        return array_map(static function (array $job): array {
+            $status = (string) ($job['status'] ?? '');
+            $job['can_cancel'] = in_array($status, [
+                ProvisionJobStore::STATUS_QUEUED,
+                ProvisionJobStore::STATUS_RUNNING,
+            ], true);
+
+            return $job;
+        }, $jobs);
+    }
+
+    /**
+     * Job aktif terbaru (untuk melanjutkan pemantauan setelah reload).
+     *
+     * @return array<string,mixed>|null
+     */
+    private function latestActiveJob(): ?array
+    {
+        try {
+            return $this->jobs()->latestActive();
+        } catch (Throwable) {
+            return null;
         }
     }
 

@@ -371,6 +371,46 @@ final class ProvisionJobStore
         return is_array($row) ? self::hydrate($row) : null;
     }
 
+    /**
+     * Job terbaru lintas server (untuk daftar pantau di `/servers` & `/servers/provision`).
+     *
+     * Tanpa kolom rahasia — baris yang sama dengan tabel `provision_jobs`.
+     * Urutan `created_at` terbaru lebih dulu; `limit` dipatok 1..100.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function recent(int $limit = 10): array
+    {
+        $limit = max(1, min(100, $limit));
+
+        // `rowid` = urutan insert: `created_at` hanya presisi detik, sehingga dua
+        // job dalam detik yang sama akan berurutan acak bila memakai kolom itu.
+        $stmt = $this->db()->pdo()->query(
+            'SELECT * FROM "provision_jobs" ORDER BY "rowid" DESC LIMIT ' . $limit
+        );
+        $rows = $stmt === false ? [] : $stmt->fetchAll();
+
+        return array_values(array_map(static fn (array $row): array => self::hydrate($row), $rows));
+    }
+
+    /**
+     * Job yang masih berjalan (`queued`/`running`) paling baru, atau null.
+     *
+     * Dipakai halaman provisioning untuk melanjutkan pemantauan setelah reload.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function latestActive(): ?array
+    {
+        $stmt = $this->db()->pdo()->query(
+            'SELECT * FROM "provision_jobs" WHERE "status" IN (\'queued\',\'running\')'
+            . ' ORDER BY "rowid" DESC LIMIT 1'
+        );
+        $row = $stmt === false ? false : $stmt->fetch();
+
+        return is_array($row) ? self::hydrate($row) : null;
+    }
+
     // ==================================================================
     // Internal
     // ==================================================================

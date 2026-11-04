@@ -235,6 +235,43 @@ class ProvisionJobStoreTest extends TestCase
         $this->assertNull($this->store->latestForServer(''));
     }
 
+    public function testRecentOrdersNewestFirstAndCapsLimit(): void
+    {
+        $first = $this->store->create($this->job(['name' => 'agent-01']));
+        $second = $this->store->create($this->job(['name' => 'agent-02']));
+        $third = $this->store->create($this->job(['name' => 'agent-03']));
+
+        $this->pdo()->prepare('UPDATE "provision_jobs" SET "created_at" = ? WHERE "id" = ?')
+            ->execute(['2020-01-01T00:00:00Z', (string) $first['id']]);
+
+        $recent = $this->store->recent(2);
+
+        $this->assertCount(2, $recent, 'limit dipatuhi');
+        $this->assertSame($third['id'], $recent[0]['id'], 'terbaru lebih dulu');
+        $this->assertSame($second['id'], $recent[1]['id']);
+        $this->assertArrayNotHasKey('token', $recent[0], 'tidak ada kolom rahasia');
+
+        // limit di luar rentang tetap aman (dipatok 1..100).
+        $this->assertCount(1, $this->store->recent(0), 'limit < 1 dipatok ke 1');
+        $this->assertCount(3, $this->store->recent(1000), 'limit besar tidak melebihi jumlah baris');
+    }
+
+    public function testLatestActiveReturnsOnlyQueuedOrRunning(): void
+    {
+        $done = $this->store->create($this->job(['name' => 'agent-selesai']));
+        $this->store->markDone((string) $done['id'], 'selesai');
+
+        $this->assertNull($this->store->latestActive(), 'job selesai bukan job aktif');
+
+        $running = $this->store->create($this->job(['name' => 'agent-berjalan']));
+        $this->store->markRunning((string) $running['id']);
+
+        $active = $this->store->latestActive();
+        $this->assertIsArray($active);
+        $this->assertSame($running['id'], $active['id']);
+        $this->assertSame('running', $active['status']);
+    }
+
     public function testFailStaleRunningMarksOnlyOldRunningJobs(): void
     {
         $stale = $this->store->create($this->job(['name' => 'agent-lama']));

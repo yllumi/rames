@@ -225,8 +225,6 @@
     setStatus('Job dibuat — menunggu worker provisioning …');
     setCancelEnabled(true);
 
-    // Kunci privat tidak perlu lagi disimpan di DOM setelah terkirim.
-
     schedule(0);
   }
 
@@ -372,6 +370,24 @@
       setKeyMessage('Salin manual: teks sudah dipilih.', false);
     });
   }
+
+  // ---------------------------------------------------------------------
+  // Lanjutkan pemantauan setelah reload / dari tautan `/servers/provision?job=`
+  // ---------------------------------------------------------------------
+  (function resumeJob() {
+    var fromQuery = '';
+    try {
+      fromQuery = new URLSearchParams(window.location.search).get('job') || '';
+    } catch (error) {
+      fromQuery = '';
+    }
+
+    var fromServer = (form.getAttribute('data-provision-active-job') || '').trim();
+    var jobId = /^[A-Za-z0-9_-]{1,64}$/.test(fromQuery) ? fromQuery
+      : (/^[A-Za-z0-9_-]{1,64}$/.test(fromServer) ? fromServer : '');
+
+    if (jobId !== '') startJob(jobId);
+  }());
 
   document.addEventListener('visibilitychange', function () {
     if (!state.running) return;

@@ -139,17 +139,18 @@ class AgentModeTest extends TestCase
      * (operator+), dashboard-only: app impor ditolak & app agent menerima
      * metadata `host_ports` + worker `apply_ports` dari control plane.
      *
-     * +5 (provisioning server agent via Ansible, opsi B): `GET/POST
+     * +6 (provisioning server agent via Ansible, opsi B): `GET/POST
      * /servers/provision` + `POST /servers/provision/keypair` + `GET
-     * /servers/provision/status` + `POST /servers/provision/cancel` — admin-only
+     * /servers/provision/jobs` + `GET /servers/provision/status` + `POST
+     * /servers/provision/cancel` — admin-only
      * (non-admin ⇒ 404), dashboard-only: playbook `ops/ansible/playbooks/*.yml`
      * dijalankan DI control plane terhadap host SSH, jadi agent tidak punya
      * permukaan ini.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 157;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 158;
 
     /** Definisi di atas menghasilkan 163 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 163;
+    private const DASHBOARD_ROUTE_PAIRS = 164;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -167,6 +168,7 @@ class AgentModeTest extends TestCase
         'GET /servers/provision',
         'POST /servers/provision',
         'POST /servers/provision/keypair',
+        'GET /servers/provision/jobs',
         'POST /nginx/reload',        'GET /monitor',
         'GET /database',
         'GET /ssl',
