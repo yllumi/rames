@@ -105,6 +105,12 @@ final class HostKeyPinner
             foreach ($existing as $entry) {
                 if ($entry[0] === $keyType && hash_equals($entry[1], $keyBody)) {
                     // Idempoten: pin lama sama dengan kunci yang dibaca sekarang.
+                    // Tetap tulis ulang supaya bentuk kolom host dinormalkan:
+                    // versi lama menulis `[host]:22`, padahal OpenSSH mencari
+                    // `host` untuk port default (kalau tidak, koneksi ditolak
+                    // "No ED25519 host key is known").
+                    $this->store->saveKnownHost($keySlot, $host, $port, $keyType . ' ' . $keyBody);
+
                     return ['fingerprint' => $fingerprint, 'host_key_changed' => false, 'pinned' => false];
                 }
             }

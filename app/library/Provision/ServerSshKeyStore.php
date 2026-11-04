@@ -19,8 +19,10 @@ use RuntimeException;
  * `servers/` dibuat mode 0700. Private key **tidak pernah** masuk basis data,
  * log, atau pesan galat — kelas ini hanya menyebut path/nama kunci.
  *
- * Pin host key (TOFU) disimpan di `<keysDir>/known_hosts` dengan format
- * `[host]:port <baris host key>`. Baris untuk host:port yang sama diganti
+ * Pin host key (TOFU) disimpan di `<keysDir>/known_hosts` dengan format yang
+ * SAMA dengan OpenSSH: `host <baris host key>` untuk port 22 dan
+ * `[host]:port <baris host key>` untuk port lain (bentuk `[host]:22` tidak
+ * pernah cocok saat koneksi memakai port default). Baris untuk host:port yang sama diganti
  * (idempoten), entri host lain tidak pernah ditimpa. `saveKnownHost()` juga
  * menulis penanda per server (`servers/{serverId}.pin`) sehingga
  * {@see self::hasPin()} bisa menjawab "host key server ini sudah dipin?" tanpa
@@ -155,9 +157,10 @@ final class ServerSshKeyStore
     }
 
     /**
-     * Simpan/pin host key server: tulis `[host]:port <hostKeyLine>` ke
-     * `<keysDir>/known_hosts` (ganti entri host:port yang sama, entri host lain
-     * dipertahankan) dan penanda `servers/{serverId}.pin`.
+     * Simpan/pin host key server ke `<keysDir>/known_hosts` dengan bentuk kolom
+     * host yang sama seperti OpenSSH (`host` untuk port 22, `[host]:port`
+     * untuk port lain) — mengganti entri host itu, entri host lain tetap —
+     * lalu menulis penanda `servers/{serverId}.pin`.
      *
      * @throws RuntimeException bila host/port/baris host key tidak sah
      */
@@ -183,15 +186,39 @@ final class ServerSshKeyStore
             throw new RuntimeException('Baris host key SSH tidak valid (satu baris, maksimal 8 KiB).');
         }
 
-        $entry = '[' . $normalizedHost . ']:' . $port . ' ' . $keyLine;
+        // Bentuk kolom host WAJIB mengikuti OpenSSH: port default (22) ditulis
+        // `host` polos, port lain `[host]:port`. Menulis `[host]:22` membuat SSH
+        // TIDAK menemukan entri (pesan: "No ED25519 host key is known for <host>")
+        // sehingga `StrictHostKeyChecking=yes` menolak koneksi.
+        $spec = $port === 22 ? $normalizedHost : '[' . $normalizedHost . ']:' . $port;
+        $entry = $spec . ' ' . $keyLine;
+
+        // Semua bentuk ekuivalen untuk host ini (termasuk bentuk legacy
+        // `[host]:22` dari versi lama) diganti supaya tidak menumpuk.
+        $aliases = [$spec];
+        if ($port === 22) {
+            $aliases[] = $normalizedHost;
+            $aliases[] = '[' . $normalizedHost . ']:22';
+        } else {
+            $aliases[] = '[' . $normalizedHost . ']:' . $port;
+        }
+        $aliases = array_values(array_unique($aliases));
 
         $knownHosts = $this->knownHostsPath();
         $lines = $this->knownHostLines();
         $result = [];
         foreach ($lines as $line) {
             $parts = preg_split('/\s+/', trim($line)) ?: [];
-            if (($parts[0] ?? '') === '[' . $normalizedHost . ']:' . $port) {
-                continue; // entri lama host:port ini diganti
+            $specs = explode(',', strtolower((string) ($parts[0] ?? '')));
+            $replaced = false;
+            foreach ($specs as $existingSpec) {
+                if (in_array($existingSpec, $aliases, true)) {
+                    $replaced = true;
+                    break;
+                }
+            }
+            if ($replaced) {
+                continue; // entri lama host ini diganti bentuk kanoniknya
             }
             $result[] = $line;
         }

@@ -94,6 +94,24 @@ class ServerSshKeyStoreTest extends TestCase
         $this->store->save('../keluar', self::PRIVATE_KEY);
     }
 
+    public function testPort22EntryUsesPlainHostAndReplacesLegacyBracketForm(): void
+    {
+        // Kondisi produksi lama: `[host]:22` ditulis versi sebelumnya. OpenSSH
+        // TIDAK mencocokkannya untuk port default ⇒ koneksi gagal
+        // "No ED25519 host key is known". Pin baru harus menormalkannya.
+        $knownHosts = $this->store->knownHostsPath();
+        mkdir($this->dir, 0700, true);
+        file_put_contents($knownHosts, "[103.82.92.133]:22 ssh-ed25519 AAAA-legacy\n");
+        chmod($knownHosts, 0600);
+
+        $this->store->saveKnownHost('idch', '103.82.92.133', 22, 'ssh-ed25519 AAAA-baru');
+
+        $lines = $this->knownHostsLines();
+        $this->assertSame(['103.82.92.133 ssh-ed25519 AAAA-baru'], $lines,
+            'bentuk legacy [host]:22 diganti host polos, tanpa duplikat');
+        $this->assertStringNotContainsString(']:22', implode("\n", $lines));
+    }
+
     public function testDeleteIsIdempotentAndRemovesPin(): void
     {
         $this->store->save('srv-1', self::PRIVATE_KEY);
@@ -134,16 +152,16 @@ class ServerSshKeyStoreTest extends TestCase
 
         $lines = $this->knownHostsLines();
         $this->assertCount(1, $lines, 'host:port yang sama tidak diduplikasi');
-        $this->assertSame('[10.0.0.5]:22 ssh-ed25519 AAAA-baru', $lines[0]);
+        $this->assertSame('10.0.0.5 ssh-ed25519 AAAA-baru', $lines[0], 'port 22 ditulis tanpa bracket (bentuk OpenSSH)');
 
         $this->store->saveKnownHost('srv-2', '10.0.0.6', 2222, 'ssh-ed25519 AAAA-srv2');
         $this->store->saveKnownHost('srv-3', 'agent.example.com', 22, 'ssh-ed25519 AAAA-domain');
 
         $lines = $this->knownHostsLines();
         $this->assertSame([
-            '[10.0.0.5]:22 ssh-ed25519 AAAA-baru',
+            '10.0.0.5 ssh-ed25519 AAAA-baru',
             '[10.0.0.6]:2222 ssh-ed25519 AAAA-srv2',
-            '[agent.example.com]:22 ssh-ed25519 AAAA-domain',
+            'agent.example.com ssh-ed25519 AAAA-domain',
         ], $lines, 'entri host lain dipertahankan pada urutan aslinya');
 
         $this->assertTrue($this->store->hasPin('srv-1'));

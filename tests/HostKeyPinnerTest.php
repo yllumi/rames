@@ -48,7 +48,7 @@ class HostKeyPinnerTest extends TestCase
         self::removeTree($this->dir);
     }
 
-    public function testFirstPinWritesBracketedHostPortEntry(): void
+    public function testFirstPinWritesPlainHostEntryForPort22(): void
     {
         $runner = $this->runner();
         $result = (new HostKeyPinner($runner, $this->store))->pin('vps-jakarta', self::HOST, self::PORT);
@@ -57,7 +57,10 @@ class HostKeyPinnerTest extends TestCase
         $this->assertFalse($result['host_key_changed']);
         $this->assertSame(self::FINGERPRINT, $result['fingerprint']);
 
-        $expected = '[' . self::HOST . ']:' . self::PORT . ' ssh-ed25519 ' . self::KEY_BODY . "\n";
+        // Port default (22) WAJIB ditulis tanpa bracket: OpenSSH hanya mencari
+        // `host` untuk port 22, sehingga entri `[host]:22` membuat koneksi gagal
+        // "No ED25519 host key is known".
+        $expected = self::HOST . ' ssh-ed25519 ' . self::KEY_BODY . "\n";
         $this->assertSame($expected, (string) file_get_contents($this->store->knownHostsPath()));
 
         // argv keyscan eksplisit (array, tanpa shell) — port & tipe kunci terbatas.
@@ -87,6 +90,28 @@ class HostKeyPinnerTest extends TestCase
         $this->assertFalse($result['host_key_changed']);
         $this->assertSame(self::FINGERPRINT, $result['fingerprint']);
         $this->assertSame($before, (string) file_get_contents($this->store->knownHostsPath()));
+    }
+
+    public function testLegacyBracketedPinIsNormalizedOnRerun(): void
+    {
+        // Kondisi produksi: pin lama `[host]:22` (versi sebelumnya) membuat
+        // Ansible/ssh menolak koneksi. Pin ulang dengan kunci yang SAMA harus
+        // menormalkan bentuknya tanpa melaporkan perubahan kunci.
+        mkdir($this->dir, 0700, true);
+        $knownHosts = $this->store->knownHostsPath();
+        file_put_contents(
+            $knownHosts,
+            '[' . self::HOST . ']:22 ssh-ed25519 ' . self::KEY_BODY . "\n"
+        );
+
+        $result = (new HostKeyPinner($this->runner(), $this->store))->pin('vps-jakarta', self::HOST, self::PORT);
+
+        $this->assertFalse($result['host_key_changed'], 'kunci sama, bukan perubahan');
+        $this->assertSame(
+            self::HOST . ' ssh-ed25519 ' . self::KEY_BODY . "\n",
+            (string) file_get_contents($knownHosts),
+            'bentuk [host]:22 diganti host polos'
+        );
     }
 
     public function testChangedHostKeyIsReportedWithoutWriting(): void
