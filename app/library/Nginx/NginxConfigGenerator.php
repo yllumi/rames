@@ -40,18 +40,22 @@ class NginxConfigGenerator
      * mem-proxy ke app.
      *
      * Rute memakai semantik **mount subpath**: prefix `path` DILEPAS sebelum
-     * diteruskan (`proxy_pass {target}/`), URL absolut balik dari upstream
-     * di-`proxy_redirect` ke prefix, dan upstream menerima prefix lewat
-     * `X-Forwarded-Prefix`. Tanpa ini aset & link absolut upstream (yang
-     * mengasumsikan dirinya di root `/`) menunjuk ke app utama, bukan rute.
-     * Bila `path` = `/dashboard/` maka `/dashboard/app.js` diteruskan sebagai
-     * `/app.js` + `X-Forwarded-Prefix: /dashboard`.
+     * diteruskan (`proxy_pass {target}/`), URL balik upstream (Location relatif
+     * maupun absolut ke origin target) di-`proxy_redirect` ke prefix, dan
+     * upstream menerima prefix lewat `X-Forwarded-Prefix`. Tanpa ini aset &
+     * link absolut upstream (yang mengasumsikan dirinya di root `/`) menunjuk
+     * ke app utama, bukan rute. Bila `path` = `/dashboard/` maka
+     * `/dashboard/app.js` diteruskan sebagai `/app.js` +
+     * `X-Forwarded-Prefix: /dashboard`.
      *
-     * `Connection $rames_upgrade_*` memakai `map` milik berkas ini (dirender di
-     * awal berkas, satu kali) supaya request HTTP biasa tidak mengirim
-     * `Connection: upgrade`. Nama variabel diberi sufiks hash server_name agar
-     * dua berkas app tidak pernah mendefinisikan map yang sama (duplikat map =
-     * `nginx -t` gagal untuk SELURUH host).
+     * **`Connection "upgrade"` literal, bukan `map $http_upgrade`.** `map`
+     * mendaftarkan variabel baru di konteks `http`; satu map per berkas app
+     * membuat host dengan config padat gagal `nginx -t`
+     * (`could not build variables_hash, you should increase
+     * variables_hash_bucket_size`) — kegagalan yang memblokir reload SELURUH
+     * host. Literal ini sama dengan yang dipakai `location /` app (sudah terbukti
+     * jalan di host); varian `$connection_upgrade` hanya boleh didefinisikan
+     * **sekali** di `nginx.conf` host, di luar kendali dashboard.
      *
      * @param array<int,array{server_name:string,ssl?:bool,redirect_to?:string}> $servers
      * @param array<int,array{path:string,target:string}> $routes
@@ -63,13 +67,7 @@ class NginxConfigGenerator
         // (satu config rusak menggagalkan reload SELURUH host). all() sudah
         // menyaring data apps.json, jadi umumnya di sini tidak ada yang gagal.
         $routes = NginxRoutes::normalize($routes);
-        $upgradeVar = '';
-        $routePrefix = '';
-        if ($routes !== [] && self::hasServeBlock($servers)) {
-            $upgradeVar = $this->upgradeVarName($servers);
-            $routePrefix = $this->upgradeMap($upgradeVar) . "\n\n";
-        }
-        $routeSuffix = $routes === [] ? '' : "\n\n" . $this->routeBlocks($routes, $upgradeVar);
+        $routeSuffix = $routes === [] ? '' : "\n\n" . $this->routeBlocks($routes);
 
         $webroot = (string) config('deploy.ssl_webroot', base_path() . '/webroot');
         $lePath = (string) config('deploy.letsencrypt_path', '/etc/letsencrypt');
@@ -209,65 +207,7 @@ server {
 NGINX;
         }
 
-        return $routePrefix . implode("\n\n", $blocks) . "\n";
-    }
-
-    /**
-     * Ada server block yang benar-benar mem-proxy ke app? (Blok redirect murni
-     * tidak memuat `location /` proxy, jadi `map` tidak perlu dirender.)
-     *
-     * @param array<int,array<string,mixed>> $servers
-     */
-    private static function hasServeBlock(array $servers): bool
-    {
-        foreach ($servers as $entry) {
-            $redirectTo = $entry['redirect_to'] ?? null;
-            if ($redirectTo === null || $redirectTo === '') {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * `map` WebSocket untuk berkas ini (wajib di konteks `http` — berkas
-     * `sites-enabled` memang di-include di sana).
-     */
-    private function upgradeMap(string $var): string
-    {
-        $target = '$' . $var;
-
-        return "map \$http_upgrade {$target} {\n    default upgrade;\n    ''      close;\n}";
-    }
-
-    /**
-     * Nama variabel `map` unik per berkas config app.
-     *
-     * Server name dibaca sebagai slug agar config tetap terbaca; sufiks hash
-     * mencegah dua app berbeda (mis. `a-b.example.com` & `a.b.example.com`)
-     * menghasilkan nama variabel sama — duplikat `map` di konteks `http`
-     * menggagalkan `nginx -t` seluruh host.
-     *
-     * @param array<int,array<string,mixed>> $servers
-     */
-    private function upgradeVarName(array $servers): string
-    {
-        $names = [];
-        foreach ($servers as $entry) {
-            $name = (string) ($entry['server_name'] ?? '');
-            if ($name !== '') {
-                $names[] = $name;
-            }
-        }
-
-        $slug = strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', $names[0] ?? 'app'));
-        $slug = trim($slug, '_');
-        if ($slug === '') {
-            $slug = 'app';
-        }
-
-        return 'rames_upgrade_' . substr($slug, 0, 32) . '_' . substr(sha1(implode(',', $names)), 0, 6);
+        return implode("\n\n", $blocks) . "\n";
     }
 
     /**
@@ -282,10 +222,8 @@ NGINX;
      *
      * @param array<int,array{path:string,target:string}> $routes
      */
-    private function routeBlocks(array $routes, string $upgradeVar): string
+    private function routeBlocks(array $routes): string
     {
-        $connection = 'proxy_set_header Connection $' . $upgradeVar . ';';
-
         $blocks = [];
         foreach ($routes as $route) {
             $path = $route['path'];
@@ -333,7 +271,7 @@ NGINX;
 
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        {$connection}
+        proxy_set_header Connection "upgrade";
 
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;

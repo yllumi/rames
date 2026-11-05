@@ -220,12 +220,10 @@ class NginxConfigGeneratorTest extends TestCase
 
     /**
      * Blok rute yang diharapkan (indent 4 spasi, `location ^~`, tanpa nested).
-     * `$upgradeVar` = nama variabel `map` WebSocket milik berkas (dinamis).
      */
-    private function expectedRouteBlock(string $path, string $targetBase, string $upgradeVar): string
+    private function expectedRouteBlock(string $path, string $targetBase): string
     {
         $prefix = rtrim($path, '/');
-        $connection = 'proxy_set_header Connection ' . $upgradeVar . ';';
 
         // Location absolut dari upstream (origin miliknya sendiri) ikut
         // di-rewrite; host/port diambil dari target.
@@ -249,7 +247,7 @@ class NginxConfigGeneratorTest extends TestCase
 
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        {$connection}
+        proxy_set_header Connection "upgrade";
 
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;
@@ -258,16 +256,6 @@ class NginxConfigGeneratorTest extends TestCase
 NGINX;
     }
 
-    /**
-     * Nama variabel `map` WebSocket yang dideklarasikan berkas config.
-     */
-    private function upgradeVar(string $config): string
-    {
-        preg_match('/^map \$http_upgrade (\$\w+) \{/m', $config, $m);
-        $this->assertNotEmpty($m, 'map $http_upgrade harus dideklarasikan saat ada rute');
-
-        return $m[1];
-    }
 
     public function testRouteBlocksRenderedAfterLocationSlashInHttpServeBlock(): void
     {
@@ -275,13 +263,12 @@ NGINX;
             ['server_name' => 'app.example.com'],
         ], self::SAMPLE_ROUTES);
 
-        $upgradeVar = $this->upgradeVar($config);
         $this->assertStringContainsString(
-            $this->expectedRouteBlock('/api/', 'http://127.0.0.1:3001', $upgradeVar),
+            $this->expectedRouteBlock('/api/', 'http://127.0.0.1:3001'),
             $config
         );
         $this->assertStringContainsString(
-            $this->expectedRouteBlock('/gateway/', 'http://127.0.0.1:3002', $upgradeVar),
+            $this->expectedRouteBlock('/gateway/', 'http://127.0.0.1:3002'),
             $config
         );
 
@@ -343,65 +330,46 @@ NGINX;
     }
 
     /**
-     * `Connection` rute memakai `map` (bukan string "upgrade") agar request HTTP
-     * biasa tidak mengirim header upgrade; map dideklarasikan SEKALI di berkas.
+     * Regresi: blok rute **TIDAK** boleh memakai `map $http_upgrade`.
+     *
+     * `map` mendaftarkan variabel baru di konteks `http`; satu map per berkas
+     * app membuat host dengan config padat gagal `nginx -t`
+     * (`could not build variables_hash, you should increase
+     * variables_hash_bucket_size`) — kegagalan yang memblokir reload SELURUH
+     * host. `Connection "upgrade"` literal sama dengan `location /` app.
      */
-    public function testUpgradeMapDeclaredOnceAndUsedByEveryRoute(): void
+    public function testRouteBlocksNeverDeclareUpgradeMap(): void
     {
         $config = $this->generator()->render(8080, [
             ['server_name' => 'sub.app.example.com'],
             ['server_name' => 'custom.example.com'],
         ], self::SAMPLE_ROUTES);
 
-        $this->assertSame(1, substr_count($config, 'map $http_upgrade '), 'map harus tunggal per berkas');
-        $upgradeVar = $this->upgradeVar($config);
-        $this->assertMatchesRegularExpression('/^\s*default upgrade;$/m', $config);
-        $this->assertMatchesRegularExpression('/^\s*\'\'\s+close;$/m', $config);
+        $this->assertStringNotContainsString('map ', $config);
+        $this->assertStringNotContainsString('rames_upgrade', $config);
+        $this->assertStringNotContainsString('connection_upgrade', $config);
 
-        // 2 serve block × 2 rute = 4 blok, semua memakai variabel map yang sama.
-        $this->assertSame(4, substr_count($config, "Connection {$upgradeVar};"));
-        $this->assertSame(1, substr_count($config, 'map $http_upgrade'));
-
-        // Tidak ada lagi `Connection "upgrade"` di blok rute.
-        preg_match_all('/location \^~ \/(api|gateway)\/ \{.*?^    \}/ms', $config, $m);
-        $this->assertCount(4, $m[0]);
-        foreach ($m[0] as $routeBlock) {
-            $this->assertStringNotContainsString('Connection "upgrade";', $routeBlock);
-        }
-    }
-
-    public function testUpgradeVarNameDiffersBetweenApps(): void
-    {
-        $first = $this->upgradeVar($this->generator()->render(8080, [
-            ['server_name' => 'a-b.example.com'],
-        ], self::SAMPLE_ROUTES));
-        $second = $this->upgradeVar($this->generator()->render(8080, [
-            ['server_name' => 'a.b.example.com'],
-        ], self::SAMPLE_ROUTES));
-
-        $this->assertNotSame(
-            $first,
-            $second,
-            'server name yang di-slug sama tidak boleh menghasilkan map duplikat'
-        );
+        // 2 serve block × 2 rute = 4 blok, semuanya memakai literal "upgrade".
+        $this->assertSame(6, substr_count($config, 'proxy_set_header Connection "upgrade";'));
     }
 
     public function testNoUpgradeMapWithoutRoutes(): void
     {
         $config = $this->generator()->render(8080, [['server_name' => 'app.example.com']]);
 
-        $this->assertStringNotContainsString('map $http_upgrade', $config);
-        $this->assertStringNotContainsString('rames_upgrade_', $config);
+        $this->assertStringNotContainsString('map ', $config);
+        $this->assertSame(1, substr_count($config, 'proxy_set_header Connection "upgrade";'));
     }
 
-    public function testNoUpgradeMapWhenEveryServerBlockIsRedirectOnly(): void
+    public function testRouteBlocksNotRenderedWhenEveryServerBlockIsRedirectOnly(): void
     {
         $config = $this->generator()->render(8080, [
             ['server_name' => 'sub.app.example.com', 'redirect_to' => 'https://custom.example.com'],
         ], self::SAMPLE_ROUTES);
 
-        $this->assertStringNotContainsString('map $http_upgrade', $config);
+        $this->assertStringNotContainsString('map ', $config);
         $this->assertStringNotContainsString('proxy_pass', $config);
+        $this->assertStringNotContainsString('location ^~ /api/', $config);
     }
 
     public function testRouteBlocksRenderedOnlyInHttpsServeBlockWhenSsl(): void
