@@ -272,6 +272,55 @@ class ProvisionJobStoreTest extends TestCase
         $this->assertSame('running', $active['status']);
     }
 
+    public function testDeleteOnlyAcceptsTerminalJobs(): void
+    {
+        $done = $this->store->create($this->job(['name' => 'agent-done']));
+        $this->store->markDone((string) $done['id'], 'selesai');
+
+        $this->assertTrue($this->store->delete((string) $done['id']));
+        $this->assertNull($this->store->find((string) $done['id']), 'baris terhapus');
+        $this->assertFalse($this->store->delete((string) $done['id']), 'sudah tidak ada ⇒ false');
+
+        $running = $this->store->create($this->job(['name' => 'agent-running']));
+        $this->store->markRunning((string) $running['id']);
+
+        try {
+            $this->store->delete((string) $running['id']);
+            $this->fail('job aktif tidak boleh terhapus');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('masih berjalan', $e->getMessage());
+        }
+        $this->assertIsArray($this->store->find((string) $running['id']), 'job aktif tetap ada');
+    }
+
+    public function testDeleteTerminalOnlyRemovesRequestedStatuses(): void
+    {
+        $done = $this->store->create($this->job(['name' => 'agent-done']));
+        $this->store->markDone((string) $done['id'], 'selesai');
+        $failed = $this->store->create($this->job(['name' => 'agent-failed']));
+        $this->store->markError((string) $failed['id'], 'gagal');
+        $running = $this->store->create($this->job(['name' => 'agent-running']));
+        $this->store->markRunning((string) $running['id']);
+
+        // "failed" = error + cancelled, TIDAK menyentuh done & running.
+        $removed = $this->store->deleteTerminal(['error', 'cancelled']);
+        $this->assertSame([(string) $failed['id']], $removed);
+        $this->assertIsArray($this->store->find((string) $done['id']));
+        $this->assertIsArray($this->store->find((string) $running['id']));
+
+        // "done" scope menghapus riwayat sukses saja.
+        $this->assertSame([(string) $done['id']], $this->store->deleteTerminal(['done']));
+        $this->assertIsArray($this->store->find((string) $running['id']), 'job aktif tidak pernah ikut terhapus');
+
+        // Status aktif ditolak eksplisit.
+        try {
+            $this->store->deleteTerminal(['running']);
+            $this->fail('status aktif tidak boleh dihapus massal');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('tidak bisa dihapus massal', $e->getMessage());
+        }
+    }
+
     public function testFailStaleRunningMarksOnlyOldRunningJobs(): void
     {
         $stale = $this->store->create($this->job(['name' => 'agent-lama']));

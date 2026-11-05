@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace app\library\Provision;
 
 use app\library\Storage\SqliteDatabase;
+use PDO;
 use RuntimeException;
 
 /**
@@ -409,6 +410,77 @@ final class ProvisionJobStore
         $row = $stmt === false ? false : $stmt->fetch();
 
         return is_array($row) ? self::hydrate($row) : null;
+    }
+
+    /**
+     * Hapus SATU job yang sudah terminal (`done`/`error`/`cancelled`).
+     *
+     * Job aktif (`queued`/`running`) DITOLAK: menghapusnya akan membuat worker
+     * kehilangan baris status saat masih berjalan (job "hantu" yang tidak bisa
+     * dipantau/dibatalkan). Hentikan dulu lewat `cancel`, lalu hapus.
+     *
+     * @return bool true bila baris dihapus, false bila id tidak ada
+     * @throws RuntimeException bila job masih aktif
+     */
+    public function delete(string $id): bool
+    {
+        $job = $this->find($id);
+        if ($job === null) {
+            return false;
+        }
+
+        $status = (string) ($job['status'] ?? '');
+        if (!in_array($status, [self::STATUS_DONE, self::STATUS_ERROR, self::STATUS_CANCELLED], true)) {
+            throw new RuntimeException(
+                'Job provisioning yang masih berjalan tidak bisa dihapus (status ' . $status . ').'
+                . ' Batalkan dulu, lalu hapus.'
+            );
+        }
+
+        $stmt = $this->db()->pdo()->prepare('DELETE FROM "provision_jobs" WHERE "id" = ?');
+        $stmt->execute([(string) $job['id']]);
+
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * Hapus semua job terminal berstatus tertentu (mis. semua yang gagal).
+     *
+     * Hanya status terminal yang diterima — mencegah satu panggilan menghapus
+     * job aktif. Job aktif tidak pernah ikut terhapus.
+     *
+     * @param array<int,string> $statuses subset `done|error|cancelled`
+     * @return array<int,string> id yang dihapus
+     * @throws RuntimeException bila daftar status memuat status aktif/tak dikenal
+     */
+    public function deleteTerminal(array $statuses): array
+    {
+        $allowed = [self::STATUS_DONE, self::STATUS_ERROR, self::STATUS_CANCELLED];
+        $targets = [];
+        foreach ($statuses as $status) {
+            $status = trim((string) $status);
+            if (!in_array($status, $allowed, true)) {
+                throw new RuntimeException('Status job "' . $status . '" tidak bisa dihapus massal (hanya done/error/cancelled).');
+            }
+            $targets[] = $status;
+        }
+        if ($targets === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($targets), '?'));
+        $pdo = $this->db()->pdo();
+
+        $select = $pdo->prepare('SELECT "id" FROM "provision_jobs" WHERE "status" IN (' . $placeholders . ')');
+        $select->execute($targets);
+        $ids = array_map('strval', $select->fetchAll(PDO::FETCH_COLUMN));
+
+        if ($ids !== []) {
+            $delete = $pdo->prepare('DELETE FROM "provision_jobs" WHERE "status" IN (' . $placeholders . ')');
+            $delete->execute($targets);
+        }
+
+        return $ids;
     }
 
     // ==================================================================

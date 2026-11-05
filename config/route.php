@@ -416,6 +416,8 @@ Route::post('/servers/provision', [ProvisionController::class, 'store']);
 Route::post('/servers/provision/keypair', [ProvisionController::class, 'keypair']);
 // Daftar job provisioning terbaru (JSON) — dipantau dari `/servers` & `/servers/provision`.
 Route::get('/servers/provision/jobs', [ProvisionController::class, 'jobList']);
+// Hapus job terminal (gagal/selesai/dibatalkan) + log worker-nya (admin-only).
+Route::post('/servers/provision/jobs/delete', [ProvisionController::class, 'deleteJobs']);
 Route::get('/servers/provision/status', [ProvisionController::class, 'status']);
 Route::post('/servers/provision/cancel', [ProvisionController::class, 'cancel']);
 

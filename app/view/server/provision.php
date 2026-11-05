@@ -358,10 +358,34 @@ $breadcrumbs = [
 </section>
 
 <?php if ($provisionJobs !== []): ?>
-<section class="card mb-4">
+<section class="card mb-4" data-provision-history>
+  <?php
+  $__jobStatuses = array_map(static fn (array $j): string => (string) ($j['status'] ?? ''), $provisionJobs);
+  $__hasFailed = array_intersect($__jobStatuses, ['error', 'cancelled']) !== [];
+  $__hasDone = in_array('done', $__jobStatuses, true);
+  $__hasTerminal = array_intersect($__jobStatuses, ['error', 'cancelled', 'done']) !== [];
+  $__hasActive = array_intersect($__jobStatuses, ['queued', 'running']) !== [];
+  ?>
   <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
     <h2 class="h6 mb-0">Job provisioning terakhir</h2>
-    <span class="text-muted small">status tetap tersedia setelah halaman direfresh</span>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <span class="text-muted small">status tetap tersedia setelah halaman direfresh</span>
+      <?php if ($__hasFailed): ?>
+        <button type="button" class="btn btn-outline-danger btn-sm" data-provision-purge="failed">
+          <?= svg_icon('trash') ?> Hapus yang gagal
+        </button>
+      <?php endif; ?>
+      <?php if ($__hasDone): ?>
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-provision-purge="done">
+          <?= svg_icon('trash') ?> Hapus yang selesai
+        </button>
+      <?php endif; ?>
+      <?php if ($__hasTerminal && !$__hasActive): ?>
+        <button type="button" class="btn btn-outline-danger btn-sm" data-provision-purge="finished">
+          <?= svg_icon('trash') ?> Hapus semua riwayat
+        </button>
+      <?php endif; ?>
+    </div>
   </div>
   <div class="table-responsive">
     <table class="table table-sm align-middle mb-0">
@@ -397,8 +421,17 @@ $breadcrumbs = [
             <td class="small text-muted"><?= e((string) ($__job['created_at'] ?? '—')) ?></td>
             <td class="text-end">
               <?php if ($__jobId !== ''): ?>
-                <a class="btn btn-outline-primary btn-sm"
-                   href="/servers/provision?job=<?= e(rawurlencode($__jobId)) ?>">Pantau</a>
+                <div class="d-inline-flex gap-1">
+                  <a class="btn btn-outline-primary btn-sm"
+                     href="/servers/provision?job=<?= e(rawurlencode($__jobId)) ?>">Pantau</a>
+                  <?php if (!in_array($__jobStatus, ['queued', 'running'], true)): ?>
+                    <button type="button" class="btn btn-outline-danger btn-sm"
+                            data-provision-delete="<?= e($__jobId) ?>"
+                            title="Hapus job ini beserta log-nya">
+                      <?= svg_icon('trash') ?>
+                    </button>
+                  <?php endif; ?>
+                </div>
               <?php endif; ?>
             </td>
           </tr>
@@ -406,6 +439,7 @@ $breadcrumbs = [
       </tbody>
     </table>
   </div>
+  <div class="card-body py-2" data-provision-history-msg aria-live="polite"></div>
 </section>
 <?php endif; ?>
 
@@ -425,6 +459,6 @@ $breadcrumbs = [
   </div>
 </section>
 
-<script src="/js/provision.js?v=3"></script>
+<script src="/js/provision.js?v=4"></script>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>

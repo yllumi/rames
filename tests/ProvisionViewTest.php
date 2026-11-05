@@ -22,7 +22,7 @@ use PHPUnit\Framework\TestCase;
  *        playbook/ssl_*), nilai default dari payload;
  *  (ii)  area status (`[data-provision-status]`, `[data-provision-log]`,
  *        `[data-provision-cancel]`, `[data-provision-pubkey]`) + tabel job
- *        terakhir (status bertahan setelah refresh) + skrip `/js/provision.js?v=3`;
+ *        terakhir (status bertahan setelah refresh) + skrip `/js/provision.js?v=4`;
  *  (iii) peringatan keamanan (kunci 0600, host key TOFU, egress image Ansible);
  *  (iv)  input lama ter-escape & pesan galat tampil; `private_key` tidak pernah
  *        dirender ulang;
@@ -183,7 +183,7 @@ class ProvisionViewTest extends TestCase
         $this->assertStringContainsString('data-provision-status', $html);
         $this->assertStringContainsString('data-provision-log', $html);
         $this->assertStringContainsString('data-provision-cancel', $html);
-        $this->assertStringContainsString('src="/js/provision.js?v=3"', $html);
+        $this->assertStringContainsString('src="/js/provision.js?v=4"', $html);
 
         // Peringatan keamanan yang wajib terlihat operator.
         $this->assertStringContainsString('0600', $html);
@@ -285,6 +285,15 @@ class ProvisionViewTest extends TestCase
         $this->assertStringContainsString('/servers/provision?job=job-aktif-1', $html);
         $this->assertStringContainsString('berjalan', $html);
         $this->assertStringContainsString('selesai', $html);
+
+        // Hapus log: job aktif tidak punya tombol hapus; job terminal punya.
+        $this->assertStringContainsString('data-provision-delete="job-lama"', $html);
+        $this->assertStringNotContainsString('data-provision-delete="job-aktif-1"', $html,
+            'job berjalan tidak boleh bisa dihapus');
+        // Tombol massal sesuai status yang ada di daftar (ada done ⇒ "Hapus yang selesai").
+        $this->assertStringContainsString('data-provision-purge="done"', $html);
+        $this->assertStringNotContainsString('data-provision-purge="failed"', $html,
+            'tidak ada job gagal di payload ⇒ tombol tidak dirender');
 
         // Pemantauan dilanjutkan otomatis untuk job aktif terbaru.
         $this->assertStringContainsString('data-provision-active-job="job-aktif-1"', $html);

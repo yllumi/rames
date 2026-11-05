@@ -372,6 +372,81 @@
   }
 
   // ---------------------------------------------------------------------
+  // Hapus riwayat job (gagal / selesai / semua terminal) + log worker-nya
+  // ---------------------------------------------------------------------
+  var historyMsg = document.querySelector('[data-provision-history-msg]');
+
+  function setHistoryMessage(text, isError) {
+    if (!historyMsg) return;
+    historyMsg.textContent = text;
+    historyMsg.className = 'card-body py-2' + (isError ? ' text-danger small' : ' text-muted small');
+  }
+
+  function postDelete(body) {
+    if (CSRF !== '') body.set('_token', CSRF);
+
+    return request('/servers/provision/jobs/delete', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'X-CSRF-TOKEN': CSRF
+      },
+      body: body.toString()
+    });
+  }
+
+  document.querySelectorAll('[data-provision-delete]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var jobId = button.getAttribute('data-provision-delete') || '';
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(jobId)) return;
+      if (!window.confirm('Hapus job ' + jobId + ' beserta log-nya?')) return;
+
+      var body = new URLSearchParams();
+      body.set('job', jobId);
+      button.disabled = true;
+
+      postDelete(body).then(function (result) {
+        if (result.response.ok && result.data && result.data.code === 0) {
+          window.location.reload();
+          return;
+        }
+        button.disabled = false;
+        setHistoryMessage(describe(result.data, result.response), true);
+      }).catch(function () {
+        button.disabled = false;
+        setHistoryMessage('Gagal menghubungi control plane. Coba lagi.', true);
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-provision-purge]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var scope = button.getAttribute('data-provision-purge') || '';
+      var label = scope === 'failed' ? 'semua job GAGAL (error/dibatalkan)'
+        : (scope === 'done' ? 'semua job SELESAI (berhasil)' : 'SELURUH riwayat job terminal');
+      if (!window.confirm('Hapus ' + label + ' beserta log-nya? Tindakan ini tidak bisa dibatalkan.')) return;
+
+      var body = new URLSearchParams();
+      body.set('scope', scope);
+      button.disabled = true;
+
+      postDelete(body).then(function (result) {
+        if (result.response.ok && result.data && result.data.code === 0) {
+          window.location.reload();
+          return;
+        }
+        button.disabled = false;
+        setHistoryMessage(describe(result.data, result.response), true);
+      }).catch(function () {
+        button.disabled = false;
+        setHistoryMessage('Gagal menghubungi control plane. Coba lagi.', true);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // Lanjutkan pemantauan setelah reload / dari tautan `/servers/provision?job=`
   // ---------------------------------------------------------------------
   (function resumeJob() {

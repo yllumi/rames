@@ -72,6 +72,9 @@ class ProvisionControllerAccessTest extends TestCase
             'GET /servers/provision/jobs' => fn (): Response => $controller->jobList(
                 $this->get('/servers/provision/jobs', true)
             ),
+            'POST /servers/provision/jobs/delete' => fn (): Response => $controller->deleteJobs(
+                $this->post('/servers/provision/jobs/delete', ['job' => 'abc123'], true)
+            ),
         ];
 
         $allowed = [];
@@ -143,6 +146,84 @@ class ProvisionControllerAccessTest extends TestCase
             array_values(array_filter(array_map('trim', explode("\n", (string) file_get_contents($this->tmp . '/keys/known_hosts'))))),
             'pin host target dihapus, entri host lain dipertahankan'
         );
+    }
+
+    public function testAdminDeletesTerminalJobAndItsLog(): void
+    {
+        $controller = $this->controller(['id' => 'u1', 'username' => 'admin', 'role' => 'admin']);
+        $store = new ProvisionJobStore(new SqliteDatabase($this->dbFile));
+
+        $job = $store->create($this->payload());
+        $store->markError((string) $job['id'], 'gagal di run');
+        $log = new ProvisionLog($this->tmp . '/logs');
+        $log->append((string) $job['id'], 'baris log');
+
+        $response = $controller->deleteJobs($this->post(
+            '/servers/provision/jobs/delete',
+            ['job' => (string) $job['id']],
+            true
+        ));
+
+        $this->assertSame(200, $response->getStatusCode());
+        $decoded = $this->json($response);
+        $this->assertSame(0, $decoded['code'] ?? null);
+        $this->assertSame(1, $decoded['count'] ?? null);
+        $this->assertNull($store->find((string) $job['id']), 'baris job terhapus');
+        $this->assertFileDoesNotExist($log->path((string) $job['id']), 'log ikut terhapus');
+    }
+
+    public function testAdminCannotDeleteRunningJob(): void
+    {
+        $controller = $this->controller(['id' => 'u1', 'username' => 'admin', 'role' => 'admin']);
+        $store = new ProvisionJobStore(new SqliteDatabase($this->dbFile));
+        $job = $store->create($this->payload());
+
+        $response = $controller->deleteJobs($this->post(
+            '/servers/provision/jobs/delete',
+            ['job' => (string) $job['id']],
+            true
+        ));
+
+        $this->assertSame(409, $response->getStatusCode(), 'job aktif = konflik, bukan 500');
+        $this->assertIsArray($store->find((string) $job['id']));
+    }
+
+    public function testAdminBulkPurgeScopesOnlyTouchTerminalJobs(): void
+    {
+        $controller = $this->controller(['id' => 'u1', 'username' => 'admin', 'role' => 'admin']);
+        $store = new ProvisionJobStore(new SqliteDatabase($this->dbFile));
+
+        $done = $store->create($this->payload(['name' => 'agent-done']));
+        $store->markDone((string) $done['id'], 'selesai');
+        $failed = $store->create($this->payload(['name' => 'agent-failed']));
+        $store->markError((string) $failed['id'], 'gagal');
+        $running = $store->create($this->payload(['name' => 'agent-running']));
+
+        $response = $controller->deleteJobs($this->post(
+            '/servers/provision/jobs/delete',
+            ['scope' => 'failed'],
+            true
+        ));
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame(1, $this->json($response)['count'] ?? null);
+        $this->assertIsArray($store->find((string) $done['id']), 'riwayat sukses tidak ikut');
+        $this->assertIsArray($store->find((string) $running['id']), 'job aktif tidak ikut');
+
+        $response = $controller->deleteJobs($this->post(
+            '/servers/provision/jobs/delete',
+            ['scope' => 'done'],
+            true
+        ));
+        $this->assertSame(1, $this->json($response)['count'] ?? null, 'scope done menghapus riwayat sukses');
+        $this->assertIsArray($store->find((string) $running['id']));
+
+        // Scope asing ditolak 422.
+        $response = $controller->deleteJobs($this->post(
+            '/servers/provision/jobs/delete',
+            ['scope' => 'semua'],
+            true
+        ));
+        $this->assertSame(422, $response->getStatusCode());
     }
 
     public function testAdminJobListReturnsJobsWithoutSecrets(): void

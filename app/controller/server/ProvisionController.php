@@ -287,6 +287,90 @@ class ProvisionController
     }
 
     /**
+     * `POST /servers/provision/jobs/delete` — hapus job terminal + log-nya.
+     *
+     * Body: `job=<id>` (satu job) ATAU `scope=failed|done|finished`:
+     *  - `failed`   = `error` + `cancelled`
+     *  - `done`     = `done` (riwayat sukses)
+     *  - `finished` = seluruh riwayat terminal (`error` + `cancelled` + `done`)
+     * Job aktif (`queued`/`running`) DITOLAK **409** — batalkan dulu, supaya
+     * worker tidak kehilangan baris status. Log worker ikut dihapus agar tidak
+     * tertinggal sebagai berkas yatim di `runtime/logs/provision/`.
+     *
+     * Respons: `{code:0, deleted:[ids], count:int}`; id tak dikenal ⇒ 404;
+     * job aktif ⇒ 409; id berbentuk asing ⇒ 422.
+     */
+    public function deleteJobs(Request $request): Response
+    {
+        $denied = $this->guard($request);
+        if ($denied !== null) {
+            return $denied;
+        }
+
+        $post = $request->post();
+        $post = is_array($post) ? $post : [];
+        $scope = strtolower(trim((string) ($post['scope'] ?? '')));
+
+        // Hapus massal hanya untuk job TERMINAL. Daftar status per scope
+        // sengaja eksplisit: tidak ada nilai dari klien yang diteruskan apa
+        // adanya ke basis data.
+        $scopes = [
+            // gagal = error + dibatalkan operator
+            'failed' => [ProvisionJobStore::STATUS_ERROR, ProvisionJobStore::STATUS_CANCELLED],
+            // selesai sukses
+            'done' => [ProvisionJobStore::STATUS_DONE],
+            // seluruh riwayat terminal (gagal + selesai + dibatalkan)
+            'finished' => [
+                ProvisionJobStore::STATUS_ERROR,
+                ProvisionJobStore::STATUS_CANCELLED,
+                ProvisionJobStore::STATUS_DONE,
+            ],
+        ];
+
+        if ($scope !== '') {
+            if (!isset($scopes[$scope])) {
+                return json([
+                    'code' => 1,
+                    'error' => 'Scope hapus tidak dikenal; nilai yang sah: ' . implode(', ', array_keys($scopes)) . '.',
+                ])->withStatus(422);
+            }
+
+            try {
+                $ids = $this->jobs()->deleteTerminal($scopes[$scope]);
+            } catch (Throwable $e) {
+                return $this->jsonError('Riwayat job tidak bisa dihapus: ' . $e->getMessage());
+            }
+            foreach ($ids as $id) {
+                $this->deleteLog($id);
+            }
+
+            return json(['code' => 0, 'deleted' => $ids, 'count' => count($ids), 'scope' => $scope]);
+        }
+
+        $jobId = trim((string) ($post['job'] ?? ''));
+        if (preg_match(self::JOB_ID_PATTERN, $jobId) !== 1) {
+            return json(['code' => 1, 'error' => 'Id job provisioning tidak valid.'])->withStatus(422);
+        }
+
+        try {
+            $deleted = $this->jobs()->delete($jobId);
+        } catch (RuntimeException $e) {
+            // Job masih berjalan: 409 (konflik status), bukan 500.
+            return json(['code' => 1, 'error' => $e->getMessage()])->withStatus(409);
+        } catch (Throwable $e) {
+            return $this->jsonError('Job provisioning tidak bisa dihapus: ' . $e->getMessage());
+        }
+
+        if (!$deleted) {
+            return json(['code' => 1, 'error' => 'Job provisioning tidak ditemukan.'])->withStatus(404);
+        }
+
+        $this->deleteLog($jobId);
+
+        return json(['code' => 0, 'deleted' => [$jobId], 'count' => 1]);
+    }
+
+    /**
      * `GET /servers/provision/status?job=<id>&offset=<n>` — status job + log baru.
      *
      * Job tidak ada / id berbentuk asing ⇒ 404. Respons **tidak pernah** memuat
@@ -429,6 +513,16 @@ class ProvisionController
     }
 
     /** Galat sisi server (job/kunci/spawn) — JSON 500 tanpa jejak rahasia. */
+    /** Hapus berkas log worker untuk satu job (best-effort; log bersifat diagnostik). */
+    private function deleteLog(string $jobId): void
+    {
+        try {
+            $this->logs()->delete($jobId);
+        } catch (Throwable) {
+            // Baris job sudah hilang; berkas log yatim tidak boleh menggagalkan aksi.
+        }
+    }
+
     /** Nilai checkbox/flag form → bool ('' / '0' / 'false' = false). */
     private static function truthy(mixed $value): bool
     {
