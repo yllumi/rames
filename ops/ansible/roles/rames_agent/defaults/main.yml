@@ -53,6 +53,6 @@ rames_agent_async_timeout: 1800
 rames_agent_async_poll: 5
 
 # Pertahanan verifikasi endpoint /version.
-rames_agent_verify_retries: 20
-rames_agent_verify_delay: 3
+# Retry `uri` dihapus: `X-Rames-Nonce` sekali pakai, jadi request ulang
+# dengan nonce lama selalu 401. Kesiapan agent ditunggu lewat `wait_for`.
 rames_agent_verify_timeout: 15

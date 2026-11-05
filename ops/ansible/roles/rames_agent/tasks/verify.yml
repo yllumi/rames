@@ -100,12 +100,42 @@
       no_log: true
       changed_when: false
 
+    # Agent TIDAK menerima Bearer saja: `AgentAuthMiddleware` mewajibkan
+    # `X-Rames-Timestamp` (unix seconds, toleransi ±60 s) dan `X-Rames-Nonce`
+    # (≥16 karakter, sekali pakai) — tanpa keduanya respons selalu 401 walau
+    # token benar. Timestamp diambil dari JAM TARGET (bukan control node) agar
+    # selisih jam antar-server tidak membuat request ditolak.
+    - name: "Verify | tunggu port agent menerima koneksi (dari target)"
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ rames_agent_port }}"
+        timeout: "{{ (rames_agent_verify_timeout * 4) if (rames_agent_verify_timeout * 4) > 60 else 60 }}"
+      changed_when: false
+      become: false
+
+    - name: "Verify | waktu unix server target (X-Rames-Timestamp)"
+      ansible.builtin.command:
+        argv:
+          - date
+          - +%s
+      register: rames_agent_verify_now
+      changed_when: false
+      check_mode: false
+      become: false
+
+    - name: "Verify | nonce sekali pakai (X-Rames-Nonce)"
+      ansible.builtin.set_fact:
+        rames_agent_verify_nonce: "{{ lookup('password', '/dev/null length=32 chars=hexdigits') }}"
+      no_log: true
+
     - name: "Verify | panggil endpoint /version agent (TLS dipin ke CA self-signed)"
       ansible.builtin.uri:
         url: "https://{{ rames_agent_verify_host }}:{{ rames_agent_port }}/version"
         method: GET
         headers:
           Authorization: "Bearer {{ rames_agent_token }}"
+          X-Rames-Timestamp: "{{ rames_agent_verify_now.stdout | trim }}"
+          X-Rames-Nonce: "{{ rames_agent_verify_nonce }}"
           Accept: application/json
         ca_path: "{{ rames_agent_verify_ca_path }}"
         validate_certs: true
@@ -113,9 +143,6 @@
         timeout: "{{ rames_agent_verify_timeout }}"
         return_content: true
       register: rames_agent_version_response
-      until: rames_agent_version_response is not failed
-      retries: "{{ rames_agent_verify_retries }}"
-      delay: "{{ rames_agent_verify_delay }}"
       changed_when: false
       no_log: true
 

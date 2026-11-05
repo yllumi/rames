@@ -945,15 +945,35 @@ verify_version() {
     # `url` wajib di baris terpisah — kalau digabung, `${port}` masih "unbound"
     # dan `set -u` mematikan installer di akhir run (bug pra-ada).
     local url="https://127.0.0.1:${port}/version"
-    local shown_cmd="curl -sS -k -H \"Authorization: Bearer <token>\" $url"
+    local shown_cmd="curl -sS -k -H \"Authorization: Bearer $token\" -H 'X-Rames-Timestamp: <ts>' -H 'X-Rames-Nonce: <nonce>' $url"
+    # Agent mewajibkan `X-Rames-Timestamp` (unix seconds, toleransi +/-60 dtk) DAN
+    # `X-Rames-Nonce` (>=16 karakter, sekali pakai) selain Bearer token
+    # (`AgentAuthMiddleware`). Tanpa keduanya respons SELALU 401 walau token
+    # benar — verifikasi di sini dulu karena itu selalu berbunyi "HTTP 401".
+    local ts="" nonce=""
+    ts="$(date +%s 2>/dev/null)" || ts=""
+    if command -v openssl >/dev/null 2>&1; then
+        nonce="$(openssl rand -hex 16)"
+    else
+        nonce="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+    if [ -z "$ts" ] || [ -z "$nonce" ]; then
+        warn "tidak bisa membuat timestamp/nonce — verifikasi manual:"
+        echo "     $shown_cmd"
+        return 0
+    fi
     if ! command -v curl >/dev/null 2>&1; then
         warn "curl tidak tersedia — verifikasi manual:"
         echo "     $shown_cmd"
         return 0
     fi
-    info "Verifikasi: GET $url (dengan header token) ..."
+    info "Verifikasi: GET $url (token + X-Rames-Timestamp/Nonce) ..."
     set +e
-    response="$(curl -sk --max-time 10 -w '\n%{http_code}' -H "Authorization: Bearer ${token}" "$url" 2>/dev/null)"
+    response="$(curl -sk --max-time 10 -w '\n%{http_code}' \
+        -H "Authorization: Bearer ${token}" \
+        -H "X-Rames-Timestamp: ${ts}" \
+        -H "X-Rames-Nonce: ${nonce}" \
+        "$url" 2>/dev/null)"
     set -e
     if [ -z "$response" ]; then
         warn "tidak ada respons dari agent — periksa log: docker compose -f docker-compose.agent.yml -p $PROJECT_NAME logs webman --tail 80"
