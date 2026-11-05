@@ -238,7 +238,6 @@ class ServerControllerTest extends TestCase
             'nama invalid' => [['name' => 'VPS Jakarta!']],
             'nama kosong' => [['name' => '']],
             'domain dengan skema' => [['domain' => 'https://domain2.com']],
-            'port tumpang tindih lokal' => [['port_range' => '30000-30999']],
             'port terbalik' => [['port_range' => '31999-31000']],
             'enabled tak dikenal' => [['enabled' => 'mungkin']],
         ];

@@ -51,6 +51,7 @@ $controlPlaneIpsValue = array_key_exists('control_plane_ips', $values)
     ? (string) $values['control_plane_ips']
     : (string) $controlPlaneIps;
 
+$allowIdentityChange = !in_array(strtolower(trim($field('allow_identity_change', '0'))), ['', '0', 'false', 'no', 'off'], true);
 $resetHostKey = !in_array(strtolower(trim($field('reset_host_key', '0'))), ['', '0', 'false', 'no', 'off'], true);
 $manageFirewall = !in_array(strtolower(trim($field('manage_firewall', '1'))), ['', '0', 'false', 'no', 'off'], true);
 
@@ -241,7 +242,7 @@ $breadcrumbs = [
           <label class="form-label" for="provision-range-end">Rentang port — selesai</label>
           <input class="form-control mono" id="provision-range-end" name="port_range_end" type="number"
                  min="1" max="65535" required value="<?= e($field('port_range_end', '30999')) ?>">
-          <div class="form-text">Harus lebih besar dari port mulai.</div>
+          <div class="form-text">Harus lebih besar dari port mulai. Rentang <strong>boleh sama</strong> dengan server lain (port host milik masing-masing server); hanya di host yang sama rentang wajib dibedakan.</div>
         </div>
         <div class="col-md-3">
           <label class="form-label" for="provision-agent-port">Port agent</label>
@@ -290,6 +291,23 @@ $breadcrumbs = [
             <label class="form-check-label" for="provision-manage-firewall">
               Kelola firewall di server tujuan (UFW) agar port agent terbuka
             </label>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="form-check mb-2">
+            <input type="hidden" name="allow_identity_change" value="0">
+            <input class="form-check-input" type="checkbox" id="provision-allow-identity"
+                   name="allow_identity_change" value="1" <?= $allowIdentityChange ? 'checked' : '' ?>>
+            <label class="form-check-label" for="provision-allow-identity">
+              Izinkan perubahan identitas server (domain / rentang port / bind)
+            </label>
+          </div>
+          <div class="form-text">
+            Centang hanya bila server ini memang diubah identitasnya. Tanpa centang, role menolak menimpa
+            <span class="mono">secrets/agent.env</span> yang sudah terpasang (perlindungan agar rerun tidak
+            diam-diam memindahkan port/domain). Bila server sudah terdaftar di dashboard, perbarui juga
+            baris server itu setelahnya.
           </div>
         </div>
 

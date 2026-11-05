@@ -189,8 +189,8 @@ final class ProvisionOnboarding
         $resolver ??= new ServerResolver($stores);
 
         // Validasi lewat jalur yang SAMA dengan form Add Server: nama, base URL
-        // https, token, PEM X.509, domain, rentang port (tanpa tumpang tindih
-        // dengan server lokal). Nilai rahasia tidak pernah muncul di pesan galat.
+        // https, token, PEM X.509, domain, rentang port — port host per server,
+        // jadi rentang yang sama dengan server lain sah. Nilai rahasia tidak pernah muncul di pesan galat.
         $validated = $resolver->validate([
             'name' => (string) ($job['name'] ?? ''),
             'base_url' => $data['url'],

@@ -73,6 +73,7 @@ class ProvisionController
         'manage_firewall',
         'playbook',
         'reset_host_key',
+        'allow_identity_change',
         'ssl_challenge',
         'ssl_ca_server',
     ];

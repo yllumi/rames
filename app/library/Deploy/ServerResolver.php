@@ -22,8 +22,7 @@ use Throwable;
  *    `fingerprintFromPem()`) — tanpa I/O, mudah diuji tanpa store;
  *  - **logika yang menyentuh store = instance** (`local()`, `resolve()`,
  *    `resolveForApp()`/`serverForApp()`, `domainForApp()`, dan `validate()`
- *    karena aturan "tidak boleh tumpang tindih rentang port server lokal" perlu
- *    membaca rentang efektif server lokal). `findForApp()` adalah varian `null`
+ *    karena memvalidasi registry). `findForApp()` adalah varian `null`
  *    khusus jalur pembersihan record app (§7.14) — **bukan** untuk operasi.
  *    Store disuntikkan lewat konstruktor,
  *    sehingga tes cukup memakai `new ServerResolver(new ServerStore($pathTemp))`
@@ -641,8 +640,9 @@ final class ServerResolver
      *  - `tls_cert_pem` wajib PEM X.509 valid; `tls_fingerprint` dihitung di sini;
      *  - `domain` opsional (kosong ⇒ ikut `APP_DOMAIN`);
      *  - `port_range` opsional: array `{start,end}` atau teks `"31000-31999"`;
-     *    wajib 1–65535, `start < end`, dan **tidak** tumpang tindih rentang
-     *    efektif server lokal (bila diberikan);
+     *    wajib 1–65535 dan `start < end`. Tumpang tindih dengan rentang server
+     *    lain **DIIZINKAN** (port host bersifat per server) — bawaannya justru
+     *    sama dengan rentang dashboard, lihat GOTCHA multi-server no. 70;
      *  - `notes`/`enabled` opsional;
      *  - `rates` opsional: array `{cpu, ram, backup}`; hanya nilai **numerik > 0**
      *    yang disimpan (0/negatif/string sampah dibuang). Key hasil validasi
@@ -717,9 +717,12 @@ final class ServerResolver
             'rates' => self::normalizeRates($payload['rates'] ?? null),
         ];
 
+        // Port host bersifat PER SERVER (host berbeda), jadi rentang yang sama
+        // dengan server lokal/agent lain SAH — lihat catatan di
+        // {@see self::normalizePortRange()}. Bentrok nyata tetap dicegah saat
+        // alokasi port app (`AppPorts::onServer`).
         $range = self::normalizePortRange($payload['port_range'] ?? null);
         if ($range !== null) {
-            self::assertNoLocalOverlap($range, self::portRange($this->local()));
             $server['port_range'] = $range;
         }
 
@@ -745,11 +748,8 @@ final class ServerResolver
      *
      * `port_range` **sengaja** dikunci: untuk baris lokal sumber kebenaran
      * rentang port adalah `.env` (`PORT_RANGE_START`/`PORT_RANGE_END`, lihat
-     * `config('deploy.port_range')`), bukan registry server. `validate()` juga
-     * tidak bisa dipakai di sini karena ia membandingkan rentang kandidat dengan
-     * rentang server lokal itu sendiri (selalu dianggap "tumpang tindih") —
-     * membuka `port_range` lewat jalur lain akan menciptakan sumber kebenaran
-     * kedua untuk hal yang sama.
+     * `config('deploy.port_range')`), bukan registry server — membukanya lewat
+     * jalur lain akan menciptakan sumber kebenaran kedua untuk hal yang sama.
      *
      * Mengembalikan payload ternormalisasi berisi **hanya** field yang boleh
      * berubah **dan** memang dikirim (field yang absen tidak ditulis ulang oleh
@@ -1036,6 +1036,13 @@ final class ServerResolver
      * `"31000-31999"` (`-`, `..`, atau `:` sebagai pemisah). Mengembalikan null
      * bila tidak diisi; MELEMPAR bila bentuk/nilainya tidak sah.
      *
+     * Tumpang tindih antar-server **tidak** ditolak: port host milik masing-masing
+     * server, dan rentang bawaan agent (30000–30999) memang sama dengan bawaan
+     * dashboard. Satu-satunya bentrok yang nyata adalah port yang sudah dipakai di
+     * server yang sama — itu dicegah saat alokasi (`AppPorts::onServer`). Bila
+     * dashboard dan agent berada di HOST yang sama, operator wajib memilih rentang
+     * berbeda secara manual (GOTCHA multi-server no. 70).
+     *
      * @return array{start:int,end:int}|null
      * @throws RuntimeException
      */
@@ -1080,34 +1087,6 @@ final class ServerResolver
         }
 
         return null;
-    }
-
-    /**
-     * Fail-fast bentrok rentang dengan server lokal.
-     *
-     * Catatan keputusan: port host sebenarnya **per host**, jadi tumpang tindih
-     * antar-server secara teknis tidak berbahaya. Tetapi rentang server lokal
-     * juga jadi acuan "satu port = satu sumber" (alokasi port app, proxy,
-     * monitoring) di control plane; membiarkan rentang identik membuat dashboard
-     * tidak bisa membedakan asal port. Karena itu tumpang tindih ditolak dan
-     * admin diminta memilih rentang lain (boleh dilonggarkan di fase berikutnya
-     * bila terbukti mengganggu).
-     *
-     * @param array{start:int,end:int} $range
-     * @param array{start:int,end:int} $local
-     * @throws RuntimeException
-     */
-    private static function assertNoLocalOverlap(array $range, array $local): void
-    {
-        if ($range['start'] <= $local['end'] && $range['end'] >= $local['start']) {
-            throw new RuntimeException(sprintf(
-                'Rentang port %d–%d tumpang tindih dengan rentang server lokal (%d–%d); pilih rentang lain.',
-                $range['start'],
-                $range['end'],
-                $local['start'],
-                $local['end']
-            ));
-        }
     }
 
     /**

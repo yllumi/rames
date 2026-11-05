@@ -20,7 +20,8 @@ use Tests\Support\StoreDbFiles;
  *  - fallback `domain`/`port_range` ke config hanya saat dokumen server kosong;
  *  - accessor server agent (`base_url`/`token`/`tls_cert_pem`) fail-fast;
  *  - `validate()` menolak `http://`, token kosong, PEM sampah, `kind=local`,
- *    nama tidak valid, port range tumpang tindih dengan server lokal;
+ *    nama tidak valid, bentuk/urutan port range salah (tumpang tindih ANTAR-server
+ *    justru DIIZINKAN — port host milik masing-masing server);
  *  - fingerprint SHA-256 dihitung dashboard (bukan diketik user).
  *
  * Semua uji memakai store SQLite di path temp (`sys_get_temp_dir()`) — tidak
@@ -417,17 +418,16 @@ class ServerResolverTest extends TestCase
         $this->assertThrowsWith('Rentang port server harus', fn () => $this->validate($this->payload(['port_range' => ['start' => 'a', 'end' => 'b']])));
     }
 
-    public function testValidateRejectsPortRangeOverlappingLocalServer(): void
+    public function testValidateAcceptsPortRangeOverlappingLocalServer(): void
     {
+        // Port host bersifat per server: rentang bawaan agent sama dengan bawaan
+        // dashboard (30000–30999) dan itu SAH. Bentrok nyata dicegah saat
+        // alokasi port app di server yang sama (`AppPorts::onServer`).
         $local = $this->localPortRange();
 
-        $this->assertThrowsWith(
-            'tumpang tindih',
-            fn () => $this->validate($this->payload(['port_range' => $local]))
-        );
+        $this->assertSame($local, $this->validate($this->payload(['port_range' => $local]))['port_range']);
 
         $free = $this->freePortRange();
-        $this->assertFalse($free['start'] <= $local['end'] && $free['end'] >= $local['start']);
         $this->assertSame($free, $this->validate($this->payload(['port_range' => $free]))['port_range']);
     }
 

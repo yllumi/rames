@@ -64,6 +64,7 @@ class ProvisionInputTest extends TestCase
         $this->assertSame('', $input['ssl_ca_server']);
         $this->assertSame(['203.0.113.7'], $input['control_plane_ips']);
         $this->assertTrue($input['manage_firewall']);
+        $this->assertFalse($input['allow_identity_change'], 'bawaan: identitas tidak boleh berubah');
         $this->assertSame('provision-agent', $input['playbook']);
 
         // Hanya field yang dikenal; rahasia tidak pernah ikut.
@@ -71,7 +72,7 @@ class ProvisionInputTest extends TestCase
             'name', 'host', 'ssh_user', 'ssh_port', 'domain', 'email',
             'port_range_start', 'port_range_end', 'agent_port', 'bind', 'ip',
             'ssl_challenge', 'ssl_ca_server', 'control_plane_ips',
-            'manage_firewall', 'playbook',
+            'manage_firewall', 'allow_identity_change', 'playbook',
         ], array_keys($input));
         $this->assertArrayNotHasKey('ssh_private_key', $input);
         $this->assertArrayNotHasKey('token', $input);
@@ -346,6 +347,19 @@ class ProvisionInputTest extends TestCase
      * Firewall dikelola tanpa daftar IP control plane = kegagalan PASTI di
      * preflight role (setelah antre). Validasi harus menolaknya lebih awal.
      */
+    public function testAllowIdentityChangeDisablesAssertIdentity(): void
+    {
+        $default = ProvisionInput::extraVars(ProvisionInput::validate($this->payload()));
+        $this->assertTrue($default['rames_agent_assert_identity'], 'bawaan: role memagari identitas');
+
+        $input = ProvisionInput::validate($this->payload(['allow_identity_change' => '1']));
+        $this->assertTrue($input['allow_identity_change']);
+        $this->assertFalse(
+            ProvisionInput::extraVars($input)['rames_agent_assert_identity'],
+            'opt-in eksplisit: role boleh mengubah identitas'
+        );
+    }
+
     public function testManagedFirewallRequiresControlPlaneIps(): void
     {
         $this->expectException(RuntimeException::class);

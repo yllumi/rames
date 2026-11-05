@@ -201,6 +201,7 @@ final class ProvisionInput
             'ssl_ca_server' => $sslCaServer,
             'control_plane_ips' => $controlPlaneIps,
             'manage_firewall' => $manageFirewall,
+            'allow_identity_change' => self::boolValue($payload['allow_identity_change'] ?? null, 'allow_identity_change', false),
             'playbook' => $playbook,
         ];
     }
@@ -226,7 +227,10 @@ final class ProvisionInput
             'rames_agent_port' => (int) ($input['agent_port'] ?? self::AGENT_PORT),
             'rames_agent_manage_firewall' => self::boolValue($input['manage_firewall'] ?? null, 'manage_firewall', true),
             'rames_agent_run_installer' => $playbook === self::DEFAULT_PLAYBOOK,
-            'rames_agent_assert_identity' => true,
+            // Perubahan identitas (domain/rentang port/bind) menuntut opt-in
+            // eksplisit: tanpa itu role menolak menimpa `secrets/agent.env`
+            // yang sudah ada (server yang dipasang ulang bisa saja disengaja).
+            'rames_agent_assert_identity' => !self::boolValue($input['allow_identity_change'] ?? null, 'allow_identity_change', false),
         ];
 
         foreach ([

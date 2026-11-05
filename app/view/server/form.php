@@ -300,8 +300,9 @@ $breadcrumbs = [
         </div>
         <div class="form-text">
           Port host yang boleh dipakai app di server ini (<span class="mono">start &lt; end</span>). Kosongkan
-          keduanya agar memakai rentang dari konfigurasi dashboard. Rentang tidak boleh tumpang tindih dengan
-          rentang server lokal.
+          keduanya agar memakai rentang dari konfigurasi dashboard. Rentang <strong>boleh sama</strong> dengan
+          server lain — port host milik masing-masing server; hanya bila dua server berjalan di <strong>host
+          yang sama</strong> rentang wajib dibedakan.
         </div>
       </div>
       <?php endif; ?>
