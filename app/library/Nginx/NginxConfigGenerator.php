@@ -39,6 +39,20 @@ class NginxConfigGenerator
      * — tidak di redirect block / blok 80→https, karena blok-blok itu tidak
      * mem-proxy ke app.
      *
+     * Rute memakai semantik **mount subpath**: prefix `path` DILEPAS sebelum
+     * diteruskan (`proxy_pass {target}/`), URL absolut balik dari upstream
+     * di-`proxy_redirect` ke prefix, dan upstream menerima prefix lewat
+     * `X-Forwarded-Prefix`. Tanpa ini aset & link absolut upstream (yang
+     * mengasumsikan dirinya di root `/`) menunjuk ke app utama, bukan rute.
+     * Bila `path` = `/dashboard/` maka `/dashboard/app.js` diteruskan sebagai
+     * `/app.js` + `X-Forwarded-Prefix: /dashboard`.
+     *
+     * `Connection $rames_upgrade_*` memakai `map` milik berkas ini (dirender di
+     * awal berkas, satu kali) supaya request HTTP biasa tidak mengirim
+     * `Connection: upgrade`. Nama variabel diberi sufiks hash server_name agar
+     * dua berkas app tidak pernah mendefinisikan map yang sama (duplikat map =
+     * `nginx -t` gagal untuk SELURUH host).
+     *
      * @param array<int,array{server_name:string,ssl?:bool,redirect_to?:string}> $servers
      * @param array<int,array{path:string,target:string}> $routes
      * @return string
@@ -49,7 +63,13 @@ class NginxConfigGenerator
         // (satu config rusak menggagalkan reload SELURUH host). all() sudah
         // menyaring data apps.json, jadi umumnya di sini tidak ada yang gagal.
         $routes = NginxRoutes::normalize($routes);
-        $routeSuffix = $routes === [] ? '' : "\n\n" . $this->routeBlocks($routes);
+        $upgradeVar = '';
+        $routePrefix = '';
+        if ($routes !== [] && self::hasServeBlock($servers)) {
+            $upgradeVar = $this->upgradeVarName($servers);
+            $routePrefix = $this->upgradeMap($upgradeVar) . "\n\n";
+        }
+        $routeSuffix = $routes === [] ? '' : "\n\n" . $this->routeBlocks($routes, $upgradeVar);
 
         $webroot = (string) config('deploy.ssl_webroot', base_path() . '/webroot');
         $lePath = (string) config('deploy.letsencrypt_path', '/etc/letsencrypt');
@@ -189,34 +209,135 @@ server {
 NGINX;
         }
 
-        return implode("\n\n", $blocks) . "\n";
+        return $routePrefix . implode("\n\n", $blocks) . "\n";
     }
 
     /**
-     * Blok `location ^~ {path} { proxy_pass {target}; ... }` (indent 4 spasi).
+     * Ada server block yang benar-benar mem-proxy ke app? (Blok redirect murni
+     * tidak memuat `location /` proxy, jadi `map` tidak perlu dirender.)
      *
-     * `^~` dipakai agar rute tidak pernah kalah dari regex location milik app
-     * di belakang proxy; direktif WebSocket disertakan supaya app real-time di
-     * target rute (mis. gateway API) tetap dapat Upgrade.
+     * @param array<int,array<string,mixed>> $servers
+     */
+    private static function hasServeBlock(array $servers): bool
+    {
+        foreach ($servers as $entry) {
+            $redirectTo = $entry['redirect_to'] ?? null;
+            if ($redirectTo === null || $redirectTo === '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * `map` WebSocket untuk berkas ini (wajib di konteks `http` — berkas
+     * `sites-enabled` memang di-include di sana).
+     */
+    private function upgradeMap(string $var): string
+    {
+        $target = '$' . $var;
+
+        return "map \$http_upgrade {$target} {\n    default upgrade;\n    ''      close;\n}";
+    }
+
+    /**
+     * Nama variabel `map` unik per berkas config app.
+     *
+     * Server name dibaca sebagai slug agar config tetap terbaca; sufiks hash
+     * mencegah dua app berbeda (mis. `a-b.example.com` & `a.b.example.com`)
+     * menghasilkan nama variabel sama — duplikat `map` di konteks `http`
+     * menggagalkan `nginx -t` seluruh host.
+     *
+     * @param array<int,array<string,mixed>> $servers
+     */
+    private function upgradeVarName(array $servers): string
+    {
+        $names = [];
+        foreach ($servers as $entry) {
+            $name = (string) ($entry['server_name'] ?? '');
+            if ($name !== '') {
+                $names[] = $name;
+            }
+        }
+
+        $slug = strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', $names[0] ?? 'app'));
+        $slug = trim($slug, '_');
+        if ($slug === '') {
+            $slug = 'app';
+        }
+
+        return 'rames_upgrade_' . substr($slug, 0, 32) . '_' . substr(sha1(implode(',', $names)), 0, 6);
+    }
+
+    /**
+     * Blok rute `location ^~ {path} { ... }` (indent 4 spasi) dengan semantik
+     * mount subpath: prefix `path` dilepas (`proxy_pass {target}/`), redirect
+     * absolut upstream dikembalikan ke prefix, dan prefix dikirim sebagai
+     * `X-Forwarded-Prefix`.
+     *
+     * `^~` dipertahankan agar rute tidak pernah kalah dari regex location milik
+     * app di belakang proxy; direktif WebSocket disertakan supaya app real-time
+     * di target rute (mis. gateway API) tetap dapat Upgrade.
      *
      * @param array<int,array{path:string,target:string}> $routes
      */
-    private function routeBlocks(array $routes): string
+    private function routeBlocks(array $routes, string $upgradeVar): string
     {
+        $connection = 'proxy_set_header Connection $' . $upgradeVar . ';';
+
         $blocks = [];
         foreach ($routes as $route) {
             $path = $route['path'];
             $target = $route['target'];
+
+            // Prefix yang dilepas dari request (tanpa garis miring akhir).
+            $prefix = rtrim($path, '/');
+            $base = rtrim($target, '/');
+
+            // `path` boleh memuat `.` (mis. `/v1.2/`) → escape agar rewrite
+            // mencocokkan literal, bukan wildcard regex.
+            $pathRegex = preg_quote($prefix, '#');
+
+            // Perlakukan path pada target: `proxy_pass .../app/` membuat
+            // upstream menerima `/app/...`, sehingga Location absolutnya juga
+            // berawalan `/app` — regex redirect wajib mengikuti.
+            $targetPath = rtrim((string) (parse_url($target, PHP_URL_PATH) ?? ''), '/');
+            $locationPath = $targetPath === '' ? '' : preg_quote($targetPath, '#');
+
+            // Redirect dari upstream wajib kembali ke bawah prefix; tanpa ini
+            // browser diarahkan ke path root app (atau ke host internal upstream).
+            $redirects = [
+                "proxy_redirect ~^{$locationPath}/(.*)\$ {$prefix}/\$1;",
+            ];
+            $host = preg_quote((string) (parse_url($target, PHP_URL_HOST) ?? ''), '#');
+            if ($host !== '') {
+                $port = parse_url($target, PHP_URL_PORT);
+                $portRegex = is_int($port) ? ':' . $port : '(?::\d+)?';
+                $redirects[] = "proxy_redirect ~^https?://{$host}{$portRegex}{$locationPath}/(.*)\$ {$prefix}/\$1;";
+            }
+            $redirectBlock = implode("\n        ", $redirects);
+
             $blocks[] = <<<NGINX
     location ^~ {$path} {
-        proxy_pass {$target};
+        rewrite ^{$pathRegex}/(.+)/\$ \$1 permanent;
+
+        proxy_pass {$base}/;
+        {$redirectBlock}
+
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Prefix {$prefix};
+
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        {$connection}
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
     }
 NGINX;
         }

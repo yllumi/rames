@@ -288,6 +288,13 @@
             Maksimal <strong>20 rute</strong>; prefix <span class="mono">/.well-known</span> dicadangkan sistem.
             <span class="mono">target</span> boleh berupa hostname, tetapi hostname harus bisa di-resolve dari host Nginx — bila tidak, <span class="mono">nginx -t</span> gagal dan penyimpanan otomatis dibatalkan.
           </p>
+          <p class="text-muted small">
+            Rute dipasang seperti <strong>subpath</strong>: prefix <span class="mono">&lt;path&gt;</span> dilepas sebelum request diteruskan
+            (mis. <span class="mono">/dashboard/app.js</span> → <span class="mono">/app.js</span>) dan prefix dikirim ke upstream sebagai
+            <span class="mono">X-Forwarded-Prefix: /dashboard</span>. URL yang dikembalikan upstream (header
+            <span class="mono">Location</span>/redirect — termasuk yang absolut ke host target) di-rewrite kembali ke prefix,
+            sehingga aset &amp; link tetap berada di bawah rute — app di belakang proxy tidak perlu tahu prefix-nya.
+          </p>
           <div class="table-responsive mb-3">
             <table class="table align-middle mb-0">
               <thead><tr><th>Path</th><th>Target</th></tr></thead>

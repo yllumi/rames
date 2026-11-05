@@ -11,8 +11,11 @@ use RuntimeException;
  *   nginx_routes: [ { "path": "/api/", "target": "http://127.0.0.1:3001" } ]
  *
  * Setiap rute dirender `NginxConfigGenerator::render()` sebagai blok
- * `location ^~ {path} { proxy_pass {target}; ... }` di dalam serve block
- * (HTTP 80 & HTTPS 443) — bukan di redirect block / blok 80→https. Rute ini
+ * `location ^~ {path} { ... }` di dalam serve block (HTTP 80 & HTTPS 443) —
+ * bukan di redirect block / blok 80→https. Blok itu memakai semantik **mount
+ * subpath**: prefix `path` dilepas sebelum request diteruskan
+ * (`proxy_pass {target}/`), URL absolut balik upstream di-`proxy_redirect` ke
+ * prefix, dan prefix dikirim sebagai `X-Forwarded-Prefix`. Rute ini
  * disimpan sebagai struktur terstruktur (path + target), **bukan** snippet
  * mentah, supaya dashboard bisa memvalidasi & membatasi sebelum menulis config
  * Nginx (config rusak = nginx gagal reload untuk SELURUH host).

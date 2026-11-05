@@ -220,21 +220,53 @@ class NginxConfigGeneratorTest extends TestCase
 
     /**
      * Blok rute yang diharapkan (indent 4 spasi, `location ^~`, tanpa nested).
+     * `$upgradeVar` = nama variabel `map` WebSocket milik berkas (dinamis).
      */
-    private function expectedRouteBlock(string $path, string $target): string
+    private function expectedRouteBlock(string $path, string $targetBase, string $upgradeVar): string
     {
+        $prefix = rtrim($path, '/');
+        $connection = 'proxy_set_header Connection ' . $upgradeVar . ';';
+
+        // Location absolut dari upstream (origin miliknya sendiri) ikut
+        // di-rewrite; host/port diambil dari target.
+        $host = preg_quote((string) parse_url($targetBase, PHP_URL_HOST), '#');
+        $port = parse_url($targetBase, PHP_URL_PORT);
+        $portRegex = is_int($port) ? ':' . $port : '(?::\d+)?';
+
         return <<<NGINX
     location ^~ {$path} {
-        proxy_pass {$target};
+        rewrite ^{$prefix}/(.+)/\$ \$1 permanent;
+
+        proxy_pass {$targetBase}/;
+        proxy_redirect ~^/(.*)$ {$prefix}/\$1;
+        proxy_redirect ~^https?://{$host}{$portRegex}/(.*)$ {$prefix}/\$1;
+
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Prefix {$prefix};
+
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        {$connection}
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
     }
 NGINX;
+    }
+
+    /**
+     * Nama variabel `map` WebSocket yang dideklarasikan berkas config.
+     */
+    private function upgradeVar(string $config): string
+    {
+        preg_match('/^map \$http_upgrade (\$\w+) \{/m', $config, $m);
+        $this->assertNotEmpty($m, 'map $http_upgrade harus dideklarasikan saat ada rute');
+
+        return $m[1];
     }
 
     public function testRouteBlocksRenderedAfterLocationSlashInHttpServeBlock(): void
@@ -243,8 +275,15 @@ NGINX;
             ['server_name' => 'app.example.com'],
         ], self::SAMPLE_ROUTES);
 
-        $this->assertStringContainsString($this->expectedRouteBlock('/api/', 'http://127.0.0.1:3001'), $config);
-        $this->assertStringContainsString($this->expectedRouteBlock('/gateway/', 'http://127.0.0.1:3002'), $config);
+        $upgradeVar = $this->upgradeVar($config);
+        $this->assertStringContainsString(
+            $this->expectedRouteBlock('/api/', 'http://127.0.0.1:3001', $upgradeVar),
+            $config
+        );
+        $this->assertStringContainsString(
+            $this->expectedRouteBlock('/gateway/', 'http://127.0.0.1:3002', $upgradeVar),
+            $config
+        );
 
         // Rute diletakkan SETELAH blok `location /`, bukan nested di dalamnya.
         $location = strpos($config, "location / {");
@@ -256,6 +295,113 @@ NGINX;
         preg_match('/^    location \/ \{.*?^    \}/ms', $config, $m);
         $this->assertNotEmpty($m);
         $this->assertStringNotContainsString('location ^~ /api/', $m[0], 'rute tidak boleh nested di location /');
+    }
+
+    /**
+     * Inti perbaikan: prefix rute DILEPAS ke upstream, URL balik di-rewrite ke
+     * prefix, dan prefix dikirim lewat X-Forwarded-Prefix — tanpa ini aset
+     * absolut upstream menunjuk ke app utama (bukan rute).
+     */
+    public function testRoutePrefixIsStrippedAndForwarded(): void
+    {
+        $config = $this->generator()->render(8080, [
+            ['server_name' => 'app.example.com'],
+        ], [['path' => '/dashboard/', 'target' => 'http://127.0.0.1:30018']]);
+
+        $this->assertStringContainsString('location ^~ /dashboard/ {', $config);
+        $this->assertStringContainsString('proxy_pass http://127.0.0.1:30018/;', $config);
+        $this->assertStringContainsString('proxy_redirect ~^/(.*)$ /dashboard/$1;', $config);
+        $this->assertStringContainsString(
+            'proxy_redirect ~^https?://127\.0\.0\.1:30018/(.*)$ /dashboard/$1;',
+            $config,
+            'Location absolut ke origin upstream harus ikut di-rewrite ke prefix'
+        );
+        $this->assertStringContainsString('proxy_set_header X-Forwarded-Prefix /dashboard;', $config);
+        $this->assertStringContainsString('rewrite ^/dashboard/(.+)/$ $1 permanent;', $config);
+        $this->assertStringContainsString('proxy_connect_timeout 60s;', $config);
+        $this->assertStringContainsString('proxy_send_timeout 60s;', $config);
+        $this->assertStringContainsString('proxy_read_timeout 60s;', $config);
+        // `$1`/`$host` harus literal (bukan variabel PHP).
+        $this->assertStringNotContainsString('proxy_redirect ~^/(.*)$ /dashboard/;', $config);
+    }
+
+    public function testRouteTargetWithPathAdjustsProxyPassAndRedirectRegex(): void
+    {
+        $config = $this->generator()->render(8080, [
+            ['server_name' => 'app.example.com'],
+        ], [['path' => '/gateway/v1', 'target' => 'https://upstream.internal:8443/base']]);
+
+        $this->assertStringContainsString('location ^~ /gateway/v1 {', $config);
+        $this->assertStringContainsString('proxy_pass https://upstream.internal:8443/base/;', $config);
+        $this->assertStringContainsString('proxy_redirect ~^/base/(.*)$ /gateway/v1/$1;', $config);
+        $this->assertStringContainsString(
+            'proxy_redirect ~^https?://upstream\.internal:8443/base/(.*)$ /gateway/v1/$1;',
+            $config
+        );
+        $this->assertStringContainsString('proxy_set_header X-Forwarded-Prefix /gateway/v1;', $config);
+        $this->assertStringContainsString('rewrite ^/gateway/v1/(.+)/$ $1 permanent;', $config);
+    }
+
+    /**
+     * `Connection` rute memakai `map` (bukan string "upgrade") agar request HTTP
+     * biasa tidak mengirim header upgrade; map dideklarasikan SEKALI di berkas.
+     */
+    public function testUpgradeMapDeclaredOnceAndUsedByEveryRoute(): void
+    {
+        $config = $this->generator()->render(8080, [
+            ['server_name' => 'sub.app.example.com'],
+            ['server_name' => 'custom.example.com'],
+        ], self::SAMPLE_ROUTES);
+
+        $this->assertSame(1, substr_count($config, 'map $http_upgrade '), 'map harus tunggal per berkas');
+        $upgradeVar = $this->upgradeVar($config);
+        $this->assertMatchesRegularExpression('/^\s*default upgrade;$/m', $config);
+        $this->assertMatchesRegularExpression('/^\s*\'\'\s+close;$/m', $config);
+
+        // 2 serve block × 2 rute = 4 blok, semua memakai variabel map yang sama.
+        $this->assertSame(4, substr_count($config, "Connection {$upgradeVar};"));
+        $this->assertSame(1, substr_count($config, 'map $http_upgrade'));
+
+        // Tidak ada lagi `Connection "upgrade"` di blok rute.
+        preg_match_all('/location \^~ \/(api|gateway)\/ \{.*?^    \}/ms', $config, $m);
+        $this->assertCount(4, $m[0]);
+        foreach ($m[0] as $routeBlock) {
+            $this->assertStringNotContainsString('Connection "upgrade";', $routeBlock);
+        }
+    }
+
+    public function testUpgradeVarNameDiffersBetweenApps(): void
+    {
+        $first = $this->upgradeVar($this->generator()->render(8080, [
+            ['server_name' => 'a-b.example.com'],
+        ], self::SAMPLE_ROUTES));
+        $second = $this->upgradeVar($this->generator()->render(8080, [
+            ['server_name' => 'a.b.example.com'],
+        ], self::SAMPLE_ROUTES));
+
+        $this->assertNotSame(
+            $first,
+            $second,
+            'server name yang di-slug sama tidak boleh menghasilkan map duplikat'
+        );
+    }
+
+    public function testNoUpgradeMapWithoutRoutes(): void
+    {
+        $config = $this->generator()->render(8080, [['server_name' => 'app.example.com']]);
+
+        $this->assertStringNotContainsString('map $http_upgrade', $config);
+        $this->assertStringNotContainsString('rames_upgrade_', $config);
+    }
+
+    public function testNoUpgradeMapWhenEveryServerBlockIsRedirectOnly(): void
+    {
+        $config = $this->generator()->render(8080, [
+            ['server_name' => 'sub.app.example.com', 'redirect_to' => 'https://custom.example.com'],
+        ], self::SAMPLE_ROUTES);
+
+        $this->assertStringNotContainsString('map $http_upgrade', $config);
+        $this->assertStringNotContainsString('proxy_pass', $config);
     }
 
     public function testRouteBlocksRenderedOnlyInHttpsServeBlockWhenSsl(): void
@@ -280,7 +426,7 @@ NGINX;
         // Serve block 443 memuat kedua rute.
         $this->assertStringContainsString('location ^~ /api/ {', $https);
         $this->assertStringContainsString('location ^~ /gateway/ {', $https);
-        $this->assertSame(1, substr_count($https, 'proxy_pass http://127.0.0.1:3001;'));
+        $this->assertSame(1, substr_count($https, 'proxy_pass http://127.0.0.1:3001/;'));
 
         // Blok 80→https hanya redirect → tanpa blok rute.
         $this->assertStringContainsString('return 301 https://', $httpRedirect);

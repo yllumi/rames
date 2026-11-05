@@ -14,6 +14,10 @@
 ## 5.6a Rute proxy tambahan per app (Simpan & Terapkan + rollback)
 
 > Terkait: SPECS §8.2a. Field `apps.json` `nginx_routes`; blok `location ^~ <path>` di-render `NginxConfigGenerator::render()` **hanya** di serve block (HTTP 80 & HTTPS 443).
+>
+> **Semantik blok (mount subpath, §8.2a):** prefix `path` **dilepas** ke upstream (`proxy_pass {target}/`), URL balik upstream (Location relatif maupun absolut ke origin target) di-`proxy_redirect` ke prefix, prefix dikirim sebagai `X-Forwarded-Prefix`, `proxy_http_version 1.1` + `Upgrade`/`Connection $rames_upgrade_*`, dan timeout proxy 60 s. Sebelumnya `proxy_pass` meneruskan path penuh tanpa `X-Forwarded-Prefix`, sehingga aset absolut upstream (yang mengasumsikan dirinya di `/`) menunjuk ke app utama — bukan ke rute.
+>
+> **`map` WebSocket per berkas.** Blok rute memakai `Connection $rames_upgrade_<slug>_<hash>`, dengan `map $http_upgrade …` dirender **satu kali di awal berkas** config app (konteks `http`, karena `sites-enabled` di-include di sana) dan hanya bila ada serve block. Nama variabel diberi sufiks hash `server_name` supaya dua app berbeda tidak mendeklarasikan map dengan variabel yang sama — **duplikat `map` menggagalkan `nginx -t` untuk SELURUH host** (GOTCHA). `location /` milik app tetap memakai `Connection "upgrade"` seperti semula (perilaku lama tidak diubah).
 
 1. Detail app → kartu **Rute Proxy Tambahan** (ability `routes` = operator ke atas; `AppControllerBase::findApp($id, 'routes')` → tanpa hak = **404**). App tanpa host port (`AppPorts::hasHostPort`, §5.1) ditolak lebih dulu dengan pesan prasyarat — **sebelum** efek samping apa pun.
 2. `POST /apps/{id}/routes` → `DomainSettingsController::saveRoutes`: textarea (`<path> <target>` per baris; baris `#` = komentar; kosong = `[]` = hapus semua) di-parse `NginxRoutes::parse()` (fail-fast). Kesalahan **per baris** (format maupun isi) menyebut **nomor baris textarea** (`Baris N: …`); kesalahan **lintas-entri** (duplikat `path`, batas `MAX`) berasal dari `normalize()` akhir tanpa nomor baris tetapi menyebut nilai path-nya.
