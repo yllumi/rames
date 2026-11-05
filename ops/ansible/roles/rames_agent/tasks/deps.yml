@@ -47,3 +47,34 @@
       manual: Docker Engine + plugin compose v2.6+, nginx, certbot, git,
       openssl (lihat agent/README.md prasyarat).
   when: not (rames_agent_manage_deps | bool)
+
+- name: "Deps | uji konfigurasi nginx host (nginx -t)"
+  ansible.builtin.command:
+    argv:
+      - nginx
+      - -t
+  register: rames_agent_nginx_test
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+  when:
+    - rames_agent_manage_deps | bool
+    - not ansible_check_mode
+
+- name: "Deps | nginx -t gagal — tampilkan sebab & jalan keluar"
+  ansible.builtin.debug:
+    msg: >-
+      `nginx -t` GAGAL di {{ inventory_hostname }}:
+      {{ (rames_agent_nginx_test.stderr | default('')) | trim }}
+      Ini BUKAN berkas Rames (Rames tidak menulis vhost IPv6). Bila pesan memuat
+      "Address family not supported by protocol", host ini tanpa IPv6 dan site
+      BAWAAN paket nginx mendengarkan [::]:80 — komentari baris listen IPv6 pada
+      site itu (lihat ops/ansible/README.md, bagian nginx tanpa IPv6), lalu
+      jalankan `sudo nginx -t && sudo systemctl enable --now nginx`.
+      Tanpa nginx host yang sehat, agent tetap terpasang tetapi app di server ini
+      TIDAK bisa diakses publik dan penerbitan SSL akan gagal.
+  when:
+    - rames_agent_manage_deps | bool
+    - not ansible_check_mode
+    - (rames_agent_nginx_test.rc | default(0)) != 0

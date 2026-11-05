@@ -651,6 +651,16 @@ ensure_nginx_running() {
         || warn "systemctl enable --now nginx gagal — pastikan Nginx berjalan manual."
     nginx -t >/dev/null 2>&1 \
         || warn "nginx -t gagal — periksa konfigurasi Nginx sebelum deploy app."
+    # Diagnosa paling sering di VPS tanpa IPv6: site BAWAAN paket nginx memakai
+    # `listen [::]:80`, sehingga systemd gagal start dengan
+    # "socket() [::]:80 failed (97: Address family not supported by protocol)".
+    # Rames tidak menulis listen IPv6; cukup site bawaan yang perlu diperbaiki.
+    if ! nginx -t >/dev/null 2>&1; then
+        warn "Site bawaan nginx bisa jadi penyebabnya. Bila 'nginx -t' memuat \
+'Address family not supported by protocol', host ini tanpa IPv6 — komentari baris listen [::]:"
+        echo "     sudo sed -i -E 's/^([[:space:]]*)listen[[:space:]]+\[::\]:/\1# listen [::]:/' /etc/nginx/sites-available/default"
+        echo "     sudo nginx -t && sudo systemctl enable --now nginx"
+    fi
 }
 
 preflight() {

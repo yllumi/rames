@@ -327,6 +327,23 @@ ikut. Karena itu:
   **Jangan** menulis ke `database/keys/known_hosts`: job provisioning harus
   mem-pin sendiri (TOFU) agar fingerprint bisa Anda verifikasi.
 
+### nginx host gagal start: `[::]:80 failed (Address family not supported)`
+
+Di VPS/container **tanpa IPv6**, site **bawaan** paket nginx memakai
+`listen [::]:80` sehingga `nginx -t` gagal dan service tidak pernah hidup.
+Rames hanya menulis vhost IPv4, jadi perbaiki site bawaan saja:
+
+```bash
+sudo sed -i -E 's/^([[:space:]]*)listen[[:space:]]+\[::\]:/\1# listen [::]:/' /etc/nginx/sites-available/default
+sudo nginx -t && sudo systemctl enable --now nginx
+# site lain yang juga mendengarkan IPv6:
+grep -rn 'listen \[::\]' /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null
+```
+
+Role menampilkan peringatan ini otomatis setelah `host/install.sh --deps-only`
+bila `nginx -t` gagal (agent tetap terpasang, tetapi app belum bisa diakses
+publik dan SSL akan gagal sampai nginx diperbaiki) — GOTCHA multi-server no. 71.
+
 ### GOTCHA no. 52 — dua kelompok port, aturan berbeda
 
 `firewall.yml` menambahkan **dua** kelompok:
