@@ -24,6 +24,12 @@
  * markup: badge `online`/`offline`/`unknown` sudah ada di template sehingga
  * server `offline` ditampilkan sebagai offline (bukan error) tanpa perlu
  * merakit class dari nilai server (anti-XSS: status dipetakan ke tiga varian baku).
+ *
+ * Kartu **statistik host per server agent** (`data-m="host-cards-card"` +
+ * `<template data-m="host-card">`) juga diisi JS dari `data.servers[]` dengan
+ * bentuk kartu yang sama seperti server ini (CPU/memori/storage/container/uptime);
+ * server agent `offline` hanya menampilkan kepala kartu + catatan, tanpa deretan
+ * angka kosong.
  */
 $monitorPanelId = $monitorPanelId ?? 'monitor-panel';
 $monitorEndpoint = $monitorEndpoint ?? '/api/monitor/overview';
@@ -45,6 +51,8 @@ $isAdmin = (bool) ($isAdmin ?? false);
   </div>
 
   <div class="alert alert-warning py-2 small d-none" role="alert" data-m="error"></div>
+
+  <h2 class="h6 mb-2">Statistik host <span class="text-muted fw-normal">· server ini (control plane)</span></h2>
 
   <div class="row row-cols-2 row-cols-lg-3 row-cols-xxl-5 g-3 mb-3">
     <div class="col">
@@ -124,6 +132,108 @@ $isAdmin = (bool) ($isAdmin ?? false);
     </div>
   </div>
 
+  <!-- Statistik host tiap server agent (multi-server). Rangka + <template>:
+       seluruh angka diisi `public/js/monitor.js` dari `data.servers[]`, jadi
+       tidak ada data server yang dibakar ke HTML. Bentuk kartunya sengaja sama
+       dengan kartu host server ini supaya angka tiap server bisa dibandingkan
+       sekilas; metriknya dibaca DI server itu sendiri (bukan host ini). -->
+  <section class="d-none" data-m="host-cards-card">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+      <h2 class="h6 mb-0">Statistik host <span class="text-muted fw-normal">· server agent</span></h2>
+      <span class="text-muted small" data-m="host-cards-note"></span>
+    </div>
+    <div data-m="host-cards"></div>
+    <template data-m="host-card">
+      <div class="mb-4" data-hs="server">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+          <h3 class="h6 mb-0" data-hs="name">—</h3>
+          <span class="badge badge-deploying" data-hs="kind">agent</span>
+          <span class="badge badge-running d-none" data-hs="status-online">online</span>
+          <span class="badge badge-error d-none" data-hs="status-offline">offline</span>
+          <span class="badge badge-unknown d-none" data-hs="status-unknown">unknown</span>
+          <span class="badge badge-stopped d-none" data-hs="badge-disabled">nonaktif</span>
+          <span class="text-muted small ms-auto" data-hs="at">—</span>
+        </div>
+        <div class="alert alert-warning py-2 small d-none mb-2" role="alert" data-hs="note"></div>
+        <div class="row row-cols-2 row-cols-lg-3 row-cols-xxl-5 g-3" data-hs="cards">
+          <div class="col">
+            <div class="card h-100">
+              <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-baseline">
+                  <span class="text-muted small">CPU host</span>
+                  <span class="text-muted small" data-hs="cpu-count">—</span>
+                </div>
+                <div class="h4 mb-1" data-hs="cpu">—</div>
+                <div class="progress" style="height:6px" role="progressbar" aria-label="Pemakaian CPU host server agent">
+                  <div class="progress-bar bg-primary" data-hs="cpu-bar" style="width:0"></div>
+                </div>
+                <div class="text-muted small mt-1">load <span data-hs="load">—</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="card h-100">
+              <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-baseline">
+                  <span class="text-muted small">Memori host</span>
+                  <span class="text-muted small" data-hs="mem-percent">—</span>
+                </div>
+                <div class="h4 mb-1" data-hs="mem">—</div>
+                <div class="progress" style="height:6px" role="progressbar" aria-label="Pemakaian memori host server agent">
+                  <div class="progress-bar bg-primary" data-hs="mem-bar" style="width:0"></div>
+                </div>
+                <div class="text-muted small mt-1" data-hs="mem-sub">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="card h-100">
+              <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-baseline">
+                  <span class="text-muted small" title="Pemakaian filesystem tempat app & volume disimpan (storage server agent)">Storage server</span>
+                  <span class="text-muted small" data-hs="disk-percent">—</span>
+                </div>
+                <div class="h4 mb-1" data-hs="disk">—</div>
+                <div class="progress" style="height:6px" role="progressbar" aria-label="Pemakaian storage server agent">
+                  <div class="progress-bar bg-primary" data-hs="disk-bar" style="width:0"></div>
+                </div>
+                <div class="text-muted small mt-1" data-hs="disk-sub">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="card h-100">
+              <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-baseline">
+                  <span class="text-muted small">Container</span>
+                  <span class="text-muted small" data-hs="totals-cpu">—</span>
+                </div>
+                <div class="h4 mb-1" data-hs="totals">—</div>
+                <div class="text-muted small" data-hs="totals-mem">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="card h-100">
+              <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-baseline">
+                  <span class="text-muted small">Uptime host</span>
+                  <span class="text-muted small" data-hs="proc">—</span>
+                </div>
+                <div class="h4 mb-1" data-hs="uptime">—</div>
+                <div class="text-muted small">diperbarui: <span data-hs="at-inline">—</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+  </section>
+
   <!-- Semua server (multi-server). Tersembunyi sampai data tiba; hanya muncul
        bila ada lebih dari satu server (satu server sudah terwakili kartu host). -->
   <div class="card mb-3 d-none" data-m="servers-card">
@@ -153,7 +263,8 @@ $isAdmin = (bool) ($isAdmin ?? false);
     <div class="card-footer text-muted small">
       Angka tiap server dibaca dari <strong>server itu sendiri</strong> — server <span class="badge badge-error">offline</span>
       tetap ditampilkan sebagai offline (metriknya tidak tersedia) dan tidak memengaruhi server lain.
-      Metrik host yang dipoll berkala di atas hanya milik server lokal (server ini).
+      Kartu host server ini dipoll berkala; kartu statistik host server agent &amp; tabel ini
+      diperbarui saat halaman dibuka atau tombol <strong>Refresh</strong> ditekan.
       <?php if ($isAdmin): ?>
         Uji koneksi &amp; perbaikan konfigurasi ada di halaman <a href="/servers">Servers</a>.
       <?php else: ?>

@@ -43,7 +43,8 @@ use Throwable;
  * Bentuk respons **lama tidak berubah**: kunci `host`/`containers`/`totals`/
  * `error`/`scope` tetap milik server **lokal** sehingga `public/js/monitor.js`
  * jalan apa adanya; agregat per server ditambahkan di kunci baru `servers[]`
- * (dipakai misi Frontend UI berikutnya). Server agent yang mati ⇒ entri-nya
+ * (dipakai kartu statistik host server agent + tabel "Semua Server" di
+ * `public/js/monitor.js`). Server agent yang mati ⇒ entri-nya
  * berstatus `offline` dan **tidak** menggagalkan seluruh halaman (satu server
  * rusak tidak boleh mematikan `/monitor`).
  *

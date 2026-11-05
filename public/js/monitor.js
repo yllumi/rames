@@ -1,10 +1,13 @@
 // Monitoring resource container & VM (SPECS §8d) — halaman /monitor.
 //
 // Data lengkap (host + container) diambil sekali saat halaman dibuka dan lewat
-// tombol Refresh. Kartu HOST kemudian dipoll berkala (default 7 detik) selama
-// halaman ini terbuka — poll hanya membaca `/proc` (file lokal, tanpa Docker
-// Engine); interval dijeda saat tab tidak terlihat dan dimatikan saat halaman
-// ditinggalkan, jadi tidak ada permintaan latar belakang.
+// tombol Refresh. Kartu HOST server ini kemudian dipoll berkala (default 7 detik)
+// selama halaman ini terbuka — poll hanya membaca `/proc` (file lokal, tanpa
+// Docker Engine); interval dijeda saat tab tidak terlihat dan dimatikan saat
+// halaman ditinggalkan, jadi tidak ada permintaan latar belakang. Kartu
+// statistik host server agent & tabel per server memakai data yang sama
+// (`data.servers[]`) dan hanya diperbarui saat halaman dibuka/Refresh — memanggil
+// seluruh agent tiap interval akan membanjiri jaringan.
 (function () {
   'use strict';
 
@@ -64,48 +67,72 @@
     });
   }
 
-  function renderHost(panel, host) {
-    var cpu = host.cpu_percent;
-    setText(panel, 'host-cpu', fmtPercent(cpu));
-    setBar(panel, 'host-cpu-bar', cpu);
-    setText(panel, 'host-cpu-count', host.cpu_count ? host.cpu_count + ' vCPU' : EMPTY);
-    setText(panel, 'host-load',
-      (host.load_1 === null || host.load_1 === undefined)
+  // Nilai teks kartu host — dipakai kartu host server ini DAN kartu statistik
+  // host tiap server agent (bentuk kartu & angka harus identik, satu renderer).
+  function hostTexts(host) {
+    var hasMem = host.mem_total !== null && host.mem_total !== undefined;
+    var hasDisk = host.disk_total !== null && host.disk_total !== undefined;
+    return {
+      cpu: fmtPercent(host.cpu_percent),
+      cpuCount: host.cpu_count ? host.cpu_count + ' vCPU' : EMPTY,
+      load: (host.load_1 === null || host.load_1 === undefined)
         ? EMPTY
-        : host.load_1 + ' / ' + host.load_5 + ' / ' + host.load_15);
+        : host.load_1 + ' / ' + host.load_5 + ' / ' + host.load_15,
+      mem: hasMem ? fmtBytes(host.mem_used) + ' / ' + fmtBytes(host.mem_total) : EMPTY,
+      memPercent: fmtPercent(host.mem_percent),
+      memSub: (host.mem_available === null || host.mem_available === undefined)
+        ? EMPTY
+        : 'tersedia ' + fmtBytes(host.mem_available),
+      disk: hasDisk ? fmtBytes(host.disk_used) + ' / ' + fmtBytes(host.disk_total) : EMPTY,
+      diskPercent: fmtPercent(host.disk_percent),
+      diskSub: (host.disk_available === null || host.disk_available === undefined)
+        ? EMPTY
+        : 'sisa ' + fmtBytes(host.disk_available) + ' tersedia',
+      diskPath: hasDisk && host.disk_path ? host.disk_path : EMPTY,
+      uptime: fmtUptime(host.uptime_seconds),
+      proc: host.available ? host.proc_path : 'tidak terbaca'
+    };
+  }
 
-    setText(panel, 'host-mem', (host.mem_total === null || host.mem_total === undefined)
-      ? EMPTY
-      : fmtBytes(host.mem_used) + ' / ' + fmtBytes(host.mem_total));
-    setText(panel, 'host-mem-percent', fmtPercent(host.mem_percent));
+  function totalsTexts(totals) {
+    return {
+      count: totals.containers + ' container',
+      cpu: 'CPU ' + fmtPercent(totals.cpu_percent),
+      mem: (totals.mem_used ? 'memori ' + fmtBytes(totals.mem_used) : 'memori ' + EMPTY) +
+        (totals.mem_limit ? ' / ' + fmtBytes(totals.mem_limit) : '') +
+        ' · ' + totals.running + ' jalan'
+    };
+  }
+
+  function renderHost(panel, host) {
+    var t = hostTexts(host);
+    setText(panel, 'host-cpu', t.cpu);
+    setBar(panel, 'host-cpu-bar', host.cpu_percent);
+    setText(panel, 'host-cpu-count', t.cpuCount);
+    setText(panel, 'host-load', t.load);
+
+    setText(panel, 'host-mem', t.mem);
+    setText(panel, 'host-mem-percent', t.memPercent);
     setBar(panel, 'host-mem-bar', host.mem_percent);
-    setText(panel, 'host-mem-sub', (host.mem_available === null || host.mem_available === undefined)
-      ? EMPTY
-      : 'tersedia ' + fmtBytes(host.mem_available));
+    setText(panel, 'host-mem-sub', t.memSub);
 
-    setText(panel, 'host-uptime', fmtUptime(host.uptime_seconds));
-    setText(panel, 'host-proc', host.available ? host.proc_path : 'tidak terbaca');
+    setText(panel, 'host-uptime', t.uptime);
+    setText(panel, 'host-proc', t.proc);
 
     // Storage server: filesystem tempat app & volume disimpan (statvfs pada
     // path yang di-mount dari host). N/A bila path tidak terbaca.
-    var hasDisk = host.disk_total !== null && host.disk_total !== undefined;
-    setText(panel, 'host-disk', hasDisk
-      ? fmtBytes(host.disk_used) + ' / ' + fmtBytes(host.disk_total)
-      : EMPTY);
-    setText(panel, 'host-disk-percent', fmtPercent(host.disk_percent));
+    setText(panel, 'host-disk', t.disk);
+    setText(panel, 'host-disk-percent', t.diskPercent);
     setBar(panel, 'host-disk-bar', host.disk_percent);
-    setText(panel, 'host-disk-sub', (host.disk_available === null || host.disk_available === undefined)
-      ? EMPTY
-      : 'sisa ' + fmtBytes(host.disk_available) + ' tersedia');
-    setText(panel, 'host-disk-path', hasDisk && host.disk_path ? host.disk_path : EMPTY);
+    setText(panel, 'host-disk-sub', t.diskSub);
+    setText(panel, 'host-disk-path', t.diskPath);
   }
 
   function renderTotals(panel, totals) {
-    setText(panel, 'totals', totals.containers + ' container');
-    setText(panel, 'totals-cpu', 'CPU ' + fmtPercent(totals.cpu_percent));
-    setText(panel, 'totals-mem', (totals.mem_used ? 'memori ' + fmtBytes(totals.mem_used) : 'memori ' + EMPTY) +
-      (totals.mem_limit ? ' / ' + fmtBytes(totals.mem_limit) : '') +
-      ' · ' + totals.running + ' jalan');
+    var t = totalsTexts(totals);
+    setText(panel, 'totals', t.count);
+    setText(panel, 'totals-cpu', t.cpu);
+    setText(panel, 'totals-mem', t.mem);
   }
 
   function memCell(row) {
@@ -188,6 +215,37 @@
     if (node) node.textContent = text;
   }
 
+  // Kunci `data-hs` hanya berlaku di dalam satu fragmen kartu server (satu
+  // server bisa muncul lebih dari sekali di halaman, jadi pencarian harus lokal).
+  function hs(frag, key) {
+    return frag.querySelector('[data-hs="' + key + '"]');
+  }
+
+  function setHs(frag, key, text) {
+    setNode(hs(frag, key), text);
+  }
+
+  function setHsBar(frag, key, percent) {
+    var el = hs(frag, key);
+    if (!el) return;
+    var pct = (percent === null || percent === undefined || isNaN(percent)) ? 0 : Math.min(100, Math.max(0, Number(percent)));
+    el.style.width = pct + '%';
+    el.className = 'progress-bar ' + barClass(percent);
+  }
+
+  // Server yang boleh ditampilkan di halaman. Penyaringan hak akses sebenarnya
+  // ada di server (JSON hanya memuat server yang boleh dilihat user); aturan di
+  // sini lapisan kedua yang sama untuk tabel maupun kartu host.
+  function visibleServers(panel, servers) {
+    var isAdmin = panel.getAttribute('data-is-admin') === '1';
+    return servers.filter(function (server) {
+      if (!server || typeof server !== 'object') return false;
+      if (isAdmin) return true;
+      if (String(server.kind || '').toLowerCase() === 'local') return true;
+      return Array.isArray(server.containers) && server.containers.length > 0;
+    });
+  }
+
   function serverRowNode(panel, server, diskText) {
     var tpl = panel.querySelector('template[data-m="server-row"]');
     if (!tpl || !tpl.content) return null;
@@ -260,20 +318,106 @@
     return row;
   }
 
+  /**
+   * Satu grup kartu statistik host untuk server agent — bentuknya sama dengan
+   * kartu host server ini (CPU, memori, storage, container, uptime). Server
+   * `offline`/`unknown` hanya menampilkan kepala + catatan (tanpa angka kosong
+   * yang menyesatkan).
+   */
+  function serverHostNode(panel, server) {
+    var tpl = panel.querySelector('template[data-m="host-card"]');
+    if (!tpl || !tpl.content) return null;
+
+    var frag = tpl.content.cloneNode(true);
+    var group = hs(frag, 'server');
+    if (!group) return null;
+
+    var status = String(server.status || '').toLowerCase();
+    var statusKey = status === 'online' ? 'online' : (status === 'offline' ? 'offline' : 'unknown');
+    var host = server.host || {};
+
+    setHs(frag, 'name', String(server.name || server.id || ''));
+    showNode(hs(frag, 'badge-disabled'), server.enabled === false);
+    ['online', 'offline', 'unknown'].forEach(function (key) {
+      showNode(hs(frag, 'status-' + key), key === statusKey);
+    });
+
+    var note = '';
+    if (statusKey === 'offline') note = 'server tidak dapat dihubungi — metrik tidak tersedia';
+    else if (server.error) note = 'sebagian metrik tidak tersedia';
+    setHs(frag, 'note', note);
+    showNode(hs(frag, 'note'), note !== '');
+
+    if (statusKey !== 'online') {
+      showNode(hs(frag, 'cards'), false);
+      setHs(frag, 'at', EMPTY);
+      return group;
+    }
+
+    var t = hostTexts(host);
+    setHs(frag, 'cpu', t.cpu);
+    setHsBar(frag, 'cpu-bar', host.cpu_percent);
+    setHs(frag, 'cpu-count', t.cpuCount);
+    setHs(frag, 'load', t.load);
+    setHs(frag, 'mem', t.mem);
+    setHs(frag, 'mem-percent', t.memPercent);
+    setHsBar(frag, 'mem-bar', host.mem_percent);
+    setHs(frag, 'mem-sub', t.memSub);
+    setHs(frag, 'disk', t.disk);
+    setHs(frag, 'disk-percent', t.diskPercent);
+    setHsBar(frag, 'disk-bar', host.disk_percent);
+    setHs(frag, 'disk-sub', t.diskSub);
+
+    var totals = totalsTexts(server.totals || { containers: 0, running: 0, cpu_percent: null, mem_used: null, mem_limit: null });
+    setHs(frag, 'totals', totals.count);
+    setHs(frag, 'totals-cpu', totals.cpu);
+    setHs(frag, 'totals-mem', totals.mem);
+
+    setHs(frag, 'uptime', t.uptime);
+    setHs(frag, 'proc', t.proc);
+    setHs(frag, 'at', String(server.at || EMPTY));
+    setHs(frag, 'at-inline', String(server.at || EMPTY));
+
+    return group;
+  }
+
+  /**
+   * Kartu statistik host seluruh server **agent** (server ini sudah punya kartu
+   * sendiri di atas). Sumber `data.servers[]` — angka dibaca di server itu.
+   * Sengaja tidak dipoll: memanggil seluruh agent tiap interval akan membanjiri
+   * jaringan (alasan yang sama dengan endpoint `/api/monitor/host` yang lokal).
+   */
+  function renderServerHosts(panel, servers) {
+    var card = panel.querySelector('[data-m="host-cards-card"]');
+    var body = panel.querySelector('[data-m="host-cards"]');
+    if (!card || !body || !Array.isArray(servers)) return;
+
+    var agents = visibleServers(panel, servers).filter(function (server) {
+      return String(server.kind || '').toLowerCase() !== 'local';
+    });
+
+    card.classList.toggle('d-none', agents.length === 0);
+    body.textContent = '';
+    if (agents.length === 0) return;
+
+    var offline = 0;
+    agents.forEach(function (server) {
+      if (String(server.status || '').toLowerCase() === 'offline') offline++;
+      var node = serverHostNode(panel, server);
+      if (node) body.appendChild(node);
+    });
+
+    setText(panel, 'host-cards-note', agents.length + ' server · ' +
+      (agents.length - offline) + ' online' + (offline > 0 ? ' · ' + offline + ' offline' : '') +
+      ' · diperbarui saat halaman dibuka/Refresh');
+  }
+
   function renderServers(panel, servers, diskText) {
     var card = panel.querySelector('[data-m="servers-card"]');
     var body = panel.querySelector('[data-m="servers"]');
     if (!card || !body || !Array.isArray(servers)) return;
 
-    var isAdmin = panel.getAttribute('data-is-admin') === '1';
-    var visible = servers.filter(function (server) {
-      if (!server || typeof server !== 'object') return false;
-      // Non-admin: nama server lain tidak boleh bocor — hanya server lokal dan
-      // server tempat ia memang punya container yang bisa ia lihat.
-      if (isAdmin) return true;
-      if (String(server.kind || '').toLowerCase() === 'local') return true;
-      return Array.isArray(server.containers) && server.containers.length > 0;
-    });
+    var visible = visibleServers(panel, servers);
 
     // Satu server saja tidak perlu tabel tambahan (kartu host sudah mewakilinya).
     card.classList.toggle('d-none', visible.length < 2);
@@ -362,7 +506,9 @@
       setText(panel, 'scope', scopeLabel(payload.scope));
       lastAt = payload.at || '';
 
-      renderServers(panel, Array.isArray(payload.servers) ? payload.servers : [], diskText);
+      var servers = Array.isArray(payload.servers) ? payload.servers : [];
+      renderServers(panel, servers, diskText);
+      renderServerHosts(panel, servers);
 
       var rows = payload.containers || [];
       if (rows.length === 0) {

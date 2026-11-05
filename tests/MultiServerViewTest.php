@@ -240,7 +240,22 @@ class MultiServerViewTest extends TestCase
         self::assertStringNotContainsString('vps-jakarta', $html);
 
         // Cache-bust JS ikut naik (perubahan render server + storage di monitor.js).
-        self::assertStringContainsString('src="/js/monitor.js?v=3"', $html);
+        self::assertStringContainsString('src="/js/monitor.js?v=4"', $html);
+
+        // Kartu statistik host tiap server agent: rangka + template (angka diisi
+        // JS dari `data.servers[]`), bentuk sama dengan kartu host server ini.
+        self::assertStringContainsString('data-m="host-cards-card"', $html);
+        self::assertStringContainsString('<template data-m="host-card">', $html);
+        self::assertStringContainsString('data-m="host-cards-note"', $html);
+        foreach (['cpu', 'mem', 'disk', 'totals', 'uptime'] as $key) {
+            self::assertStringContainsString('data-hs="' . $key . '"', $html);
+        }
+        self::assertStringContainsString('data-hs="cpu-bar"', $html);
+        self::assertStringContainsString('data-hs="mem-bar"', $html);
+        self::assertStringContainsString('data-hs="disk-bar"', $html);
+        self::assertStringContainsString('data-hs="status-online">online<', $html);
+        self::assertStringContainsString('data-hs="status-offline">offline<', $html);
+        self::assertStringContainsString('data-hs="status-unknown">unknown<', $html);
 
         // Kartu storage server (filesystem host) + kolom storage per server.
         self::assertStringContainsString('Storage server', $html);
@@ -290,6 +305,12 @@ class MultiServerViewTest extends TestCase
         self::assertStringContainsString('if (server.error)', $js);
         self::assertStringNotContainsString("'note'), server.error", $js);
         self::assertStringNotContainsString("'note'), String(server.error", $js);
+
+        // Kartu statistik host server agent dirender dari `data.servers[]` dengan
+        // filter visibilitas yang sama seperti tabel (satu `visibleServers()`).
+        self::assertStringContainsString('function renderServerHosts(', $js);
+        self::assertStringContainsString("!== 'local'", $js);
+        self::assertStringContainsString('visibleServers(panel, servers)', $js);
 
         // Polling hanya metrik host lokal; baris per server tidak ikut dipoll diam-diam.
         self::assertStringContainsString('function pollHost()', $js);
