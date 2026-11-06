@@ -44,6 +44,7 @@ $__navIcons = [
     'servers' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/></svg>',
     'errors' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
     'profile' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    'api' => '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
 ];
 // Ikon burger dipakai tombol lipat (desktop) & buka drawer (mobile).
 $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>';
@@ -111,6 +112,10 @@ $__burger = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke=
           <a class="nav-link <?= ($active ?? '') === 'errors' ? 'active' : '' ?>" href="/errors" data-label="Errors" aria-label="Errors"<?= ($active ?? '') === 'errors' ? ' aria-current="page"' : '' ?>><span class="nav-ico" aria-hidden="true"><?= $__navIcons['errors'] ?></span><span class="nav-label">Errors</span><?php if ($__errorCount > 0): ?><span class="badge text-bg-danger ms-1" title="<?= e($__errorCount . ' grup error open') ?>"><?= e((string) $__errorCount) ?></span><?php endif; ?></a>
         </li>
         <?php endif; ?>
+        <?php // Dokumentasi API: wajib login (semua user), detail token hanya untuk admin di halaman. ?>
+        <li class="nav-item">
+          <a class="nav-link <?= ($active ?? '') === 'api' ? 'active' : '' ?>" href="/api-docs" data-label="API" aria-label="API"<?= ($active ?? '') === 'api' ? ' aria-current="page"' : '' ?>><span class="nav-ico" aria-hidden="true"><?= $__navIcons['api'] ?></span><span class="nav-label">API</span></a>
+        </li>
       </ul>
     </nav>
     <?php $__u = current_user(); ?>

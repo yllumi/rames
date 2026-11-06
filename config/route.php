@@ -22,6 +22,8 @@ use app\controller\AgentJobController;
 use app\controller\AgentLogController;
 use app\controller\AgentNetworkController;
 use app\controller\AgentTerminalController;
+use app\controller\api\ApiDocsController;
+use app\controller\api\AppApiController;
 use app\controller\AppMetricsController;
 use app\controller\AuthController;
 use app\controller\backup\BackupArchiveController;
@@ -275,6 +277,26 @@ Route::post('/payments/duitku/callback', [PaymentController::class, 'callback'])
 */
 Route::get('/', [IndexController::class, 'index']);
 Route::get('/apps', [ListController::class, 'index']);
+
+/*
+|--------------------------------------------------------------------------
+| API eksternal + dokumentasi OpenAPI (docs/SPECS.md §7.19)
+|--------------------------------------------------------------------------
+| Autentikasi permukaan `/api/v1/**` = bearer token `RAMES_API_TOKEN`
+| (`ApiAuthMiddleware`, global di config/middleware.php) — **bukan** sesi:
+| `AuthMiddleware` & `CsrfMiddleware` sengaja melewati prefix itu. Jangan
+| mendaftarkan route `/api/v1/*` di luar cakupan middleware tersebut.
+|
+| Halaman `/api-docs` + dokumen JSON-nya **wajib login** (sesi dashboard;
+| `AuthMiddleware` global menolak tanpa sesi ⇒ redirect `/login`) dan sengaja
+| berada di luar prefix `/api/v1/**`. Detail konfigurasi token hanya tampil
+| untuk admin (`ApiDocsController` mengirim flag `canManageApi`).
+|--------------------------------------------------------------------------
+*/
+Route::get('/api-docs', [ApiDocsController::class, 'page']);
+Route::get('/api-docs/openapi.json', [ApiDocsController::class, 'spec']);
+Route::get('/api/v1/apps/{slug}', [AppApiController::class, 'show']);
+Route::post('/api/v1/apps/{slug}/build', [AppApiController::class, 'build']);
 
 // Wizard create app
 Route::get('/apps/create', [CreateController::class, 'createForm']);

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\middleware;
 
+use app\library\Api\ApiSurface;
 use Webman\MiddlewareInterface;
 use Webman\Http\Response;
 use Webman\Http\Request;
@@ -10,7 +11,7 @@ use Webman\Http\Request;
 /**
  * Validasi token CSRF untuk semua request yang mengubah state (POST/PUT/PATCH/DELETE).
  *
- * Ada **dua** pengecualian sempit, keduanya path-presisi (larangan repo #17):
+ * Ada **tiga** pengecualian sempit, semuanya path-presisi (larangan repo #17):
  *
  * 1. PENGECUALIAN 1 — proxy Adminer (`/database/{container}/adminer…`):
  *    halaman Adminer di-render di dalam helper container dan punya token CSRF-nya
@@ -37,6 +38,15 @@ use Webman\Http\Request;
  *
  * Route lain — termasuk `/credits/deposit`, `/credits/topup`, dan
  * `/database/{container}/query` — tetap **wajib** token.
+ *
+ * 3. PENGECUALIAN 3 — API eksternal (`/api/v1/**`, docs/SPECS.md §7.19):
+ *    klien mesin tidak punya sesi/cookie dashboard sehingga tidak mungkin
+ *    memegang token CSRF; request-nya diautentikasi bearer token
+ *    (`ApiAuthMiddleware`) di kanal TLS. Pengecualian ini **prefix path**
+ *    (`/api/v1/`), bukan seluruh `/api/*` — endpoint AJAX dashboard di
+ *    `/api/...` tetap wajib token. Kompensasi: `AuthMiddleware` juga melewati
+ *    prefix itu, jadi setiap route `/api/v1/*` wajib berada di bawah
+ *    `ApiAuthMiddleware`.
  */
 class CsrfMiddleware implements MiddlewareInterface
 {
@@ -46,6 +56,7 @@ class CsrfMiddleware implements MiddlewareInterface
     /** Path callback Duitku (pengecualian 2; eksak & hanya POST). */
     private const PAYMENT_CALLBACK_PATTERN = '#^/payments/duitku/callback$#';
 
+
     public function process(Request $request, callable $handler): Response
     {
         $method = $request->method();
@@ -54,8 +65,10 @@ class CsrfMiddleware implements MiddlewareInterface
 
             // Proxy Adminer: body multipart diteruskan mentah oleh controller.
             // Callback Duitku: mesin tanpa sesi, verifikasi di controller.
+            // API eksternal: bearer token, tanpa sesi/cookie dashboard.
             $exempt = self::isAdminerProxyPath($path)
-                || ($method === 'POST' && self::isPaymentCallbackPath($path));
+                || ($method === 'POST' && self::isPaymentCallbackPath($path))
+                || self::isApiPath($path);
 
             if (!$exempt) {
                 $token = (string) $request->post('_token', '');
@@ -94,5 +107,16 @@ class CsrfMiddleware implements MiddlewareInterface
     public static function isPaymentCallbackPath(string $path): bool
     {
         return preg_match(self::PAYMENT_CALLBACK_PATTERN, $path) === 1;
+    }
+
+    /**
+     * Apakah path berada di permukaan API eksternal (pengecualian CSRF 3).
+     *
+     * Prefix `/api/v1/` saja — endpoint AJAX dashboard di `/api/...` tetap
+     * wajib token CSRF.
+     */
+    public static function isApiPath(string $path): bool
+    {
+        return ApiSurface::contains($path);
     }
 }

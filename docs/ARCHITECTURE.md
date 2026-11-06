@@ -29,7 +29,7 @@ Dokumen dipecah per bagian di folder [`ARCHITECTURE/`](./ARCHITECTURE/): setiap 
 | 5.21a | Onboarding via Ansible (opsional) — pembungkus `ops/ansible/`, guard produksi | [`05-09-multiserver-operasional.md`](./ARCHITECTURE/05-09-multiserver-operasional.md) |
 | 5.21b | Provisioning dari dashboard (opsi B) — kunci bersama `rames-agent-key`, job `provision_jobs`, TOFU host key, helper container Ansible, auto-register | [`05-09-multiserver-operasional.md`](./ARCHITECTURE/05-09-multiserver-operasional.md) |
 | 5.27–5.35 | Multi-server operasional: Nginx/SSL, log/terminal, file, monitor, DB/network/volume, backup, versi agen & status job update agen | [`05-09-multiserver-operasional.md`](./ARCHITECTURE/05-09-multiserver-operasional.md) |
-| 5.36–5.44 | SSL AJAX, env per app, domain parking, installer, branding, tema, rekam error, antrean aktivasi SSL | [`05-10-fitur-lain.md`](./ARCHITECTURE/05-10-fitur-lain.md) |
+| 5.36–5.45 | SSL AJAX, env per app, domain parking, installer, branding, tema, rekam error, antrean aktivasi SSL, API eksternal + dokumentasi OpenAPI | [`05-10-fitur-lain.md`](./ARCHITECTURE/05-10-fitur-lain.md) |
 | 6 | Keputusan teknis penting | [`06-keputusan-teknis.md`](./ARCHITECTURE/06-keputusan-teknis.md) |
 | 7 | Keamanan | [`07-keamanan.md`](./ARCHITECTURE/07-keamanan.md) |
 | 8 | Batasan dan future work | [`08-batasan-future-work.md`](./ARCHITECTURE/08-batasan-future-work.md) |

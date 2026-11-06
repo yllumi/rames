@@ -19,8 +19,9 @@
 // config/process.php) agar tidak ada parsing env kedua yang bisa menyimpang.
 $ramesMode = (string) ((require __DIR__ . '/deploy.php')['mode'] ?? 'dashboard');
 
-// `dashboard` (default): CSRF → Auth(session) → StaticFile, persis seperti
-// sebelumnya — tidak ada perubahan perilaku.
+// `dashboard` (default): CSRF → Auth(session) → API(bearer) → StaticFile.
+// Tiga lapisan pertama tidak berubah perilakunya; `ApiAuthMiddleware` hanya
+// menyentuh prefix `/api/v1/**` (no-op untuk path dashboard lain).
 //
 // `agent`: server agent tidak punya UI/sesi/aset statis dashboard dan tidak
 // boleh melewati pengecekan sesi; seluruh route agent (termasuk `/healthz`,
@@ -34,6 +35,10 @@ $ramesGlobalMiddleware = $ramesMode === 'agent'
     : [
         app\middleware\CsrfMiddleware::class,
         app\middleware\AuthMiddleware::class,
+        // API eksternal (`/api/v1/**`) — bearer token; no-op untuk path lain.
+        // Wajib SETELAH AuthMiddleware (yang melewati prefix itu) dan sebelum
+        // StaticFile: satu-satunya penjaga permukaan API ada di sini.
+        app\middleware\ApiAuthMiddleware::class,
         app\middleware\StaticFile::class,
     ];
 

@@ -147,10 +147,10 @@ class AgentModeTest extends TestCase
      * dijalankan DI control plane terhadap host SSH, jadi agent tidak punya
      * permukaan ini.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 159;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 163;
 
-    /** Definisi di atas menghasilkan 163 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 165;
+    /** Definisi di atas menghasilkan 169 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 169;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -205,6 +205,11 @@ class AgentModeTest extends TestCase
         'GET /errors',
         'GET /api/errors',
         'POST /api/errors',
+        // Dokumentasi API + permukaan API eksternal (bearer token): dashboard-only.
+        'GET /api-docs',
+        'GET /api-docs/openapi.json',
+        'GET /api/v1/apps/{slug}',
+        'POST /api/v1/apps/{slug}/build',
     ];
 
     private string $tmp = '';
@@ -676,14 +681,19 @@ class AgentModeTest extends TestCase
     // (6) middleware global per mode
     // ------------------------------------------------------------------
 
-    public function testDashboardGlobalMiddlewareIsUnchanged(): void
+    public function testDashboardGlobalMiddlewareChain(): void
     {
         $config = $this->loadMiddleware('dashboard');
 
         $this->assertSame(
-            ['app\middleware\CsrfMiddleware', 'app\middleware\AuthMiddleware', 'app\middleware\StaticFile'],
+            [
+                'app\middleware\CsrfMiddleware',
+                'app\middleware\AuthMiddleware',
+                'app\middleware\ApiAuthMiddleware',
+                'app\middleware\StaticFile',
+            ],
             $config[''] ?? null,
-            'mode dashboard wajib tetap CSRF → Auth → StaticFile (urutan sama)'
+            'mode dashboard: CSRF → Auth → API(bearer) → StaticFile (urutan sama, + gerbang API)'
         );
         $this->assertSame([''], array_keys($config), 'hanya key default app yang dipakai');
     }
@@ -699,6 +709,7 @@ class AgentModeTest extends TestCase
         );
         $this->assertNotContains('app\middleware\AuthMiddleware', $config[''] ?? []);
         $this->assertNotContains('app\middleware\CsrfMiddleware', $config[''] ?? []);
+        $this->assertNotContains('app\middleware\ApiAuthMiddleware', $config[''] ?? []);
         $this->assertNotContains('app\middleware\StaticFile', $config[''] ?? []);
     }
 
@@ -717,9 +728,14 @@ class AgentModeTest extends TestCase
 
         $dashboard = $this->resolvedGlobalMiddleware($this->loadMiddleware('dashboard'));
         // Webman membalik urutan daftar saat menyusun rantai, sehingga CSRF
-        // menjadi lapisan terluar — efeknya tetap CSRF → Auth → StaticFile.
+        // menjadi lapisan terluar — efeknya tetap CSRF → Auth → API → StaticFile.
         $this->assertSame(
-            ['app\middleware\StaticFile', 'app\middleware\AuthMiddleware', 'app\middleware\CsrfMiddleware'],
+            [
+                'app\middleware\StaticFile',
+                'app\middleware\ApiAuthMiddleware',
+                'app\middleware\AuthMiddleware',
+                'app\middleware\CsrfMiddleware',
+            ],
             array_map(static fn (array $item): string => (string) $item[0], $dashboard)
         );
     }

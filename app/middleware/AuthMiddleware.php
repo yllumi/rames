@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\middleware;
 
+use app\library\Api\ApiSurface;
 use app\library\Auth\UserStore;
 use Webman\MiddlewareInterface;
 use Webman\Http\Response;
@@ -43,8 +44,15 @@ class AuthMiddleware implements MiddlewareInterface
      * sementara ada di session `2fa_pending` yang divalidasi controller
      * (kedaluwarsa TTL + batas percobaan). Route `/profile/2fa/*` tetap
      * terlindungi karena hanya bermakna bagi user yang sudah login.
+     *
+     * Prefix `/api/v1/` **dilewati** middleware ini: klien mesin tidak punya
+     * sesi/cookie dashboard. Satu-satunya penjaga autentikasi permukaan itu
+     * adalah `ApiAuthMiddleware` (bearer token `RAMES_API_TOKEN`), yang
+     * dipasang global tepat setelah middleware ini. DILARANG mendaftarkan route
+     * `/api/v1/*` tanpa lewat middleware tersebut.
      */
     private const PUBLIC_PATHS = ['/', '/login', '/login/2fa', '/healthz', '/payments/duitku/callback', '/branding/logo'];
+
 
     private const STATIC_EXTENSIONS = [
         'css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp',
@@ -55,7 +63,11 @@ class AuthMiddleware implements MiddlewareInterface
     {
         $path = $request->path();
 
-        if (in_array($path, self::PUBLIC_PATHS, true) || $this->isStaticAsset($path)) {
+        if (
+            in_array($path, self::PUBLIC_PATHS, true)
+            || $this->isStaticAsset($path)
+            || self::isApiPath($path)
+        ) {
             return $handler($request);
         }
 
@@ -113,5 +125,14 @@ class AuthMiddleware implements MiddlewareInterface
     {
         $ext = strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
         return in_array($ext, self::STATIC_EXTENSIONS, true);
+    }
+
+    /**
+     * Apakah path berada di permukaan API eksternal (`/api/v1/**`) — autentikasi
+     * di sana milik `ApiAuthMiddleware` (bearer token), bukan sesi.
+     */
+    public static function isApiPath(string $path): bool
+    {
+        return ApiSurface::contains($path);
     }
 }

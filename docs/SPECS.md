@@ -352,6 +352,16 @@ Merekam error yang **tidak tertangani** di sisi user sebagai bahan bug fix, sepe
 
 **Control plane & fase 2.** Fitur berjalan di dashboard (control plane); server agent belum mengirim error-nya ke control plane. Belum ada tombol "Laporkan masalah" manual, notifikasi email/webhook, maupun uji HTTP hidup/JS browser di CI. Rincian alur dan batasan: §5.43, §8.
 
+### 7.19 API Eksternal & Dokumentasi OpenAPI
+
+API mesin untuk otomatisasi (CI/CD, tooling internal) di samping UI dashboard. **Token bearer tetap** `RAMES_API_TOKEN` (`Authorization: Bearer <token>`, `hash_equals`) — bukan sesi/cookie dan bukan token CSRF. Token **tidak punya hak sendiri**: ia dipetakan ke satu user dashboard `RAMES_API_TOKEN_USER` (default `admin`), sehingga seluruh pemeriksaan hak app (`AppAccess`) dan gerbang kredit (`BillingGate`) berjalan sama seperti aksi user itu di UI. Token kosong ⇒ API **mati**: setiap path `/api/v1/**` menjawab **404** (permukaan disembunyikan, fail-closed). Token salah/format salah/user aktor tidak ada ⇒ **401 tanpa detail** (body identik, tanpa oracle).
+
+**Cakupan fase awal.** `POST /api/v1/apps/{slug}/build` — build ulang app berdasarkan **nama app (slug)** dengan perilaku identik tombol **Rebuild** dashboard (`docker compose build` + recreate, **tanpa** `git pull`; app impor ditolak; app `deploying` ditolak 409). Respons **202** berarti worker detached sudah di-spawn (bukan build selesai); `GET /api/v1/apps/{slug}` menyajikan status untuk polling. Slug dinormalkan seperti form create (trim + lowercase, `[a-z0-9-]`, ≤63). Nama yang dipakai >1 app yang terlihat aktor (multi-server) ⇒ **409** (tidak ditebak). App tak ada **atau** tak boleh diakses ⇒ **404** yang identik. Payload app adalah **allowlist** (tanpa `env`, kunci repo/agent, kredensial).
+
+**Dokumentasi.** Halaman `/api-docs` + dokumen `GET /api-docs/openapi.json` dirender dari satu sumber `OpenApiSpec::build()` (OpenAPI 3.1). Keduanya **wajib login** dashboard dan sengaja berada **di luar** prefix `/api/v1/**`; detail konfigurasi token (aktif/nonaktif, user aktor) hanya tampil untuk admin. Endpoint `/api/v1/**` tidak pernah menyentuh sesi sehingga `AuthMiddleware`/`CsrfMiddleware` melewati prefix itu — satu-satunya penjaga permukaan API adalah `ApiAuthMiddleware` (global, dipasang setelah Auth).
+
+**Belum ada (fase berikut).** API-key per user/scope, rate limiting, audit log pemakaian token, endpoint create/rollback/stop, dan pemilihan server pada resolusi slug (multi-server dengan nama sama). Rincian teknis: `docs/ARCHITECTURE/05-10-fitur-lain.md` §5.45 & `04-02-middleware.md`.
+
 ## 8. Reverse Proxy / Subdomain Routing
 
 ### 8.1 Domain dasar

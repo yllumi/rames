@@ -2470,15 +2470,24 @@ class AppControllerServerScopeTest extends TestCase
      * `rebuild()`/`rollback()` wajib memakai satu penjaga server-aware — kalau
      * tidak, app agent (yang tidak punya direktori lokal) kembali ditolak dengan
      * "Direktori app tidak ada" yang menyesatkan.
+     *
+     * Sejak pipeline build dipakai bersama API (`AppBuildService`), guard
+     * rebuild hidup di library itu (satu sumber) — controller hanya mendelegasi.
      */
     public function testPreDeployActionsUseTheServerAwareGuard(): void
     {
-        foreach (['rebuild', 'rollback'] as $method) {
-            $body = $this->methodBody($method);
+        $rebuild = $this->methodBody('rebuild');
+        $this->assertStringContainsString('AppBuildService', $rebuild, 'rebuild harus memakai pipeline library');
+        $this->assertStringNotContainsString('is_dir($dir)', $rebuild, 'rebuild() tidak boleh memeriksa direktori lokal langsung');
 
-            $this->assertStringContainsString('localArtifactsError(', $body, $method);
-            $this->assertStringNotContainsString('is_dir($dir)', $body, "{$method}() tidak boleh memeriksa direktori lokal langsung");
-        }
+        $rollback = $this->methodBody('rollback');
+        $this->assertStringContainsString('localArtifactsError(', $rollback);
+        $this->assertStringNotContainsString('is_dir($dir)', $rollback, 'rollback() tidak boleh memeriksa direktori lokal langsung');
+
+        // Satu sumber guard server-aware: pipeline library memakai ServerResolver.
+        $library = (string) file_get_contents(dirname(__DIR__) . '/app/library/Deploy/AppBuildService.php');
+        $this->assertStringContainsString('ServerResolver::isLocal', $library);
+        $this->assertStringContainsString('class AppBuildService', $library);
     }
 
     // ==================================================================

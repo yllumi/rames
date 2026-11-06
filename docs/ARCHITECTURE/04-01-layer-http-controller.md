@@ -48,7 +48,7 @@ Sejak refactor struktural, controller **tidak lagi** berupa satu kelas raksasa. 
 - **Satu domain fitur = satu direktori namespace**: `app/controller/<domain>/`, namespace `app\controller\<domain>`.
 - Controller konkret **hanya mediator**: tanpa state properti, tanpa logika bisnis (logika tetap di `app/library/`, §4.3), otorisasi lewat satu pintu `AppAccess` (`AppControllerBase::findApp()`).
 - **Helper lintas-controller hanya di base abstract** (`AppControllerBase`, `AppArtifactControllerBase`, `BackupControllerBase`); helper yang hanya dipakai satu controller tetap di controller itu.
-- **Kontrak URL tidak berubah**: pemecahan controller hanya memindahkan handler ke kelas baru — path/verb/urutan route lama dipertahankan. Baseline yang diuji `tests/AgentModeTest.php` saat ini **159 definisi route dashboard / 165 pasangan method+path**; fitur baru menambah route (mis. `POST /apps/{id}/ports`, `POST /servers/provision/keypair`) tanpa mengubah kontrak yang sudah ada.
+- **Kontrak URL tidak berubah**: pemecahan controller hanya memindahkan handler ke kelas baru — path/verb/urutan route lama dipertahankan. Baseline yang diuji `tests/AgentModeTest.php` saat ini **163 definisi route dashboard / 169 pasangan method+path**; fitur baru menambah route (mis. `POST /apps/{id}/ports`, `POST /servers/provision/keypair`) tanpa mengubah kontrak yang sudah ada.
 - Test yang perlu memanggil helper/protected controller memakai `tests/Support/AppControllerLocator.php` (refleksi nama method → kelas pemilik + instance konkret). Ini **helper test**, bukan bagian arsitektur produksi.
 
 #### Fitur app — `app/controller/app/` (namespace `app\controller\app`)
@@ -84,6 +84,15 @@ Rantai warisan: `AppControllerBase` ← `AppArtifactControllerBase` ← {`InfoCo
 
 Semua controller backup konkret extends `BackupControllerBase`. Helper statis publik dipanggil lintas kelas memakai FQCN baru (`BackupOverviewController::guideHtml()`, `BackupStatusController::withRegistryFallback()`/`withScheduled()`/`archivedRows()`/`publicStatus()`, `BackupArchiveController::volumeListed()`, `BackupControllerBase::safeDownloadName()`) — tidak ada lagi satu kelas backup monolitik.
 
+
+#### API eksternal & dokumentasi — `app/controller/api/` (namespace `app\controller\api`)
+
+| Kelas | Berkas | Tanggung jawab | Prefix route | Method publik |
+|---|---|---|---|---|
+| `AppApiController` | `AppApiController.php` | API fase awal (SPECS §7.19): `GET /api/v1/apps/{slug}` (status untuk polling build) & `POST /api/v1/apps/{slug}/build` (202, worker asinkron via `AppBuildService`). Aktor dari token (`ApiTokenAuth`) → cek `AppAccess` (404 tanpa oracle) → gerbang kredit `billingAssertCanStart()` (warisan base, satu sumber) → payload allowlist `AppApiPayload`. Autentikasi token sendiri dikerjakan `ApiAuthMiddleware` | `/api/v1/apps/{slug}` | `show()`, `build()` |
+| `ApiDocsController` | `ApiDocsController.php` | Dokumentasi OpenAPI: `GET /api-docs` (halaman; **wajib login**, detail token hanya untuk admin lewat flag `canManageApi`) & `GET /api-docs/openapi.json` (dokumen JSON, juga wajib login). Keduanya **di luar** prefix `/api/v1/**` | `/api-docs` | `page()`, `spec()` |
+
+`AppApiController` extends `AppControllerBase` **hanya** untuk memakai gerbang kredit bersama (`billingAssertCanStart()`); semua logika tetap di `app/library/Api/**` + `AppBuildService`. View `/api-docs` dirender dari `OpenApiSpec::build()` — daftar endpoint tidak boleh diduplikasi di view.
 
 ### Impor project compose eksternal (`ListController`, admin-only)
 

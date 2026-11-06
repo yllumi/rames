@@ -14,6 +14,7 @@ use app\library\Billing\ServerRates;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ComposeSource;
 use app\library\Deploy\DeployerFactory;
+use app\library\Deploy\DeploySpawner;
 use app\library\Deploy\DeployWorkerLauncher;
 use app\library\Deploy\ServerAddress;
 use app\library\Deploy\ServerResolver;
@@ -406,25 +407,7 @@ abstract class AppControllerBase
         ?string $actorId = null,
         ?DeployWorkerLauncher $launcher = null
     ): bool {
-        $pid = 0;
-        $ok = ($launcher ?? new DeployWorkerLauncher())->launch($appId, $mode, $arg, (string) $actorId, '', $pid);
-
-        // Catat PID worker supaya deploy bisa dibatalkan (`DeployCanceller`).
-        // Best-effort: kegagalan mencatat PID tidak boleh menggagalkan deploy —
-        // canceller masih bisa menemukan worker lewat pemindaian `/proc`.
-        if ($ok && $pid > 0) {
-            try {
-                (new AppStore())->update($appId, static function (array &$s) use ($pid, $mode): void {
-                    $s['worker_pid'] = $pid;
-                    $s['worker_mode'] = $mode;
-                    $s['worker_started_at'] = date('c');
-                });
-            } catch (\Throwable) {
-                // abaikan
-            }
-        }
-
-        return $ok;
+        return (new DeploySpawner($launcher))->spawn($appId, $mode, $arg, (string) $actorId);
     }
 
     /**

@@ -322,3 +322,38 @@ sequenceDiagram
 > **GOTCHA — jangan menganggap "pending" berarti worker sedang berjalan.** Baris `pending` bisa berarti `queued` menunggu giliran, menunggu backoff retry, atau job-nya sudah `failed` sementara target belum tersinkron. Sumber kebenaran adalah `ssl_jobs`; UI hanya menampilkan posisi sebagai pelengkap (`decorate()` fail-safe, `null` bila tak ada job aktif), dan tombol Retry hanya dirender untuk status `failed`.
 
 **Pengujian**: `tests/SslQueueTest.php` (dedupe/posisi/klaim FIFO/stale/retry-backoff/prune/isRetryable), `tests/SslQueueWorkerTest.php` (klaim → jalankan CLI → `done`/`retry`/`failed`, target hilang), `tests/SslQueueProcessTest.php` (tick tak pernah melempar, mode agent tanpa timer), `tests/AgentProcessConfigTest.php` (proses dashboard-only + `count=1`), `tests/SslQueuePositionViewTest.php` (smoke render posisi "antrean #N dari M" di `/domains` & `/ssl`), `tests/SslControllerApiTest.php`/`tests/DomainControllerTest.php`/`tests/ParkedSslEnablerTest.php` (enqueue + posisi pada envelope JSON).
+
+## 5.45 API Eksternal (bearer token) & Dokumentasi OpenAPI
+
+API mesin untuk otomatisasi (CI/CD) tanpa sesi browser. Cakupan fase awal: **build ulang app berdasarkan nama (slug)** + pembacaan status untuk polling, plus halaman dokumentasi OpenAPI.
+
+**Permukaan route** (`config/route.php`, hanya mode `dashboard`):
+
+| Method | Path | Handler | Auth |
+|---|---|---|---|
+| `POST` | `/api/v1/apps/{slug}/build` | `api\AppApiController::build()` | bearer token |
+| `GET` | `/api/v1/apps/{slug}` | `api\AppApiController::show()` | bearer token |
+| `GET` | `/api-docs` | `api\ApiDocsController::page()` | sesi login (halaman) |
+| `GET` | `/api-docs/openapi.json` | `api\ApiDocsController::spec()` | sesi login (JSON) |
+
+**Autentikasi & hak.** Token `RAMES_API_TOKEN` (`Authorization: Bearer <token>`, `hash_equals`) **tidak** membawa hak sendiri: `ApiTokenAuth` memetakannya ke user dashboard `RAMES_API_TOKEN_USER` (default `admin`) dalam bentuk publik (`findPublicById` — tanpa `password_hash`/secret 2FA). Karena itu `AppAccess` dan `BillingGate` menilai user tersebut persis seperti aksi UI. Token kosong ⇒ `/api/v1/*` **404** (fail-closed, konfigurasi bisa dilihat admin di `/api-docs`); token salah/user hilang ⇒ **401** dengan body identik untuk semua penyebab.
+
+**Alur build (`POST /api/v1/apps/{slug}/build`).**
+
+1. `ApiAuthMiddleware` (global, setelah `AuthMiddleware`) menolak request tanpa token sah sebelum controller dipanggil.
+2. `ApiAppLocator::findVisible($slug, $actor)` — slug dinormalkan (trim+lowercase), divalidasi pola nama app (`[a-z0-9-]`, ≤63), dicari **hanya** pada app yang terlihat aktor. Nol hasil ⇒ **404**; >1 hasil (nama sama di server berbeda) ⇒ **409** `ambiguous_app` (tidak ditebak).
+3. `AppAccess::can('deploy', $app, $actor)` — kemampuan sama dengan tombol Rebuild; gagal ⇒ **404** (bukan 403, supaya keberadaan app lain tidak bocor).
+4. `AppBuildService::rebuild($app, $guard, $actorId)` — **satu pipeline** dengan `DeploymentController::rebuild()`: app impor ditolak; status `deploying` ⇒ **409** `app_busy`; artefak lokal (server-aware) diperiksa; `$guard` (gerbang kredit via `billingAssertCanStart()`) dijalankan **sebelum** efek samping — kredit kurang ⇒ **402** `insufficient_credits`; status → `deploying/queued`; worker detached di-spawn (`DeploySpawner` → `DeployWorkerLauncher`, PID dicatat untuk `DeployCanceller`).
+5. Respons **202** `{code:0,data:{slug,id,status,stage,message,poll_url}}`. Ini **bukan** tanda build selesai — klien mem-poll `GET /api/v1/apps/{slug}` sampai `status` bukan `deploying`.
+
+**Respons status.** `AppApiPayload::summary()` = allowlist: `slug`, `id`, `server_id`, `status`, `stage`, `message`, `domain`, `created_at`, `updated_at`, `containers[]` (service/name/status/ports `host`→`container`), `last_deploy` (sha/short/action/status/message/created_at). **Tidak pernah** `env`, `ssh_key`, kredensial repo, `worker_pid`, `members`, atau field agent.
+
+**Dokumentasi OpenAPI.** `OpenApiSpec::build()` adalah **satu sumber**: dokumen JSON (`/api-docs/openapi.json`) dan halaman `/api-docs` (dirender server-side, tanpa JS/CDN baru). Menambah endpoint/field = ubah `OpenApiSpec` (paths/components), bukan view. Halaman & JSON berada **di luar** prefix `/api/v1/**` sehingga dijaga sesi login; detail konfigurasi token hanya tampil untuk admin (`canManageApi` dari controller). Tautan nav "API" tampil untuk semua user login.
+
+> **WAJIB — `/api/v1/` bukan permukaan sesi.** `AuthMiddleware` dan `CsrfMiddleware` **melewati** prefix itu (klien mesin tidak punya cookie/token CSRF). Karena itu setiap route baru `/api/v1/*` **wajib** berada di bawah `ApiAuthMiddleware` (global) dan memakai `AppAccess` dengan user hasil `ApiTokenAuth`. Jangan menambah pengecualian CSRF untuk `/api/*` (endpoint AJAX dashboard tetap wajib token CSRF).
+
+> **GOTCHA — dokumentasi wajib login, bukan publik.** `GET /api-docs` dan `/api-docs/openapi.json` sengaja tidak dikecualikan di `AuthMiddleware`; permintaan tanpa sesi dialihkan ke `/login`. Jangan memindahkannya ke `/api/v1/` "supaya mudah diakses tooling" — itu membuka permukaan tanpa sesi.
+
+> **GOTCHA — nama app tidak unik lintas server.** Keunikan `apps.name` hanya per server (`AppStore::findByNameOnServer`). Endpoint berbasis slug membalas **409** bila beberapa app terlihat aktor memakai nama sama; gunakan id app di dashboard sampai pemilihan server pada API tersedia.
+
+**Pengujian**: `tests/ApiTokenAuthTest.php`, `tests/ApiAuthMiddlewareTest.php`, `tests/ApiAppLocatorTest.php`, `tests/AppBuildServiceTest.php`, `tests/AppApiControllerTest.php`, `tests/OpenApiSpecTest.php`; regresi middleware/route: `tests/AgentModeTest.php`, `tests/AppControllerServerScopeTest.php`, `tests/AppControllerBillingGateTest.php`.

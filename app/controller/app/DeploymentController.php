@@ -5,6 +5,8 @@ namespace app\controller\app;
 
 use app\library\Billing\InsufficientCredits;
 use app\library\Deploy\AgentDeployer;
+use app\library\Deploy\AppBuildBlocked;
+use app\library\Deploy\AppBuildService;
 use app\library\Deploy\ComposeSource;
 use app\library\Deploy\DeployCanceller;
 use app\library\Deploy\DeployerFactory;
@@ -39,95 +41,51 @@ class DeploymentController extends AppControllerBase
      */
     private function localArtifactsError(array $app, string $feature): ?string
     {
-        try {
-            if (!ServerResolver::isLocal($this->serverForApp($app))) {
-                return null;
-            }
-        } catch (\Throwable $e) {
-            // `server_id` app menunjuk server yang hilang dari registry: tolak
-            // eksplisit (bukan 500 mentah) — jangan menyentuh host yang salah.
-            return $feature . ' tidak bisa dijalankan: ' . $e->getMessage();
-        }
-
-        $dir = (string) config('deploy.apps_path') . '/' . (string) ($app['name'] ?? '');
-
-        return is_dir($dir) ? null : 'Direktori app tidak ada. App mungkin sudah dihapus.';
+        return (new AppBuildService())->artifactsError($app, $feature);
     }
 
     public function rebuild(Request $request, string $id)
     {
-        $store = new AppStore();
         $app = $this->findApp($id, 'deploy');
 
-        // App impor dikelola `docker compose` di terminal user — Rames tidak
-        // menulis override & tidak menciptakan ulang container.
         try {
-            ImportedApp::assertManageable($app, 'Rebuild');
-        } catch (RuntimeException $e) {
+            // Pipeline (guard app impor → busy → artefak → kredit → spawn) ada di
+            // library supaya jalur API `POST /api/v1/apps/{slug}/build` memakai
+            // perilaku yang sama persis. Gerbang kredit tetap milik controller
+            // (butuh user login + bentuk respons web).
+            $result = (new AppBuildService())->rebuild(
+                $app,
+                function () use ($app): void {
+                    $this->billingAssertCanStart($app, current_user());
+                },
+                $this->currentActorId()
+            );
+        } catch (InsufficientCredits $e) {
+            return $this->billingBlocked($request, $e);
+        } catch (AppBuildBlocked $e) {
+            $payload = ['code' => 1, 'error' => $e->getMessage()];
+            if ($e->busy()) {
+                $payload['busy'] = true;
+            }
             if ($request->expectsJson()) {
-                return json(['code' => 1, 'error' => $e->getMessage()]);
+                return json($payload);
             }
             flash_set('error', $e->getMessage());
 
             return redirect('/apps/' . $id);
         }
 
-        // Tolak rebuild ganda saat app sedang diproses worker lain.
-        if (($app['status'] ?? '') === 'deploying') {
-            $msg = 'App sedang diproses (deploy/rebuild/rollback). Tunggu sampai selesai dulu.';
-            if ($request->expectsJson()) {
-                return json(['code' => 1, 'error' => $msg, 'busy' => true]);
-            }
-            flash_set('error', $msg);
-            return redirect('/apps/' . $id);
+        if ($request->expectsJson()) {
+            return json([
+                'code' => 0,
+                'status' => $result['status'],
+                'stage' => $result['stage'],
+                'message' => $result['message'],
+            ]);
         }
 
-        $blocked = $this->localArtifactsError($app, 'Rebuild');
-        if ($blocked !== null) {
-            if ($request->expectsJson()) {
-                return json(['code' => 1, 'error' => $blocked]);
-            }
-            flash_set('error', $blocked);
-            return redirect('/apps/' . $id);
-        }
+        flash_set('success', 'Rebuild dijalankan.');
 
-        // Gerbang kredit — sebelum mengubah status / spawn worker.
-        try {
-            $this->billingAssertCanStart($app, current_user());
-        } catch (InsufficientCredits $e) {
-            return $this->billingBlocked($request, $e);
-        }
-
-        $store->update($id, function (array &$s): void {
-            $s['status'] = 'deploying';
-            $s['stage'] = 'queued';
-            $s['message'] = 'Menunggu worker rebuild ...';
-            $s['error'] = null;
-        });
-
-        if (!$this->spawnWorker($id, 'rebuild', null, $this->currentActorId())) {
-            $store->update($id, function (array &$s): void {
-                $s['status'] = 'error';
-                $s['stage'] = null;
-                $s['message'] = 'Gagal menjalankan worker rebuild.';
-                $s['error'] = 'Gagal spawn worker rebuild.';
-            });
-            $msg = 'Gagal menjalankan rebuild.';
-            if ($request->expectsJson()) {
-                return json(['code' => 1, 'error' => $msg]);
-            }
-            flash_set('error', $msg);
-        } else {
-            if ($request->expectsJson()) {
-                return json([
-                    'code' => 0,
-                    'status' => 'deploying',
-                    'stage' => 'queued',
-                    'message' => 'Rebuild dimulai.',
-                ]);
-            }
-            flash_set('success', 'Rebuild dijalankan.');
-        }
         return redirect('/apps/' . $id);
     }
 
