@@ -498,6 +498,7 @@ if (!function_exists('icon_paths')) {
             'code' => '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
             'message' => '<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
             'workflow' => '<rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h4a2 2 0 0 1 2 2v4"/>',
+            'chevron-down' => '<polyline points="6 9 12 15 18 9"/>',
         ];
     }
 }

@@ -175,14 +175,22 @@ $breadcrumbs = [
       $parameters = is_array($op['parameters'] ?? null) ? $op['parameters'] : [];
       $responses = is_array($op['responses'] ?? null) ? $op['responses'] : [];
       $anonymous = ($op['security'] ?? null) === [];
+      // Id unik & aman untuk target collapse Bootstrap (method + path unik).
+      $collapseId = 'ep-' . substr(md5(strtoupper((string) $method) . ' ' . (string) $path), 0, 10);
     ?>
     <div class="card mb-3">
-      <div class="card-header bg-body py-2 d-flex flex-wrap align-items-center gap-2">
-        <span class="badge <?= e($methodBadge((string) $method)) ?>"><?= e(strtoupper((string) $method)) ?></span>
-        <span class="mono fw-semibold"><?= e((string) $path) ?></span>
-        <?php if ($anonymous): ?><span class="badge text-bg-secondary">tanpa token</span><?php endif; ?>
-        <?php if ($summary !== ''): ?><span class="text-muted small ms-auto"><?= e($summary) ?></span><?php endif; ?>
+      <div class="card-header bg-body p-0">
+        <button type="button" class="btn btn-link text-reset text-decoration-none text-start w-100 d-flex flex-wrap align-items-center gap-2 px-3 py-2 ep-toggle"
+                data-bs-toggle="collapse" data-bs-target="#<?= e($collapseId) ?>" aria-expanded="true" aria-controls="<?= e($collapseId) ?>">
+          <span class="badge <?= e($methodBadge((string) $method)) ?>"><?= e(strtoupper((string) $method)) ?></span>
+          <span class="mono fw-semibold"><?= e((string) $path) ?></span>
+          <?php if ($anonymous): ?><span class="badge text-bg-secondary">tanpa token</span><?php endif; ?>
+          <?php if ($summary !== ''): ?><span class="text-muted small"><?= e($summary) ?></span><?php endif; ?>
+          <span class="flex-grow-1"></span>
+          <span class="ep-chevron" aria-hidden="true"><?= svg_icon('chevron-down') ?></span>
+        </button>
       </div>
+      <div class="collapse show" id="<?= e($collapseId) ?>">
       <div class="card-body">
         <?php if ($description !== ''): ?>
           <p class="small mb-3"><?= e($description) ?></p>
@@ -226,6 +234,7 @@ $breadcrumbs = [
             <?php endif; ?>
           </div>
         <?php endforeach; ?>
+      </div>
       </div>
     </div>
   <?php endforeach; ?>
