@@ -35,6 +35,18 @@ Karena tidak ada `ports:`, app ini tidak dibuatkan domain/subdomain.
    import/export dump. User aplikasi dibuat dari **dalam Adminer** (tab Pengguna
    lama sudah tidak ada).
 
+## Klien MySQL dari Terminal
+
+Image resmi juga menyediakan klien `mysql`. Buka **Terminal** pada container
+database yang sedang berjalan, lalu jalankan:
+
+```sh
+mysql -h 127.0.0.1 -u root -p
+```
+
+Saat diminta, masukkan password root yang dibuat otomatis dan dapat dilihat di
+tab **Environment** app ini.
+
 > Jangan menambahkan `MYSQL_USER`/`MYSQL_PASSWORD` ke compose:
 > `DbCredentialResolver` mengutamakan user aplikasi di atas root, sehingga sesi
 > Adminer `/database` **dan dump backup otomatis** berjalan ber-hak-terbatas.

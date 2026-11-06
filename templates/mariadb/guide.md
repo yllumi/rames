@@ -38,6 +38,18 @@ image dinaikkan (mis. 11.4 → 11.8).
    import/export dump. User aplikasi dibuat dari **dalam Adminer** (tab Pengguna
    lama sudah tidak ada).
 
+## Klien MariaDB dari Terminal
+
+Image resmi juga menyediakan klien `mariadb`. Buka **Terminal** pada container
+database yang sedang berjalan, lalu jalankan:
+
+```sh
+mariadb -h 127.0.0.1 -u root -p
+```
+
+Saat diminta, masukkan password root yang dibuat otomatis dan dapat dilihat di
+tab **Environment** app ini.
+
 > Jangan menambahkan `MARIADB_USER`/`MARIADB_PASSWORD` ke compose:
 > `DbCredentialResolver` mengutamakan user aplikasi di atas root, sehingga sesi
 > Adminer `/database` **dan dump backup otomatis** berjalan ber-hak-terbatas.
