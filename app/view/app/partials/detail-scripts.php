@@ -16,3 +16,4 @@ document.addEventListener('DOMContentLoaded', function () {
 <script src="/js/app-terminal.js?v=7"></script>
 <script src="/js/app-files.js?v=5"></script>
 <script src="/js/app-metrics.js?v=3"></script>
+<script src="/js/app-detail.js?v=1"></script>

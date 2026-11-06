@@ -195,7 +195,7 @@ $importedDir = (string) ($importedDir ?? '');
           <p class="text-muted small mb-2">Tambahkan public key ini sebagai <strong>Deploy Key</strong> di repo Anda bila belum (GitHub/GitLab: <em>Settings → Deploy keys</em>). Diperlukan untuk <code>git pull</code> saat <strong>Rebuild</strong>.</p>
           <div class="input-group">
             <textarea id="ssh-pubkey-detail" class="form-control mono form-control-sm" rows="4" readonly><?= e($sshPubkey) ?></textarea>
-            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="copyDetailKey()">Salin</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-copy-detail-key>Salin</button>
           </div>
         </div>
       </div>

@@ -93,6 +93,19 @@ final class AppMetricsViewTest extends TestCase
         self::assertStringNotContainsString('data-app-id="<script>', $html);
     }
 
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testTombolSalinDeployKeyMemakaiHandlerEksternal(): void
+    {
+        $html = $this->render([
+            'app' => ['auth_method' => 'ssh'],
+            'sshPubkey' => 'ssh-ed25519 AAAA test@example',
+        ]);
+
+        self::assertStringContainsString('data-copy-detail-key', $html);
+        self::assertStringNotContainsString('onclick="copyDetailKey()', $html);
+    }
+
     public function testDetailScriptsMemuatAppMetrics(): void
     {
         $file = dirname(__DIR__) . '/app/view/app/partials/detail-scripts.php';
@@ -100,6 +113,7 @@ final class AppMetricsViewTest extends TestCase
 
         $source = (string) file_get_contents($file);
         self::assertMatchesRegularExpression('#<script src="/js/app-metrics\.js\?v=\d+"></script>#', $source);
+        self::assertMatchesRegularExpression('#<script src="/js/app-detail\.js\?v=\d+"></script>#', $source);
 
         // Aset benar-benar ada dan punya endpoint metrik.
         $js = dirname(__DIR__) . '/public/js/app-metrics.js';
@@ -114,6 +128,12 @@ final class AppMetricsViewTest extends TestCase
         // membuat `available` tak terbaca → UI salah menampilkan "tidak tersedia".
         self::assertStringContainsString('renderStorage(data && data.storage', $code);
         self::assertStringNotContainsString('.then(renderStorage)', $code);
+
+        $detailJs = dirname(__DIR__) . '/public/js/app-detail.js';
+        self::assertFileExists($detailJs);
+        $detailCode = (string) file_get_contents($detailJs);
+        self::assertStringContainsString("closest('[data-copy-detail-key]')", $detailCode);
+        self::assertStringContainsString("getElementById('ssh-pubkey-detail')", $detailCode);
     }
 
     // ==================================================================

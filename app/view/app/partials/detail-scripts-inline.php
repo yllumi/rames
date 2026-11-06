@@ -1,13 +1,4 @@
 <script>
-function copyDetailKey() {
-  var t = document.getElementById('ssh-pubkey-detail');
-  if (!t) return;
-  t.select();
-  t.setSelectionRange(0, 99999);
-  try { navigator.clipboard.writeText(t.value); } catch (e) {}
-  try { document.execCommand('copy'); } catch (e) {}
-}
-
 (function () {
   var SITE_ID = '<?= e($app['id']) ?>';
   var STATUS_URL = '/api/apps/' + SITE_ID + '/status';
