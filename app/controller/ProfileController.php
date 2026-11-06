@@ -38,6 +38,13 @@ use Workerman\Protocols\Http\Session;
 class ProfileController
 {
     /**
+     * Session sekali-tampil API key baru (pola sama dengan kode pemulihan 2FA):
+     * plaintext dibaca `index()` lalu dihapus; **tidak pernah** masuk flash,
+     * log, atau store.
+     */
+    private const SESSION_NEW_API_KEY = 'api_key_new';
+
+    /**
      * Seam pengujian (pola `CreditController`): `null` ⇒ `UserStore` bawaan
      * dibangun per-request, tanpa memo lintas-request.
      */
@@ -86,10 +93,15 @@ class ProfileController
             return $this->unauthenticated($request);
         }
 
+        $session = $this->session($request);
+        $newApiKey = $session?->pull(self::SESSION_NEW_API_KEY);
+
         return $this->renderView('profile/index', [
             'user' => $user,
             'email' => (string) ($user['email'] ?? ''),
-            'twoFactor' => $this->twoFactorPayload($user, $this->session($request)),
+            'twoFactor' => $this->twoFactorPayload($user, $session),
+            'apiKey' => $this->users()->apiKeyMeta((string) ($user['id'] ?? '')),
+            'newApiKey' => is_string($newApiKey) ? $newApiKey : '',
         ]);
     }
 
@@ -194,6 +206,65 @@ class ProfileController
         } catch (Throwable $e) {
             // Pesan kebijakan (mis. "Password minimal 6 karakter.") dari store.
             $this->flash('error', $e->getMessage());
+        }
+
+        return redirect('/profile');
+    }
+
+    // ==================================================================
+    // Aksi API key (self-service; satu key aktif per user)
+    // ==================================================================
+
+    /**
+     * `POST /profile/api-key` — buat atau ganti API key **user login sendiri**.
+     *
+     * Plaintext key hanya ditampilkan **sekali**: disimpan sebentar di session
+     * (`api_key_new`, pola sama dengan kode pemulihan 2FA), dibaca `index()`,
+     * lalu dihapus. Generate ulang menimpa hash lama ⇒ key sebelumnya langsung
+     * tidak berlaku (tanpa masa transisi).
+     *
+     * Anti-IDOR: id SELALU dari session; input request tidak dipakai.
+     */
+    public function generateApiKey(Request $request): Response
+    {
+        $user = $this->currentUser();
+        if ($user === null) {
+            return $this->unauthenticated($request);
+        }
+
+        try {
+            $key = $this->users()->issueApiKey((string) $user['id']);
+        } catch (Throwable) {
+            $this->flash('error', 'Gagal membuat API key.');
+
+            return redirect('/profile');
+        }
+
+        $this->session($request)?->set(self::SESSION_NEW_API_KEY, $key);
+        $this->flash('success', 'API key baru dibuat. Salin sekarang — hanya ditampilkan sekali.');
+
+        return redirect('/profile');
+    }
+
+    /**
+     * `POST /profile/api-key/revoke` — cabut API key **user login sendiri**.
+     *
+     * Idempoten: mencabut saat tidak ada key tetap dianggap sukses. Key yang
+     * tercabut langsung ditolak `ApiAuthMiddleware` (401).
+     */
+    public function revokeApiKey(Request $request): Response
+    {
+        $user = $this->currentUser();
+        if ($user === null) {
+            return $this->unauthenticated($request);
+        }
+
+        try {
+            $this->users()->revokeApiKey((string) $user['id']);
+            $this->session($request)?->delete(self::SESSION_NEW_API_KEY);
+            $this->flash('success', 'API key dicabut.');
+        } catch (Throwable) {
+            $this->flash('error', 'Gagal mencabut API key.');
         }
 
         return redirect('/profile');

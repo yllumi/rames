@@ -41,7 +41,7 @@ use Webman\Http\Request;
  *
  * 3. PENGECUALIAN 3 — API eksternal (`/api/v1/**`, docs/SPECS.md §7.19):
  *    klien mesin tidak punya sesi/cookie dashboard sehingga tidak mungkin
- *    memegang token CSRF; request-nya diautentikasi bearer token
+ *    memegang token CSRF; request-nya diautentikasi API key per user
  *    (`ApiAuthMiddleware`) di kanal TLS. Pengecualian ini **prefix path**
  *    (`/api/v1/`), bukan seluruh `/api/*` — endpoint AJAX dashboard di
  *    `/api/...` tetap wajib token. Kompensasi: `AuthMiddleware` juga melewati
@@ -65,7 +65,7 @@ class CsrfMiddleware implements MiddlewareInterface
 
             // Proxy Adminer: body multipart diteruskan mentah oleh controller.
             // Callback Duitku: mesin tanpa sesi, verifikasi di controller.
-            // API eksternal: bearer token, tanpa sesi/cookie dashboard.
+            // API eksternal: API key per user, tanpa sesi/cookie dashboard.
             $exempt = self::isAdminerProxyPath($path)
                 || ($method === 'POST' && self::isPaymentCallbackPath($path))
                 || self::isApiPath($path);

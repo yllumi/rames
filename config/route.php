@@ -282,7 +282,7 @@ Route::get('/apps', [ListController::class, 'index']);
 |--------------------------------------------------------------------------
 | API eksternal + dokumentasi OpenAPI (docs/SPECS.md §7.19)
 |--------------------------------------------------------------------------
-| Autentikasi permukaan `/api/v1/**` = bearer token `RAMES_API_TOKEN`
+| Autentikasi permukaan `/api/v1/**` = API key per user (dibuat di `/profile`)
 | (`ApiAuthMiddleware`, global di config/middleware.php) — **bukan** sesi:
 | `AuthMiddleware` & `CsrfMiddleware` sengaja melewati prefix itu. Jangan
 | mendaftarkan route `/api/v1/*` di luar cakupan middleware tersebut.
@@ -614,6 +614,11 @@ Route::post('/profile/2fa/setup', [ProfileController::class, 'startTotpSetup']);
 Route::post('/profile/2fa/enable', [ProfileController::class, 'enableTotp']);
 Route::post('/profile/2fa/disable', [ProfileController::class, 'disableTotp']);
 Route::post('/profile/2fa/recovery', [ProfileController::class, 'regenerateTotpRecovery']);
+// API key per user (self-service, docs/SPECS.md §7.19): plaintext hanya tampil
+// sekali setelah dibuat; generate ulang menimpa key lama, revoke mematikan API
+// untuk user itu. Anti-IDOR: id user selalu dari session, bukan request.
+Route::post('/profile/api-key', [ProfileController::class, 'generateApiKey']);
+Route::post('/profile/api-key/revoke', [ProfileController::class, 'revokeApiKey']);
 
 /*
 |--------------------------------------------------------------------------

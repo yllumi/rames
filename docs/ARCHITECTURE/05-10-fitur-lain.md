@@ -323,7 +323,7 @@ sequenceDiagram
 
 **Pengujian**: `tests/SslQueueTest.php` (dedupe/posisi/klaim FIFO/stale/retry-backoff/prune/isRetryable), `tests/SslQueueWorkerTest.php` (klaim → jalankan CLI → `done`/`retry`/`failed`, target hilang), `tests/SslQueueProcessTest.php` (tick tak pernah melempar, mode agent tanpa timer), `tests/AgentProcessConfigTest.php` (proses dashboard-only + `count=1`), `tests/SslQueuePositionViewTest.php` (smoke render posisi "antrean #N dari M" di `/domains` & `/ssl`), `tests/SslControllerApiTest.php`/`tests/DomainControllerTest.php`/`tests/ParkedSslEnablerTest.php` (enqueue + posisi pada envelope JSON).
 
-## 5.45 API Eksternal (bearer token) & Dokumentasi OpenAPI
+## 5.45 API Eksternal (API key per user) & Dokumentasi OpenAPI
 
 API mesin untuk otomatisasi (CI/CD) tanpa sesi browser. Cakupan fase awal: **build ulang app berdasarkan nama (slug)** + pembacaan status untuk polling, plus halaman dokumentasi OpenAPI.
 
@@ -331,16 +331,24 @@ API mesin untuk otomatisasi (CI/CD) tanpa sesi browser. Cakupan fase awal: **bui
 
 | Method | Path | Handler | Auth |
 |---|---|---|---|
-| `POST` | `/api/v1/apps/{slug}/build` | `api\AppApiController::build()` | bearer token |
-| `GET` | `/api/v1/apps/{slug}` | `api\AppApiController::show()` | bearer token |
+| `POST` | `/api/v1/apps/{slug}/build` | `api\AppApiController::build()` | API key per user |
+| `GET` | `/api/v1/apps/{slug}` | `api\AppApiController::show()` | API key per user |
 | `GET` | `/api-docs` | `api\ApiDocsController::page()` | sesi login (halaman) |
 | `GET` | `/api-docs/openapi.json` | `api\ApiDocsController::spec()` | sesi login (JSON) |
+| `POST` | `/profile/api-key` | `ProfileController::generateApiKey()` | sesi + CSRF |
+| `POST` | `/profile/api-key/revoke` | `ProfileController::revokeApiKey()` | sesi + CSRF |
 
-**Autentikasi & hak.** Token `RAMES_API_TOKEN` (`Authorization: Bearer <token>`, `hash_equals`) **tidak** membawa hak sendiri: `ApiTokenAuth` memetakannya ke user dashboard `RAMES_API_TOKEN_USER` (default `admin`) dalam bentuk publik (`findPublicById` — tanpa `password_hash`/secret 2FA). Karena itu `AppAccess` dan `BillingGate` menilai user tersebut persis seperti aksi UI. Token kosong ⇒ `/api/v1/*` **404** (fail-closed, konfigurasi bisa dilihat admin di `/api-docs`); token salah/user hilang ⇒ **401** dengan body identik untuk semua penyebab.
+**API key per user (bukan env).** Tidak ada `RAMES_API_TOKEN`/token admin global. Setiap user login membuat/mencabut key-nya sendiri di card **API key** halaman `/profile`:
+
+- `UserStore::issueApiKey($id)` → plaintext `rmk_` + 24 byte acak, **hanya dikembalikan sekali**; store menyimpan `api_key_hash` (SHA-256), `api_key_prefix` (12 karakter untuk ditampilkan), `api_key_created_at`, `api_key_last_used_at`. Generate ulang menimpa hash ⇒ key lama **langsung** tidak berlaku.
+- Plaintext dikirim ke halaman Profil lewat session sekali-tampil (`api_key_new`, pola kode pemulihan 2FA) — **bukan** flash, log, atau store; `index()` menariknya lalu menghapus.
+- `revokeApiKey($id)` idempoten mematikan key; tombol generate/revoke selalu memakai **id dari session** (anti-IDOR), CSRF form wajib.
+- `ApiKeyAuth::authenticate()` (middleware) memverifikasi header `Authorization: Bearer <api-key>` → `UserStore::actorByApiKey()` (`hash_equals` terhadap hash tersimpan; bentuk publik tanpa hash/secret) lalu mencatat `last_used_at` dengan throttle 1×/menit. `actorFromRequest()` dipakai controller (tanpa efek samping, defense-in-depth).
+- Key **tidak punya hak sendiri**: aktor = user pemilik key, sehingga `AppAccess` & `BillingGate` menilai persis seperti sesi user itu. Key tak dikenal/dicabut/format salah/user dihapus ⇒ **401** body identik.
 
 **Alur build (`POST /api/v1/apps/{slug}/build`).**
 
-1. `ApiAuthMiddleware` (global, setelah `AuthMiddleware`) menolak request tanpa token sah sebelum controller dipanggil.
+1. `ApiAuthMiddleware` (global, setelah `AuthMiddleware`) menolak request tanpa key sah sebelum controller dipanggil.
 2. `ApiAppLocator::findVisible($slug, $actor)` — slug dinormalkan (trim+lowercase), divalidasi pola nama app (`[a-z0-9-]`, ≤63), dicari **hanya** pada app yang terlihat aktor. Nol hasil ⇒ **404**; >1 hasil (nama sama di server berbeda) ⇒ **409** `ambiguous_app` (tidak ditebak).
 3. `AppAccess::can('deploy', $app, $actor)` — kemampuan sama dengan tombol Rebuild; gagal ⇒ **404** (bukan 403, supaya keberadaan app lain tidak bocor).
 4. `AppBuildService::rebuild($app, $guard, $actorId)` — **satu pipeline** dengan `DeploymentController::rebuild()`: app impor ditolak; status `deploying` ⇒ **409** `app_busy`; artefak lokal (server-aware) diperiksa; `$guard` (gerbang kredit via `billingAssertCanStart()`) dijalankan **sebelum** efek samping — kredit kurang ⇒ **402** `insufficient_credits`; status → `deploying/queued`; worker detached di-spawn (`DeploySpawner` → `DeployWorkerLauncher`, PID dicatat untuk `DeployCanceller`).
@@ -348,12 +356,14 @@ API mesin untuk otomatisasi (CI/CD) tanpa sesi browser. Cakupan fase awal: **bui
 
 **Respons status.** `AppApiPayload::summary()` = allowlist: `slug`, `id`, `server_id`, `status`, `stage`, `message`, `domain`, `created_at`, `updated_at`, `containers[]` (service/name/status/ports `host`→`container`), `last_deploy` (sha/short/action/status/message/created_at). **Tidak pernah** `env`, `ssh_key`, kredensial repo, `worker_pid`, `members`, atau field agent.
 
-**Dokumentasi OpenAPI.** `OpenApiSpec::build()` adalah **satu sumber**: dokumen JSON (`/api-docs/openapi.json`) dan halaman `/api-docs` (dirender server-side, tanpa JS/CDN baru). Menambah endpoint/field = ubah `OpenApiSpec` (paths/components), bukan view. Halaman & JSON berada **di luar** prefix `/api/v1/**` sehingga dijaga sesi login; detail konfigurasi token hanya tampil untuk admin (`canManageApi` dari controller). Tautan nav "API" tampil untuk semua user login.
+**Dokumentasi OpenAPI.** `OpenApiSpec::build()` adalah **satu sumber**: dokumen JSON (`/api-docs/openapi.json`) dan halaman `/api-docs` (dirender server-side, tanpa JS/CDN baru). Kartu endpoint adalah **accordion Bootstrap** dengan id unik (method+path), **default tertutup**; chevron berputar via CSS (`aria-expanded`), tanpa JS tambahan. Menambah endpoint/field = ubah `OpenApiSpec` (paths/components), bukan view. Halaman mengarahkan user membuat key di `/profile`; detail key (prefix, dibuat, terakhir dipakai) tampil di halaman Profil masing-masing user — **bukan** di `/api-docs`.
 
-> **WAJIB — `/api/v1/` bukan permukaan sesi.** `AuthMiddleware` dan `CsrfMiddleware` **melewati** prefix itu (klien mesin tidak punya cookie/token CSRF). Karena itu setiap route baru `/api/v1/*` **wajib** berada di bawah `ApiAuthMiddleware` (global) dan memakai `AppAccess` dengan user hasil `ApiTokenAuth`. Jangan menambah pengecualian CSRF untuk `/api/*` (endpoint AJAX dashboard tetap wajib token CSRF).
+> **WAJIB — `/api/v1/` bukan permukaan sesi.** `AuthMiddleware` dan `CsrfMiddleware` **melewati** prefix itu (klien mesin tidak punya cookie/token CSRF). Karena itu setiap route baru `/api/v1/*` **wajib** berada di bawah `ApiAuthMiddleware` (global) dan memakai `AppAccess` dengan user pemilik API key. Jangan menambah pengecualian CSRF untuk `/api/*` (endpoint AJAX dashboard tetap wajib token CSRF).
 
 > **GOTCHA — dokumentasi wajib login, bukan publik.** `GET /api-docs` dan `/api-docs/openapi.json` sengaja tidak dikecualikan di `AuthMiddleware`; permintaan tanpa sesi dialihkan ke `/login`. Jangan memindahkannya ke `/api/v1/` "supaya mudah diakses tooling" — itu membuka permukaan tanpa sesi.
 
+> **DILARANG — plaintext key keluar dari sekali-tampil.** Jangan menaruh key di flash, log, `apps`/`auth` dalam bentuk plaintext, atau respons selain halaman Profil pertama setelah generate. `publicUser()` wajib membuang `api_key_hash`; `api_key_prefix`/timestamp boleh tampil (bukan rahasia).
+
 > **GOTCHA — nama app tidak unik lintas server.** Keunikan `apps.name` hanya per server (`AppStore::findByNameOnServer`). Endpoint berbasis slug membalas **409** bila beberapa app terlihat aktor memakai nama sama; gunakan id app di dashboard sampai pemilihan server pada API tersedia.
 
-**Pengujian**: `tests/ApiTokenAuthTest.php`, `tests/ApiAuthMiddlewareTest.php`, `tests/ApiAppLocatorTest.php`, `tests/AppBuildServiceTest.php`, `tests/AppApiControllerTest.php`, `tests/OpenApiSpecTest.php`; regresi middleware/route: `tests/AgentModeTest.php`, `tests/AppControllerServerScopeTest.php`, `tests/AppControllerBillingGateTest.php`.
+**Pengujian**: `tests/ApiKeyAuthTest.php`, `tests/ApiAuthMiddlewareTest.php`, `tests/ApiAppLocatorTest.php`, `tests/AppBuildServiceTest.php`, `tests/AppApiControllerTest.php`, `tests/ProfileApiKeyTest.php`, `tests/OpenApiSpecTest.php`; regresi middleware/route: `tests/AgentModeTest.php`, `tests/AppControllerServerScopeTest.php`, `tests/AppControllerBillingGateTest.php`.

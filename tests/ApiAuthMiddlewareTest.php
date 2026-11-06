@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 namespace Tests;
 
-use app\library\Api\ApiTokenAuth;
+use app\library\Api\ApiKeyAuth;
+use app\library\Api\OpenApiSpec;
 use app\library\Auth\UserStore;
 use app\middleware\ApiAuthMiddleware;
 use app\middleware\AuthMiddleware;
@@ -18,29 +19,33 @@ if (!defined('BASE_PATH')) {
 }
 
 /**
- * Gerbang permukaan API eksternal (docs/SPECS.md §7.19).
+ * Gerbang permukaan API eksternal (docs/SPECS.md §7.19) — **API key per user**.
  *
  * Kontrak:
- *  1. di luar prefix `/api/v1/` ⇒ **no-op** (middleware dashboard lain tidak
- *     berubah perilakunya);
- *  2. token kosong ⇒ `/api/v1/*` menjawab 404 (fail-closed, permukaan disembunyikan);
- *  3. token salah/hilang ⇒ 401 body identik (tanpa oracle), handler tidak dipanggil;
- *  4. token sah ⇒ handler dipanggil;
- *  5. **tidak ada pengecualian** di prefix API — dokumentasi OpenAPI tinggal di
- *     `/api-docs/openapi.json` (di luar prefix, dijaga sesi login dashboard);
- *  6. `AuthMiddleware` & `CsrfMiddleware` melewati prefix API — kompensasi
- *     penjagaan ada di `ApiAuthMiddleware`, dan `/api/...` dashboard tetap
+ *  1. di luar prefix `/api/v1/` ⇒ no-op;
+ *  2. key tidak ada / salah / format salah / sudah dicabut ⇒ **401** body
+ *     identik (tanpa oracle), handler tidak dipanggil;
+ *  3. key sah ⇒ handler dipanggil + `api_key_last_used_at` dicatat;
+ *  4. dokumentasi OpenAPI (`/api-docs/openapi.json`) di luar prefix ⇒ dijaga
+ *     sesi login, bukan middleware ini;
+ *  5. `AuthMiddleware` & `CsrfMiddleware` melewati prefix API (kompensasi:
+ *     `ApiAuthMiddleware` satu-satunya penjaga), `/api/...` dashboard tetap
  *     wajib sesi/CSRF.
  */
 class ApiAuthMiddlewareTest extends TestCase
 {
-    private const TOKEN = 'api_token_rahasia_0123456789';
-
     private string $db = '';
+
+    private UserStore $users;
+
+    private string $key = '';
 
     protected function setUp(): void
     {
         $this->db = sys_get_temp_dir() . '/rames-apiauth-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $this->users = new UserStore($this->db);
+        $this->users->create('admin', 'rahasia-admin-1');
+        $this->key = $this->users->issueApiKey($this->userId());
     }
 
     protected function tearDown(): void
@@ -50,23 +55,15 @@ class ApiAuthMiddlewareTest extends TestCase
 
     public function testNonApiPathIsPassedThrough(): void
     {
-        $result = $this->dispatch($this->middleware(self::TOKEN), 'GET', '/apps', null);
+        $result = $this->dispatch('GET', '/apps', null);
 
         $this->assertTrue($result['handled']);
         $this->assertSame(200, $result['response']->getStatusCode());
     }
 
-    public function testDisabledApiHidesSurfaceWith404(): void
+    public function testMissingKeyIsRejectedWithoutCallingHandler(): void
     {
-        $result = $this->dispatch($this->middleware(''), 'POST', '/api/v1/apps/demo/build', null);
-
-        $this->assertFalse($result['handled']);
-        $this->assertSame(404, $result['response']->getStatusCode());
-    }
-
-    public function testMissingTokenIsRejectedWithoutCallingHandler(): void
-    {
-        $result = $this->dispatch($this->middleware(self::TOKEN), 'POST', '/api/v1/apps/demo/build', null);
+        $result = $this->dispatch('POST', '/api/v1/apps/demo/build', null);
 
         $this->assertFalse($result['handled']);
         $this->assertSame(401, $result['response']->getStatusCode());
@@ -76,50 +73,66 @@ class ApiAuthMiddlewareTest extends TestCase
         );
     }
 
-    public function testWrongTokenIsRejected(): void
+    public function testUnknownKeyIsRejected(): void
     {
-        $result = $this->dispatch($this->middleware(self::TOKEN), 'GET', '/api/v1/apps/demo', 'Bearer salah');
+        $result = $this->dispatch('GET', '/api/v1/apps/demo', 'Bearer rmk_' . bin2hex(random_bytes(24)));
 
         $this->assertFalse($result['handled']);
         $this->assertSame(401, $result['response']->getStatusCode());
     }
 
-    public function testValidTokenReachesHandler(): void
+    public function testRevokedKeyIsRejected(): void
     {
-        $result = $this->dispatch(
-            $this->middleware(self::TOKEN),
-            'POST',
-            '/api/v1/apps/demo/build',
-            'Bearer ' . self::TOKEN
-        );
+        $this->users->revokeApiKey($this->userId());
+
+        $result = $this->dispatch('GET', '/api/v1/apps/demo', 'Bearer ' . $this->key);
+
+        $this->assertFalse($result['handled']);
+        $this->assertSame(401, $result['response']->getStatusCode());
+    }
+
+    public function testValidKeyReachesHandlerAndRecordsUsage(): void
+    {
+        $result = $this->dispatch('POST', '/api/v1/apps/demo/build', 'Bearer ' . $this->key);
 
         $this->assertTrue($result['handled']);
         $this->assertSame(200, $result['response']->getStatusCode());
+        $this->assertNotSame(
+            '',
+            (string) $this->users->findById($this->userId())['api_key_last_used_at']
+        );
+    }
+
+    public function testBearerSchemeIsCaseInsensitive(): void
+    {
+        $result = $this->dispatch('GET', '/api/v1/apps/demo', 'bearer ' . $this->key);
+
+        $this->assertTrue($result['handled']);
     }
 
     public function testDocsJsonLivesOutsideApiPrefix(): void
     {
-        // Dokumentasi OpenAPI wajib login → bukan permukaan bearer token, jadi
-        // middleware API tidak boleh menyentuhnya sama sekali.
-        $result = $this->dispatch($this->middleware(''), 'GET', \app\library\Api\OpenApiSpec::DOCS_JSON_PATH, null);
+        $result = $this->dispatch('GET', OpenApiSpec::DOCS_JSON_PATH, null);
 
         $this->assertTrue($result['handled']);
         $this->assertFalse(
-            str_starts_with(\app\library\Api\OpenApiSpec::DOCS_JSON_PATH, ApiAuthMiddleware::PREFIX),
+            str_starts_with(OpenApiSpec::DOCS_JSON_PATH, ApiAuthMiddleware::PREFIX),
             'dokumen OpenAPI harus berada di luar prefix /api/v1/'
         );
     }
 
     public function testAuthMiddlewarePassesApiPrefixWithoutSession(): void
     {
-        $request = new Request("POST /api/v1/apps/demo/build HTTP/1.1\r\nHost: localhost\r\n\r\n");
         $handled = false;
 
-        (new AuthMiddleware())->process($request, function () use (&$handled): Response {
-            $handled = true;
+        (new AuthMiddleware())->process(
+            new Request("POST /api/v1/apps/demo/build HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            function () use (&$handled): Response {
+                $handled = true;
 
-            return new Response(200, [], 'OK');
-        });
+                return new Response(200, [], 'OK');
+            }
+        );
 
         $this->assertTrue($handled);
         $this->assertTrue(AuthMiddleware::isApiPath('/api/v1/apps/demo/build'));
@@ -128,32 +141,26 @@ class ApiAuthMiddlewareTest extends TestCase
 
     public function testCsrfMiddlewareExemptsApiMutationsOnly(): void
     {
-        $apiRequest = new Request("POST /api/v1/apps/demo/build HTTP/1.1\r\nHost: localhost\r\n\r\n");
         $apiHandled = false;
-        (new CsrfMiddleware())->process($apiRequest, function () use (&$apiHandled): Response {
-            $apiHandled = true;
+        (new CsrfMiddleware())->process(
+            new Request("POST /api/v1/apps/demo/build HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            function () use (&$apiHandled): Response {
+                $apiHandled = true;
 
-            return new Response(200, [], 'OK');
-        });
+                return new Response(200, [], 'OK');
+            }
+        );
+
         $this->assertTrue($apiHandled);
-
         $this->assertTrue(CsrfMiddleware::isApiPath('/api/v1/apps/demo/build'));
         $this->assertFalse(CsrfMiddleware::isApiPath('/api/apps/demo/rebuild'));
         $this->assertFalse(CsrfMiddleware::isApiPath('/api/v1'));
     }
 
-    private function middleware(string $token): ApiAuthMiddleware
-    {
-        $users = new UserStore($this->db);
-        $users->create('admin', 'rahasia-admin-1');
-
-        return new ApiAuthMiddleware(new ApiTokenAuth($token, 'admin', $users));
-    }
-
     /**
      * @return array{handled:bool,response:Response}
      */
-    private function dispatch(ApiAuthMiddleware $middleware, string $method, string $path, ?string $authorization): array
+    private function dispatch(string $method, string $path, ?string $authorization): array
     {
         $headers = "Host: localhost\r\n";
         if ($authorization !== null) {
@@ -162,12 +169,23 @@ class ApiAuthMiddlewareTest extends TestCase
         $request = new Request($method . ' ' . $path . " HTTP/1.1\r\n" . $headers . "\r\n");
         $handled = false;
 
-        $response = $middleware->process($request, function () use (&$handled): Response {
-            $handled = true;
+        $response = (new ApiAuthMiddleware(new ApiKeyAuth($this->users)))->process(
+            $request,
+            function () use (&$handled): Response {
+                $handled = true;
 
-            return new Response(200, [], 'OK');
-        });
+                return new Response(200, [], 'OK');
+            }
+        );
 
         return ['handled' => $handled, 'response' => $response];
+    }
+
+    private function userId(): string
+    {
+        $user = $this->users->findByUsername('admin');
+        $this->assertIsArray($user);
+
+        return (string) $user['id'];
     }
 }

@@ -1,7 +1,7 @@
 <?php
 /**
- * Halaman dokumentasi OpenAPI (`GET /api-docs`). Wajib login; detail
- * konfigurasi token hanya ditampilkan untuk admin (`$canManageApi`).
+ * Halaman dokumentasi OpenAPI (`GET /api-docs`) — wajib login. API key dibuat
+ * dan dicabut **per user** di halaman Profil (`/profile`).
  *
  * Seluruh isi dirender dari array dokumen `OpenApiSpec::build()` yang dikirim
  * `ApiDocsController::page()` — daftar endpoint/field TIDAK diduplikasi di sini.
@@ -12,10 +12,8 @@ $pageTitle = 'API';
 $active = 'api';
 
 $spec = is_array($spec ?? null) ? $spec : [];
-$apiEnabled = (bool) ($apiEnabled ?? false);
-$tokenUser = is_scalar($tokenUser ?? null) ? (string) $tokenUser : 'admin';
 $specPath = is_scalar($specPath ?? null) ? (string) $specPath : '/api-docs/openapi.json';
-$canManageApi = (bool) ($canManageApi ?? false);
+$profilePath = is_scalar($profilePath ?? null) ? (string) $profilePath : '/profile';
 $info = is_array($spec['info'] ?? null) ? $spec['info'] : [];
 $paths = is_array($spec['paths'] ?? null) ? $spec['paths'] : [];
 $schemas = is_array($spec['components']['schemas'] ?? null) ? $spec['components']['schemas'] : [];
@@ -100,8 +98,9 @@ $breadcrumbs = [
 <?php ob_start(); ?>
   <p class="text-muted mb-0">
     API ini dipakai klien mesin (bukan browser dashboard), jadi autentikasinya memakai
-    <strong>bearer token</strong> — bukan sesi login dan bukan token CSRF.
-    Token dipetakan ke satu user dashboard sehingga hak akses app
+    <strong>API key per user</strong> — bukan sesi login dan bukan token CSRF.
+    Key dibuat/dicabut sendiri oleh setiap user di <a href="<?= e($profilePath) ?>">halaman Profil</a>
+    dan bertindak sebagai akun pemiliknya, sehingga hak akses app
     (<span class="mono">AppAccess</span>), kepemilikan, dan gerbang kredit tetap berlaku:
     API tidak bisa melakukan hal yang tidak boleh dilakukan user tersebut di UI.
     Halaman dokumentasi ini — termasuk berkas <span class="mono"><?= e($specPath) ?></span> —
@@ -110,39 +109,24 @@ $breadcrumbs = [
 <?php $__infoHtml = (string) ob_get_clean(); $__infoId = 'api-info'; $__infoTitle = 'Tentang halaman API'; ?>
 <?php include app_path() . '/view/partials/page-info-modal.php'; ?>
 
-<?php if ($canManageApi): ?>
-  <?php if (!$apiEnabled): ?>
-    <div class="alert alert-warning" role="alert">
-      <strong>API belum aktif.</strong> Isi <span class="mono">RAMES_API_TOKEN</span> (dan opsional
-      <span class="mono">RAMES_API_TOKEN_USER</span>) di <span class="mono">.env</span> dashboard lalu buat ulang container
-      (<span class="mono">docker compose up -d</span>). Selama token kosong, semua path
-      <span class="mono">/api/v1/*</span> menjawab <strong>404</strong> (fail-closed).
-    </div>
-  <?php else: ?>
-    <div class="alert alert-info" role="alert">
-      <strong>API aktif.</strong> Token dipetakan ke user <span class="mono"><?= e($tokenUser) ?></span> —
-      otorisasi app &amp; kredit mengikuti user itu. Token bersifat rahasia: jangan disimpan di repo,
-      log, atau tangkapan layar.
-    </div>
-  <?php endif; ?>
-<?php else: ?>
-  <div class="alert alert-secondary" role="alert">
-    Konfigurasi token API (aktif/nonaktif &amp; user aktor) hanya ditampilkan untuk admin.
-    Hubungi admin dashboard bila Anda membutuhkan token untuk otomatisasi.
-  </div>
-<?php endif; ?>
+<div class="alert alert-info" role="alert">
+  <strong>API key per user.</strong> Buat atau cabut key Anda di
+  <a href="<?= e($profilePath) ?>" class="alert-link">halaman Profil</a> — key hanya ditampilkan
+  <strong>sekali</strong> saat dibuat. Satu key aktif per user; generate ulang langsung mematikan key lama.
+</div>
 
 <div class="card mb-3">
   <div class="card-header bg-body py-2 fw-semibold">Autentikasi</div>
   <div class="card-body">
     <p class="mb-2">
-      Sertakan header berikut pada setiap request:
-      <span class="mono">Authorization: Bearer &lt;RAMES_API_TOKEN&gt;</span>
+      Sertakan header berikut pada setiap request (key dari
+      <a href="<?= e($profilePath) ?>">Profil → API key</a>):
+      <span class="mono">Authorization: Bearer &lt;api-key&gt;</span>
     </p>
     <pre class="bg-body-tertiary border rounded p-3 small mb-2"><code>curl -X POST 'https://&lt;dashboard-host&gt;/api/v1/apps/contoh-app/build' \
-  -H 'Authorization: Bearer $RAMES_API_TOKEN'</code></pre>
+  -H 'Authorization: Bearer $RAMES_API_KEY'</code></pre>
     <ul class="small text-muted mb-0">
-      <li><strong>401</strong> — token tidak ada/salah, atau user aktor tidak ditemukan.</li>
+      <li><strong>401</strong> — API key tidak ada/salah, sudah dicabut, atau user pemiliknya sudah dihapus.</li>
       <li><strong>404</strong> — app tidak ada <em>atau</em> tidak boleh diakses aktor (sengaja tidak dibedakan
         agar keberadaan app user lain tidak bocor).</li>
       <li><strong>409</strong> — app sedang deploy, atau nama app ambigu di beberapa server.</li>
@@ -181,7 +165,7 @@ $breadcrumbs = [
     <div class="card mb-3">
       <div class="card-header bg-body p-0">
         <button type="button" class="btn btn-link text-reset text-decoration-none text-start w-100 d-flex flex-wrap align-items-center gap-2 px-3 py-2 ep-toggle"
-                data-bs-toggle="collapse" data-bs-target="#<?= e($collapseId) ?>" aria-expanded="true" aria-controls="<?= e($collapseId) ?>">
+                data-bs-toggle="collapse" data-bs-target="#<?= e($collapseId) ?>" aria-expanded="false" aria-controls="<?= e($collapseId) ?>">
           <span class="badge <?= e($methodBadge((string) $method)) ?>"><?= e(strtoupper((string) $method)) ?></span>
           <span class="mono fw-semibold"><?= e((string) $path) ?></span>
           <?php if ($anonymous): ?><span class="badge text-bg-secondary">tanpa token</span><?php endif; ?>
@@ -190,7 +174,7 @@ $breadcrumbs = [
           <span class="ep-chevron" aria-hidden="true"><?= svg_icon('chevron-down') ?></span>
         </button>
       </div>
-      <div class="collapse show" id="<?= e($collapseId) ?>">
+      <div class="collapse" id="<?= e($collapseId) ?>">
       <div class="card-body">
         <?php if ($description !== ''): ?>
           <p class="small mb-3"><?= e($description) ?></p>

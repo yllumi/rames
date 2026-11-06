@@ -47,7 +47,7 @@ class AuthMiddleware implements MiddlewareInterface
      *
      * Prefix `/api/v1/` **dilewati** middleware ini: klien mesin tidak punya
      * sesi/cookie dashboard. Satu-satunya penjaga autentikasi permukaan itu
-     * adalah `ApiAuthMiddleware` (bearer token `RAMES_API_TOKEN`), yang
+     * adalah `ApiAuthMiddleware` (API key per user), yang
      * dipasang global tepat setelah middleware ini. DILARANG mendaftarkan route
      * `/api/v1/*` tanpa lewat middleware tersebut.
      */
@@ -129,7 +129,7 @@ class AuthMiddleware implements MiddlewareInterface
 
     /**
      * Apakah path berada di permukaan API eksternal (`/api/v1/**`) — autentikasi
-     * di sana milik `ApiAuthMiddleware` (bearer token), bukan sesi.
+     * di sana milik `ApiAuthMiddleware` (API key per user), bukan sesi.
      */
     public static function isApiPath(string $path): bool
     {

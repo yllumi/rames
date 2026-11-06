@@ -41,10 +41,11 @@ final class OpenApiSpec
                 'version' => self::VERSION,
                 'description' => implode("\n\n", [
                     'API eksternal dashboard Rames untuk otomatisasi CI/CD dan tooling internal.',
-                    'Autentikasi memakai bearer token tetap (`RAMES_API_TOKEN`). Token dipetakan ke '
-                    . 'user dashboard `RAMES_API_TOKEN_USER` (default `admin`), sehingga seluruh '
-                    . 'pemeriksaan hak app (`AppAccess`) dan gerbang kredit berjalan sama seperti '
-                    . 'aksi di UI.',
+                    'Autentikasi memakai **API key per user**: setiap user membuat/mencabut key-nya '
+                    . 'sendiri di halaman Profil (`/profile`); key hanya ditampilkan sekali dan yang '
+                    . 'disimpan server hanyalah hash-nya. Key bertindak sebagai user pemiliknya, '
+                    . 'sehingga pemeriksaan hak app (`AppAccess`) dan gerbang kredit berjalan sama '
+                    . 'seperti aksi di UI.',
                     'Build berjalan **asinkron** di worker deploy: respons `202` hanya berarti worker '
                     . 'sudah di-spawn. Pantau `GET /api/v1/apps/{slug}` sampai `status` bukan '
                     . '`deploying`.',
@@ -67,8 +68,9 @@ final class OpenApiSpec
                     'bearerAuth' => [
                         'type' => 'http',
                         'scheme' => 'bearer',
-                        'description' => 'Token dari `RAMES_API_TOKEN` pada header '
-                            . '`Authorization: Bearer <token>`. Kosong ⇒ API tidak aktif (404).',
+                        'description' => 'API key per user (dibuat di `/profile`, tampil sekali) pada '
+                            . 'header `Authorization: Bearer <api-key>`. Key yang tidak dikenal/dicabut '
+                            . '⇒ 401.',
                     ],
                     'sessionLogin' => [
                         'type' => 'apiKey',

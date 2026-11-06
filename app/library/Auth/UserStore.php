@@ -32,6 +32,15 @@ class UserStore
     public const ROLE_ADMIN = 'admin';
     public const ROLE_MEMBER = 'member';
 
+    /** Prefix plaintext API key (mudah dikenali di log/kebocoran). */
+    public const API_KEY_PREFIX = 'rmk_';
+
+    /** Panjang prefix plaintext yang disimpan untuk ditampilkan (bukan rahasia). */
+    public const API_KEY_DISPLAY_LENGTH = 12;
+
+    /** Interval minimum pembaruan `api_key_last_used_at` (detik). */
+    public const API_KEY_TOUCH_INTERVAL = 60;
+
     private SqliteStore $store;
 
     public function __construct(?string $filePath = null)
@@ -279,6 +288,161 @@ class UserStore
             }
             throw new RuntimeException('User tidak ditemukan.');
         });
+    }
+
+    // ==================================================================
+    // API key per user (docs/SPECS.md §7.19)
+    // ==================================================================
+    //
+    // Satu key aktif per user. Plaintext HANYA dikembalikan sekali oleh
+    // `issueApiKey()`; yang disimpan adalah SHA-256 + prefix tampilan. Generate
+    // ulang menimpa hash lama ⇒ key lama langsung tidak berlaku.
+
+    /**
+     * Buat (atau ganti) API key user. Mengembalikan **plaintext sekali**.
+     *
+     * @throws RuntimeException bila user tidak ditemukan
+     */
+    public function issueApiKey(string $id): string
+    {
+        $plain = self::API_KEY_PREFIX . bin2hex(random_bytes(24));
+        $hash = self::hashApiKey($plain);
+        $prefix = substr($plain, 0, self::API_KEY_DISPLAY_LENGTH);
+        $now = date('c');
+
+        $this->store->update(function (array &$data) use ($id, $hash, $prefix, $now): void {
+            foreach ($data as &$user) {
+                if ((string) ($user['id'] ?? '') !== $id) {
+                    continue;
+                }
+                $user['api_key_hash'] = $hash;
+                $user['api_key_prefix'] = $prefix;
+                $user['api_key_created_at'] = $now;
+                $user['api_key_last_used_at'] = '';
+
+                return;
+            }
+            throw new RuntimeException('User tidak ditemukan.');
+        });
+
+        return $plain;
+    }
+
+    /**
+     * Cabut API key user (idempoten: user tanpa key tetap aman).
+     *
+     * @throws RuntimeException bila user tidak ditemukan
+     */
+    public function revokeApiKey(string $id): void
+    {
+        $this->store->update(function (array &$data) use ($id): void {
+            foreach ($data as &$user) {
+                if ((string) ($user['id'] ?? '') !== $id) {
+                    continue;
+                }
+                unset(
+                    $user['api_key_hash'],
+                    $user['api_key_prefix'],
+                    $user['api_key_created_at'],
+                    $user['api_key_last_used_at']
+                );
+
+                return;
+            }
+            throw new RuntimeException('User tidak ditemukan.');
+        });
+    }
+
+    /**
+     * Metadata API key untuk UI (tanpa hash/plaintext).
+     *
+     * @return array{active:bool,prefix:string,created_at:string,last_used_at:string}
+     */
+    public function apiKeyMeta(string $id): array
+    {
+        // Dokumen mentah: status aktif butuh `api_key_hash`, yang sengaja
+        // dibuang `publicUser()` dari session/view/API.
+        $user = $this->findById($id);
+        if ($user === null) {
+            return ['active' => false, 'prefix' => '', 'created_at' => '', 'last_used_at' => ''];
+        }
+
+        $prefix = (string) ($user['api_key_prefix'] ?? '');
+
+        return [
+            'active' => trim((string) ($user['api_key_hash'] ?? '')) !== '' && $prefix !== '',
+            'prefix' => $prefix,
+            'created_at' => (string) ($user['api_key_created_at'] ?? ''),
+            'last_used_at' => (string) ($user['api_key_last_used_at'] ?? ''),
+        ];
+    }
+
+    /**
+     * User aktor pemilik API key — `null` bila key kosong/tidak dikenal.
+     *
+     * Perbandingan hash memakai `hash_equals()` (constant-time) terhadap hash
+     * yang tersimpan; plaintext key **tidak pernah** disimpan.
+     *
+     * @return array<string,mixed>|null bentuk publik (tanpa hash/secret)
+     */
+    public function actorByApiKey(string $key): ?array
+    {
+        $key = trim($key);
+        if ($key === '' || !str_starts_with($key, self::API_KEY_PREFIX)) {
+            return null;
+        }
+
+        $hash = self::hashApiKey($key);
+        $all = $this->all();
+        $firstId = (string) ($all[0]['id'] ?? '');
+        foreach ($all as $user) {
+            $stored = (string) ($user['api_key_hash'] ?? '');
+            if ($stored === '' || !hash_equals($stored, $hash)) {
+                continue;
+            }
+
+            return $this->publicUser($user, $firstId);
+        }
+
+        return null;
+    }
+
+    /**
+     * Perbarui `api_key_last_used_at` (throttle: maksimal sekali per
+     * {@see self::API_KEY_TOUCH_INTERVAL} detik agar tidak menulis store tiap
+     * request API).
+     *
+     * Best-effort oleh pemanggil: kegagalan mencatat pemakaian tidak boleh
+     * menggagalkan request yang sudah terautentikasi.
+     */
+    public function touchApiKey(string $id, int $minIntervalSeconds = self::API_KEY_TOUCH_INTERVAL): void
+    {
+        $user = $this->findById($id);
+        if ($user === null || trim((string) ($user['api_key_hash'] ?? '')) === '') {
+            return;
+        }
+
+        $now = time();
+        $last = (string) ($user['api_key_last_used_at'] ?? '');
+        $lastTs = $last === '' ? false : strtotime($last);
+        if ($lastTs !== false && $now - $lastTs < max(0, $minIntervalSeconds)) {
+            return;
+        }
+
+        $stamp = date('c', $now);
+        $this->store->update(function (array &$data) use ($id, $stamp): void {
+            foreach ($data as &$user) {
+                if ((string) ($user['id'] ?? '') === $id && trim((string) ($user['api_key_hash'] ?? '')) !== '') {
+                    $user['api_key_last_used_at'] = $stamp;
+                }
+            }
+        });
+    }
+
+    /** SHA-256 hex dari plaintext key — satu-satunya bentuk yang disimpan. */
+    public static function hashApiKey(string $key): string
+    {
+        return hash('sha256', $key);
     }
 
     /**
@@ -743,7 +907,7 @@ class UserStore
 
     /**
      * @param string|null $firstUserId id user pertama (untuk berkas legacy tanpa role)
-     * @return array{id:string, username:string, role:string, created_at:string, email:string, server_select:bool, server_ids:array<int,string>, totp_enabled:bool}
+     * @return array{id:string, username:string, role:string, created_at:string, email:string, server_select:bool, server_ids:array<int,string>, totp_enabled:bool, api_key_prefix:string, api_key_created_at:string, api_key_last_used_at:string}
      */
     private function publicUser(array $user, ?string $firstUserId = null): array
     {
@@ -755,8 +919,14 @@ class UserStore
             $user['totp_secret'],
             $user['totp_enabled_at'],
             $user['totp_last_step'],
-            $user['totp_recovery_codes']
+            $user['totp_recovery_codes'],
+            // Hash API key TIDAK PERNAH keluar dari store (session/view/API).
+            $user['api_key_hash']
         );
+        // Metadata API key (bukan rahasia) selalu bertipe string stabil.
+        $user['api_key_prefix'] = (string) ($user['api_key_prefix'] ?? '');
+        $user['api_key_created_at'] = (string) ($user['api_key_created_at'] ?? '');
+        $user['api_key_last_used_at'] = (string) ($user['api_key_last_used_at'] ?? '');
         $explicit = (string) ($user['role'] ?? '');
         $user['role'] = in_array($explicit, [self::ROLE_ADMIN, self::ROLE_MEMBER], true)
             ? $explicit

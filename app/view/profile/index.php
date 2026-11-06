@@ -43,6 +43,16 @@ if (is_array($twoFactor['recovery_codes'] ?? null)) {
     }
 }
 
+// Kartu API key: metadata aman dari controller + plaintext sekali-tampil
+// (`newApiKey`, sudah dihapus dari session oleh controller). Fallback dijaga
+// agar view tetap bisa di-smoke-render tanpa controller.
+$apiKey = is_array($apiKey ?? null) ? $apiKey : [];
+$apiKeyActive = (bool) ($apiKey['active'] ?? false);
+$apiKeyPrefix = is_scalar($apiKey['prefix'] ?? null) ? (string) $apiKey['prefix'] : '';
+$apiKeyCreated = is_scalar($apiKey['created_at'] ?? null) ? (string) $apiKey['created_at'] : '';
+$apiKeyLastUsed = is_scalar($apiKey['last_used_at'] ?? null) ? (string) $apiKey['last_used_at'] : '';
+$newApiKey = is_scalar($newApiKey ?? null) ? (string) $newApiKey : '';
+
 $breadcrumbs = [
     ['label' => 'Apps', 'href' => '/apps'],
     ['label' => 'Profil', 'href' => null],
@@ -315,4 +325,75 @@ $breadcrumbs = [
   </div>
 </div>
 
+<div class="row g-3 mt-1">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header bg-body py-2 fw-semibold d-flex flex-wrap align-items-center justify-content-between gap-2">
+        <span>API key</span>
+        <span class="badge <?= $apiKeyActive ? 'text-bg-success' : 'text-bg-light border' ?>">
+          <?= e($apiKeyActive ? 'Aktif' : 'Belum ada') ?>
+        </span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          Key untuk mengakses <a href="/api-docs">API eksternal</a> tanpa sesi browser (CI/CD, skrip).
+          Key <strong>bertindak sebagai akun Anda</strong>: hak akses app, kepemilikan, dan kredit
+          mengikuti akun ini. Satu key aktif per user; generate ulang mematikan key lama.
+        </p>
+
+        <?php // Plaintext hanya ada di respons pertama setelah dibuat (session sekali-tampil). ?>
+        <?php if ($newApiKey !== ''): ?>
+          <div class="alert alert-warning" role="alert">
+            <p class="fw-semibold mb-1">Salin API key ini sekarang.</p>
+            <p class="small mb-2">
+              Key hanya ditampilkan <strong>sekali</strong> dan tidak bisa dilihat lagi.
+              Simpan di tempat aman (mis. secret CI). Bila hilang, generate ulang.
+            </p>
+            <div class="input-group">
+              <input type="text" class="form-control mono" id="new-api-key" value="<?= e($newApiKey) ?>"
+                     readonly autocomplete="off" spellcheck="false" aria-label="API key baru">
+              <button type="button" class="btn btn-outline-secondary" data-copy-target="#new-api-key">Salin</button>
+            </div>
+          </div>
+        <?php endif; ?>
+
+        <?php if ($apiKeyActive): ?>
+          <dl class="row small mb-3">
+            <dt class="col-sm-4">Prefix</dt>
+            <dd class="col-sm-8 mono"><?= e($apiKeyPrefix) ?>…</dd>
+            <dt class="col-sm-4">Dibuat</dt>
+            <dd class="col-sm-8"><?= e($apiKeyCreated) ?></dd>
+            <dt class="col-sm-4">Terakhir dipakai</dt>
+            <dd class="col-sm-8"><?= e($apiKeyLastUsed === '' ? 'belum pernah' : $apiKeyLastUsed) ?></dd>
+          </dl>
+        <?php else: ?>
+          <p class="small text-muted mb-3">Belum ada API key untuk akun ini.</p>
+        <?php endif; ?>
+
+        <div class="d-flex flex-wrap gap-2">
+          <form method="post" action="/profile/api-key"
+                onsubmit="return confirm('<?= $apiKeyActive ? 'Generate ulang API key? Key lama langsung tidak berlaku.' : 'Buat API key baru?' ?>')">
+            <?= csrf_field() ?>
+            <button type="submit" class="btn btn-primary btn-sm">
+              <?= e($apiKeyActive ? 'Generate ulang' : 'Buat API key') ?>
+            </button>
+          </form>
+          <?php if ($apiKeyActive): ?>
+            <form method="post" action="/profile/api-key/revoke"
+                  onsubmit="return confirm('Cabut API key? Semua klien yang memakainya akan ditolak.')">
+              <?= csrf_field() ?>
+              <button type="submit" class="btn btn-outline-danger btn-sm">Cabut key</button>
+            </form>
+          <?php endif; ?>
+        </div>
+        <div class="form-text mt-2">
+          Header request: <code>Authorization: Bearer &lt;api-key&gt;</code>. Kunci rahasia — jangan
+          ditempel di tiket, tangkapan layar, atau repo.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/profile.js"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

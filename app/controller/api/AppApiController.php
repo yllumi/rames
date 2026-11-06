@@ -6,7 +6,7 @@ namespace app\controller\api;
 use app\controller\app\AppControllerBase;
 use app\library\Api\AmbiguousAppSlug;
 use app\library\Api\ApiAppLocator;
-use app\library\Api\ApiTokenAuth;
+use app\library\Api\ApiKeyAuth;
 use app\library\Api\AppApiPayload;
 use app\library\Auth\AppAccess;
 use app\library\Billing\InsufficientCredits;
@@ -40,17 +40,17 @@ final class AppApiController extends AppControllerBase
 {
     private readonly ?AppStore $apps;
     private readonly ?AppBuildService $builder;
-    private readonly ?ApiTokenAuth $auth;
+    private readonly ?ApiKeyAuth $auth;
 
     /**
      * @param AppStore|null         $apps    seam uji: store app temp (null = bawaan)
      * @param AppBuildService|null  $builder seam uji: pipeline build temp
-     * @param ApiTokenAuth|null     $auth    seam uji: verifier token temp
+     * @param ApiKeyAuth|null       $auth    seam uji: verifier API key temp
      */
     public function __construct(
         ?AppStore $apps = null,
         ?AppBuildService $builder = null,
-        ?ApiTokenAuth $auth = null,
+        ?ApiKeyAuth $auth = null,
     ) {
         $this->apps = $apps;
         $this->builder = $builder;
@@ -59,13 +59,9 @@ final class AppApiController extends AppControllerBase
 
     public function build(Request $request, string $slug): Response
     {
-        $auth = $this->auth ?? new ApiTokenAuth();
-        if (!$auth->enabled()) {
-            // Defense-in-depth: `ApiAuthMiddleware` sudah menjawab 404 sebelum
-            // controller dipanggil; jangan pernah melayani API tanpa token.
-            return $this->fail(404, 'Not Found', 'not_found');
-        }
-        $actor = $auth->actorFromRequest($request);
+        // Defense-in-depth: `ApiAuthMiddleware` sudah menolak key tak sah
+        // sebelum controller dipanggil.
+        $actor = ($this->auth ?? new ApiKeyAuth())->actorFromRequest($request);
         if ($actor === null) {
             return $this->fail(401, 'Unauthorized', 'unauthorized');
         }
@@ -111,11 +107,7 @@ final class AppApiController extends AppControllerBase
 
     public function show(Request $request, string $slug): Response
     {
-        $auth = $this->auth ?? new ApiTokenAuth();
-        if (!$auth->enabled()) {
-            return $this->fail(404, 'Not Found', 'not_found');
-        }
-        $actor = $auth->actorFromRequest($request);
+        $actor = ($this->auth ?? new ApiKeyAuth())->actorFromRequest($request);
         if ($actor === null) {
             return $this->fail(401, 'Unauthorized', 'unauthorized');
         }

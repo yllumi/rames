@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace Tests;
 
 use app\controller\api\AppApiController;
-use app\library\Api\ApiTokenAuth;
+use app\library\Api\ApiKeyAuth;
 use app\library\Auth\UserStore;
 use app\library\Deploy\AppBuildService;
 use app\library\Deploy\DeploySpawner;
@@ -27,15 +27,13 @@ if (!defined('BASE_PATH')) {
  * Endpoint API eksternal fase awal (docs/SPECS.md §7.19):
  * `POST /api/v1/apps/{slug}/build` dan `GET /api/v1/apps/{slug}`.
  *
- * Yang diuji adalah **kontrak respons** controller (middleware token diuji
+ * Yang diuji adalah **kontrak respons** controller (middleware API key diuji
  * terpisah): 202 + payload build, 404 tanpa oracle untuk app tak terlihat,
  * 409 untuk nama ambigu, 401 tanpa aktor, dan payload status tanpa field
  * rahasia. Seluruh store memakai berkas temp (tidak menyentuh data runtime).
  */
 class AppApiControllerTest extends TestCase
 {
-    private const TOKEN = 'api_token_rahasia_0123456789';
-
     private string $db = '';
 
     private string $root = '';
@@ -43,6 +41,9 @@ class AppApiControllerTest extends TestCase
     private UserStore $users;
 
     private AppStore $apps;
+
+    /** @var array<string,string> API key per username (plaintext hanya di tes) */
+    private array $keys = [];
 
     /** @var array<string,mixed> */
     private array $configState = [];
@@ -63,6 +64,10 @@ class AppApiControllerTest extends TestCase
         $this->users->create('admin', 'rahasia-admin-1');
         $this->users->create('member', 'rahasia-member-1');
         $this->users->create('stranger', 'rahasia-stranger-1');
+        foreach (['admin', 'member', 'stranger'] as $username) {
+            $user = $this->users->findByUsername($username);
+            $this->keys[$username] = $this->users->issueApiKey((string) $user['id']);
+        }
         $this->apps = new AppStore($this->db);
     }
 
@@ -83,7 +88,7 @@ class AppApiControllerTest extends TestCase
         $app = $this->createApp('demo', 'owner-other');
         mkdir($this->root . '/demo');
 
-        $response = $this->controller('admin')->build($this->request('POST', '/api/v1/apps/demo/build'), 'demo');
+        $response = $this->controller()->build($this->request('POST', '/api/v1/apps/demo/build'), 'demo');
         $payload = json_decode($response->rawBody(), true);
 
         $this->assertSame(202, $response->getStatusCode());
@@ -100,14 +105,14 @@ class AppApiControllerTest extends TestCase
         $this->createApp('demo', 'owner-other');
         mkdir($this->root . '/demo');
 
-        $response = $this->controller('admin')->build($this->request('POST', '/api/v1/apps/DEMO/build'), 'DEMO');
+        $response = $this->controller()->build($this->request('POST', '/api/v1/apps/DEMO/build'), 'DEMO');
 
         $this->assertSame(202, $response->getStatusCode());
     }
 
     public function testUnknownAppReturns404(): void
     {
-        $response = $this->controller('admin')->build($this->request('POST', '/api/v1/apps/hantu/build'), 'hantu');
+        $response = $this->controller()->build($this->request('POST', '/api/v1/apps/hantu/build'), 'hantu');
         $payload = json_decode($response->rawBody(), true);
 
         $this->assertSame(404, $response->getStatusCode());
@@ -119,8 +124,8 @@ class AppApiControllerTest extends TestCase
     {
         $this->createApp('demo', 'someone-else');
 
-        $own = $this->controller('stranger')->show($this->request('GET', '/api/v1/apps/demo'), 'demo');
-        $missing = $this->controller('stranger')->show($this->request('GET', '/api/v1/apps/hantu'), 'hantu');
+        $own = $this->controller()->show($this->request('GET', '/api/v1/apps/demo', $this->keys['stranger']), 'demo');
+        $missing = $this->controller()->show($this->request('GET', '/api/v1/apps/hantu', $this->keys['stranger']), 'hantu');
 
         $this->assertSame(404, $own->getStatusCode(), 'app milik user lain tidak boleh terlihat');
         $this->assertSame(404, $missing->getStatusCode());
@@ -131,12 +136,13 @@ class AppApiControllerTest extends TestCase
         );
     }
 
-    public function testMissingTokenReturns401(): void
+    public function testMissingKeyReturns401(): void
     {
         $this->createApp('demo', 'someone-else');
 
-        $response = $this->controller('admin')->build(
-            $this->request('POST', '/api/v1/apps/demo/build', null),
+        // Defense-in-depth: tanpa header Authorization controller tetap menolak.
+        $response = $this->controller()->build(
+            $this->request('POST', '/api/v1/apps/demo/build', ''),
             'demo'
         );
 
@@ -154,24 +160,42 @@ class AppApiControllerTest extends TestCase
             'server_id' => 'server-agent-1',
         ]);
 
-        $response = $this->controller('admin')->build($this->request('POST', '/api/v1/apps/dup/build'), 'dup');
+        $response = $this->controller()->build($this->request('POST', '/api/v1/apps/dup/build'), 'dup');
 
         $this->assertSame(409, $response->getStatusCode());
         $this->assertSame('ambiguous_app', json_decode($response->rawBody(), true)['reason']);
     }
 
-    public function testDisabledApiReturns404EvenWithoutMiddleware(): void
+    public function testUnknownKeyReturns401EvenWithoutMiddleware(): void
     {
         $this->createApp('demo', 'someone-else');
         mkdir($this->root . '/demo');
 
-        // Token kosong ⇒ API mati. Middleware sudah menjawab 404; controller
-        // wajib fail-closed juga (defense-in-depth).
-        $controller = $this->controller('admin', '');
-        $response = $controller->build($this->request('POST', '/api/v1/apps/demo/build'), 'demo');
+        // Defense-in-depth: middleware sudah menolak; controller tidak boleh
+        // melayani key yang tidak dikenal maupun mengubah status app.
+        $response = $this->controller()->build(
+            $this->request('POST', '/api/v1/apps/demo/build', 'rmk_' . bin2hex(random_bytes(24))),
+            'demo'
+        );
 
-        $this->assertSame(404, $response->getStatusCode());
-        $this->assertSame('not_found', json_decode($response->rawBody(), true)['reason']);
+        $this->assertSame(401, $response->getStatusCode());
+        $this->assertSame('unauthorized', json_decode($response->rawBody(), true)['reason']);
+        $this->assertSame('running', $this->apps->findByName('demo')['status']);
+    }
+
+    public function testRevokedKeyReturns401(): void
+    {
+        $this->createApp('demo', 'someone-else');
+        mkdir($this->root . '/demo');
+        $admin = $this->users->findByUsername('admin');
+        $this->users->revokeApiKey((string) $admin['id']);
+
+        $response = $this->controller()->build(
+            $this->request('POST', '/api/v1/apps/demo/build', $this->keys['admin']),
+            'demo'
+        );
+
+        $this->assertSame(401, $response->getStatusCode());
         $this->assertSame('running', $this->apps->findByName('demo')['status']);
     }
 
@@ -186,7 +210,10 @@ class AppApiControllerTest extends TestCase
         ]);
         mkdir($this->root . '/demo');
 
-        $response = $this->controller('member')->build($this->request('POST', '/api/v1/apps/demo/build'), 'demo');
+        $response = $this->controller()->build(
+            $this->request('POST', '/api/v1/apps/demo/build', $this->keys['member']),
+            'demo'
+        );
 
         $this->assertSame(404, $response->getStatusCode(), 'viewer tidak punya ability deploy ⇒ 404');
         $this->assertSame('running', $this->apps->findByName('demo')['status']);
@@ -205,7 +232,10 @@ class AppApiControllerTest extends TestCase
         ]);
         mkdir($this->root . '/demo');
 
-        $response = $this->controller('member')->build($this->request('POST', '/api/v1/apps/demo/build'), 'demo');
+        $response = $this->controller()->build(
+            $this->request('POST', '/api/v1/apps/demo/build', $this->keys['member']),
+            'demo'
+        );
 
         $this->assertSame(402, $response->getStatusCode());
         $this->assertSame('insufficient_credits', json_decode($response->rawBody(), true)['reason']);
@@ -236,7 +266,7 @@ class AppApiControllerTest extends TestCase
             ]],
         ]);
 
-        $response = $this->controller('admin')->show($this->request('GET', '/api/v1/apps/demo'), 'demo');
+        $response = $this->controller()->show($this->request('GET', '/api/v1/apps/demo'), 'demo');
         $payload = json_decode($response->rawBody(), true);
 
         $this->assertSame(200, $response->getStatusCode());
@@ -250,7 +280,7 @@ class AppApiControllerTest extends TestCase
         $this->assertStringNotContainsString('rahasia-sekali', $response->rawBody());
     }
 
-    private function controller(string $actorUsername, string $token = self::TOKEN): AppApiController
+    private function controller(): AppApiController
     {
         $launcher = new DeployWorkerLauncher(
             static function (array $argv, ?int &$pid = null, array $env = []): bool {
@@ -271,7 +301,7 @@ class AppApiControllerTest extends TestCase
         return new AppApiController(
             $this->apps,
             $service,
-            new ApiTokenAuth($token, $actorUsername, $this->users)
+            new ApiKeyAuth($this->users)
         );
     }
 
@@ -288,11 +318,16 @@ class AppApiControllerTest extends TestCase
         ]);
     }
 
-    private function request(string $method, string $path, ?string $token = self::TOKEN): Request
+    /**
+     * @param string|null $key API key yang dikirim; `null` = key admin (default),
+     *                         `''` = tanpa header Authorization
+     */
+    private function request(string $method, string $path, ?string $key = null): Request
     {
+        $key ??= $this->keys['admin'];
         $headers = "Host: localhost\r\nAccept: application/json\r\n";
-        if ($token !== null) {
-            $headers .= 'Authorization: Bearer ' . $token . "\r\n";
+        if ($key !== '') {
+            $headers .= 'Authorization: Bearer ' . $key . "\r\n";
         }
 
         return new Request($method . ' ' . $path . " HTTP/1.1\r\n" . $headers . "\r\n");

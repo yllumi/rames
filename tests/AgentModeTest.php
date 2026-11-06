@@ -147,10 +147,10 @@ class AgentModeTest extends TestCase
      * dijalankan DI control plane terhadap host SSH, jadi agent tidak punya
      * permukaan ini.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 163;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 165;
 
-    /** Definisi di atas menghasilkan 169 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 169;
+    /** Definisi di atas menghasilkan 171 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 171;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [
@@ -210,6 +210,9 @@ class AgentModeTest extends TestCase
         'GET /api-docs/openapi.json',
         'GET /api/v1/apps/{slug}',
         'POST /api/v1/apps/{slug}/build',
+        // API key per user (self-service di /profile) — dashboard-only.
+        'POST /profile/api-key',
+        'POST /profile/api-key/revoke',
     ];
 
     private string $tmp = '';

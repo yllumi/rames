@@ -63,14 +63,6 @@ return [
     // route agent TIDAK didaftarkan sama sekali (fail-closed, config/route.php).
     'agent_token' => getenv('AGENT_TOKEN') ?: '',
 
-    // Token bearer API eksternal dashboard (`Authorization: Bearer <token>`,
-    // docs/SPECS.md §7.19). RAHASIA — hanya dari .env, tidak pernah di-log/
-    // ditampilkan. Kosong ⇒ API mati: `/api/v1/*` menjawab 404 (fail-closed,
-    // `ApiAuthMiddleware`). Token dipetakan ke user dashboard `api_token_user`
-    // sehingga otorisasi app (`AppAccess`) & gerbang kredit tetap berlaku.
-    'api_token' => getenv('RAMES_API_TOKEN') ?: '',
-    'api_token_user' => getenv('RAMES_API_TOKEN_USER') ?: 'admin',
-
     // Alamat bind HTTP agent (HTTPS self-signed + pinning fingerprint di sisi
     // control plane; allowlist IP lewat firewall, bukan UI). Dipakai worker
     // agent sebagai alamat listen (`config/process.php`, dengan TLS) — bentuk
