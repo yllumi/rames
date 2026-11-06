@@ -1,9 +1,11 @@
 /**
- * Halaman Profil — tombol "Salin" kartu API key.
+ * Tombol "Salin" generik: elemen apa pun dengan `data-copy-target="<selector>"`
+ * menyalin isi `value`/`textContent` elemen target ke clipboard.
  *
- * Hanya teks statis yang ditulis ke tombol (tanpa innerHTML/data pengguna).
- * Clipboard API dipakai bila tersedia (konteks aman); fallback `execCommand`
- * untuk akses dashboard via http://IP.
+ * Dipakai kartu **API key** di halaman Profil dan blok konfigurasi **MCP** di
+ * halaman `/api-docs`. Hanya teks statis yang ditulis ke tombol (tanpa
+ * innerHTML/data pengguna). Clipboard API dipakai bila tersedia (konteks
+ * aman); fallback `execCommand` untuk akses dashboard via http://IP.
  */
 (function () {
   'use strict';

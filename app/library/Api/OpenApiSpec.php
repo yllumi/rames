@@ -22,6 +22,41 @@ final class OpenApiSpec
     public const VERSION = '1.0.0';
 
     /**
+     * Tool yang disediakan server MCP (`tools/mcp/rames_mcp.py`) — satu sumber
+     * untuk dokumentasi di halaman `/api-docs` dan untuk uji konsistensi
+     * (`tests/OpenApiSpecTest.php` membandingkan nama tool dengan berkas Python).
+     *
+     * @var array<int,array{name:string,title:string,method:string,path:string,description:string}>
+     */
+    public const MCP_TOOLS = [
+        [
+            'name' => 'rames_app_status',
+            'title' => 'Rames: status app',
+            'method' => 'GET',
+            'path' => '/api/v1/apps/{slug}',
+            'description' => 'Status app berdasarkan nama (slug) — dipakai untuk polling setelah build '
+                . 'sampai `status` bukan `deploying`.',
+        ],
+        [
+            'name' => 'rames_build_app',
+            'title' => 'Rames: build ulang app',
+            'method' => 'POST',
+            'path' => '/api/v1/apps/{slug}/build',
+            'description' => 'Build ulang app (asinkron, 202): sama dengan tombol Rebuild di dashboard '
+                . '(gerbang kredit & guard app impor berlaku).',
+        ],
+    ];
+
+    /** Nama server MCP (dipakai klien untuk mengidentifikasi). */
+    public const MCP_SERVER_NAME = 'rames';
+
+    /** Versi server MCP — samakan dengan `SERVER_VERSION` di `tools/mcp/rames_mcp.py`. */
+    public const MCP_SERVER_VERSION = '1.0.0';
+
+    /** Skrip server MCP relatif akar repo. */
+    public const MCP_SCRIPT = 'tools/mcp/rames_mcp.py';
+
+    /**
      * Path dokumen ini di dashboard — **sesi login wajib** (bukan permukaan
      * `/api/v1/**`): dokumentasi API tidak boleh diambil anonim.
      */
@@ -63,6 +98,9 @@ final class OpenApiSpec
                 ['bearerAuth' => []],
             ],
             'paths' => self::paths(),
+            // Ekstensi OpenAPI (prefix `x-`) — dibaca halaman /api-docs untuk
+            // kartu "MCP" (server stdio + dua tool di atas).
+            'x-rames-mcp' => self::mcp(),
             'components' => [
                 'securitySchemes' => [
                     'bearerAuth' => [
@@ -82,6 +120,33 @@ final class OpenApiSpec
                 ],
                 'schemas' => self::schemas(),
             ],
+        ];
+    }
+
+    /**
+     * Metadata server MCP untuk dokumentasi (bukan bagian protokol OpenAPI —
+     * dikirim sebagai extension `x-rames-mcp`).
+     *
+     * @return array<string,mixed>
+     */
+    public static function mcp(): array
+    {
+        return [
+            'name' => self::MCP_SERVER_NAME,
+            'version' => self::MCP_SERVER_VERSION,
+            'transport' => 'stdio',
+            'protocol' => '2025-06-18',
+            'command' => 'python3',
+            'args' => [self::MCP_SCRIPT],
+            'script' => self::MCP_SCRIPT,
+            'docs' => 'tools/mcp/README.md',
+            'requires' => 'Python >= 3.9 (pustaka standar saja, tanpa pip/composer/npm)',
+            'env' => [
+                'RAMES_URL' => 'Alamat dashboard TANPA garis miring di akhir, mis. http://localhost:8123.',
+                'RAMES_API_KEY' => 'API key per user (Profil → API key). Tanpa ini tool menolak jalan.',
+                'RAMES_TIMEOUT' => 'Timeout HTTP detik (opsional; default & maksimum 30).',
+            ],
+            'tools' => self::MCP_TOOLS,
         ];
     }
 

@@ -8,6 +8,10 @@
 /tests/.phpunit.result.cache
 /.phpunit.cache
 
+# Python (tools/mcp — server MCP tanpa dependensi)
+__pycache__/
+*.pyc
+
 # runtime data dashboard deployer
 /apps
 /nginx-status

@@ -126,6 +126,114 @@ class OpenApiSpecTest extends TestCase
         );
     }
 
+    // ------------------------------------------------------------------
+    // Extension MCP (x-rames-mcp)
+    // ------------------------------------------------------------------
+
+    public function testMcpExtensionIsDocumentedInTheSpec(): void
+    {
+        $mcp = OpenApiSpec::build()['x-rames-mcp'] ?? null;
+
+        $this->assertIsArray($mcp);
+        $this->assertSame('stdio', $mcp['transport']);
+        $this->assertSame(OpenApiSpec::MCP_SERVER_NAME, $mcp['name']);
+        $this->assertSame(OpenApiSpec::MCP_SERVER_VERSION, $mcp['version']);
+        $this->assertSame(OpenApiSpec::MCP_SCRIPT, $mcp['script']);
+        $this->assertSame('python3', $mcp['command']);
+        $this->assertSame([OpenApiSpec::MCP_SCRIPT], $mcp['args']);
+        $this->assertNotSame('', (string) ($mcp['docs'] ?? ''));
+    }
+
+    public function testMcpEnvDocumentsUrlAndKey(): void
+    {
+        $env = OpenApiSpec::build()['x-rames-mcp']['env'] ?? [];
+
+        $this->assertArrayHasKey('RAMES_URL', $env);
+        $this->assertArrayHasKey('RAMES_API_KEY', $env);
+        $this->assertStringContainsString('tanpa garis miring', strtolower((string) $env['RAMES_URL']));
+    }
+
+    public function testMcpToolsMapToDocumentedApiPaths(): void
+    {
+        $spec = OpenApiSpec::build();
+        $paths = $spec['paths'];
+        $tools = $spec['x-rames-mcp']['tools'];
+
+        $this->assertCount(2, $tools);
+        $this->assertSame(
+            ['rames_app_status', 'rames_build_app'],
+            array_column($tools, 'name')
+        );
+
+        foreach ($tools as $tool) {
+            // Path tool wajib benar-benar ada di dokumen, dengan method sama.
+            $this->assertArrayHasKey($tool['path'], $paths);
+            $operations = $paths[$tool['path']];
+            $this->assertArrayHasKey(strtolower($tool['method']), $operations);
+        }
+    }
+
+    /**
+     * Satu sumber tidak boleh menyimpang dari skrip MCP: nama tool, versi, dan
+     * path API harus sama dengan yang tertulis di `tools/mcp/rames_mcp.py`.
+     */
+    public function testMcpSpecMatchesServerScript(): void
+    {
+        $script = dirname(__DIR__) . '/' . OpenApiSpec::MCP_SCRIPT;
+        $this->assertFileExists($script);
+        $source = (string) file_get_contents($script);
+        $spec = OpenApiSpec::build();
+
+        foreach ($spec['x-rames-mcp']['tools'] as $tool) {
+            $this->assertStringContainsString(
+                (string) $tool['name'],
+                $source,
+                'tool ' . $tool['name'] . ' tidak ada di skrip MCP'
+            );
+            $this->assertStringContainsString(
+                (string) $tool['path'],
+                $source,
+                'path ' . $tool['path'] . ' tidak ada di skrip MCP'
+            );
+        }
+
+        $this->assertMatchesRegularExpression(
+            '/SERVER_VERSION\\s*=\\s*["\']' . preg_quote(OpenApiSpec::MCP_SERVER_VERSION, '/') . '["\']/',
+            $source,
+            'versi server MCP di skrip berbeda dari OpenApiSpec::MCP_SERVER_VERSION'
+        );
+    }
+
+    public function testDocsViewRendersMcpFromSpecAndUsesSharedCopyScript(): void
+    {
+        $view = (string) file_get_contents(dirname(__DIR__) . '/app/view/api/docs.php');
+        $profileView = (string) file_get_contents(dirname(__DIR__) . '/app/view/profile/index.php');
+
+        $this->assertStringContainsString("x-rames-mcp", $view, 'view harus membaca extension dari OpenApiSpec');
+        $this->assertStringContainsString('/js/copy-text.js', $view);
+        $this->assertStringContainsString('/js/copy-text.js', $profileView);
+        $this->assertFileDoesNotExist(dirname(__DIR__) . '/public/js/profile.js', 'skrip salin sudah digeneralisasi');
+        $this->assertFileExists(dirname(__DIR__) . '/public/js/copy-text.js');
+    }
+
+    /**
+     * Konten Endpoint & MCP dipisah ke tab sendiri: nav memakai `data-tab`
+     * server-side dan pane-nya punya id tetap (`pane-endpoint`, `pane-mcp`).
+     */
+    public function testDocsViewSeparatesEndpointAndMcpIntoTabs(): void
+    {
+        $view = (string) file_get_contents(dirname(__DIR__) . '/app/view/api/docs.php');
+        $script = (string) file_get_contents(dirname(__DIR__) . '/public/js/api-docs.js');
+
+        $this->assertStringContainsString('id="api-docs-tabs"', $view);
+        $this->assertStringContainsString('id="pane-endpoint"', $view);
+        $this->assertStringContainsString('id="pane-mcp"', $view);
+        $this->assertStringContainsString('data-tab="endpoint"', $view);
+        $this->assertStringContainsString('data-tab="mcp"', $view);
+        $this->assertStringContainsString('/js/api-docs.js', $view);
+        $this->assertStringContainsString("searchParams.set('tab'", $script);
+    }
+
     /**
      * Kumpulkan seluruh nilai `$ref` di dokumen.
      *

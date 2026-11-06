@@ -395,5 +395,5 @@ $breadcrumbs = [
   </div>
 </div>
 
-<script src="/js/profile.js"></script>
+<script src="/js/copy-text.js"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>
