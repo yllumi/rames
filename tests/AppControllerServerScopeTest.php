@@ -336,6 +336,27 @@ class AppControllerServerScopeTest extends TestCase
         $this->assertSame([], (new AppStore())->all(), 'tidak boleh ada app yang tersimpan');
     }
 
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testTemplateDeployReturnsValidationErrorsAsJsonForAjax(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $this->tempTemplate('demo');
+
+        $response = (new TemplateController())->templateDeploy(
+            $this->postForm('/apps/create/template/demo', ['name' => 'nama tidak valid'], true),
+            'demo'
+        );
+        $data = json_decode($this->renderBody($response), true);
+
+        self::assertIsArray($data);
+        self::assertSame(1, $data['code'] ?? null);
+        self::assertSame(
+            'Nama app hanya boleh huruf kecil a-z, angka, dan strip (-).',
+            $data['error'] ?? null
+        );
+    }
+
     /**
      * Non-admin tidak boleh memilih server selain server lokal — dan pesannya
      * **tidak membocorkan** apakah server itu ada (id tak dikenal & id milik
@@ -3238,12 +3259,13 @@ class AppControllerServerScopeTest extends TestCase
     }
 
     /** Request form-urlencoded (jalur wizard create) — dengan sesi uji. */
-    private function postForm(string $uri, array $fields): Request
+    private function postForm(string $uri, array $fields, bool $json = false): Request
     {
         $body = http_build_query($fields);
 
         return new AppControllerServerSessionRequest(
             "POST {$uri} HTTP/1.1\r\nHost: localhost\r\n"
+            . ($json ? "Accept: application/json\r\n" : '')
             . "Content-Type: application/x-www-form-urlencoded\r\n"
             . 'Content-Length: ' . strlen($body) . "\r\n\r\n" . $body
         );

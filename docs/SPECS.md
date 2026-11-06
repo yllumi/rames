@@ -164,7 +164,7 @@ Template adalah aset repo (dikelola lewat git, bukan UI): `templates/<slug>/` be
 
 **Nilai env** (`TemplateCatalog::resolveEnv()`): form → `default` → auto-generate (`generate: secret`, hex 48) → tolak bila `required`. Hasil ditulis ke managed env + override env + dokumen app.
 
-**Alur deploy**: galeri → modal (Detail | Panduan) → form nama + env + batas resource + server → `POST /apps/create/template/{slug}` → materialisasi `apps/{name}` → jalur compose biasa (§7.2a). Hasilnya app compose normal (stop/start/deploy ulang/domain/SSL/env/network/terminal/log/database), **tanpa rollback**.
+**Alur deploy**: galeri → modal (Detail | Panduan) → form nama + env + batas resource + server → `POST /apps/create/template/{slug}` → materialisasi `apps/{name}` → jalur compose biasa (§7.2a). Request AJAX mengembalikan kegagalan validasi sebagai JSON `{code: 1, error: "…"}` agar UI menampilkan alasan yang dapat ditindaklanjuti; submit form biasa tetap merender ulang form seperti sebelumnya. Hasilnya app compose normal (stop/start/deploy ulang/domain/SSL/env/network/terminal/log/database), **tanpa rollback**.
 
 ### 7.2c Mode "Impor project compose yang sudah berjalan"
 

@@ -145,6 +145,10 @@ class TemplateController extends CreateDeployController
         } catch (InsufficientCredits $e) {
             return $this->billingBlocked($request, $e);
         } catch (\Throwable $e) {
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $e->getMessage()]);
+            }
+
             // Template tidak ada/rusak → tidak ada form yang bisa dirender ulang.
             if ($template === null || !$template['valid']) {
                 flash_set('error', $e->getMessage());
