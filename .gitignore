@@ -35,3 +35,5 @@
 /ops/ansible/inventories/agents/hosts.yml
 /ops/ansible/.onboarding/
 /ops/ansible/.venv/
+
+docs/api.http
