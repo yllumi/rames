@@ -71,6 +71,16 @@ class FakeCliDeployer implements DeployerInterface
         return $this->finish($app, 'rollback');
     }
 
+    public function switchBranch(array $app, string $branch, callable $logger): array
+    {
+        $this->note('switch-branch:' . $branch);
+        if ((string) getenv('FAKE_DEPLOYER_FAIL') !== '') {
+            throw new RuntimeException('fake branch deploy gagal (test)');
+        }
+        $app['branch'] = $branch;
+        return $this->finish($app, 'switch-branch');
+    }
+
     public function stop(array $app): void
     {
         $this->note('stop');

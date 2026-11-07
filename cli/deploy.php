@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * Background worker deploy app.
  *
- *   php cli/deploy.php <appId> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|apply_limits|apply_ports|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]
+ *   php cli/deploy.php <appId> [deploy|rebuild|rollback|switch_branch|apply|stop|start|teardown|apply_env|apply_limits|apply_ports|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]
  *
  * Untuk op **tingkat server** (`template_pull`, `self_update` — op yang tidak
  * terikat satu app) slot `appId` berisi *target*: slug template (pull) atau
@@ -78,8 +78,8 @@ $ref = $argv[3] ?? '';
 
 // Daftar mode = satu sumber untuk `DeployWorkerLauncher::MODES` (capabilities
 // agent) — jangan menyalinnya di tempat lain.
-if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback', 'apply', 'stop', 'start', 'teardown', 'apply_env', 'apply_limits', 'apply_ports', 'nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue', 'ssl_revoke', 'backup_run', 'restore', 'db_dump', 'restore_archived', 'template_pull', 'self_update'], true) || ($mode === 'rollback' && $ref === '')) {
-    fwrite(STDERR, "Usage: php cli/deploy.php <appId|target> [deploy|rebuild|rollback|apply|stop|start|teardown|apply_env|apply_limits|apply_ports|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]\n");
+if ($appId === '' || !in_array($mode, ['deploy', 'rebuild', 'rollback', 'switch_branch', 'apply', 'stop', 'start', 'teardown', 'apply_env', 'apply_limits', 'apply_ports', 'nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue', 'ssl_revoke', 'backup_run', 'restore', 'db_dump', 'restore_archived', 'template_pull', 'self_update'], true) || (in_array($mode, ['rollback', 'switch_branch'], true) && $ref === '')) {
+    fwrite(STDERR, "Usage: php cli/deploy.php <appId|target> [deploy|rebuild|rollback|switch_branch|apply|stop|start|teardown|apply_env|apply_limits|apply_ports|nginx_write|nginx_remove|nginx_reload|ssl_issue|ssl_revoke|backup_run|restore|db_dump|restore_archived|template_pull|self_update] [ref] [actorId]\n");
     exit(1);
 }
 
@@ -705,6 +705,7 @@ try {
     $app = match ($mode) {
         'rebuild'   => $deployer->rebuild($app, $logger),
         'rollback'  => $deployer->rollback($app, $ref, $logger),
+        'switch_branch' => $deployer->switchBranch($app, $ref, $logger),
         'apply'     => $deployer->apply($app, $logger),
         'apply_env' => $deployer->applyEnv($app, $logger),
         'apply_limits' => $deployer->applyLimits($app, $logger),
@@ -712,13 +713,16 @@ try {
         default     => $deployer->deploy($app, $logger),
     };
 
-    $store->update($appId, function (array &$s) use ($app): void {
+    $store->update($appId, function (array &$s) use ($app, $mode): void {
         $s['status'] = (string) ($app['status'] ?? 'running');
         $s['stage'] = null;
         $s['message'] = $s['status'] === 'running' ? 'Running' : (string) ($app['message'] ?? '');
         $s['error'] = null;
         $s['containers'] = $app['containers'] ?? [];
         $s['deploy_history'] = $app['deploy_history'] ?? $s['deploy_history'] ?? [];
+        if ($mode === 'switch_branch' && array_key_exists('branch', $app)) {
+            $s['branch'] = (string) $app['branch'];
+        }
         unset($s['worker_pid'], $s['worker_mode'], $s['worker_started_at'], $s['agent_job_id']);
     });
 

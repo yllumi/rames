@@ -9,6 +9,7 @@ use app\library\Agent\AgentClient;
 use app\library\Agent\AgentError;
 use app\library\Docker\AppContainers;
 use app\library\Docker\VolumeUsage;
+use app\library\Git\GitService;
 use app\library\Update\AgentVersionGate;
 use RuntimeException;
 
@@ -143,7 +144,7 @@ final class AgentDeployer implements DeployerInterface
      *
      * @var array<int,string>
      */
-    private const ARTIFACT_OPS = ['deploy', 'rebuild', 'rollback', 'apply', 'apply_ports'];
+    private const ARTIFACT_OPS = ['deploy', 'rebuild', 'rollback', 'switch_branch', 'apply', 'apply_ports'];
 
     /** @var array<string,mixed> */
     private readonly array $server;
@@ -246,6 +247,25 @@ final class AgentDeployer implements DeployerInterface
         }
 
         return $this->runJob('rollback', $app, $logger, ['ref' => $ref]);
+    }
+
+    /**
+     * Jalankan pergantian branch + build sepenuhnya di server agent. `ref` pada
+     * payload/argv adalah nama branch target; metadata app baru dikembalikan
+     * dengan branch baru setelah job agent sukses.
+     */
+    public function switchBranch(array $app, string $branch, callable $logger): array
+    {
+        ImportedApp::assertManageable($app, 'Pindah branch');
+        if (!ComposeSource::isGit($app) || trim((string) ($app['repo_url'] ?? '')) === '') {
+            throw new RuntimeException('Pindah branch hanya tersedia untuk app yang dibuat dari repo Git.');
+        }
+        $branch = GitService::validateBranchName($branch);
+
+        $app = $this->runJob('switch_branch', $app, $logger, ['ref' => $branch]);
+        $app['branch'] = $branch;
+
+        return $app;
     }
 
     public function apply(array $app, callable $logger): array

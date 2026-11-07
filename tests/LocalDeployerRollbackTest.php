@@ -254,6 +254,93 @@ class LocalDeployerRollbackTest extends TestCase
         $deployer->rollback($this->makeApp(), $this->fx->v1, fn () => null);
     }
 
+    public function testSwitchBranchDeploysAndPreservesManagedUntrackedOverride(): void
+    {
+        $compose = new FakeComposeRunner();
+        $deployer = $this->makeDeployer($compose, new FakeNginxGenerator());
+        $override = $this->appDir . '/docker-compose.override.managed.yml';
+        $contents = "managed override sentinel\n";
+        file_put_contents($override, $contents);
+
+        $app = $deployer->switchBranch($this->makeApp(), 'feature/test', fn () => null);
+
+        $this->assertSame('feature/test', $app['branch']);
+        $this->assertSame($this->fx->v1, (new GitService())->revParse($this->appDir));
+        $this->assertSame('feature/test', (new GitService())->currentBranch($this->appDir));
+        $this->assertSame($contents, file_get_contents($override));
+        $this->assertSame([['up', 'myapp', true]], $compose->calls);
+        $this->assertSame('switch_branch', $app['deploy_history'][0]['action']);
+        $this->assertSame('success', $app['deploy_history'][0]['status']);
+    }
+
+    public function testSwitchBranchBuildFailureRestoresPriorDetachedCommitNotMetadataBranch(): void
+    {
+        $git = new GitService();
+        $git->checkout($this->appDir, $this->fx->v1);
+        $compose = new FakeComposeRunner();
+        $compose->upFailRemaining = 1;
+        $deployer = $this->makeDeployer($compose, new FakeNginxGenerator());
+        $app = $this->makeApp(); // metadata still says main (at v2)
+        $metadataBranchBefore = $app['branch'];
+
+        try {
+            $deployer->switchBranch($app, 'feature/test', fn () => null);
+            $this->fail('build target yang gagal harus dilaporkan ke caller');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('deployment sebelumnya berhasil dibangun ulang', $e->getMessage());
+        }
+
+        $this->assertSame($metadataBranchBefore, $app['branch'], 'input metadata caller tidak dimutasi');
+        $this->assertSame($this->fx->v1, $git->revParse($this->appDir), 'SHA sebelumnya dipulihkan persis');
+        $this->assertNull($git->currentBranch($this->appDir), 'HEAD sebelumnya yang detached tetap detached');
+        $this->assertSame([['up', 'myapp', true], ['up', 'myapp', true]], $compose->calls);
+    }
+
+    public function testSwitchBranchBuildFailureRestoresPriorAttachedBranchAndCommit(): void
+    {
+        $git = new GitService();
+        $compose = new FakeComposeRunner();
+        $compose->upFailRemaining = 1;
+        $deployer = $this->makeDeployer($compose, new FakeNginxGenerator());
+        $app = $this->makeApp();
+
+        try {
+            $deployer->switchBranch($app, 'feature/test', fn () => null);
+            $this->fail('build target yang gagal harus dilaporkan ke caller');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('deployment sebelumnya berhasil dibangun ulang', $e->getMessage());
+        }
+
+        $this->assertSame('main', $git->currentBranch($this->appDir));
+        $this->assertSame($this->fx->v2, $git->revParse($this->appDir));
+        $this->assertSame([['up', 'myapp', true], ['up', 'myapp', true]], $compose->calls);
+    }
+
+    public function testSwitchBranchFailureReportsBothOperationAndRestoreErrors(): void
+    {
+        $compose = new FakeComposeRunner();
+        $compose->upFailRemaining = 2;
+        $deployer = $this->makeDeployer($compose, new FakeNginxGenerator());
+
+        try {
+            $deployer->switchBranch($this->makeApp(), 'feature/test', fn () => null);
+            $this->fail('target build dan restore build sama-sama gagal');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('Pindah branch/deploy gagal:', $e->getMessage());
+            $this->assertStringContainsString('restore branch/commit/deployment sebelumnya juga gagal:', $e->getMessage());
+            $this->assertSame(2, substr_count($e->getMessage(), 'docker compose up gagal (simulasi)'));
+        }
+    }
+
+    public function testSwitchBranchIsRejectedForComposeApp(): void
+    {
+        $deployer = $this->makeDeployer(new FakeComposeRunner(), new FakeNginxGenerator());
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('repo Git');
+        $deployer->switchBranch($this->makeComposeApp(), 'feature/test', fn () => null);
+    }
+
     public function testRecordHistoryKeepsLastTwentyEntries(): void
     {
         $deployer = $this->makeDeployer(new FakeComposeRunner(), new FakeNginxGenerator());

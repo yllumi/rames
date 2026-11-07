@@ -341,6 +341,39 @@ class CliDeployJobAwarenessTest extends TestCase
         $this->assertSame([], $this->notes());
     }
 
+    public function testSwitchBranchModePersistsMetadataOnlyAfterSuccessfulDeploy(): void
+    {
+        $job = $this->jobStore()->create('switch_branch', self::APP_ID, ['ref' => 'feature/test']);
+        $result = $this->worker('switch_branch', self::APP_ID, 'feature/test', ['RAMES_JOB_ID' => (string) $job['id']]);
+
+        $this->assertSame(0, $result['code'], 'stderr: ' . $result['stderr']);
+        $this->assertSame('feature/test', $this->storedApp()['branch']);
+        $this->assertSame(['switch-branch:feature/test'], $this->notes());
+        $this->assertSame('done', $this->jobStore()->find((string) $job['id'])['status']);
+    }
+
+    public function testSwitchBranchFailureLeavesBranchMetadataUnchanged(): void
+    {
+        $job = $this->jobStore()->create('switch_branch', self::APP_ID, ['ref' => 'feature/test']);
+        $result = $this->worker('switch_branch', self::APP_ID, 'feature/test', [
+            'RAMES_JOB_ID' => (string) $job['id'],
+            'FAKE_DEPLOYER_FAIL' => '1',
+        ]);
+
+        $this->assertSame(1, $result['code']);
+        $this->assertSame('main', $this->storedApp()['branch']);
+        $this->assertSame('error', $this->jobStore()->find((string) $job['id'])['status']);
+    }
+
+    public function testSwitchBranchRequiresTargetArgument(): void
+    {
+        $result = $this->worker('switch_branch');
+
+        $this->assertSame(1, $result['code']);
+        $this->assertStringContainsString('Usage:', $result['stderr']);
+        $this->assertSame('main', $this->storedApp()['branch']);
+    }
+
     // ==================================================================
     // Mode Nginx & SSL (multi-server F2) — dijalankan di server tempat worker
     // ini berjalan, tanpa menyentuh container (tidak melewati gerbang kredit)

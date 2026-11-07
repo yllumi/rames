@@ -1857,7 +1857,9 @@ class AppControllerServerScopeTest extends TestCase
         file_put_contents($this->tmp . '/apps/app-yatim/docker-compose.yml', "services:\n  web:\n    image: nginx:alpine\n");
         $GLOBALS['RAMES_FLASH'] = [];
 
-        $request = new Request("POST /apps/{$app['id']}/delete HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        $request = $this->postForm('/apps/' . $app['id'] . '/delete', [
+            'confirm_name' => 'app-yatim',
+        ]);
         $response = (new DeploymentController())->delete($request, $app['id']);
 
         $this->assertSame(302, $response->getStatusCode());
@@ -1872,6 +1874,88 @@ class AppControllerServerScopeTest extends TestCase
         $this->assertStringContainsString('sudah tidak ada di registry', $flash[0]['message']);
         $this->assertStringContainsString('TIDAK dijalankan', $flash[0]['message']);
         $this->assertStringContainsString('down -v', $flash[0]['message'], 'arah pembersihan manual disebut');
+    }
+
+    /**
+     * Semua varian delete wajib memvalidasi nama lebih dulu: preserve, purge,
+     * dan detach app impor tidak boleh menghapus record, artefak, maupun env
+     * bila konfirmasi hilang, salah, atau bukan scalar string.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testDeleteRejectsMissingOrMismatchedConfirmationBeforeSideEffects(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $cases = [
+            ['name' => 'delete-preserve', 'fields' => ['mode' => 'preserve']],
+            ['name' => 'delete-purge', 'fields' => ['mode' => 'purge', 'confirm_name' => 'not-the-name']],
+            ['name' => 'delete-imported', 'fields' => ['confirm_name' => ['delete-imported']]],
+        ];
+
+        foreach ($cases as $case) {
+            $name = $case['name'];
+            $imported = $name === 'delete-imported';
+            $app = (new AppStore())->create([
+                'name' => $name,
+                'server_id' => 'server-yang-dihapus',
+                'source' => 'compose',
+                'origin' => $imported ? 'imported' : '',
+                'status' => 'running',
+            ]);
+            $dir = $this->tmp . '/apps/' . $name;
+            mkdir($dir, 0777, true);
+            file_put_contents($dir . '/marker.txt', 'tetap ada');
+            $envDir = $this->tmp . '/database/env';
+            if (!is_dir($envDir)) {
+                mkdir($envDir, 0777, true);
+            }
+            file_put_contents($envDir . '/' . $name . '.env', 'MARKER=keep' . PHP_EOL);
+
+            $response = (new DeploymentController())->delete(
+                $this->postForm('/apps/' . $app['id'] . '/delete', $case['fields']),
+                $app['id']
+            );
+
+            self::assertSame(302, $response->getStatusCode(), $name);
+            self::assertSame('/apps/' . $app['id'], $response->getHeader('Location'), $name);
+            self::assertSame($app, (new AppStore())->find($app['id']), $name . ': record tidak berubah');
+            self::assertSame('tetap ada', file_get_contents($dir . '/marker.txt'), $name . ': artefak tidak berubah');
+            self::assertSame(
+                'MARKER=keep' . PHP_EOL,
+                file_get_contents($envDir . '/' . $name . '.env'),
+                $name . ': managed env tidak berubah'
+            );
+        }
+
+        self::assertCount(3, $GLOBALS['RAMES_FLASH']);
+        foreach ($GLOBALS['RAMES_FLASH'] as $flash) {
+            self::assertSame('error', $flash['type']);
+            self::assertStringContainsString('nama app', $flash['message']);
+        }
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testDeleteInvalidConfirmationReturnsJsonErrorWithoutDeletingApp(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = (new AppStore())->create([
+            'name' => 'delete-json',
+            'server_id' => 'server-yang-dihapus',
+            'status' => 'running',
+        ]);
+
+        $response = (new DeploymentController())->delete(
+            $this->postForm('/apps/' . $app['id'] . '/delete', ['confirm_name' => 'wrong'], true),
+            $app['id']
+        );
+        $payload = json_decode($this->renderBody($response), true);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame(1, $payload['code'] ?? null);
+        self::assertSame('Ketik nama app dengan tepat untuk mengonfirmasi penghapusan.', $payload['error'] ?? null);
+        self::assertSame($app, (new AppStore())->find($app['id']));
+        self::assertSame([], $GLOBALS['RAMES_FLASH'], 'respons JSON tidak memakai flash session');
     }
 
     /**

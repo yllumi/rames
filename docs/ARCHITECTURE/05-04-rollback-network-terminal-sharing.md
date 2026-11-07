@@ -2,7 +2,15 @@
 
 > Bagian dari [dokumentasi arsitektur](../ARCHITECTURE.md) · Spesifikasi: [SPECS.md](../SPECS.md) · Panduan operasional: [DETAILS.md](../../DETAILS.md)
 
-## 5.7 Rollback (kembali ke versi sebelumnya)
+## 5.7 Rollback & Ganti Branch
+
+### Ganti Branch (switch-and-deploy)
+
+`POST /apps/{id}/branch` (`branch`) memerlukan ability `deploy`. `BranchChangeService` memvalidasi dan mengantrekan worker `switch_branch`; status app menjadi `deploying`, tetapi metadata `branch` tidak berubah sampai worker berhasil. Hanya app Git yang didukung (lokal dan agent); app compose, template, dan impor tidak berpindah branch.
+
+Worker mengambil branch lokal maupun remote secara eksplisit dengan shallow fetch `--depth=1`, mengganti checkout, lalu membangun ulang. Override terkelola hasil generate yang untracked tetap dipertahankan. Jika operasi gagal, pemulihan best-effort mengembalikan SHA sebelumnya dan keadaan HEAD attached/detached secara persis lalu membangun ulang checkout itu. Error operasi tetap ditampilkan; jika pemulihan juga gagal, kedua error dilaporkan. Pada server agent, `AgentDeployer` mengirim operasi sebagai job; agent wajib mendukung mode/capability worker yang kompatibel.
+
+### Rollback (kembali ke versi sebelumnya)
 
 > Hanya untuk app mode `source: "git"`. App mode `compose` (§5.1b) tidak punya checkpoint commit: `deploy_history` tetap dicatat sebagai log deployment (`sha` kosong), tetapi tombol Rollback & link *Semua versi* disembunyikan, route `/apps/{id}/versions` dialihkan ke detail app, dan `LocalDeployer::rollback()` menolak.
 

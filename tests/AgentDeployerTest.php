@@ -159,6 +159,7 @@ class AgentDeployerTest extends TestCase
             'apply_limits' => ['applyLimits', [], ['op' => 'apply_limits']],
             'apply_ports' => ['applyPorts', [], ['op' => 'apply_ports']],
             'rollback' => ['rollback', ['ref' => 'abc1234'], ['op' => 'rollback', 'ref' => 'abc1234']],
+            'switch_branch' => ['switchBranch', ['branch' => 'feature/test'], ['op' => 'switch_branch', 'ref' => 'feature/test']],
             'stop' => ['stop', [], ['op' => 'stop']],
             'start' => ['start', [], ['op' => 'start']],
             // `teardown` = app dihapus di control plane ⇒ agent wajib membuang
@@ -180,7 +181,7 @@ class AgentDeployerTest extends TestCase
         $handler->reply(200, json_encode(['code' => 0, 'app' => []]));
         $deployer = $this->deployer($handler);
 
-        match ($method) {
+        $result = match ($method) {
             'deploy' => $deployer->deploy($this->app(), $this->logger()),
             'rebuild' => $deployer->rebuild($this->app(), $this->logger()),
             'apply' => $deployer->apply($this->app(), $this->logger()),
@@ -188,6 +189,7 @@ class AgentDeployerTest extends TestCase
             'applyLimits' => $deployer->applyLimits($this->app(), $this->logger()),
             'applyPorts' => $deployer->applyPorts($this->app(), $this->logger()),
             'rollback' => $deployer->rollback($this->app(), (string) $args['ref'], $this->logger()),
+            'switchBranch' => $deployer->switchBranch($this->app(), (string) $args['branch'], $this->logger()),
             'stop' => $deployer->stop($this->app()),
             'start' => $deployer->start($this->app()),
             'teardown' => $deployer->teardown($this->app(), $args['preserve']),
@@ -207,6 +209,24 @@ class AgentDeployerTest extends TestCase
         // Dokumen app ikut dikirim (proyeksi di agent, plan §4.3).
         $this->assertSame(self::APP_ID, $body['app']['id'] ?? null);
         $this->assertSame('demo', $body['app']['name'] ?? null);
+        if ($method === 'switchBranch') {
+            $this->assertArrayHasKey('artifacts', $body, 'worker agent membutuhkan deploy key/artefak yang sama seperti rebuild');
+            $this->assertSame('feature/test', $result['branch'] ?? null);
+        }
+    }
+
+    public function testSwitchBranchRejectsInvalidTargetBeforeAgentRequest(): void
+    {
+        $handler = new AgentDeployerFakeHandler();
+
+        try {
+            $this->deployer($handler)->switchBranch($this->app(), '-option', $this->logger());
+            $this->fail('branch invalid harus ditolak');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('branch', strtolower($e->getMessage()));
+        }
+
+        $this->assertSame(0, $handler->count());
     }
 
     public function testRollbackWithoutRefIsRejectedBeforeAnyCall(): void

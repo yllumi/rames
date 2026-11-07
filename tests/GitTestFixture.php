@@ -29,6 +29,7 @@ final class GitTestFixture
 
         $fx->v2 = trim((string) shell_exec('git -C ' . escapeshellarg($fx->origin) . ' rev-parse HEAD'));
         $fx->v1 = trim((string) shell_exec('git -C ' . escapeshellarg($fx->origin) . ' rev-parse HEAD~1'));
+        $fx->git($fx->origin, ['branch', 'feature/test', $fx->v1]);
         return $fx;
     }
 

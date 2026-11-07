@@ -39,6 +39,7 @@ use app\controller\MonitorController;
 use app\controller\NetworkController;
 use app\controller\NginxController;
 use app\controller\app\AccessController;
+use app\controller\app\BranchController;
 use app\controller\app\ComposeController;
 use app\controller\app\ContainerController;
 use app\controller\app\CreateController;
@@ -326,6 +327,7 @@ Route::get('/api/apps/{id}/deploy-log', [LogController::class, 'deployLog']);
 Route::get('/api/apps/{id}/metrics', [AppMetricsController::class, 'show']);
 
 // Aksi app
+Route::post('/apps/{id}/branch', [BranchController::class, 'change']);
 Route::post('/apps/{id}/rebuild', [DeploymentController::class, 'rebuild']);
 // Batalkan deploy/build yang sedang berjalan (hentikan worker + grup proses)
 Route::post('/apps/{id}/deploy/cancel', [DeploymentController::class, 'cancelDeploy']);
@@ -635,7 +637,6 @@ Route::post('/credits/email', [CreditController::class, 'setEmail']);
 Route::post('/credits/topup', [CreditController::class, 'topup']);
 Route::get('/credits/topup/return', [CreditController::class, 'topupReturn']);
 Route::get('/api/credits/methods', [CreditController::class, 'methods']);
-
 
 
 

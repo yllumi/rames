@@ -84,6 +84,22 @@ class GitServiceTest extends TestCase
         $this->assertSame('/tmp/rames-clone-target', $command[count($command) - 1]);
     }
 
+    public function testSwitchBranchFetchUsesShallowDepth(): void
+    {
+        $runner = new RecordingProcessRunner();
+        (new GitService($runner))->switchBranch('/tmp/rames-app', 'feature/test');
+
+        $this->assertCount(4, $runner->commands);
+        $fetch = $runner->commands[1];
+        $this->assertSame(['git', '-C', '/tmp/rames-app', 'fetch'], array_slice($fetch, 0, 4));
+        $this->assertContains('--depth=1', $fetch);
+        $this->assertSame('origin', $fetch[count($fetch) - 2]);
+        $this->assertSame(
+            '+refs/heads/feature/test:refs/remotes/origin/feature/test',
+            $fetch[count($fetch) - 1]
+        );
+    }
+
     public function testCloneProducesShallowRepositoryWithSingleCommit(): void
     {
         $dest = $this->fx->workDir . '/app-shallow';
@@ -114,5 +130,47 @@ class GitServiceTest extends TestCase
         $git->ensureBranch($dest, 'main');
         $git->pull($dest, 'main');
         $this->assertSame($this->fx->v2, $git->revParse($dest));
+    }
+
+    public function testSwitchBranchFetchesOnlyRequestedRemoteHeadAndAttachesLocalBranch(): void
+    {
+        $dest = $this->fx->workDir . '/switch-branch';
+        $this->fx->cloneShallow($dest);
+        $git = new GitService();
+
+        $sha = $git->switchBranch($dest, 'feature/test');
+
+        $this->assertSame($this->fx->v1, $sha);
+        $this->assertSame($this->fx->v1, $git->revParse($dest));
+        $this->assertSame('feature/test', $git->currentBranch($dest));
+        $this->assertFileExists($dest . '/v1.txt');
+        $this->assertFileDoesNotExist($dest . '/v2.txt');
+    }
+
+    public function testRestoreCheckoutRestoresDetachedHeadAtExactCommit(): void
+    {
+        $dest = $this->fx->workDir . '/restore-detached';
+        $this->fx->cloneShallow($dest);
+        $git = new GitService();
+        $git->checkout($dest, $this->fx->v1);
+
+        $this->assertNull($git->currentBranch($dest));
+        $git->switchBranch($dest, 'feature/test');
+        $git->restoreCheckout($dest, $this->fx->v1, null);
+
+        $this->assertSame($this->fx->v1, $git->revParse($dest));
+        $this->assertNull($git->currentBranch($dest));
+    }
+
+    public function testBranchNameValidationRejectsRefspecAndOptionInjectionShapes(): void
+    {
+        foreach (['', '-main', 'main..other', 'main/../other', 'main:other', 'main.lock'] as $branch) {
+            try {
+                GitService::validateBranchName($branch);
+                $this->fail('branch tidak sah harus ditolak: ' . $branch);
+            } catch (\RuntimeException $e) {
+                $this->assertSame('Nama branch Git tidak valid.', $e->getMessage());
+            }
+        }
     }
 }

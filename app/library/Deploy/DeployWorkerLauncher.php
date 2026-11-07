@@ -22,9 +22,10 @@ use app\library\Support\SigchldGuard;
  * (slug template / `agent`) — bentuk argv-nya identik; hanya pemaknaan slot itu
  * yang berbeda (didokumentasikan juga di `cli/deploy.php`).
  *
- * `ref` selalu menempati slot ke-4 (string kosong bila bukan rollback) supaya
- * `actorId` (argv[4]) tidak bergeser; worker memakai aktor untuk pengecualian
- * kredit yang sama dengan controller.
+ * Slot `ref` selalu berada di argv[3] (SHA rollback atau nama branch untuk
+ * `switch_branch`; string kosong untuk mode lain) supaya `actorId` (argv[4])
+ * tidak bergeser; worker memakai aktor untuk pengecualian kredit yang sama
+ * dengan controller.
  *
  * Alasan `pcntl_fork` + `pcntl_exec` (bukan `proc_open`/`ProcessRunner`):
  * `proc_open` + `proc_close` **BLOCKING** sampai worker selesai, sehingga
@@ -98,6 +99,7 @@ final class DeployWorkerLauncher
         'deploy',
         'rebuild',
         'rollback',
+        'switch_branch',
         'apply',
         'stop',
         'start',
@@ -208,7 +210,7 @@ final class DeployWorkerLauncher
      * @param string      $appId   id app, atau **target** untuk op tingkat server
      *                             ({@see self::SERVER_OPS}: slug template / `agent`)
      * @param string      $mode    mode `cli/deploy.php` — lihat {@see self::MODES} (satu sumber)
-     * @param string|null $ref     ref rollback (mode lain: null/'' ⇒ slot dibiarkan kosong)
+     * @param string|null $ref     SHA rollback / branch target (mode lain: null/'' ⇒ slot dibiarkan kosong)
      * @param string      $actorId id user penekan tombol (`argv[4]`), '' bila tak ada konteks login
      * @param string      $jobId   id job agent (`RAMES_JOB_ID` di worker), '' bila
      *                             spawn bukan bagian dari job agent (jalur control

@@ -8,8 +8,8 @@ use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Smoke render blok metrik di tab Info halaman detail app
- * (`app/view/app/partials/detail-tab-info.php` #app-metrics) + kontrak aset JS.
+ * Smoke render blok metrik & form branch di tab Info halaman detail app
+ * (`app/view/app/partials/detail-tab-info.php`) + kontrak aset JS.
  *
  * Kontrak yang dikunci (frontend, data diisi `public/js/app-metrics.js`):
  *  1. section `#app-metrics` punya `data-app-id` dari `$app['id']` (ter-escape);
@@ -35,6 +35,12 @@ final class AppMetricsViewTest extends TestCase
                 function e(mixed $value): string
                 {
                     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                }
+            }
+            if (!function_exists('csrf_field')) {
+                function csrf_field(): string
+                {
+                    return '<input type="hidden" name="_token" value="test">';
                 }
             }
         }
@@ -104,6 +110,18 @@ final class AppMetricsViewTest extends TestCase
 
         self::assertStringContainsString('data-copy-detail-key', $html);
         self::assertStringNotContainsString('onclick="copyDetailKey()', $html);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testBranchDapatDiubahOlehUserDenganAbilityDeploy(): void
+    {
+        $html = $this->render(['abilities' => ['deploy' => true]]);
+
+        self::assertStringContainsString('action="/apps/app-1/branch"', $html);
+        self::assertStringContainsString('name="branch"', $html);
+        self::assertStringContainsString('Ganti &amp; deploy', $html);
+        self::assertStringContainsString('name="_token"', $html);
     }
 
     public function testDetailScriptsMemuatAppMetrics(): void
@@ -178,6 +196,9 @@ final class AppMetricsViewTest extends TestCase
             'appPorts' => [],
             'proxiedPort' => 0,
             'isCompose' => false,
+            'isImported' => false,
+            'isBusy' => false,
+            'abilities' => [],
             'isRemoteServer' => false,
             'appServerName' => '',
             'sshPubkey' => null,

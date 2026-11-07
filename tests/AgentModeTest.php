@@ -147,10 +147,10 @@ class AgentModeTest extends TestCase
      * dijalankan DI control plane terhadap host SSH, jadi agent tidak punya
      * permukaan ini.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 165;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 166;
 
     /** Definisi di atas menghasilkan 171 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 171;
+    private const DASHBOARD_ROUTE_PAIRS = 172;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [

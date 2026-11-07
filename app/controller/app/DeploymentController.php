@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\controller\app;
 
+use app\library\Auth\AppDeletionConfirmation;
 use app\library\Billing\InsufficientCredits;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\AppBuildBlocked;
@@ -318,6 +319,16 @@ class DeploymentController extends AppControllerBase
     {
         $store = new AppStore();
         $app = $this->findApp($id, 'delete');
+
+        if (!AppDeletionConfirmation::matches($request->post('confirm_name'), (string) ($app['name'] ?? ''))) {
+            $message = 'Ketik nama app dengan tepat untuk mengonfirmasi penghapusan.';
+            if ($request->expectsJson()) {
+                return json(['code' => 1, 'error' => $message]);
+            }
+            flash_set('error', $message);
+
+            return redirect('/apps/' . $id);
+        }
 
         // App impor = project compose milik user di terminal. "Hapus" berarti
         // MELEPAS record dari dashboard saja: container/volume/berkas proyek

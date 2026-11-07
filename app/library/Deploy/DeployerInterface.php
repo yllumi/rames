@@ -55,6 +55,18 @@ interface DeployerInterface
      */
     public function rollback(array $app, string $ref, callable $logger): array;
 
+    /**
+     * Pindah ke branch remote Git yang ditentukan dan deploy versinya.
+     * Implementasi hanya memperbarui `branch` pada hasil setelah fetch,
+     * checkout, dan build seluruhnya berhasil.
+     *
+     * @param array    $app
+     * @param string   $branch nama branch target
+     * @param callable $logger callable(string $stage, string $message): void
+     * @return array app yang diperbarui
+     */
+    public function switchBranch(array $app, string $branch, callable $logger): array;
+
     public function stop(array $app): void;
 
     public function start(array $app): void;

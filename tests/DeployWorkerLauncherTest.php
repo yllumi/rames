@@ -162,6 +162,19 @@ class DeployWorkerLauncherTest extends TestCase
         $this->assertSame([PHP_BINARY, $this->tmp . '/cli/deploy.php', 'app1', 'apply_limits'], $this->spawned[0]);
     }
 
+    public function testSwitchBranchModeCarriesTargetInRefArgumentSlot(): void
+    {
+        $this->assertContains('switch_branch', DeployWorkerLauncher::MODES);
+        $this->assertContains('switch_branch', AgentJobController::OPS);
+
+        $launcher = $this->launcher();
+        $this->assertTrue($launcher->launch('app1', 'switch_branch', 'feature/test'));
+        $this->assertSame(
+            [PHP_BINARY, $this->tmp . '/cli/deploy.php', 'app1', 'switch_branch', 'feature/test'],
+            $this->spawned[0]
+        );
+    }
+
     public function testSpawnFailureIsReportedAsFalse(): void
     {
         $launcher = $this->launcher(false);

@@ -164,6 +164,99 @@ class LocalDeployer implements DeployerInterface
         }
     }
 
+    /**
+     * Pindah ke branch remote dan build di branch itu. Bila fetch/checkout/build
+     * gagal, kembalikan branch+SHA checkout sebelumnya dan up versi tersebut
+     * best-effort; metadata branch hanya diperbarui pada hasil sukses.
+     */
+    public function switchBranch(array $app, string $branch, callable $logger): array
+    {
+        ImportedApp::assertManageable($app, 'Pindah branch');
+        if (!ComposeSource::isGit($app) || trim((string) ($app['repo_url'] ?? '')) === '') {
+            throw new RuntimeException('Pindah branch hanya tersedia untuk app yang dibuat dari repo Git.');
+        }
+        $branch = GitService::validateBranchName($branch);
+
+        $project = (string) $app['name'];
+        $dir = $this->appDir($app);
+        $files = $this->resolveComposeFiles($app, $dir);
+        $this->ensureNginxPrecondition($app, $dir, $files);
+
+        $git = new GitService();
+        $previousSha = $git->revParse($dir);
+        $previousBranch = $git->currentBranch($dir);
+        $previousMetadataBranch = (string) ($app['branch'] ?? '');
+        $managedOverrides = $this->captureUntrackedManagedOverrides($dir, $git);
+
+        $logger('branch', 'Mengambil branch remote "' . $branch . '" ...');
+        try {
+            $this->removeManagedOverrides($dir, $managedOverrides);
+            $git->switchBranch($dir, $branch, $this->appSshKeyPath($app));
+            $this->restoreManagedOverrides($dir, $managedOverrides);
+
+            $files = $this->syncManagedOverrides($app, $dir, $files);
+            $logger('build', 'docker compose up -d --build ...');
+            $this->upCompose($project, $app, $dir, $files, true, $logger);
+
+            $app['containers'] = $this->getContainers($project);
+            $this->writeNginxConfigStep($app, $logger);
+            $app['status'] = 'running';
+            $app['branch'] = $branch;
+            $logger('done', 'Pindah branch dan deploy selesai.');
+            return $this->recordHistory($app, $git->revParse($dir), 'switch_branch', 'success');
+        } catch (\Throwable $operationError) {
+            $failure = $operationError->getMessage();
+            $this->logBranchSwitch($logger, 'restore', 'Pindah branch/deploy gagal: ' . $failure);
+
+            try {
+                $git->restoreCheckout($dir, $previousSha, $previousBranch);
+                $this->restoreManagedOverrides($dir, $managedOverrides);
+                $restoreFiles = $this->syncManagedOverrides($app, $dir, $files);
+                $this->logBranchSwitch($logger, 'restore', 'Membangun ulang commit sebelumnya ' . $previousSha . ' ...');
+                $this->upCompose($project, $app, $dir, $restoreFiles, true, $logger);
+
+                $app['containers'] = $this->getContainers($project);
+                $this->writeNginxConfigStep($app, $logger);
+                $app['status'] = 'running';
+            } catch (\Throwable $restoreError) {
+                $logger('error', 'Restore branch/commit/deployment sebelumnya juga gagal: ' . $restoreError->getMessage());
+                throw new RuntimeException(
+                    'Pindah branch/deploy gagal: ' . $failure
+                    . '; restore branch/commit/deployment sebelumnya juga gagal: ' . $restoreError->getMessage(),
+                    0,
+                    $operationError
+                );
+            }
+
+            $this->logBranchSwitch(
+                $logger,
+                'restore',
+                'Restore berhasil: branch metadata "' . $previousMetadataBranch
+                . '", checkout ' . ($previousBranch ?? '(detached)') . '@' . $previousSha
+                . ' dan deployment sebelumnya aktif kembali.'
+            );
+            throw new RuntimeException(
+                'Pindah branch/deploy gagal: ' . $failure
+                . '; branch dan commit sebelumnya dipulihkan dan deployment sebelumnya berhasil dibangun ulang.',
+                0,
+                $operationError
+            );
+        }
+    }
+
+    /**
+     * Logging pemulihan bersifat non-fatal: callback log tidak boleh
+     * menghalangi restore source/container setelah kegagalan build.
+     */
+    private function logBranchSwitch(callable $logger, string $stage, string $message): void
+    {
+        try {
+            $logger($stage, $message);
+        } catch (\Throwable) {
+            // Proses restore lebih penting daripada callback logger.
+        }
+    }
+
     public function stop(array $app): void
     {
         // App impor: compose dijalankan dari terminal user, bukan Rames. Cukup
@@ -499,6 +592,94 @@ class LocalDeployer implements DeployerInterface
             $this->repairStaleOverrides($dir, $files);
         }
         return ComposeSource::filterMissingGenerated($dir, $files);
+    }
+
+    /**
+     * Simpan override managed yang belum dilacak Git agar checkout antar-branch
+     * tidak menimpa atau membuang konfigurasi generated yang dimiliki Rames.
+     *
+     * @return array<string,array{contents:string,mode:int}>
+     */
+    private function captureUntrackedManagedOverrides(string $dir, GitService $git): array
+    {
+        $saved = [];
+        foreach (glob(rtrim($dir, '/') . '/' . ComposeSource::GENERATED_PREFIX . '*') ?: [] as $path) {
+            if (!is_file($path) || is_link($path)) {
+                continue;
+            }
+            $name = basename($path);
+            if ($git->isTracked($dir, $name)) {
+                continue;
+            }
+            $contents = file_get_contents($path);
+            if ($contents === false) {
+                throw new RuntimeException('Gagal menyimpan override managed "' . $name . '" sebelum pindah branch.');
+            }
+            $mode = fileperms($path);
+            $saved[$name] = ['contents' => $contents, 'mode' => $mode === false ? 0644 : ($mode & 0777)];
+        }
+
+        return $saved;
+    }
+
+    /**
+     * Pindahkan snapshot override sebelum checkout agar file target branch tidak
+     * dapat menimpa data managed. Snapshot selalu dipasang kembali di jalur sukses
+     * maupun pemulihan.
+     *
+     * @param array<string,array{contents:string,mode:int}> $saved
+     */
+    private function removeManagedOverrides(string $dir, array $saved): void
+    {
+        foreach (array_keys($saved) as $name) {
+            $path = rtrim($dir, '/') . '/' . $name;
+            if (is_file($path) && !unlink($path)) {
+                $this->restoreManagedOverrides($dir, $saved);
+                throw new RuntimeException('Gagal memindahkan override managed "' . $name . '" sebelum pindah branch.');
+            }
+        }
+    }
+
+    /**
+     * Pulihkan isi override managed yang dipindahkan untuk checkout. Tulis atomik
+     * agar worker terputus di tengah tidak meninggalkan file parsial.
+     *
+     * @param array<string,array{contents:string,mode:int}> $saved
+     */
+    private function restoreManagedOverrides(string $dir, array $saved): void
+    {
+        foreach ($saved as $name => $entry) {
+            $path = rtrim($dir, '/') . '/' . $name;
+            $temp = tempnam(rtrim($dir, '/'), '.rames-branch-override-');
+            if ($temp === false) {
+                throw new RuntimeException('Gagal memulihkan override managed "' . $name . '".');
+            }
+            @chmod($temp, 0600);
+            $handle = @fopen($temp, 'wb');
+            if ($handle === false) {
+                @unlink($temp);
+                throw new RuntimeException('Gagal memulihkan override managed "' . $name . '".');
+            }
+            $contents = $entry['contents'];
+            $offset = 0;
+            $length = strlen($contents);
+            while ($offset < $length) {
+                $written = fwrite($handle, substr($contents, $offset));
+                if ($written === false || $written === 0) {
+                    fclose($handle);
+                    @unlink($temp);
+                    throw new RuntimeException('Gagal memulihkan override managed "' . $name . '".');
+                }
+                $offset += $written;
+            }
+            fflush($handle);
+            fclose($handle);
+            @chmod($temp, $entry['mode']);
+            if (!@rename($temp, $path)) {
+                @unlink($temp);
+                throw new RuntimeException('Gagal memasang kembali override managed "' . $name . '".');
+            }
+        }
     }
 
     /**

@@ -513,6 +513,11 @@ final class AppMetricsLocalDeployer implements DeployerInterface
         return $app;
     }
 
+    public function switchBranch(array $app, string $branch, callable $logger): array
+    {
+        return $app;
+    }
+
     public function stop(array $app): void
     {
     }

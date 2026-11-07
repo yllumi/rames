@@ -150,6 +150,7 @@ Sinkron via `DockerComposeRunner->stop()/start()` (cepat), lalu update status di
 
 Delete dua mode (modal konfirmasi di detail app):
 
+- `POST /apps/{id}/delete` memvalidasi `confirm_name` sebagai string yang persis sama dengan slug app **sebelum efek samping**; ini berlaku untuk preserve, purge, dan app impor yang hanya melepas record. Otorisasi/CSRF serta pilihan volume tidak berubah.
 - **Hapus & pertahankan volume** (default, aman): `LocalDeployer::teardown($app, $preserveVolumes)` → `docker compose down` (tanpa `-v`), lalu `docker volume rm` hanya volume project yang **tidak** dicentang (via `DockerClient::listVolumesForProject` + `DockerComposeRunner::removeVolumes`). Named volume yang dipertahankan akan **dipakai ulang otomatis** saat app dibuat ulang dengan nama yang sama (project name compose = nama app) — data DB tidak hilang.
 - **Hapus total** (`mode=purge`): `LocalDeployer::teardown($app, null)` → `docker compose down -v` (semua named + anonymous volume terhapus permanen; butuh konfirmasi tambahan).
 

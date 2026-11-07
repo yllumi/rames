@@ -193,11 +193,19 @@ Dua mode: **pertahankan volume** (default; `docker compose down` tanpa `-v`, vol
 
 Urutan: lepaskan container asing dari network project (tanpa menghentikan/menghapus) → down sesuai mode → hapus config Nginx + reload → hapus direktori app → hapus record. Kegagalan pelepasan network dicatat sebagai peringatan, tidak menggagalkan delete. `/volumes` (admin) boleh mem-purge volume yatim; volume app aktif ditolak.
 
-**App impor project compose eksternal** (§7.2c) **tidak** memakai kedua mode di atas: delete hanya **melepas record** (config Nginx app + managed env dibuang); container, volume, dan berkas proyek tidak dihentikan/dihapus.
+Sebelum efek samping apa pun, `POST /apps/{id}/delete` mewajibkan `confirm_name` berupa string yang **persis sama** dengan slug app. Ketentuan ini berlaku pada penghapusan biasa maupun purge; otorisasi, CSRF, dan pilihan volume tetap berlaku.
+
+**App impor project compose eksternal** (§7.2c) **tidak** memakai kedua mode di atas: delete hanya **melepas record** (config Nginx app + managed env dibuang); container, volume, dan berkas proyek tidak dihentikan/dihapus. Konfirmasi slug tetap diwajibkan sebelum pelepasan record.
 
 ### 7.5 Rollback App ke Versi Sebelumnya
 
 Hanya app **git**: `deploy_history` menyimpan checkpoint deploy sukses; rollback memakai commit sukses sebelumnya lalu rebuild. App **compose** tidak punya rollback/versi (pakai tab Compose + Deploy Ulang). Rollback melewati gerbang kredit dan otorisasi `deploy`; di server agent dijalankan sebagai job di server pemilik app, tidak pernah di control plane.
+
+### 7.5a Ganti Branch dan Deploy
+
+`POST /apps/{id}/branch` menerima field `branch` dan memerlukan ability `deploy`. Hanya app bersumber Git yang didukung, baik di server lokal maupun agent; app compose, template, dan impor tidak otomatis berpindah branch. Perpindahan berjalan asinkron sebagai worker `switch_branch`; metadata branch baru disimpan hanya setelah switch dan deploy berhasil. Di server agent, operasi berjalan sebagai job dan memerlukan agent dengan mode/capability worker yang kompatibel.
+
+Worker mengambil branch lokal dan remote secara eksplisit dengan shallow fetch (`--depth=1`), lalu membangun ulang app. Override terkelola yang dihasilkan dashboard dan tidak dilacak Git tetap dipertahankan. Jika switch/deploy gagal, worker berupaya mengembalikan SHA sebelumnya beserta keadaan HEAD attached/detached yang persis, lalu membangun ulang versi sebelumnya. Kegagalan proses utama ditampilkan; jika pemulihan juga gagal, kedua error dilaporkan.
 
 ### 7.6 Environment Variables per App
 

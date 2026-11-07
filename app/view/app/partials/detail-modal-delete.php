@@ -42,6 +42,15 @@ $isImported = (bool) ($isImported ?? false);
           <p class="text-muted small mb-0">Volume yang <strong>tidak</strong> dicentang ikut dihapus.</p>
         <?php endif; ?>
 <?php endif; ?>
+        <div class="mt-3">
+          <label class="form-label fw-semibold" for="delete-confirm-name">
+            Untuk mengonfirmasi, ketik nama app persis:
+            <span class="mono"><?= e($app['name']) ?></span>
+          </label>
+          <input class="form-control" type="text" id="delete-confirm-name"
+                 name="confirm_name" required autocomplete="off" autocapitalize="off"
+                 spellcheck="false">
+        </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Batal</button>
