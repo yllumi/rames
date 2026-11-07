@@ -95,14 +95,10 @@ $importedDir = (string) ($importedDir ?? '');
       <div class="app-info-item">
         <dt class="k">Branch</dt>
         <dd class="v mb-0">
-          <?= e($app['branch'] ?? 'main') ?>
+          <span><?= e($app['branch'] ?? 'main') ?></span>
 <?php if (!$isBusy && !$isImported && !$isCompose && !empty($abilities['deploy'])): ?>
-          <div class="mt-2">
-            <button type="button" class="btn btn-outline-secondary btn-sm"
-                    data-bs-toggle="modal" data-bs-target="#branch-change-modal">
-              Ganti Branch
-            </button>
-          </div>
+          <a class="small ms-2" href="#branch-change-modal" data-bs-toggle="modal"
+             aria-haspopup="dialog" aria-controls="branch-change-modal">Ganti Branch</a>
 <?php endif; ?>
         </dd>
       </div>

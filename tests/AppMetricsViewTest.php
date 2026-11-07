@@ -118,8 +118,9 @@ final class AppMetricsViewTest extends TestCase
     {
         $html = $this->render(['abilities' => ['deploy' => true]]);
 
-        self::assertStringContainsString('data-bs-target="#branch-change-modal"', $html);
+        self::assertStringContainsString('href="#branch-change-modal" data-bs-toggle="modal"', $html);
         self::assertStringContainsString('Ganti Branch', $html);
+        self::assertStringNotContainsString('<button type="button" class="btn btn-outline-secondary btn-sm"', $html);
         self::assertStringNotContainsString('name="branch"', $html);
     }
 
