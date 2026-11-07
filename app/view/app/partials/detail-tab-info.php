@@ -98,7 +98,7 @@ $importedDir = (string) ($importedDir ?? '');
           <span><?= e($app['branch'] ?? 'main') ?></span>
 <?php if (!$isBusy && !$isImported && !$isCompose && !empty($abilities['deploy'])): ?>
           <a class="small ms-2" href="#branch-change-modal" data-bs-toggle="modal"
-             aria-haspopup="dialog" aria-controls="branch-change-modal">Ganti Branch</a>
+             aria-haspopup="dialog" aria-controls="branch-change-modal">ganti branch</a>
 <?php endif; ?>
         </dd>
       </div>
