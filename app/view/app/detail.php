@@ -15,14 +15,15 @@
 //  12. detail-tab-access.php      Tab Akses: kepemilikan & sharing (hanya bila $canShare atau ada members)
 //  13. detail-tab-delete.php      Tab Hapus App (Danger Zone; pane hanya bila $canDelete)
 //  14. detail-modal-delete.php    Modal konfirmasi delete + pilihan volume yang dipertahankan
-//  15. detail-modal-guide.php     Modal panduan (HTML hasil sanitasi Markdown)
-//  16. detail-scripts-inline.php  Script inline halaman: copyDetailKey() + tombol Rebuild & monitor progres deploy
-//  17. detail-modal-terminal.php  Modal terminal interaktif (xterm.js + SSE)
-//  18. detail-modal-run.php       Modal one-shot run command (non-interaktif)
-//  19. detail-modal-files.php     Modal file manager container (bila $canFiles & ada container)
-//  20. detail-modal-log.php       Modal log container + script pemuatnya (bila $canLogs & ada container)
-//  21. detail-modal-deploy-log.php Modal log deploy on-demand (tahap worker + output build live)
-//  22. detail-scripts.php         Penutup: xterm.css, script aktifkan tab dari hash, script xterm/app-terminal/app-files
+//  15. detail-modal-branch.php   Modal ganti branch app Git
+//  16. detail-modal-guide.php     Modal panduan (HTML hasil sanitasi Markdown)
+//  17. detail-scripts-inline.php  Script inline halaman: copyDetailKey() + tombol Rebuild & monitor progres deploy
+//  18. detail-modal-terminal.php  Modal terminal interaktif (xterm.js + SSE)
+//  19. detail-modal-run.php       Modal one-shot run command (non-interaktif)
+//  20. detail-modal-files.php     Modal file manager container (bila $canFiles & ada container)
+//  21. detail-modal-log.php       Modal log container + script pemuatnya (bila $canLogs & ada container)
+//  22. detail-modal-deploy-log.php Modal log deploy on-demand (tahap worker + output build live)
+//  23. detail-scripts.php         Penutup: xterm.css, script aktifkan tab dari hash, script xterm/app-terminal/app-files
 // ---------------------------------------------------------------------------
 // PERINGATAN PEMELIHARAAN — keluaran view ini byte-exact; jangan diubah tanpa verifikasi render:
 //  * Partial di app/view/app/partials/ adalah hasil potong-tempel byte-exact dari berkas ini.
@@ -186,6 +187,10 @@ include app_path() . '/view/app/partials/detail-tab-delete.php'; ?>
 include app_path() . '/view/app/partials/detail-modal-delete.php'; ?>
 
 <?php
+// Partial: Modal ganti branch app Git
+include app_path() . '/view/app/partials/detail-modal-branch.php'; ?>
+
+<?php
 // Partial: Modal panduan (HTML hasil sanitasi Markdown)
 include app_path() . '/view/app/partials/detail-modal-guide.php'; ?>
 
@@ -218,4 +223,3 @@ include app_path() . '/view/app/partials/detail-modal-deploy-log.php'; ?>
 include app_path() . '/view/app/partials/detail-scripts.php'; ?>
 
 <?php include app_path() . '/view/partials/footer.php'; ?>
-

@@ -8,7 +8,7 @@ use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Smoke render blok metrik & form branch di tab Info halaman detail app
+ * Smoke render blok metrik & tombol branch di tab Info halaman detail app
  * (`app/view/app/partials/detail-tab-info.php`) + kontrak aset JS.
  *
  * Kontrak yang dikunci (frontend, data diisi `public/js/app-metrics.js`):
@@ -118,10 +118,50 @@ final class AppMetricsViewTest extends TestCase
     {
         $html = $this->render(['abilities' => ['deploy' => true]]);
 
+        self::assertStringContainsString('data-bs-target="#branch-change-modal"', $html);
+        self::assertStringContainsString('Ganti Branch', $html);
+        self::assertStringNotContainsString('name="branch"', $html);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testModalBranchBerisiFormGantiDanDeploy(): void
+    {
+        $this->installStubs();
+        $app = [
+            'id' => 'app-1',
+            'name' => 'myapp',
+            'branch' => 'main',
+        ];
+        $isBusy = false;
+        $isImported = false;
+        $isCompose = false;
+        $abilities = ['deploy' => true];
+
+        $file = dirname(__DIR__) . '/app/view/app/partials/detail-modal-branch.php';
+        self::assertFileExists($file);
+
+        set_error_handler(static function (int $no, string $message, string $source, int $line): bool {
+            throw new \ErrorException($message, 0, $no, $source, $line);
+        });
+
+        ob_start();
+        try {
+            include $file;
+        } catch (\Throwable $error) {
+            ob_end_clean();
+            throw $error;
+        } finally {
+            restore_error_handler();
+        }
+
+        $html = (string) ob_get_clean();
+        self::assertStringContainsString('id="branch-change-modal"', $html);
         self::assertStringContainsString('action="/apps/app-1/branch"', $html);
         self::assertStringContainsString('name="branch"', $html);
-        self::assertStringContainsString('Ganti &amp; deploy', $html);
+        self::assertStringContainsString('value="main"', $html);
         self::assertStringContainsString('name="_token"', $html);
+        self::assertStringContainsString('Ganti &amp; Deploy', $html);
     }
 
     public function testDetailScriptsMemuatAppMetrics(): void

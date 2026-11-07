@@ -97,17 +97,12 @@ $importedDir = (string) ($importedDir ?? '');
         <dd class="v mb-0">
           <?= e($app['branch'] ?? 'main') ?>
 <?php if (!$isBusy && !$isImported && !$isCompose && !empty($abilities['deploy'])): ?>
-          <form method="post" action="/apps/<?= e($app['id']) ?>/branch" class="mt-2">
-            <?= csrf_field() ?>
-            <label class="form-label small" for="app-branch">Ganti branch &amp; deploy</label>
-            <div class="input-group input-group-sm">
-              <input class="form-control" type="text" id="app-branch" name="branch"
-                     value="<?= e($app['branch'] ?? 'main') ?>" required
-                     pattern="[a-zA-Z0-9._/-]+" title="Gunakan nama branch Git yang valid">
-              <button type="submit" class="btn btn-outline-primary">Ganti &amp; deploy</button>
-            </div>
-            <div class="form-text">Jika build gagal, sistem akan mencoba memulihkan branch dan versi aktif sebelumnya.</div>
-          </form>
+          <div class="mt-2">
+            <button type="button" class="btn btn-outline-secondary btn-sm"
+                    data-bs-toggle="modal" data-bs-target="#branch-change-modal">
+              Ganti Branch
+            </button>
+          </div>
 <?php endif; ?>
         </dd>
       </div>
