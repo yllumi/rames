@@ -195,4 +195,174 @@ class BackupSelectionTest extends TestCase
         $this->expectException(RuntimeException::class);
         $selection->backfill(['../evil']);
     }
+
+    // ------------------------------------------------------------------
+    // Mode retensi per volume (`snapshot` / `sync`)
+    // ------------------------------------------------------------------
+
+    public function testModeDefaultsToSnapshot(): void
+    {
+        $selection = new BackupSelection($this->path);
+
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, BackupSelection::normalizeMode(''));
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, $selection->modeOf('tonidata_data'), 'entri absen ⇒ snapshot');
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, $selection->modeOf('tonidata_data', 'srv-a'), 'entri server absen ⇒ snapshot');
+        $this->assertSame(
+            [BackupSelection::MODE_SNAPSHOT, BackupSelection::MODE_SYNC],
+            BackupSelection::MODES,
+            'konstanta MODES = sumber kebenaran'
+        );
+    }
+
+    public function testModeKeyAbsentInEntryDefaultsToSnapshot(): void
+    {
+        SqliteFixture::backup($this->path, [
+            'volumes' => ['tonidata_data' => ['scheduled' => true, 'updated_by' => 'u1']],
+        ]);
+
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, (new BackupSelection($this->path))->modeOf('tonidata_data'));
+    }
+
+    public function testUnknownModeValueInStoreFallsBackToSnapshot(): void
+    {
+        SqliteFixture::backup($this->path, [
+            'volumes' => ['tonidata_data' => ['scheduled' => true, 'mode' => 'bulanan']],
+        ]);
+
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, (new BackupSelection($this->path))->modeOf('tonidata_data'));
+    }
+
+    public function testSetModePersistsAndIsReadBack(): void
+    {
+        $selection = new BackupSelection($this->path);
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SYNC, 'u1');
+
+        $this->assertSame(BackupSelection::MODE_SYNC, $selection->modeOf('tonidata_data'), 'memo disegarkan setelah setMode');
+        $this->assertSame(
+            BackupSelection::MODE_SYNC,
+            (new BackupSelection($this->path))->modeOf('tonidata_data'),
+            'persistensi lintas-instance'
+        );
+
+        $stored = $this->stored();
+        $this->assertSame(BackupSelection::MODE_SYNC, $stored['tonidata_data']['mode']);
+        $this->assertSame('u1', $stored['tonidata_data']['updated_by']);
+        $this->assertSame('local', $stored['tonidata_data']['server_id']);
+        $this->assertArrayHasKey('updated_at', $stored['tonidata_data']);
+
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SNAPSHOT, 'u2');
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, (new BackupSelection($this->path))->modeOf('tonidata_data'));
+    }
+
+    public function testSetModeIsScopedPerServer(): void
+    {
+        $selection = new BackupSelection($this->path);
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SYNC, 'u1', 'srv-a');
+
+        $this->assertSame(BackupSelection::MODE_SYNC, $selection->modeOf('tonidata_data', 'srv-a'));
+        $this->assertSame(
+            BackupSelection::MODE_SNAPSHOT,
+            $selection->modeOf('tonidata_data'),
+            'mode server lain tidak bocor ke server ini'
+        );
+        $this->assertSame(
+            BackupSelection::MODE_SNAPSHOT,
+            $selection->modeOf('tonidata_data', 'srv-b')
+        );
+
+        $stored = $this->stored();
+        $this->assertArrayHasKey('srv-a::tonidata_data', $stored, 'kunci diskop BackupRegistry::scopeKey()');
+        $this->assertSame('srv-a', $stored['srv-a::tonidata_data']['server_id']);
+    }
+
+    public function testSetScheduledPreservesMode(): void
+    {
+        $selection = new BackupSelection($this->path);
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SYNC, 'u1');
+
+        $selection->setScheduled('tonidata_data', true, 'u1');
+        $this->assertSame(BackupSelection::MODE_SYNC, $selection->modeOf('tonidata_data'), 'mode tidak terhapus saat toggle ON');
+
+        $selection->setScheduled('tonidata_data', false, 'u1');
+        $this->assertSame(BackupSelection::MODE_SYNC, $selection->modeOf('tonidata_data'), 'mode tidak terhapus saat toggle OFF');
+        $this->assertFalse($selection->isScheduled('tonidata_data'));
+
+        $stored = $this->stored()['tonidata_data'];
+        $this->assertSame(false, $stored['scheduled']);
+        $this->assertSame(BackupSelection::MODE_SYNC, $stored['mode']);
+    }
+
+    public function testSetModePreservesScheduled(): void
+    {
+        $selection = new BackupSelection($this->path);
+        $selection->setScheduled('tonidata_data', true, 'u1');
+
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SYNC, 'u2');
+
+        $this->assertTrue($selection->isScheduled('tonidata_data'), 'mengubah mode tidak mematikan jadwal');
+        $this->assertSame(BackupSelection::MODE_SYNC, $selection->modeOf('tonidata_data'));
+    }
+
+    public function testBackfillDoesNotRemoveMode(): void
+    {
+        SqliteFixture::backup($this->path, [
+            // Entri dengan mode tetapi belum punya kunci `scheduled` (ditulis
+            // sebelum fitur jadwal/backfill menyentuhnya).
+            'volumes' => ['tonidata_data' => ['mode' => BackupSelection::MODE_SYNC, 'updated_by' => 'u1']],
+        ]);
+
+        $selection = new BackupSelection($this->path);
+        $selection->backfill(['tonidata_data']);
+
+        $this->assertTrue($selection->isScheduled('tonidata_data'), 'backfill menyalakan jadwal');
+        $this->assertSame(BackupSelection::MODE_SYNC, $selection->modeOf('tonidata_data'), 'mode tidak hilang');
+        $this->assertSame(BackupSelection::MODE_SYNC, $this->stored()['tonidata_data']['mode']);
+    }
+
+    public function testBackfillDoesNotTouchExplicitEntryWithMode(): void
+    {
+        $selection = new BackupSelection($this->path);
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SYNC, 'u1');
+        $selection->setScheduled('tonidata_data', false, 'u1');
+
+        $selection->backfill(['tonidata_data']);
+
+        $this->assertFalse($selection->isScheduled('tonidata_data'), 'entri eksplisit OFF dipertahankan');
+        $this->assertSame(BackupSelection::MODE_SYNC, $selection->modeOf('tonidata_data'));
+    }
+
+    public function testModeIsIndependentPerVolume(): void
+    {
+        $selection = new BackupSelection($this->path);
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SYNC, 'u1');
+        $selection->setMode('waha_data', BackupSelection::MODE_SNAPSHOT, 'u1');
+
+        $this->assertSame(BackupSelection::MODE_SYNC, $selection->modeOf('tonidata_data'));
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, $selection->modeOf('waha_data'));
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, $selection->modeOf('lain_data'), 'volume tanpa entri ⇒ snapshot');
+    }
+
+    public function testInvalidModeIsRejectedWithoutWriting(): void
+    {
+        $selection = new BackupSelection($this->path);
+
+        foreach (['', 'daily', 'SNAPSHOT', 'sync ', 'semua'] as $mode) {
+            try {
+                $selection->setMode('tonidata_data', $mode, 'u1');
+                $this->fail('mode invalid harus ditolak: "' . $mode . '"');
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString('Mode backup tidak dikenal', $e->getMessage());
+            }
+        }
+
+        $this->assertSame([], $this->stored(), 'mode invalid tidak boleh menulis apa pun');
+    }
+
+    public function testSetModeRejectsInvalidVolumeName(): void
+    {
+        $selection = new BackupSelection($this->path);
+
+        $this->expectException(RuntimeException::class);
+        $selection->setMode('../evil', BackupSelection::MODE_SYNC);
+    }
 }

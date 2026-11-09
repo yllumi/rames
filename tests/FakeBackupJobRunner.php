@@ -31,9 +31,9 @@ class FakeBackupJobRunner
      * @param callable(string,string):void|null $log
      * @return array<string,mixed>
      */
-    public function runBackup(string $volume, string $trigger = 'manual', ?callable $log = null): array
+    public function runBackup(string $volume, string $trigger = 'manual', ?callable $log = null, ?string $mode = null): array
     {
-        $this->note('runBackup:' . $volume . ':' . $trigger);
+        $this->note('runBackup:' . $volume . ':' . $trigger . ':' . (string) $mode);
 
         if ((string) getenv('FAKE_BACKUP_RUNNER_FAIL') !== '') {
             throw new RuntimeException('fake runner backup gagal (uji)');

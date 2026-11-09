@@ -259,9 +259,12 @@ return [
     'volume_backup_db_dump_enabled' => (getenv('VOLUME_BACKUP_DB_DUMP_ENABLED') ?: 'true') !== 'false',
     'volume_backup_timeout' => (int) (getenv('VOLUME_BACKUP_TIMEOUT') ?: 3600),            // detik, timeout satu run restic
     'volume_backup_image' => getenv('VOLUME_BACKUP_IMAGE') ?: '',                          // kosong = image container dashboard
-    'volume_backup_keep_daily' => (int) (getenv('VOLUME_BACKUP_KEEP_DAILY') ?: 7),         // restic forget --keep-daily
-    'volume_backup_keep_weekly' => (int) (getenv('VOLUME_BACKUP_KEEP_WEEKLY') ?: 4),       // restic forget --keep-weekly
-    'volume_backup_keep_monthly' => (int) (getenv('VOLUME_BACKUP_KEEP_MONTHLY') ?: 3),     // restic forget --keep-monthly
+    // Retensi restic `forget --prune` per volume, **per mode** (lihat
+    // `BackupSelection::MODE_*`): mode `snapshot` memakai `--keep-daily` +
+    // `--keep-weekly` di bawah; mode `sync` memakai `--keep-last 1` (tanpa
+    // versioning harian/pekanan). Tidak ada `--keep-monthly`.
+    'volume_backup_keep_daily' => (int) (getenv('VOLUME_BACKUP_KEEP_DAILY') ?: 7),         // restic forget --keep-daily (mode snapshot)
+    'volume_backup_keep_weekly' => (int) (getenv('VOLUME_BACKUP_KEEP_WEEKLY') ?: 4),       // restic forget --keep-weekly (mode snapshot)
     'restic_repository' => getenv('RESTIC_REPOSITORY') ?: '',                              // mis. s3:https://s3.amazonaws.com/<bucket>/rames
     'restic_password_file' => getenv('RESTIC_PASSWORD_FILE') ?: (base_path() . '/database/restic/password'),
     'aws_access_key_id' => getenv('AWS_ACCESS_KEY_ID') ?: '',

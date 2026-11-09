@@ -2116,8 +2116,12 @@ final class AgentDeployer implements DeployerInterface
     /**
      * Jalankan backup satu volume **di server agent** (job `backup_run`).
      *
-     * Payload job hanya memuat `volume` + `trigger` — **tidak pernah** kredensial
-     * restic/S3: server agent memakai konfigurasi/env-nya sendiri (plan §10.5).
+     * Payload job hanya memuat `volume` + `trigger` + `backup_mode` — **tidak
+     * pernah** kredensial restic/S3: server agent memakai konfigurasi/env-nya
+     * sendiri (plan §10.5). `backup_mode` (`snapshot`|`sync`) adalah keputusan
+     * control plane ({@see \app\library\Backup\BackupSelection}); nilai tak
+     * dikenal dinormalisasi ke `snapshot` agar agent lama/tak ketemu mode tidak
+     * pernah mematikan retensi tanpa sengaja.
      * Job ditunggu sampai `done`/`error` (pemanggil jalur ini adalah worker
      * detached control plane, bukan request UI), lalu rekaman job terakhir
      * dikembalikan supaya pemanggil dapat mencatat hasilnya di registry
@@ -2127,12 +2131,16 @@ final class AgentDeployer implements DeployerInterface
      * @return array{message:string,status:string}
      * @throws RuntimeException|AgentError job gagal / timeout
      */
-    public function backupRun(array $app, string $volume, string $trigger = 'manual', ?callable $logger = null): array
+    public function backupRun(array $app, string $volume, string $trigger = 'manual', ?callable $logger = null, ?string $mode = null): array
     {
         $volume = self::assertVolumeName($volume);
         $trigger = in_array($trigger, ['manual', 'schedule'], true) ? $trigger : 'manual';
 
-        return $this->dataJob('backup_run', $app, $logger, ['volume' => $volume, 'trigger' => $trigger]);
+        return $this->dataJob('backup_run', $app, $logger, [
+            'volume' => $volume,
+            'trigger' => $trigger,
+            'backup_mode' => \app\library\Backup\BackupSelection::normalizeMode((string) $mode),
+        ]);
     }
 
     /**

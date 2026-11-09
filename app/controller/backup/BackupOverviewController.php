@@ -29,6 +29,8 @@ use support\Request;
  *   GET  /api/backups/snapshots → {code:0,data:{volume,snapshots:[…]}}
  *   POST /backups/schedule      → {code:0,data:{volume,scheduled,explicit,backup_gb,required}}
  *                                 (hak `backup` = owner/operator; 402 bila kredit kurang)
+ *   POST /backups/mode          → {code:0,data:{volume,server_id,mode}}
+ *                                 (hak `backup`; tanpa gerbang kredit)
  *   GET  /backups/guide         → halaman panduan setup Restic (admin)
  *
  * Halaman `/backups` mengambil data volume via AJAX
@@ -166,6 +168,73 @@ class BackupOverviewController extends BackupControllerBase
             'explicit' => $selection->explicit($targetServerId),
             'backup_gb' => $gb,
             'required' => $usage->requiredDeposit($gb, $serverRates->backupMonthlyFor($targetServerId)),
+        ]]);
+    }
+
+    /**
+     * Ubah **mode retensi** sebuah volume (`snapshot` / `sync`).
+     *
+     * Otorisasi lewat satu pintu `BackupAccess::require('backup', …)` (owner &
+     * operator boleh; viewer/stranger ⇒ `AppAccessDenied` → **404**, bukan 403),
+     * **sebelum** efek samping apa pun. Volume yatim tetap admin-only. Target
+     * di-resolve dari Engine (bukan dari nama volume yang dikirim request) —
+     * pola persis {@see self::setScheduled()}.
+     *
+     * **Tanpa gerbang kredit**: mengubah mode tidak menyalakan backup (hanya
+     * mengubah kebijakan retensi), jadi tidak ada biaya baru yang timbul di sini.
+     *
+     * Kontrak: `POST /backups/mode` → `{code:0,data:{volume,server_id,mode}}`;
+     * nama volume / nilai mode tak sah ⇒ **422**; target tak dikenal ⇒ **404**.
+     */
+    public function setMode(Request $request)
+    {
+        $volume = trim((string) $request->post('volume', ''));
+        try {
+            VolumeStateGuard::assertVolumeName($volume);
+        } catch (\Throwable $e) {
+            return json(['code' => 422, 'msg' => 'Nama volume tidak valid.'])->withStatus(422);
+        }
+
+        $mode = trim((string) $request->post('mode', ''));
+        if (!in_array($mode, BackupSelection::MODES, true)) {
+            return json(['code' => 422, 'msg' => 'Nilai mode harus snapshot atau sync.'])->withStatus(422);
+        }
+
+        try {
+            $targets = $this->volumeTargets();
+        } catch (\Throwable $e) {
+            return json(['code' => 500, 'msg' => 'Tidak dapat mengakses Docker Engine: ' . $e->getMessage()]);
+        }
+
+        try {
+            $target = $this->findTarget($targets, $volume, trim((string) $request->post('server_id', '')));
+        } catch (\RuntimeException $e) {
+            return json(['code' => 422, 'msg' => $e->getMessage()])->withStatus(422);
+        }
+        if ($target === null) {
+            // Termasuk volume DB dashboard (§8i.7) yang bukan target backup app.
+            return $this->notFound($request);
+        }
+
+        $actor = $this->currentUser();
+        $appId = (string) ($target['app_id'] ?? '');
+        $app = $this->findApp((new AppStore())->all(), $appId);
+
+        // Otorisasi SEBELUM efek samping apa pun (AppAccessDenied → 404).
+        BackupAccess::require('backup', $target, $app, $actor);
+
+        $targetServerId = self::serverIdOf($target);
+        $selection = new BackupSelection();
+        try {
+            $selection->setMode($volume, $mode, (string) ($actor['id'] ?? ''), $targetServerId);
+        } catch (\Throwable $e) {
+            return json(['code' => 500, 'msg' => 'Gagal menyimpan mode backup: ' . $e->getMessage()]);
+        }
+
+        return json(['code' => 0, 'data' => [
+            'volume' => $volume,
+            'server_id' => $targetServerId,
+            'mode' => $mode,
         ]]);
     }
 

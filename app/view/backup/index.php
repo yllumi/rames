@@ -58,6 +58,22 @@ $breadcrumbs = [
     Kolom <strong>Berkala</strong>: volume yang belum pernah dibackup nonaktif secara default —
     aktifkan untuk ikut backup harian (volume app yang Anda kelola; ada biaya kreditnya, lihat di bawah).
   </p>
+  <p class="form-text small text-muted mb-0 mt-2">
+    Kolom <strong>Mode</strong> mengatur kebijakan retensi snapshot:
+  </p>
+  <ul class="small text-muted mb-0 mt-1">
+    <li><strong>snapshot</strong> — versioning harian + pekanan
+      (<span class="mono">--keep-daily</span>/<span class="mono">--keep-weekly</span>): beberapa versi lama
+      disimpan sehingga Anda bisa memulihkan keadaan dari hari/pekan sebelumnya.</li>
+    <li><strong>sync</strong> — hanya <strong>satu</strong> snapshot terbaru
+      (<span class="mono">--keep-last 1</span>), cocok untuk volume uploads besar. Konsekuensinya: berkas yang
+      sudah dihapus dari volume ikut hilang dari snapshot, dan upload berikutnya hanya mengirim
+      perubahan/delta karena snapshot sebelumnya dipakai sebagai basis dedup.</li>
+  </ul>
+  <p class="form-text small text-muted mb-0 mt-2">
+    Mengubah mode tidak menyalakan backup berkala dan tidak menagih kredit tambahan — hanya memengaruhi
+    berapa versi yang disimpan saat backup berjalan.
+  </p>
 <?php $__infoHtml = (string) ob_get_clean(); $__infoId = 'backup-info'; $__infoTitle = 'Tentang Backup Volume'; ?>
 <?php include app_path() . '/view/partials/page-info-modal.php'; ?>
 
@@ -137,11 +153,12 @@ $breadcrumbs = [
             <th title="Dari cache ringkasan — nilainya baru akurat setelah run backup, atau setelah admin menekan Segarkan status">Backup terakhir</th>
             <th class="text-end" title="Dari cache ringkasan — jumlahnya baru akurat setelah run backup, atau setelah admin menekan Segarkan status">Snapshot</th>
             <th>Berkala</th>
+            <th title="snapshot = versioning harian + pekanan (bisa restore versi lama); sync = hanya 1 snapshot terbaru (cocok untuk volume uploads besar)">Mode</th>
             <th class="text-end">Aksi</th>
           </tr>
         </thead>
         <tbody id="backup-rows">
-          <tr><td colspan="9" class="text-muted small">Memuat …</td></tr>
+          <tr><td colspan="10" class="text-muted small">Memuat …</td></tr>
         </tbody>
       </table>
     </div>
@@ -559,5 +576,5 @@ $breadcrumbs = [
   </div>
 </div>
 
-<script src="/js/backup.js?v=15"></script>
+<script src="/js/backup.js?v=16"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

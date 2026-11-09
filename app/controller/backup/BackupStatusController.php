@@ -30,8 +30,9 @@ use support\Request;
  *     `container_state`; Engine gagal ⇒ nilai cache dipakai.
  *   POST /backups/refresh       → bentuk sama dengan `status()`, `cached_at` baru (admin)
  *
- * Tiap baris `volumes[]` menyertakan `scheduled:bool` segar dari
- * `BackupSelection` (bukan dari cache), `can_schedule:bool`
+ * Tiap baris `volumes[]` menyertakan `scheduled:bool` dan `mode:string`
+ * (`snapshot`/`sync`) **segar** dari `BackupSelection` (bukan dari cache),
+ * `can_schedule:bool`
  * (`BackupAccess::can('backup', …)` per baris), biaya backup (`backup_gb`,
  * `backup_credits_month`) — lihat `withScheduled()` — serta `server_name` yang
  * dipetakan **sekali** per respons (`withServerNames()`).
@@ -244,12 +245,15 @@ class BackupStatusController extends BackupControllerBase
     }
 
     /**
-     * Sisipkan flag `scheduled` **segar** (dari `BackupSelection`) + data hak &
-     * biaya backup ke tiap baris volume yang dikirim ke UI.
+     * Sisipkan flag `scheduled` + `mode` **segar** (dari `BackupSelection`) dan
+     * data hak & biaya backup ke tiap baris volume yang dikirim ke UI.
      *
-     * Flag `scheduled` sengaja **tidak** disimpan di cache `BackupCatalog` (bisa
-     * basi); ia di-merge saat merespons. Parameter `$apps`/`$user`/`$usage`
-     * bersifat **aditif opsional** (pemanggil lama tetap sah):
+     * Flag `scheduled`/`mode` sengaja **tidak** disimpan di cache
+     * `BackupCatalog` (bisa basi); keduanya di-merge saat merespons.
+     * `mode` = mode retensi volume (`snapshot`/`sync`, default `snapshot`) —
+     * dipakai UI untuk menampilkan/mengubah pilihan retensi. Parameter
+     * `$apps`/`$user`/`$usage` bersifat **aditif opsional** (pemanggil lama
+     * tetap sah):
      *   - `can_schedule` — `BackupAccess::can('backup', $row, $app, $user)` per
      *     baris (owner & operator boleh; viewer/stranger tidak; volume yatim
      *     hanya admin). `$user === null` ⇒ false (UI hanya lapisan kedua).
@@ -302,6 +306,12 @@ class BackupStatusController extends BackupControllerBase
             $gb = $chargedGbByApp[$appId] ?? 0.0;
 
             $row['scheduled'] = $selection->isScheduled(
+                (string) ($row['name'] ?? ''),
+                (string) ($row['server_id'] ?? '')
+            );
+            // Mode retensi segar per respons (bukan cache `BackupCatalog`),
+            // sejajar `scheduled`: default `snapshot` bila entri/kunci absen.
+            $row['mode'] = $selection->modeOf(
                 (string) ($row['name'] ?? ''),
                 (string) ($row['server_id'] ?? '')
             );

@@ -128,6 +128,52 @@ class BackupServerScopeTest extends TestCase
         $this->assertSame(1, $registry['srv-a::demo_data']['snapshots']);
     }
 
+    /**
+     * Mode retensi (`snapshot`|`sync`) diputuskan **control plane**:
+     * `BackupSelection::modeOf($volume, $serverId)` (ter-scope server) wajib
+     * ikut ke payload job `backup_run`, dan server lokal tetap tidak pernah
+     * lewat dispatcher agent (perilaku lama tidak berubah).
+     */
+    public function testRetentionModeFromControlPlaneTravelsInTheJobPayload(): void
+    {
+        $selection = new BackupSelection($this->tmp . '/rames.sqlite');
+        $selection->setMode('demo_data', BackupSelection::MODE_SYNC, 'u1', 'srv-a');
+        // Entri server lain (nama sama) tidak boleh menular: default snapshot.
+        $selection->setMode('demo_data', BackupSelection::MODE_SNAPSHOT, 'u1');
+
+        $handler = $this->queueBackupRun('demo_data');
+        $dispatcher = $this->dispatcher($handler, null, $selection);
+        $dispatcher->runBackup('srv-a', 'demo_data', 'schedule');
+
+        $this->assertSame(
+            BackupSelection::MODE_SYNC,
+            $this->jobBody($handler, 'demo_data')['backup_mode'] ?? null,
+            'mode dari seleksi control plane (ter-scope server) wajib ikut ke job agent'
+        );
+
+        // Volume tanpa entri seleksi ⇒ `snapshot` (perilaku lama).
+        $handlerDefault = $this->queueBackupRun('data_lain');
+        $dispatcherDefault = $this->dispatcher($handlerDefault, null, $selection);
+        $dispatcherDefault->runBackup('srv-a', 'data_lain', 'schedule');
+
+        $this->assertSame(
+            BackupSelection::MODE_SNAPSHOT,
+            $this->jobBody($handlerDefault, 'data_lain')['backup_mode'] ?? null,
+            'tanpa entri seleksi ⇒ snapshot'
+        );
+
+        // Server lokal: dispatcher tidak dipakai sama sekali (tanpa HTTP).
+        $localHandler = new BackupServerScopeFakeHandler();
+        $localDispatcher = $this->dispatcher($localHandler, null, $selection);
+        try {
+            $localDispatcher->runBackup(ServerStore::LOCAL_ID, 'demo_data');
+            $this->fail('server lokal tidak boleh lewat dispatcher agent');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('server lokal', $e->getMessage());
+        }
+        $this->assertSame([], $localHandler->calls, 'jalur lokal tidak mengirim job ke agent');
+    }
+
     public function testEveryDataOpDispatchesToTheAgentThroughTheCliWorker(): void
     {
         $cases = [
@@ -325,9 +371,9 @@ class BackupServerScopeTest extends TestCase
             $logs[] = $stage . '|' . $message;
         });
 
-        // Payload job: hanya op/app/penanda — tidak ada kunci kredensial.
+        // Payload job: hanya op/app/penanda (termasuk `backup_mode`) — tanpa kredensial.
         $body = $handler->jsonBody(1);
-        $this->assertSame(['volume', 'trigger', 'op', 'app'], array_keys($body));
+        $this->assertSame(['volume', 'trigger', 'backup_mode', 'op', 'app'], array_keys($body));
         $raw = $handler->calls[1]['body'];
         foreach (['secret', 'password', 'passphrase', 'token', 'AKIA', 'MYSQL_PWD'] as $needle) {
             $this->assertStringNotContainsString($needle, $raw, 'payload tidak boleh memuat kredensial');
@@ -382,8 +428,48 @@ class BackupServerScopeTest extends TestCase
     // Helper
     // ==================================================================
 
-    private function dispatcher(BackupServerScopeFakeHandler $handler, ?ServerResolver $resolver = null): BackupDispatcher
+    /** Antrean respons satu run `backup_run` sukses untuk volume `$volume`. */
+    private function queueBackupRun(string $volume): BackupServerScopeFakeHandler
     {
+        $handler = new BackupServerScopeFakeHandler();
+        $handler
+            ->reply(200, json_encode(['code' => 0, 'data' => ['volumes' => [
+                ['name' => $volume, 'project' => 'demo', 'app_id' => self::APP_ID, 'orphaned' => false, 'strategy' => 'snapshot'],
+            ], 'status' => []]]))
+            ->reply(200, json_encode(['code' => 0, 'job_id' => 'job-1', 'op' => 'backup_run', 'log_offset' => 0]))
+            ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'done', 'message' => 'ok di agent']]))
+            ->reply(200, '')
+            ->reply(200, '')
+            ->reply(200, json_encode(['code' => 0, 'data' => ['volume' => $volume, 'snapshots' => []]]));
+
+        return $handler;
+    }
+
+    /**
+     * Body `POST /jobs` untuk volume itu (satu-satunya job data yang dikirim).
+     *
+     * @return array<string,mixed>
+     */
+    private function jobBody(BackupServerScopeFakeHandler $handler, string $volume): array
+    {
+        foreach ($handler->calls as $index => $call) {
+            if ($call['method'] !== 'POST' || $call['path'] !== '/jobs') {
+                continue;
+            }
+            $body = $handler->jsonBody($index);
+            if ((string) ($body['volume'] ?? '') === $volume) {
+                return $body;
+            }
+        }
+
+        $this->fail("tidak ada job `backup_run` terkirim untuk volume {$volume}");
+    }
+
+    private function dispatcher(
+        BackupServerScopeFakeHandler $handler,
+        ?ServerResolver $resolver = null,
+        ?BackupSelection $selection = null,
+    ): BackupDispatcher {
         $server = [
             'id' => 'srv-a',
             'name' => 'agent-a',
@@ -406,7 +492,8 @@ class BackupServerScopeTest extends TestCase
         return new BackupDispatcher(
             static fn (array $s): ?AgentDeployer => $deployer,
             $resolver ?? $this->resolver([$server]),
-            new AppStore($this->tmp . '/rames.sqlite')
+            new AppStore($this->tmp . '/rames.sqlite'),
+            $selection
         );
     }
 

@@ -84,21 +84,33 @@ final class BackupJobRunner
      * itu hanya memengaruhi pemilihan volume berkala, sedangkan daftar volume di
      * sini **eksplisit**).
      *
+     * `$mode` (opsional) = mode retensi yang diminta pemanggil (control plane
+     * mengirimnya di payload job). Nilai dinormalisasi dan diteruskan sebagai
+     * override eksplisit `modes` ke {@see VolumeBackupService::run()} sehingga
+     * menang atas store seleksi; `null`/kosong ⇒ mode dibaca dari store
+     * ({@see BackupSelection::modeOf()}, default `snapshot`). Argumen ini
+     * opsional agar pemanggil lama tetap sah.
+     *
      * @param callable(string,string):void|null $log `(project, message)`
      * @return array{volume:string,status:string,message:string,strategy:string,snapshot_id:?string,bytes:int}
      * @throws RuntimeException volume tak dikenal / run gagal
      */
-    public function runBackup(string $volume, string $trigger = 'manual', ?callable $log = null): array
+    public function runBackup(string $volume, string $trigger = 'manual', ?callable $log = null, ?string $mode = null): array
     {
         VolumeStateGuard::assertVolumeName($volume);
 
         $trigger = in_array($trigger, self::TRIGGERS, true) ? $trigger : 'manual';
 
-        $summary = $this->backup->run([
+        $options = [
             'trigger' => $trigger,
             'host' => gethostname() ?: 'rames',
             'volumes' => [$volume],
-        ]);
+        ];
+        if ($mode !== null && trim($mode) !== '') {
+            $options['modes'] = [$volume => BackupSelection::normalizeMode(trim($mode))];
+        }
+
+        $summary = $this->backup->run($options);
 
         $row = $this->rowForVolume($summary, $volume);
         $status = (string) ($row['status'] ?? 'failed');

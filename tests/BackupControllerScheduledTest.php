@@ -331,8 +331,79 @@ class BackupControllerScheduledTest extends TestCase
             $this->assertArrayHasKey('backup_gb', $row);
             $this->assertArrayHasKey('backup_credits_month', $row);
             $this->assertArrayHasKey('scheduled', $row);
+            $this->assertArrayHasKey('mode', $row);
             $this->assertFalse($row['can_schedule']);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Mode retensi per baris (`snapshot`/`sync`)
+    // ------------------------------------------------------------------
+
+    /**
+     * Setiap baris membawa `mode` **segar** dari `BackupSelection` (bukan cache
+     * `BackupCatalog`), default `snapshot` bila entri/kunci absen.
+     */
+    public function testRowsCarryFreshModeDefaultingToSnapshot(): void
+    {
+        $selection = new BackupSelection($this->path);
+
+        $out = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), self::OWNER, $this->usage());
+
+        foreach ($out as $row) {
+            $this->assertSame(BackupSelection::MODE_SNAPSHOT, $row['mode'], 'default snapshot');
+        }
+
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SYNC, 'u1');
+
+        $again = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), self::OWNER, $this->usage());
+        $this->assertSame(BackupSelection::MODE_SYNC, $again[0]['mode'], 'mode sync tercermin di respons');
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, $again[1]['mode'], 'volume lain tetap snapshot');
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, $again[2]['mode'], 'volume yatim tanpa entri ⇒ snapshot');
+    }
+
+    /**
+     * Toggle jadwal **tidak** menghapus mode (entri yang sama di-merge), dan
+     * `mode` tetap terbaca pada respons berikutnya.
+     */
+    public function testTogglingScheduleDoesNotRemoveMode(): void
+    {
+        $selection = new BackupSelection($this->path);
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SYNC, 'u1');
+
+        $selection->setScheduled('tonidata_data', true, 'u1');
+        $on = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), self::OWNER, $this->usage());
+        $this->assertTrue($on[0]['scheduled']);
+        $this->assertSame(BackupSelection::MODE_SYNC, $on[0]['mode']);
+
+        $selection->setScheduled('tonidata_data', false, 'u1');
+        $off = BackupStatusController::withScheduled($this->rows(), $selection, $this->apps(), self::OWNER, $this->usage());
+        $this->assertFalse($off[0]['scheduled']);
+        $this->assertSame(BackupSelection::MODE_SYNC, $off[0]['mode'], 'mode bertahan setelah toggle OFF');
+
+        // Instance baru (reload store) juga konsisten.
+        $reloaded = new BackupSelection($this->path);
+        $this->assertSame(BackupSelection::MODE_SYNC, $reloaded->modeOf('tonidata_data'));
+    }
+
+    /**
+     * `mode` mengikuti dimensi server baris (`server_id`), sama seperti
+     * `scheduled` — volume bernama sama di server lain tidak saling bocor.
+     */
+    public function testModeFollowsRowServerScope(): void
+    {
+        $selection = new BackupSelection($this->path);
+        $selection->setMode('tonidata_data', BackupSelection::MODE_SYNC, 'u1', 'srv-a');
+
+        $rows = [
+            ['name' => 'tonidata_data', 'project' => 'tonidata', 'app_id' => 'app1', 'server_id' => 'srv-a'],
+            ['name' => 'tonidata_data', 'project' => 'tonidata', 'app_id' => 'app1', 'server_id' => 'srv-b'],
+        ];
+
+        $out = BackupStatusController::withScheduled($rows, $selection, $this->apps(), self::ADMIN, $this->usage());
+
+        $this->assertSame(BackupSelection::MODE_SYNC, $out[0]['mode']);
+        $this->assertSame(BackupSelection::MODE_SNAPSHOT, $out[1]['mode']);
     }
 
     /**

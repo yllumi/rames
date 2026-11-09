@@ -128,4 +128,10 @@ systemctl list-timers | grep volume-backup
   sementara `0600`); passphrase hanya lewat `--password-file` yang di-mount `:ro`.
 - Restore bersifat **destruktif** (isi volume ditimpa) dan hanya untuk pemilik app
   (ability `restore`); operasi arsip & refresh status khusus **admin**.
-- Retensi snapshot diatur `VOLUME_BACKUP_KEEP_DAILY` / `_WEEKLY` / `_MONTHLY`.
+- Retensi snapshot **per volume**, diatur **mode** di halaman `/backups` (kolom **Mode**):
+  `snapshot` (default) menyimpan versi harian + pekanan (`VOLUME_BACKUP_KEEP_DAILY`,
+  default `7`; `VOLUME_BACKUP_KEEP_WEEKLY`, default `4`; **tanpa** bulanan);
+  `sync` hanya menyimpan **1 snapshot terbaru** (`restic forget --keep-last 1`) —
+  snapshot lama dipangkas pada run berikutnya dan berkas yang dihapus dari volume
+  ikut hilang dari snapshot. `VOLUME_BACKUP_KEEP_MONTHLY` **tidak dipakai** untuk
+  backup volume (bulanan hanya milik backup DB dashboard, `DB_BACKUP_KEEP_MONTHLY`).

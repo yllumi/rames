@@ -29,9 +29,15 @@ use RuntimeException;
  * dengan kunci ter-scope `server_id` ({@see BackupRegistry::scopeKey()}) sehingga
  * dua server yang punya volume bernama sama tidak bertabrakan.
  *
- * Kredensial: payload job hanya memuat `volume`/`snapshot`/`trigger` — tidak ada
- * kredensial restic/S3/DB yang dikirim (server agent memakai env & berkas
- * kredensialnya sendiri, plan §10.5).
+ * Kredensial: payload job hanya memuat `volume`/`snapshot`/`trigger` (dan
+ * `backup_mode` untuk `backup_run`) — tidak ada kredensial restic/S3/DB yang
+ * dikirim (server agent memakai env & berkas kredensialnya sendiri, plan
+ * §10.5).
+ *
+ * Mode retensi adalah keputusan **control plane**: {@see BackupSelection} milik
+ * control plane dibaca di sini (ter-scope `server_id`) lalu diteruskan sebagai
+ * penanda `backup_mode` (`snapshot`|`sync`), sehingga server agent tidak perlu
+ * menyimpan salinan seleksi.
  *
  * Stateless: seluruh dependensi disuntikkan lewat konstruktor (seam uji) —
  * uji berjalan tanpa jaringan/Docker nyata.
@@ -56,20 +62,30 @@ class BackupDispatcher
     private readonly AppStore $apps;
 
     /**
+     * Seleksi backup **milik control plane** — sumber mode retensi per volume
+     * (ter-scope `server_id`). Dibaca sekali per dispatch, bukan di agent.
+     */
+    private readonly BackupSelection $selection;
+
+    /**
      * @param callable(array<string,mixed>):?AgentDeployer|null $agentFactory pembuat
      *        deployer agent untuk satu dokumen server (default
      *        `AgentDeployer::forServer()`; `null` = server lokal)
-     * @param ServerResolver|null $servers resolver registry server (seam uji: store temp)
-     * @param AppStore|null       $apps    store app control plane (sumber metadata)
+     * @param ServerResolver|null  $servers   resolver registry server (seam uji: store temp)
+     * @param AppStore|null        $apps      store app control plane (sumber metadata)
+     * @param BackupSelection|null $selection seleksi backup control plane (sumber mode
+     *        retensi; default store dari `config('deploy.sqlite_file')`)
      */
     public function __construct(
         ?callable $agentFactory = null,
         ?ServerResolver $servers = null,
         ?AppStore $apps = null,
+        ?BackupSelection $selection = null,
     ) {
         $this->agentFactory = \Closure::fromCallable($agentFactory ?? static fn (array $server): ?AgentDeployer => AgentDeployer::forServer($server));
         $this->servers = $servers ?? new ServerResolver();
         $this->apps = $apps ?? new AppStore();
+        $this->selection = $selection ?? new BackupSelection();
     }
 
     /**
@@ -122,6 +138,10 @@ class BackupDispatcher
      * kunci ter-scope server (jumlah snapshot & snapshot terakhir ditarik dari
      * server itu) sehingga riwayat/laporan tetap milik control plane.
      *
+     * Mode retensi dibaca dari seleksi **control plane**
+     * ({@see BackupSelection::modeOf()} ter-scope `server_id`) lalu dikirim ke
+     * agent sebagai `backup_mode` — agent tidak menyimpan seleksi sendiri.
+     *
      * @param callable(string,string):void|null $log `(project, message)`
      * @return array{volume:string,status:string,message:string,server_id:string}
      * @throws RuntimeException server tak dikenal/disabled, app pemilik tak ketemu,
@@ -135,8 +155,9 @@ class BackupDispatcher
         $deployer = $this->agentFor($serverId);
         $strategy = null;
         $app = $this->appOwning($serverId, $volume, $deployer, $strategy);
+        $mode = $this->selection->modeOf($volume, $serverId);
 
-        $result = $deployer->backupRun($app, $volume, $trigger, $log);
+        $result = $deployer->backupRun($app, $volume, $trigger, $log, $mode);
 
         $this->recordRegistry($serverId, $volume, $app, $strategy ?? '', $deployer, $log);
 

@@ -22,7 +22,9 @@ use RuntimeException;
  *        - strategi `snapshot` → bila policy `stop`: `stopProject` →
  *          `assertStopped` → `restic backup` → `startProject` **di `finally`**;
  *          bila policy `skip`: dicatat `skipped`;
- *   4. `forget` retensi (`volume_backup_keep_daily|weekly|monthly`) per volume;
+ *   4. `forget` retensi **per mode** volume: `snapshot` ⇒ `--keep-daily` +
+ *      `--keep-weekly` (`volume_backup_keep_daily|weekly`), `sync` ⇒
+ *      `--keep-last 1` (hanya snapshot terbaru);
  *   5. tulis `BackupReport` (status + run), staging dibersihkan di `finally`.
  *
  * Kegagalan satu volume **tidak** menghentikan volume lain, dan app tidak
@@ -538,7 +540,12 @@ class VolumeBackupService
     /**
      * Jalankan satu run backup (ambil lock, proses semua volume yang diminta).
      *
-     * @param array{trigger?:string,host?:string,volumes?:array<int,string>|null} $options
+     * Opsi `modes` (`nama volume ⇒ mode`) adalah **override eksplisit** dari
+     * pemanggil (jalur agent: worker server menerima mode dari job). Tanpa
+     * override, mode dibaca dari {@see BackupSelection::modeOf()} per volume
+     * (default `snapshot`). Nilai tak dikenal dinormalisasi ke `snapshot`.
+     *
+     * @param array{trigger?:string,host?:string,volumes?:array<int,string>|null,modes?:array<string,string>} $options
      * @return array<string,mixed> ringkasan run (bentuk sama dengan `status.json`)
      * @throws RuntimeException fitur dimatikan / lock dipegang run lain
      */
@@ -576,7 +583,7 @@ class VolumeBackupService
     }
 
     /**
-     * @param array{trigger?:string,host?:string,volumes?:array<int,string>|null} $options
+     * @param array{trigger?:string,host?:string,volumes?:array<int,string>|null,modes?:array<string,string>} $options
      * @return array<string,mixed>
      */
     private function execute(array $options): array
@@ -596,6 +603,9 @@ class VolumeBackupService
         if (!in_array($policy, [self::POLICY_STOP, self::POLICY_SKIP], true)) {
             $policy = self::POLICY_STOP;
         }
+
+        // Override mode eksplisit (jalur agent) menang atas store seleksi.
+        $modeOverrides = self::modeOverrides($options['modes'] ?? null);
 
         $apps = $this->apps->all();
         $appById = [];
@@ -643,7 +653,7 @@ class VolumeBackupService
         }
 
         foreach ($byProject as $project => $group) {
-            foreach ($this->processProject((string) $project, $group, $appById, $dbDumpEnabled, $policy, $host) as $row) {
+            foreach ($this->processProject((string) $project, $group, $appById, $dbDumpEnabled, $policy, $host, $modeOverrides) as $row) {
                 $rows[] = $row;
                 $this->logLine(
                     (string) $project,
@@ -805,6 +815,7 @@ class VolumeBackupService
     /**
      * @param array<int,array> $group
      * @param array<string,array> $appById
+     * @param array<string,string> $modeOverrides nama volume ⇒ mode (override eksplisit)
      * @return array<int,array<string,mixed>>
      */
     private function processProject(
@@ -813,7 +824,8 @@ class VolumeBackupService
         array $appById,
         bool $dbDumpEnabled,
         string $policy,
-        string $host
+        string $host,
+        array $modeOverrides = []
     ): array {
         $rows = [];
         $plans = [];
@@ -839,7 +851,8 @@ class VolumeBackupService
             if ($plan['strategy'] !== BackupStrategyResolver::STRATEGY_DUMP) {
                 continue;
             }
-            $rows[] = $this->backupDump($plan, $appById, $host, $project);
+            $volume = (string) ($plan['target']['name'] ?? '');
+            $rows[] = $this->backupDump($plan, $appById, $host, $project, $this->modeFor($volume, $modeOverrides));
         }
 
         // Fase 2 — strategi snapshot (butuh container berhenti).
@@ -848,7 +861,10 @@ class VolumeBackupService
             static fn (array $p): bool => $p['strategy'] === BackupStrategyResolver::STRATEGY_SNAPSHOT
         ));
         if ($snapshotPlans !== []) {
-            $rows = array_merge($rows, $this->backupSnapshots($project, $snapshotPlans, $appById, $policy, $host));
+            $rows = array_merge(
+                $rows,
+                $this->backupSnapshots($project, $snapshotPlans, $appById, $policy, $host, $modeOverrides)
+            );
         }
 
         return $rows;
@@ -857,9 +873,10 @@ class VolumeBackupService
     /**
      * @param array{target:array,containers:array,strategy:string} $plan
      * @param array<string,array> $appById
+     * @param string $mode mode retensi (`snapshot`/`sync`) untuk `forget`
      * @return array<string,mixed>
      */
-    private function backupDump(array $plan, array $appById, string $host, string $project): array
+    private function backupDump(array $plan, array $appById, string $host, string $project, string $mode = BackupSelection::MODE_SNAPSHOT): array
     {
         $target = $plan['target'];
         $t0 = microtime(true);
@@ -884,7 +901,7 @@ class VolumeBackupService
 
             $outcome = $this->withResticSpec(
                 [$dump['dir'] . ':' . ResticRunner::DATA_PATH . ':ro'],
-                function (array $spec) use ($target, $host): array {
+                function (array $spec) use ($target, $host, $mode): array {
                     $runner = new ResticRunner($this->process, $spec);
                     $result = $runner->backup(
                         [ResticRunner::DATA_PATH],
@@ -894,7 +911,7 @@ class VolumeBackupService
 
                     return [
                         'result' => $result,
-                        'forget_error' => $this->forget($runner, (string) $target['name']),
+                        'forget_error' => $this->forget($runner, (string) $target['name'], $mode),
                     ];
                 }
             );
@@ -919,10 +936,17 @@ class VolumeBackupService
      *
      * @param array<int,array{target:array,containers:array,strategy:string}> $plans
      * @param array<string,array> $appById
+     * @param array<string,string> $modeOverrides nama volume ⇒ mode retensi (override eksplisit)
      * @return array<int,array<string,mixed>>
      */
-    private function backupSnapshots(string $project, array $plans, array $appById, string $policy, string $host): array
-    {
+    private function backupSnapshots(
+        string $project,
+        array $plans,
+        array $appById,
+        string $policy,
+        string $host,
+        array $modeOverrides = []
+    ): array {
         $count = count($plans);
         $rows = [];
         $target0 = $plans[0]['target'];
@@ -978,7 +1002,8 @@ class VolumeBackupService
                     continue;
                 }
 
-                $rows[$i] = $this->backupSnapshot($plan, $host);
+                $mode = $this->modeFor((string) ($target['name'] ?? ''), $modeOverrides);
+                $rows[$i] = $this->backupSnapshot($plan, $host, $mode);
             }
         } catch (\Throwable $e) {
             for ($i = count($rows); $i < $count; $i++) {
@@ -1010,9 +1035,10 @@ class VolumeBackupService
 
     /**
      * @param array{target:array,containers:array,strategy:string} $plan
+     * @param string $mode mode retensi (`snapshot`/`sync`) untuk `forget`
      * @return array<string,mixed>
      */
-    private function backupSnapshot(array $plan, string $host): array
+    private function backupSnapshot(array $plan, string $host, string $mode = BackupSelection::MODE_SNAPSHOT): array
     {
         $target = $plan['target'];
         $volume = (string) $target['name'];
@@ -1027,7 +1053,7 @@ class VolumeBackupService
 
             $outcome = $this->withResticSpec(
                 [ResticRunner::volumeBind($volume, 'ro')],
-                function (array $spec) use ($target, $volume, $host): array {
+                function (array $spec) use ($target, $volume, $host, $mode): array {
                     $runner = new ResticRunner($this->process, $spec);
                     $result = $runner->backup(
                         [ResticRunner::DATA_PATH],
@@ -1037,7 +1063,7 @@ class VolumeBackupService
 
                     return [
                         'result' => $result,
-                        'forget_error' => $this->forget($runner, $volume),
+                        'forget_error' => $this->forget($runner, $volume, $mode),
                     ];
                 }
             );
@@ -1083,17 +1109,25 @@ class VolumeBackupService
     }
 
     /**
-     * `restic forget --prune` retensi per volume (non-fatal: backup sudah dibuat).
+     * `restic forget --prune` retensi per volume, **per mode** (non-fatal: backup
+     * sudah dibuat):
+     *   - `sync`     ⇒ `--keep-last 1` (cermin: hanya snapshot terbaru);
+     *   - `snapshot` ⇒ `--keep-daily` + `--keep-weekly` (tanpa `monthly`).
+     *
+     * Nilai ≤ 0 dibuang; tanpa kunci tersisa ⇒ tanpa forget (`null`).
      *
      * @return ?string pesan error retensi bila gagal (null bila sukses/dilewati)
      */
-    private function forget(ResticRunner $runner, string $volume): ?string
+    private function forget(ResticRunner $runner, string $volume, string $mode): ?string
     {
-        $keep = array_filter([
-            'daily' => (int) config('deploy.volume_backup_keep_daily', 7),
-            'weekly' => (int) config('deploy.volume_backup_keep_weekly', 4),
-            'monthly' => (int) config('deploy.volume_backup_keep_monthly', 3),
-        ], static fn (int $value): bool => $value > 0);
+        if (BackupSelection::normalizeMode($mode) === BackupSelection::MODE_SYNC) {
+            $keep = ['last' => 1];
+        } else {
+            $keep = array_filter([
+                'daily' => (int) config('deploy.volume_backup_keep_daily', 7),
+                'weekly' => (int) config('deploy.volume_backup_keep_weekly', 4),
+            ], static fn (int $value): bool => $value > 0);
+        }
         if ($keep === []) {
             return null;
         }
@@ -1104,6 +1138,44 @@ class VolumeBackupService
         } catch (\Throwable $e) {
             return 'Retensi (forget) gagal: ' . $e->getMessage();
         }
+    }
+
+    /**
+     * Normalisasi opsi `modes` (`nama volume ⇒ mode`) menjadi peta mode valid.
+     *
+     * Kunci kosong/bukan skalar diabaikan; nilai tak dikenal ⇒ `snapshot`
+     * ({@see BackupSelection::normalizeMode()}).
+     *
+     * @param mixed $modes
+     * @return array<string,string>
+     */
+    private static function modeOverrides(mixed $modes): array
+    {
+        if (!is_array($modes)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($modes as $name => $mode) {
+            $name = trim((string) $name);
+            if ($name === '' || !is_scalar($mode)) {
+                continue;
+            }
+            $out[$name] = BackupSelection::normalizeMode((string) $mode);
+        }
+
+        return $out;
+    }
+
+    /**
+     * Mode efektif sebuah volume: override eksplisit pemanggil menang, selain
+     * itu store seleksi ({@see BackupSelection::modeOf()}; default `snapshot`).
+     *
+     * @param array<string,string> $modeOverrides
+     */
+    private function modeFor(string $volume, array $modeOverrides): string
+    {
+        return $modeOverrides[$volume] ?? $this->selection->modeOf($volume);
     }
 
     // ==================================================================

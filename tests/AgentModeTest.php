@@ -146,11 +146,15 @@ class AgentModeTest extends TestCase
      * (non-admin ⇒ 404), dashboard-only: playbook `ops/ansible/playbooks/*.yml`
      * dijalankan DI control plane terhadap host SSH, jadi agent tidak punya
      * permukaan ini.
+     *
+     * +1 (mode retensi backup per volume): `POST /backups/mode` — dashboard-only
+     * (seleksi volume hidup di control plane; agent menerima mode lewat payload
+     * job `backup_run`).
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 166;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 167;
 
-    /** Definisi di atas menghasilkan 171 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 172;
+    /** Definisi di atas menghasilkan 173 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 173;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [

@@ -76,7 +76,7 @@ Rantai warisan: `AppControllerBase` ← `AppArtifactControllerBase` ← {`InfoCo
 | Kelas | Berkas | Tanggung jawab | Prefix route | Method publik |
 |---|---|---|---|---|
 | `BackupControllerBase` (abstract) | `BackupControllerBase.php` | Helper target/volume/server: `findTarget()`, `volumeTargets()`, `agentVolumeTargets()`, `visibleAgentServers()`, `agentDeployerForServer()`, `agentDeployerForTarget()`, `assertAgentSupports()`, `backupService()`, `notFound()`, `spawnWorker()`, statik `safeDownloadName()`. Tanpa route. | — | — |
-| `BackupOverviewController` | `BackupOverviewController.php` | Halaman `/backups`, panduan restic, jadwal backup, daftar snapshot. | `/backups`, `/api/backups` | `index()`, `guide()`, `setScheduled()`, `snapshots()`; statik `guideHtml()` |
+| `BackupOverviewController` | `BackupOverviewController.php` | Halaman `/backups`, panduan restic, jadwal backup, mode retensi per volume, daftar snapshot. | `/backups`, `/api/backups` | `index()`, `guide()`, `setScheduled()`, `setMode()`, `snapshots()`; statik `guideHtml()` |
 | `BackupStatusController` | `BackupStatusController.php` | Status backup live + cache, refresh manual (admin), sanitasi respons dan baris arsip. | `/api/backups/status`, `/backups/refresh` | `status()`, `refresh()`; statik `withRegistryFallback()`, `withScheduled()`, `archivedRows()`, `publicStatus()` |
 | `BackupRunController` | `BackupRunController.php` | Jalankan backup dan restore volume. | `/backups/run`, `/backups/restore` | `run()`, `restore()` |
 | `BackupArchiveController` | `BackupArchiveController.php` | Arsip snapshot volume terhapus (admin-only) + unduh SQL arsip. | `/api/backups/archive`, `/backups/archive` | `archivedSnapshots()`, `restoreArchived()`, `downloadArchiveSql()`; statik `volumeListed()` |

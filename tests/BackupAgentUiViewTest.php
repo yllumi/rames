@@ -211,7 +211,15 @@ class BackupAgentUiViewTest extends TestCase
 
         self::assertStringContainsString('Unduh .sql', $admin, 'catatan aksi unduh .sql server agent');
         self::assertStringContainsString('server agent', $admin);
-        self::assertStringContainsString('/js/backup.js?v=15', $admin, 'cache-bust backup.js naik');
+        self::assertStringContainsString('/js/backup.js?v=16', $admin, 'cache-bust backup.js naik');
+        self::assertMatchesRegularExpression(
+            '/<th title="snapshot = versioning harian \+ pekanan[^"]*">Mode<\/th>/',
+            $admin,
+            'kolom Mode ada (judul menjelaskan kedua mode)'
+        );
+        self::assertStringContainsString('colspan="10"', $admin, 'baris "Memuat …" selebar 10 kolom');
+        self::assertStringContainsString('hanya <strong>satu</strong> snapshot terbaru', $admin, 'modal menjelaskan mode sync');
+        self::assertStringContainsString('versioning harian + pekanan', $admin, 'modal menjelaskan mode snapshot');
         self::assertStringContainsString('backup-tab-archive', $admin, 'tab arsip tetap ada untuk admin');
         $this->assertNoSecretLeak($admin);
 
@@ -354,6 +362,49 @@ class BackupAgentUiViewTest extends TestCase
         self::assertSame(0, $result['code'], "driver node gagal:\n" . $result['stdout'] . $result['stderr']);
         self::assertStringNotContainsString('FAIL', $result['stdout']);
         self::assertSame(7, substr_count($result['stdout'], 'OK '), $result['stdout']);
+    }
+
+    // ==================================================================
+    // Mode retensi (snapshot/sync) — pengkabelan view + JS
+    // ==================================================================
+
+    /**
+     * Kolom "Mode" dirender JS dari `row.mode`: select untuk yang berhak
+     * (`can_schedule === true`), badge read-only selain itu; nilai dinamis
+     * di-escape. Handler `change` mengirim `POST /backups/mode` dan toggle
+     * "Berkala" ikut mengirim `server_id` (nama volume sama di dua server).
+     * Tes statik — perilaku jaringan tetap diuji server.
+     */
+    public function testBackupModeSelectAndServerIdAreWired(): void
+    {
+        $js = (string) file_get_contents(self::JS_DIR . '/backup.js');
+
+        self::assertStringContainsString('function modeCell(row)', $js, 'modeCell ada');
+        self::assertStringContainsString('backup-mode-select', $js, 'kelas select mode');
+        self::assertStringContainsString("'<td>' + modeCell(row) + '</td>'", $js, 'sel mode disisipkan di rowHtml');
+        self::assertStringContainsString('<option value="snapshot"', $js, 'option snapshot ada');
+        self::assertStringContainsString('Snapshot</option>', $js, 'label option snapshot');
+        self::assertStringContainsString('<option value="sync"', $js, 'option sync ada');
+        self::assertStringContainsString('Sync</option>', $js, 'label option sync');
+        self::assertStringContainsString('Anda tidak berhak mengubah mode volume ini', $js, 'badge read-only ber-title');
+        self::assertStringContainsString("fetch('/backups/mode'", $js, 'handler memanggil endpoint mode');
+        self::assertMatchesRegularExpression('/mode: mode,\s*server_id: serverId/', $js, 'mode + server_id dikirim');
+        self::assertMatchesRegularExpression(
+            "/scheduled: scheduled \\? '1' : '0',\\s*server_id: serverId/",
+            $js,
+            'schedule ikut mengirim server_id'
+        );
+        self::assertStringContainsString(
+            "' data-server-id=\"' + esc(volumeServerId(row)) + '\"'",
+            $js,
+            'toggle berkala membawa data-server-id'
+        );
+        self::assertSame(1, substr_count($js, "toast('Mode backup ' + saved"), 'toast sukses mode');
+        self::assertStringContainsString(
+            '<td colspan="10" class="text-muted small">',
+            $js,
+            'empty-state tabel volume memakai 10 kolom'
+        );
     }
 
     // ==================================================================

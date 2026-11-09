@@ -493,6 +493,8 @@ Route::get('/backups/dump/sql', [BackupDbController::class, 'downloadDumpSql']);
 // Segarkan cache status (live Engine/restic) & seleksi backup berkala per volume
 Route::post('/backups/refresh', [BackupStatusController::class, 'refresh']);
 Route::post('/backups/schedule', [BackupOverviewController::class, 'setScheduled']);
+// Mode retensi per volume (`snapshot` versioning harian+pekanan / `sync` = 1 snapshot)
+Route::post('/backups/mode', [BackupOverviewController::class, 'setMode']);
 // Aksi arsip — volume yang sudah dihapus (admin-only, PLAN §8h): daftar snapshot,
 // restore ke volume baru (nama diisi user), unduh dump SQL.
 Route::get('/api/backups/archive/snapshots', [BackupArchiveController::class, 'archivedSnapshots']);

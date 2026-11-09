@@ -6,6 +6,7 @@ namespace app\library\Backup;
 use app\library\Storage\SchemaMigrations;
 use app\library\Storage\ServerStore;
 use app\library\Storage\SqliteStore;
+use InvalidArgumentException;
 
 /**
  * Flag seleksi backup berkala **per volume** (opt-in), disimpan pada store
@@ -14,7 +15,14 @@ use app\library\Storage\SqliteStore;
  * store `apps` tidak berubah (PLAN_VOLUME_BACKUP.md).
  *
  * Bentuk data (per volume):
- *   {"scheduled":bool,"updated_at":"<ISO>","updated_by":"<userId>","server_id":"<id>"?}
+ *   {"scheduled":bool,"mode":"snapshot|sync","updated_at":"<ISO>","updated_by":"<userId>","server_id":"<id>"?}
+ *
+ * **Mode retensi (per volume)**: `snapshot` = versioning harian+pekanan
+ * (`--keep-daily`/`--keep-weekly`), `sync` = cermin "selalu baru"
+ * (`--keep-last 1`). Default **snapshot** (perilaku lama), entri/kunci `mode`
+ * absen ⇒ snapshot. Mode disimpan di entri yang **sama** dengan `scheduled`
+ * (merge, bukan timpa) sehingga toggle jadwal tidak menghapus mode dan
+ * sebaliknya.
  *
  * **Dimensi server (multi-server F4, plan §4.2/§4.3)**: nama volume bisa sama di
  * dua server ⇒ kunci seleksi di-scope server lewat
@@ -35,6 +43,19 @@ use app\library\Storage\SqliteStore;
  */
 final class BackupSelection
 {
+    /** Mode retensi baku: versioning harian+pekanan (perilaku lama). */
+    public const MODE_SNAPSHOT = 'snapshot';
+
+    /** Mode retensi cermin: hanya satu snapshot terbaru (`--keep-last 1`). */
+    public const MODE_SYNC = 'sync';
+
+    /**
+     * Mode retensi yang sah — dipakai validasi endpoint/agent dan normalisasi.
+     *
+     * @var array<int,string>
+     */
+    public const MODES = [self::MODE_SNAPSHOT, self::MODE_SYNC];
+
     private SqliteStore $store;
 
     /**
@@ -100,6 +121,81 @@ final class BackupSelection
     }
 
     /**
+     * Normalisasi nilai mode: nilai sah dikembalikan apa adanya, selain itu
+     * {@see self::MODE_SNAPSHOT} (aman untuk data lama/entri tanpa `mode`).
+     */
+    public static function normalizeMode(string $mode): string
+    {
+        $mode = trim($mode);
+
+        return in_array($mode, self::MODES, true) ? $mode : self::MODE_SNAPSHOT;
+    }
+
+    /**
+     * Mode retensi sebuah volume.
+     *
+     * Entri absen / kunci `mode` absen ⇒ {@see self::MODE_SNAPSHOT} (perilaku
+     * lama: versioning harian+pekanan). Nilai tak dikenal di store juga jatuh ke
+     * snapshot, sehingga store yang ditulis tangan tidak pernah mematikan
+     * retensi tanpa disengaja.
+     *
+     * @param string $serverId server pemilik volume (`''`/`local` = server ini)
+     */
+    public function modeOf(string $name, string $serverId = ''): string
+    {
+        $data = $this->data();
+        $entry = $data['volumes'][BackupRegistry::scopeKey($serverId, $name)] ?? null;
+        if (!is_array($entry) || !array_key_exists('mode', $entry) || !is_scalar($entry['mode'])) {
+            return self::MODE_SNAPSHOT;
+        }
+
+        return self::normalizeMode((string) $entry['mode']);
+    }
+
+    /**
+     * Simpan mode retensi sebuah volume (nama & mode divalidasi **sebelum**
+     * menulis — fail-fast, tanpa efek samping).
+     *
+     * Entri eksisting **di-merge** (kunci `scheduled` dan kunci lain
+     * dipertahankan) sehingga mengubah mode tidak mematikan jadwal backup.
+     *
+     * @param string $actorId  userId pelaku (jejak audit ringan; boleh kosong)
+     * @param string $serverId server pemilik volume (`''`/`local` = server ini)
+     * @throws \InvalidArgumentException mode di luar {@see self::MODES}
+     */
+    public function setMode(string $name, string $mode, string $actorId = '', string $serverId = ''): void
+    {
+        VolumeStateGuard::assertVolumeName($name);
+        if (!in_array($mode, self::MODES, true)) {
+            throw new InvalidArgumentException(
+                'Mode backup tidak dikenal: "' . $mode . '" (harus ' . implode(' atau ', self::MODES) . ').'
+            );
+        }
+
+        $serverId = trim($serverId) === '' ? ServerStore::LOCAL_ID : trim($serverId);
+        $key = BackupRegistry::scopeKey($serverId, $name);
+
+        $this->store->update(function (array &$data) use ($key, $mode, $actorId, $serverId): void {
+            if (!isset($data['version'])) {
+                $data['version'] = 1;
+            }
+            if (!isset($data['volumes']) || !is_array($data['volumes'])) {
+                $data['volumes'] = [];
+            }
+            $existing = $data['volumes'][$key] ?? null;
+            $entry = is_array($existing) ? $existing : [];
+            $entry['mode'] = $mode;
+            $entry['updated_at'] = date('c');
+            $entry['updated_by'] = $actorId;
+            $entry['server_id'] = $serverId;
+            $data['volumes'][$key] = $entry;
+        });
+
+        // Segarkan memo (bukan state lintas-request; instance hidup per request/run).
+        $this->memo = $this->store->read();
+    }
+
+    /**
      * Isi store seleksi (koleksi `volumes`) — dibaca sekali lalu dimemoize per
      * instance.
      *
@@ -112,6 +208,9 @@ final class BackupSelection
 
     /**
      * Set flag jadwal sebuah volume (nama divalidasi fail-fast).
+     *
+     * Entri eksisting **di-merge** (kunci `mode` dan kunci lain dipertahankan) —
+     * mematikan/menyalakan jadwal tidak boleh menghapus mode retensi.
      *
      * @param string $actorId  userId pelaku (untuk jejak audit ringan; boleh kosong)
      * @param string $serverId server pemilik volume (`''`/`local` = server ini)
@@ -129,12 +228,13 @@ final class BackupSelection
             if (!isset($data['volumes']) || !is_array($data['volumes'])) {
                 $data['volumes'] = [];
             }
-            $data['volumes'][$key] = [
-                'scheduled' => $scheduled,
-                'updated_at' => date('c'),
-                'updated_by' => $actorId,
-                'server_id' => $serverId,
-            ];
+            $existing = $data['volumes'][$key] ?? null;
+            $entry = is_array($existing) ? $existing : [];
+            $entry['scheduled'] = $scheduled;
+            $entry['updated_at'] = date('c');
+            $entry['updated_by'] = $actorId;
+            $entry['server_id'] = $serverId;
+            $data['volumes'][$key] = $entry;
         });
 
         // Segarkan memo agar `isScheduled()`/`explicit()` pasca-mutasi membaca
@@ -149,9 +249,10 @@ final class BackupSelection
      *
      * Untuk setiap nama yang **belum punya entri eksplisit**, tulis
      * `{"scheduled":true,"updated_at":"<ISO>","updated_by":"system"}`.
-     * Entri eksplisit (ON maupun OFF) **tidak** ditimpa ⇒ idempotent. Semua nama
-     * ditulis dalam **satu** `SqliteStore::update`; nama divalidasi fail-fast
-     * SEBELUM menulis apa pun.
+     * Entri eksplisit (ON maupun OFF) **tidak** ditimpa ⇒ idempotent. Entri yang
+     * ada tetapi belum punya kunci `scheduled` (mis. hanya `mode`) **di-merge**
+     * sehingga mode retensinya tidak hilang. Semua nama ditulis dalam **satu**
+     * `SqliteStore::update`; nama divalidasi fail-fast SEBELUM menulis apa pun.
      *
      * @param array<int,string> $volumeNames
      */
@@ -183,12 +284,14 @@ final class BackupSelection
                 if (is_array($existing) && array_key_exists('scheduled', $existing)) {
                     continue; // hormati entri eksplisit (ON/OFF) — idempotent
                 }
-                $data['volumes'][$name] = [
-                    'scheduled' => true,
-                    'updated_at' => date('c'),
-                    'updated_by' => 'system',
-                    'server_id' => ServerStore::LOCAL_ID,
-                ];
+                $entry = is_array($existing) ? $existing : [];
+                $entry['scheduled'] = true;
+                $entry['updated_at'] = date('c');
+                $entry['updated_by'] = 'system';
+                if (!isset($entry['server_id']) || !is_scalar($entry['server_id'])) {
+                    $entry['server_id'] = ServerStore::LOCAL_ID;
+                }
+                $data['volumes'][$name] = $entry;
             }
         });
 

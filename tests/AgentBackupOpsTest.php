@@ -259,6 +259,7 @@ class AgentBackupOpsTest extends TestCase
                 'app' => $this->appPayload(),
                 'volume' => 'demo_data',
                 'trigger' => 'manual',
+                'backup_mode' => 'sync',
                 // Klien jahat: kredensial diselipkan di payload.
                 's3_secret' => 'AKIA-SUPER-SECRET',
                 'restic_password' => 'passphrase-rahasia',
@@ -275,11 +276,12 @@ class AgentBackupOpsTest extends TestCase
         $payload = $record['payload'];
         $this->assertSame('demo_data', $payload['volume']);
         $this->assertSame('manual', $payload['trigger']);
+        $this->assertSame('sync', $payload['backup_mode'], 'mode retensi control plane diteruskan ke rekaman job');
         $this->assertSame(self::APP_ID, $payload['app_id']);
 
         // Hanya penanda yang boleh masuk rekaman job (whitelist), bukan kredensial.
         $this->assertSame(
-            ['app_id', 'name', 'ref', 'actor_id', 'preserve_volumes', 'volume', 'trigger'],
+            ['app_id', 'name', 'ref', 'actor_id', 'preserve_volumes', 'volume', 'trigger', 'backup_mode'],
             array_keys($payload)
         );
 
@@ -296,6 +298,64 @@ class AgentBackupOpsTest extends TestCase
         );
     }
 
+    public function testBackupModeIsNormalizedOrDefaultsToSnapshot(): void
+    {
+        $cases = [
+            [null, 'snapshot', 'tanpa `backup_mode` ⇒ snapshot (kompatibel control plane lama)'],
+            ['sync', 'sync', 'mode sah diteruskan apa adanya'],
+            ['snapshot', 'snapshot', 'mode snapshot tetap snapshot'],
+            ['weird-mode', 'snapshot', 'mode tak dikenal ⇒ snapshot (bukan 400)'],
+            ['', 'snapshot', 'string kosong ⇒ snapshot'],
+        ];
+
+        foreach ($cases as [$input, $expected, $why]) {
+            $request = [
+                'op' => 'backup_run',
+                'app' => $this->appPayload(),
+                'volume' => 'demo_data',
+            ];
+            if ($input !== null) {
+                $request['backup_mode'] = $input;
+            }
+
+            [$status, , $body] = $this->decode($this->controller->create(
+                $this->request('POST', '/jobs', json_encode($request))
+            ));
+
+            $this->assertSame(200, $status, $why);
+            $record = $this->jobs->find((string) $body['job_id']);
+            $this->assertNotNull($record);
+            $this->assertSame($expected, $record['payload']['backup_mode'] ?? null, $why);
+        }
+    }
+
+    public function testBackupModeIsOnlyRecordedForBackupRun(): void
+    {
+        $cases = [
+            ['restore', ['volume' => 'demo_data', 'snapshot' => 'abcdef12']],
+            ['db_dump', ['volume' => 'demo_data']],
+        ];
+
+        foreach ($cases as [$op, $extra]) {
+            [$status, , $body] = $this->decode($this->controller->create(
+                $this->request('POST', '/jobs', json_encode([
+                    'op' => $op,
+                    'app' => $this->appPayload(),
+                    'backup_mode' => 'sync',
+                ] + $extra))
+            ));
+
+            $this->assertSame(200, $status, "op {$op} harus diterima");
+            $record = $this->jobs->find((string) $body['job_id']);
+            $this->assertNotNull($record);
+            $this->assertArrayNotHasKey(
+                'backup_mode',
+                $record['payload'],
+                "op `{$op}` tidak memakai mode retensi — payload harus tetap sempit"
+            );
+        }
+    }
+
     // ==================================================================
     // (3) worker di server agent benar-benar menjalankan pekerjaannya
     // ==================================================================
@@ -303,7 +363,10 @@ class AgentBackupOpsTest extends TestCase
     public function testWorkerRunsBackupRestoreAndDumpAtThisHostWithTheJobPayload(): void
     {
         $cases = [
-            ['backup_run', ['volume' => 'demo_data', 'trigger' => 'manual'], 'runBackup:demo_data:manual', 'Backup volume demo_data ok (fake).'],
+            // Mode diambil dari payload job (control plane) lalu diteruskan ke runner.
+            ['backup_run', ['volume' => 'demo_data', 'trigger' => 'manual', 'backup_mode' => 'sync'], 'runBackup:demo_data:manual:sync', 'Backup volume demo_data ok (fake).'],
+            // Payload lama tanpa `backup_mode` ⇒ snapshot.
+            ['backup_run', ['volume' => 'demo_data', 'trigger' => 'schedule'], 'runBackup:demo_data:schedule:snapshot', 'Backup volume demo_data ok (fake).'],
             ['restore', ['volume' => 'demo_data', 'snapshot' => 'abcdef12'], 'restoreVolume:demo_data:abcdef12:' . self::APP_ID, 'Restore volume demo_data selesai (fake).'],
             ['db_dump', ['volume' => 'demo_data'], 'dbDump:demo_data:' . self::APP_ID, 'Dump volume demo_data selesai (fake).'],
         ];
@@ -363,7 +426,7 @@ class AgentBackupOpsTest extends TestCase
     public function testDeployerMapsDataOpsToAgentJobs(): void
     {
         $cases = [
-            ['backupRun', ['demo_data', 'schedule'], ['op' => 'backup_run', 'volume' => 'demo_data', 'trigger' => 'schedule']],
+            ['backupRun', ['demo_data', 'schedule'], ['op' => 'backup_run', 'volume' => 'demo_data', 'trigger' => 'schedule', 'backup_mode' => 'snapshot']],
             ['restoreVolume', ['demo_data', 'abcdef12'], ['op' => 'restore', 'volume' => 'demo_data', 'snapshot' => 'abcdef12']],
             ['dbDump', ['demo_data'], ['op' => 'db_dump', 'volume' => 'demo_data']],
         ];
@@ -391,6 +454,39 @@ class AgentBackupOpsTest extends TestCase
             $this->assertArrayNotHasKey('artifacts', $body, 'op data tidak mengirim artefak app');
             $this->assertSame(self::APP_ID, $body['app']['id'] ?? null);
             $this->assertSame('selesai di agent', $result['message']);
+        }
+    }
+
+    public function testDeployerForwardsNormalizedBackupModeAndNeverLeaksCredentials(): void
+    {
+        $cases = [
+            [null, 'snapshot', 'tanpa mode ⇒ snapshot (perilaku lama)'],
+            ['sync', 'sync', 'mode sah diteruskan'],
+            ['nonsense', 'snapshot', 'mode tak dikenal dinormalisasi di control plane'],
+        ];
+
+        foreach ($cases as [$mode, $expected, $why]) {
+            $handler = new AgentBackupOpsFakeHandler();
+            $handler
+                ->reply(200, json_encode(['code' => 0, 'job_id' => 'job-1', 'op' => 'backup_run', 'log_offset' => 0]))
+                ->reply(200, json_encode(['code' => 0, 'job' => ['status' => 'done', 'message' => 'ok']]))
+                ->reply(200, '')
+                ->reply(200, '');
+
+            $deployer = $this->deployer($handler);
+            $deployer->backupRun($this->app(), 'demo_data', 'manual', null, $mode);
+
+            $body = $handler->jsonBody(0);
+            $this->assertSame($expected, $body['backup_mode'] ?? null, $why);
+            $this->assertSame('demo_data', $body['volume']);
+            $this->assertSame('manual', $body['trigger']);
+
+            // Payload tetap sempit: hanya penanda (tanpa kredensial/berkas).
+            $this->assertSame(
+                ['volume', 'trigger', 'backup_mode', 'op', 'app'],
+                array_keys($body),
+                'payload backup_run hanya memuat penanda + proyeksi app'
+            );
         }
     }
 

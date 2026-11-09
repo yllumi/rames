@@ -8,6 +8,7 @@ use app\library\Agent\AgentArtifactMaterializer;
 use app\library\Agent\AgentError;
 use app\library\Agent\AgentJobStore;
 use app\library\Backup\BackupJobRunner;
+use app\library\Backup\BackupSelection;
 use app\library\Backup\DumpStaging;
 use app\library\Backup\ResticRunner;
 use app\library\Backup\VolumeStateGuard;
@@ -255,6 +256,9 @@ class AgentJobController
      * diizinkan — semuanya nama/penanda, **bukan** kredensial: server agent
      * memakai konfigurasi & berkas kredensialnya sendiri.
      *
+     * `backup_mode` (`snapshot`|`sync`) = mode retensi yang diputuskan control
+     * plane untuk op `backup_run`; juga penanda, bukan kredensial.
+     *
      * F4 lanjutan: `target` (slug template / `agent` / nama volume arsip),
      * `update_mode` (`update|rollback`), dan `control_plane_version` (versi
      * control plane pemanggil, dipakai gerbang kompatibilitas sisi agen) —
@@ -262,7 +266,7 @@ class AgentJobController
      * `restore_archived` (nama volume, bukan kredensial). Token/PEM tetap tidak
      * pernah masuk rekaman job.
      */
-    private const PAYLOAD_FIELDS = ['ref', 'actor_id', 'preserve_volumes', 'domain', 'volume', 'snapshot', 'trigger', 'target', 'target_name', 'update_mode', 'control_plane_version'];
+    private const PAYLOAD_FIELDS = ['ref', 'actor_id', 'preserve_volumes', 'domain', 'volume', 'snapshot', 'trigger', 'backup_mode', 'target', 'target_name', 'update_mode', 'control_plane_version'];
 
     /**
      * Op data F4 (plan §4.1): backup/restore/dump volume dijalankan di server
@@ -381,6 +385,15 @@ class AgentJobController
             }
         }
 
+        // `backup_mode` (op `backup_run`): mode retensi yang diputuskan control
+        // plane. Nilai tak dikenal/absen ⇒ `snapshot` (perilaku lama), bukan
+        // 400 — kontrak agent lama tetap kompatibel. Hanya penanda, bukan
+        // kredensial, dan hanya direkam untuk `backup_run`.
+        $backupMode = BackupSelection::MODE_SNAPSHOT;
+        if (array_key_exists('backup_mode', $payload) && is_scalar($payload['backup_mode'])) {
+            $backupMode = BackupSelection::normalizeMode((string) $payload['backup_mode']);
+        }
+
         if (in_array($op, self::DATA_OPS, true)) {
             try {
                 VolumeStateGuard::assertVolumeName($volume);
@@ -454,6 +467,9 @@ class AgentJobController
         if ($volume !== '') {
             $jobPayload['volume'] = $volume;
             $jobPayload['trigger'] = $trigger;
+            if ($op === 'backup_run') {
+                $jobPayload['backup_mode'] = $backupMode;
+            }
         }
         if ($snapshot !== '') {
             $jobPayload['snapshot'] = $snapshot;

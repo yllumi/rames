@@ -464,7 +464,7 @@ Hanya **named volume** berlabel project compose; bind mount & anonymous volume d
 1. Ambil `run.lock` (`flock`) — run harian vs manual tidak tumpang tindih.
 2. Enumerasi volume berlabel → petakan project → app, tandai `orphaned`.
 3. Iterasi **serial per app**: pilih strategi A/B; B selalu start ulang di `finally`.
-4. Retensi `restic forget --prune --keep-daily/weekly/monthly` **per volume** (tag `volume:<nama>`).
+4. Retensi `restic forget --prune` **per volume** (tag `volume:<nama>`), **sadar-mode** (§8h.10): `snapshot` ⇒ `--keep-daily`/`--keep-weekly` (tanpa monthly); `sync` ⇒ `--keep-last 1`.
 5. Tulis laporan status + log; staging dibersihkan di `finally`.
 
 Kegagalan satu volume tidak menghentikan volume lain; status `ok`/`partial`/`failed`.
@@ -475,7 +475,7 @@ Strategi dibaca dari tag snapshot; absen ⇒ deteksi container DB. Dump → rest
 
 ### 8h.5 Otorisasi
 
-`backup` = operator; `restore` = owner (destruktif). Satu pintu `AppAccess`/`BackupAccess`; penolakan **404**. Seleksi berkala (`POST /backups/schedule`) = ability `backup` (owner/operator); volume yatim admin-only. Refresh status (`POST /backups/refresh`) = **admin global** (non-admin 404). Gerbang kredit **hanya saat menyalakan** seleksi, menilai aktor lalu penanggung biaya/owner (402 bila kurang); mematikan bebas; backfill otomatis tidak digerbang. Respons status disanitasi daftar-putih; baris volume disaring `BackupAccess::visible()`.
+`backup` = operator; `restore` = owner (destruktif). Satu pintu `AppAccess`/`BackupAccess`; penolakan **404**. Seleksi berkala (`POST /backups/schedule`) dan mode retensi (`POST /backups/mode`) = ability `backup` (owner/operator); volume yatim admin-only; viewer/stranger ⇒ **404**. Refresh status (`POST /backups/refresh`) = **admin global** (non-admin 404). Gerbang kredit **hanya saat menyalakan** seleksi, menilai aktor lalu penanggung biaya/owner (402 bila kurang); mematikan bebas; backfill otomatis tidak digerbang. Respons status disanitasi daftar-putih; baris volume disaring `BackupAccess::visible()`.
 
 ### 8h.6 Penjadwalan & helper container
 
@@ -493,9 +493,13 @@ Image dashboard memuat binary `restic`; service dashboard mempertahankan blok `d
 
 Downtime singkat harian pada volume non-DB (stop→snapshot→start); mitigasi jadwal jam sepi, serial per app, timeout stop, start dijamin. Biaya/ukuran S3 dikendalikan retensi + lifecycle policy. Biaya backup dibebankan ke member pemilik app (tarif + floor), dihitung dari bytes snapshot tersimpan; registry bisa tertinggal satu run. Volume yatim tidak ditagih (diserap operator). Penghitungan snapshot live memakai timeout pendek agar S3 lambat tidak mengunci UI.
 
-### 8h.10 Seleksi berkala per volume & status cache
+### 8h.10 Seleksi berkala & mode retensi per volume, status cache
 
 Seleksi di store `backup` koleksi `volumes`; **default OFF (opt-in)**. Volume yang sudah punya snapshot di-backfill `scheduled=true` (idempotent; entri eksplisit tidak ditimpa). Menyalakan seleksi memanggil gerbang kredit (saldo owner) dan mengembalikan 402 bila kurang; seleksi tidak berubah. Tiap baris UI membawa `can_schedule`, `backup_gb` (termasuk floor), `backup_credits_month`. **GOTCHA**: app tanpa snapshot ⇒ `required = 0`, sehingga gerbang belum menghalangi; biaya mengikuti snapshot nyata — jangan andalkan gerbang sebagai jaminan saldo app baru. Run terjadwal murni membaca seleksi (tanpa panggilan Engine/restic tambahan); status cache + `container_state` live; `archived[]` admin-only.
+
+**Mode retensi per volume.** Setiap entri seleksi (`volumes`, ter-scope `server_id`) juga menyimpan `mode` (`snapshot` default | `sync`); entri/kunci absen ⇒ `snapshot`, dan `setScheduled()`/`backfill()` **merge** entri sehingga mode tidak hilang saat toggle Berkala diubah. Retensi: `snapshot` ⇒ `--keep-daily` (`VOLUME_BACKUP_KEEP_DAILY`, default 7) + `--keep-weekly` (`VOLUME_BACKUP_KEEP_WEEKLY`, default 4), **tanpa** monthly; `sync` ⇒ `--keep-last 1`. **Konsekuensi `sync`**: hanya snapshot terbaru dipertahankan, jadi snapshot lama dipangkas **pada run berikutnya** (bukan saat mode diubah) dan berkas yang dihapus dari volume ikut hilang dari snapshot setelah prune — **ireversibel** untuk versi lama. Upload tetap inkremental/dedup: run berikutnya hanya meng-upload chunk baru/berubah, bukan seluruh volume. `VOLUME_BACKUP_KEEP_MONTHLY`/`deploy.volume_backup_keep_monthly` **dihapus** (tidak dibaca lagi); `DB_BACKUP_KEEP_MONTHLY` (§8i, backup DB dashboard) **tidak berubah**.
+
+Endpoint mode: `POST /backups/mode` (dashboard-only, CSRF, ability `backup`; form `_token, volume, mode, server_id?`) ⇒ `{code:0,data:{volume,server_id,mode}}`; volume/mode tak sah ⇒ **422**, target tak dikenal/tak berhak ⇒ **404**; **tanpa gerbang kredit** (mengubah mode tidak menyalakan backup). Baris `GET /api/backups/status` dan `POST /backups/refresh` memuat `mode` **segar** (sejajar `scheduled`, tidak di cache `BackupCatalog`). Jalur agent: control plane mengirim `backup_mode` pada job `backup_run` (bukan rahasia); agent menormalkan absen/invalid ⇒ `snapshot` dan meneruskannya sebagai override `VolumeBackupService::run(['modes'=>[$volume=>$mode]])` (menang atas store).
 
 ### 8h.11 Riwayat volume ter-backup (arsip) & restore ke volume baru
 

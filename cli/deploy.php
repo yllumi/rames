@@ -463,8 +463,9 @@ if (in_array($mode, ['nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue',
 // `VolumeRestoreService`/`DumpRunner` lewat `BackupJobRunner`).
 //
 // Kredensial: payload job **tidak pernah** memuat kredensial restic/S3/DB —
-// hanya `volume` (dan `snapshot`/`trigger`). Server ini memakai env/berkas
-// kredensialnya sendiri (`CredentialEnvFile`, 0600), sama seperti jalur lokal.
+// hanya `volume` (dan `snapshot`/`trigger`/`backup_mode`). Server ini memakai
+// env/berkas kredensialnya sendiri (`CredentialEnvFile`, 0600), sama seperti
+// jalur lokal.
 // Nama volume & id snapshot divalidasi library (`VolumeStateGuard`,
 // `ResticRunner::assertSnapshotId`) sebelum efek samping apa pun.
 //
@@ -482,6 +483,10 @@ if (in_array($mode, ['backup_run', 'restore', 'db_dump'], true)) {
     try {
         $volume = trim((string) ($jobPayload['volume'] ?? ''));
         $trigger = trim((string) ($jobPayload['trigger'] ?? 'manual'));
+        // Mode retensi diputuskan control plane dan dikirim sebagai penanda
+        // `backup_mode` (op `backup_run` saja). Absen/invalid ⇒ `snapshot`
+        // (kompatibel dengan control plane lama).
+        $backupMode = (string) ($jobPayload['backup_mode'] ?? 'snapshot');
         $snapshot = trim((string) ($jobPayload['snapshot'] ?? ''));
         if ($volume === '') {
             throw new RuntimeException('Payload job tidak memuat `volume` — operasi backup/restore dibatalkan.');
@@ -501,8 +506,8 @@ if (in_array($mode, ['backup_run', 'restore', 'db_dump'], true)) {
         };
 
         if ($mode === 'backup_run') {
-            $logOp('backup', "Menjalankan backup volume {$volume} (trigger {$trigger}) ...");
-            $result = $runner->runBackup($volume, $trigger, $projectLog);
+            $logOp('backup', "Menjalankan backup volume {$volume} (trigger {$trigger}, mode {$backupMode}) ...");
+            $result = $runner->runBackup($volume, $trigger, $projectLog, $backupMode);
         } elseif ($mode === 'restore') {
             if ($snapshot === '') {
                 throw new RuntimeException('Payload job tidak memuat `snapshot` — restore dibatalkan.');

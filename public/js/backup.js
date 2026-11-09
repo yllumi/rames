@@ -17,7 +17,9 @@
 // Kontrak yang dikonsumsi (JANGAN diubah dari sisi UI):
 //   GET  /api/backups/status                 → {code:0,data:{running,cached_at,status,volumes:[…]}}
 //   POST /backups/refresh                    (form: _token) → bentuk sama seperti status
-//   POST /backups/schedule                   (form: _token, volume, scheduled) — hak `backup` (owner/operator)
+//   POST /backups/schedule                   (form: _token, volume, scheduled, server_id?) — hak `backup` (owner/operator)
+//   POST /backups/mode                       (form: _token, volume, mode, server_id?)
+//        → {code:0,data:{volume,server_id,mode}} — hak `backup`, TANPA gerbang kredit
 //   GET  /api/backups/snapshots?volume=<n>   → {code:0,data:{volume,snapshots:[…]}}
 //   POST /backups/run                        (form: _token, volume)
 //   POST /backups/restore                    (form: _token, volume, snapshot, confirm)
@@ -429,6 +431,7 @@
     if (row.can_schedule === true) {
       return '<div class="form-check form-switch mb-0">' +
         '<input type="checkbox" class="form-check-input backup-schedule-toggle" data-volume="' + name + '"' +
+        ' data-server-id="' + esc(volumeServerId(row)) + '"' +
         (scheduled ? ' checked' : '') +
         ' aria-label="Backup berkala untuk ' + name + '"' +
         ' title="' + esc(scheduleCostTitle(row)) + '">' +
@@ -438,6 +441,45 @@
     return scheduled
       ? '<span class="badge text-bg-success" title="' + title + '">on</span>'
       : '<span class="badge text-bg-secondary" title="' + title + '">off</span>';
+  }
+
+  // Kolom "Mode" (retensi snapshot): `snapshot` = versioning harian + pekanan,
+  // `sync` = hanya 1 snapshot terbaru. Server selalu mengirim `mode` per baris
+  // (default `snapshot` untuk entri lama/absen). Select hanya dirender bila
+  // `can_schedule === true` (hak `backup` = owner/operator); selain itu badge
+  // read-only. Server tetap sumber kebenaran — `POST /backups/mode` menolak
+  // dengan 404 bila tidak berhak.
+  var MODE_TITLE = 'snapshot: versioning harian + pekanan; '
+    + 'sync: hanya 1 snapshot terbaru (cocok untuk volume uploads besar)';
+
+  function normalizeMode(value) {
+    return String(value === null || value === undefined ? '' : value).trim() === 'sync'
+      ? 'sync'
+      : 'snapshot';
+  }
+
+  function modeCell(row) {
+    var name = esc(row.name);
+    var serverId = esc(volumeServerId(row));
+    var mode = normalizeMode(row.mode);
+
+    if (row.can_schedule === true) {
+      return '<select class="form-select form-select-sm w-auto backup-mode-select"' +
+        ' data-volume="' + name + '" data-server-id="' + serverId + '"' +
+        ' data-prev-mode="' + mode + '"' +
+        ' aria-label="Mode backup untuk ' + name + '"' +
+        ' title="' + esc(MODE_TITLE) + '">' +
+        '<option value="snapshot"' + (mode === 'snapshot' ? ' selected' : '') +
+        ' title="Versioning harian + pekanan — bisa restore versi lama">Snapshot</option>' +
+        '<option value="sync"' + (mode === 'sync' ? ' selected' : '') +
+        ' title="Hanya 1 snapshot terbaru — file yang dihapus ikut hilang">Sync</option>' +
+        '</select>';
+    }
+
+    var title = esc('Anda tidak berhak mengubah mode volume ini');
+    return mode === 'sync'
+      ? '<span class="badge text-bg-info" title="' + title + '">Sync</span>'
+      : '<span class="badge text-bg-secondary" title="' + title + '">Snapshot</span>';
   }
 
   // Penanda server pada baris volume (multi-server F4): volume server agent
@@ -464,6 +506,7 @@
       '<td class="small">' + lastBackupCell(row) + '</td>' +
       '<td class="text-end small">' + (row.snapshots ? Number(row.snapshots) : 0) + '</td>' +
       '<td>' + scheduleCell(row) + '</td>' +
+      '<td>' + modeCell(row) + '</td>' +
       '<td class="text-end text-nowrap">' + actionsCell(row) + '</td>' +
       '</tr>';
   }
@@ -736,7 +779,7 @@
           emptyMsg = 'Tidak ada volume backup yang bisa Anda lihat.' +
             (IS_ADMIN ? '' : ' Anda hanya melihat volume app yang boleh Anda akses.');
         }
-        rowsEl.innerHTML = '<tr><td colspan="9" class="text-muted small">' + emptyMsg + '</td></tr>';
+        rowsEl.innerHTML = '<tr><td colspan="10" class="text-muted small">' + emptyMsg + '</td></tr>';
       } else {
         rowsEl.innerHTML = rows.map(rowHtml).join('');
       }
@@ -959,6 +1002,59 @@
     });
   }
 
+  // Ubah "Mode" retensi (`snapshot`/`sync`) — delegasi, tabel di-render ulang
+  // tiap poll. Tanpa gerbang kredit (server tidak menyalakan backup di sini).
+  // Select dinonaktifkan selama request; gagal ⇒ nilai lama dikembalikan.
+  rowsEl.addEventListener('change', function (ev) {
+    var target = ev.target;
+    if (!target || typeof target.closest !== 'function') return;
+    var modeSelect = target.closest('.backup-mode-select');
+    if (!modeSelect) return;
+
+    var volume = modeSelect.getAttribute('data-volume') || '';
+    var serverId = modeSelect.getAttribute('data-server-id') || '';
+    var mode = normalizeMode(modeSelect.value);
+    var previous = normalizeMode(modeSelect.getAttribute('data-prev-mode'));
+    modeSelect.disabled = true;
+
+    fetch('/backups/mode', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      body: new URLSearchParams({
+        _token: CSRF,
+        volume: volume,
+        mode: mode,
+        server_id: serverId
+      })
+    }).then(function (r) {
+      return r.json().catch(function () {
+        return { code: r.status || 400, msg: 'Respons server tidak valid.' };
+      });
+    }).then(function (d) {
+      if (!d || d.code !== 0) {
+        var msg;
+        if (d && d.code === 404) {
+          msg = 'Anda tidak berhak mengubah mode volume ini.';
+        } else {
+          msg = (d && (d.msg || d.error)) ? String(d.msg || d.error) : 'Gagal menyimpan mode backup.';
+        }
+        modeSelect.value = previous;
+        toast(msg, 'danger');
+        return;
+      }
+      var saved = normalizeMode(d.data ? d.data.mode : mode);
+      modeSelect.value = saved;
+      modeSelect.setAttribute('data-prev-mode', saved);
+      toast('Mode backup ' + saved + ': ' + volume, 'success');
+    }).catch(function () {
+      modeSelect.value = previous;
+      toast('Gagal menghubungi server.', 'danger');
+    }).then(function () {
+      modeSelect.disabled = false;
+    });
+  });
+
   // Toggle "Berkala" (delegasi — tabel di-render ulang tiap poll). Otorisasi hak
   // `backup` & gerbang kredit ditegakkan server; checkbox dinonaktifkan selama
   // request untuk mencegah dobel klik.
@@ -969,6 +1065,7 @@
     if (!toggle) return;
 
     var volume = toggle.getAttribute('data-volume') || '';
+    var serverId = toggle.getAttribute('data-server-id') || '';
     var scheduled = !!toggle.checked;
     var previous = !scheduled;
     toggle.disabled = true;
@@ -980,7 +1077,8 @@
       body: new URLSearchParams({
         _token: CSRF,
         volume: volume,
-        scheduled: scheduled ? '1' : '0'
+        scheduled: scheduled ? '1' : '0',
+        server_id: serverId
       })
     }).then(function (r) {
       return r.json().catch(function () {
