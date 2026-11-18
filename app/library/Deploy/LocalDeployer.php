@@ -7,6 +7,7 @@ use app\library\Docker\AppContainers;
 use app\library\Docker\AppPorts;
 use app\library\Docker\DockerClient;
 use app\library\Docker\DockerComposeRunner;
+use app\library\Domain\AppDomains;
 use app\library\Git\GitService;
 use app\library\Nginx\NginxConfigGenerator;
 use app\library\Nginx\NginxRoutes;
@@ -1096,36 +1097,79 @@ class LocalDeployer implements DeployerInterface
     public function renderNginxConfig(array $app): string
     {
         $hostPort = $this->primaryHostPort($app);
-        // Subdomain efektif (field `subdomain` app bila ada, selain itu `name`).
-        $subdomain = app_subdomain_of($app);
-        $customDomain = (string) ($app['custom_domain'] ?? '');
 
         // Rute proxy tambahan (apps.json: nginx_routes). all() toleran data
         // rusak → [] sehingga data lama/rusak tidak menggagalkan deploy.
         $routes = NginxRoutes::all($app);
 
-        // Tanpa custom domain: subdomain melayani app (perilaku default).
+        return $this->nginx->render($hostPort, $this->domainServerBlocks($app), $routes);
+    }
+
+    /**
+     * Server block domain app, dalam urutan render:
+     *  1. **subdomain** — melayani app bila app tidak punya `custom_domain`
+     *     (perilaku default), selain itu redirect 301 ke custom domain utama;
+     *  2. **custom domain utama** — melayani app (hanya bila ada);
+     *  3. **domain tambahan** (`apps.json.custom_domains[]`) — satu serve block
+     *     per alias, mem-proxy ke host port primary app yang sama (bukan
+     *     redirect), dengan status SSL sendiri: blok `listen 443 ssl` dirender
+     *     hanya bila status slot `alias:<domain>` bernilai `active`, sehingga
+     *     generator memakai path cert `/etc/letsencrypt/live/<alias>/`.
+     *
+     * Keberadaan alias **tidak** mengubah blok subdomain/domain utama (target
+     * redirect tetap domain utama). Alias yang kebetulan sama dengan subdomain
+     * atau domain utama (data rusak hasil sunting manual) dilewati: server_name
+     * ganda membuat nginx memakai blok pertama & menulis warning saat reload.
+     *
+     * @param array<string,mixed> $app
+     * @return array<int,array{server_name:string,ssl?:bool,redirect_to?:string}>
+     */
+    private function domainServerBlocks(array $app): array
+    {
+        // Subdomain efektif (field `subdomain` app bila ada, selain itu `name`).
+        $subdomain = app_subdomain_of($app);
+        $customDomain = (string) ($app['custom_domain'] ?? '');
+        $servers = [];
+
         if ($customDomain === '') {
-            $ssl = ($app['ssl_status'] ?? null) === 'active';
-            return $this->nginx->render($hostPort, [
-                ['server_name' => $subdomain, 'ssl' => $ssl],
-            ], $routes);
+            // Tanpa custom domain: subdomain melayani app (perilaku default).
+            $servers[] = ['server_name' => $subdomain, 'ssl' => ($app['ssl_status'] ?? null) === 'active'];
+        } else {
+            // Dengan custom domain: subdomain redirect (301) ke custom domain,
+            // custom domain melayani app. Redirect pakai https bila SSL custom
+            // aktif, selain itu http agar tidak memutus akses sebelum cert
+            // terpasang. Subdomain redirect ikut di-SSL-kan bila SSL subdomain
+            // (`ssl_status`) aktif — user bisa memilih SSL untuk subdomain dan
+            // custom domain sekaligus. Bila belum aktif, redirect tetap HTTP
+            // (lihat generator).
+            $customSsl = ($app['custom_ssl_status'] ?? null) === 'active';
+            $target = ($customSsl ? 'https://' : 'http://') . $customDomain;
+            $subdomainSsl = ($app['ssl_status'] ?? null) === 'active';
+
+            $servers[] = ['server_name' => $subdomain, 'redirect_to' => $target, 'ssl' => $subdomainSsl];
+            $servers[] = ['server_name' => $customDomain, 'ssl' => $customSsl];
         }
 
-        // Dengan custom domain: subdomain redirect (301) ke custom domain,
-        // custom domain melayani app. Redirect pakai https bila SSL custom aktif,
-        // selain itu http agar tidak memutus akses sebelum cert terpasang.
-        // Subdomain redirect ikut di-SSL-kan bila SSL subdomain (`ssl_status`)
-        // aktif — user bisa memilih SSL untuk subdomain dan custom domain
-        // sekaligus. Bila belum aktif, redirect tetap HTTP (lihat generator).
-        $customSsl = ($app['custom_ssl_status'] ?? null) === 'active';
-        $target = ($customSsl ? 'https://' : 'http://') . $customDomain;
-        $subdomainSsl = ($app['ssl_status'] ?? null) === 'active';
+        $taken = [AppDomains::normalizeDomain($subdomain)];
+        if ($customDomain !== '') {
+            $taken[] = AppDomains::normalizeDomain($customDomain);
+        }
 
-        return $this->nginx->render($hostPort, [
-            ['server_name' => $subdomain, 'redirect_to' => $target, 'ssl' => $subdomainSsl],
-            ['server_name' => $customDomain, 'ssl' => $customSsl],
-        ], $routes);
+        foreach (AppDomains::aliases($app) as $alias) {
+            // aliases() sudah menormalkan/menyaring domain tidak valid.
+            $domain = (string) ($alias['domain'] ?? '');
+            if ($domain === '' || in_array($domain, $taken, true)) {
+                continue;
+            }
+            $taken[] = $domain;
+
+            $servers[] = [
+                'server_name' => $domain,
+                'ssl' => AppDomains::status($app, AppDomains::ALIAS_SLOT_PREFIX . $domain)['ssl_status'] === 'active',
+            ];
+        }
+
+        return $servers;
     }
 
     public function writeNginxConfig(array $app): void

@@ -150,11 +150,15 @@ class AgentModeTest extends TestCase
      * +1 (mode retensi backup per volume): `POST /backups/mode` — dashboard-only
      * (seleksi volume hidup di control plane; agent menerima mode lewat payload
      * job `backup_run`).
+     *
+     * +2 (domain tambahan per app): `POST /apps/{id}/domains` &
+     * `POST /apps/{id}/domains/remove` — dashboard-only (agent hanya menerima
+     * metadata `custom_domains` lewat proyeksi app).
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 167;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 169;
 
-    /** Definisi di atas menghasilkan 173 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 173;
+    /** Definisi di atas menghasilkan 175 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 175;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [

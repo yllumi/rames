@@ -134,6 +134,28 @@ class AppFilterTest extends TestCase
         $this->assertTrue(AppFilter::matches($app, []));
     }
 
+    /**
+     * Domain tambahan (alias) ikut dicocokkan — pencarian domain di daftar app
+     * tidak boleh "kehilangan" app yang dilayani lewat alias.
+     */
+    public function testDomainAlsoMatchesAdditionalDomains(): void
+    {
+        $app = $this->app([
+            'id' => 'a1',
+            'name' => 'toko',
+            'subdomain' => 'toko-a',
+            'custom_domains' => [
+                ['domain' => 'toko-satu.example.org'],
+                ['domain' => 'toko-dua.example.org'],
+            ],
+            'owner_id' => 'u1',
+        ]);
+
+        $this->assertTrue(AppFilter::matches($app, ['domain' => 'toko-dua']));
+        $this->assertTrue(AppFilter::matches($app, ['domain' => 'TOKO-SATU.EXAMPLE.ORG']));
+        $this->assertFalse(AppFilter::matches($app, ['domain' => 'toko-tiga']));
+    }
+
     // ==================================================================
     // owner
     // ==================================================================

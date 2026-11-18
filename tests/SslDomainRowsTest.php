@@ -139,6 +139,101 @@ class SslDomainRowsTest extends TestCase
         $this->assertSame('ssl', $subdomain['ssl_slot']);
         $this->assertSame('failed', $subdomain['ssl_status']);
         $this->assertSame('redirect belum siap', $subdomain['ssl_error']);
+        $this->assertFalse($custom['is_alias'], 'domain utama bukan alias');
+        $this->assertFalse($subdomain['is_alias']);
+    }
+
+    /**
+     * Domain tambahan (alias) **melayani app langsung** (`serve`) dan statusnya
+     * dibaca dari entri `custom_domains[]`, bukan dari field datar. Urutan baris
+     * dikunci: domain utama → alias (urut daftar) → subdomain (redirect).
+     */
+    public function testAliasesAreServedBetweenPrimaryDomainAndRedirectingSubdomain(): void
+    {
+        $app = [
+            'id' => 'app_multi',
+            'name' => 'multi',
+            'containers' => [['host_port' => 30003, 'internal_port' => 80]],
+            'custom_domain' => 'multi.example.net',
+            'custom_ssl_status' => 'active',
+            'custom_domains' => [
+                [
+                    'domain' => 'satu.example.org',
+                    'ssl_status' => 'active',
+                    'ssl_message' => 'Sertifikat satu aktif',
+                    'ssl_expires_at' => '2027-01-01T00:00:00+00:00',
+                ],
+                [
+                    'domain' => 'dua.example.org',
+                    'ssl_status' => 'failed',
+                    'ssl_error' => 'DNS belum siap',
+                ],
+            ],
+        ];
+
+        $rows = SslDomainRows::appRows([$app]);
+
+        $this->assertCount(4, $rows, 'utama + 2 alias + subdomain');
+        $this->assertSame(
+            ['multi.example.net', 'satu.example.org', 'dua.example.org', 'multi.example.org'],
+            array_column($rows, 'domain')
+        );
+
+        $primary = $rows[0];
+        $this->assertSame('serve', $primary['role']);
+        $this->assertSame('custom_ssl', $primary['ssl_slot']);
+        $this->assertFalse($primary['is_alias']);
+
+        $first = $rows[1];
+        $this->assertSame('serve', $first['role'], 'alias melayani app langsung (tanpa redirect)');
+        $this->assertTrue($first['is_custom']);
+        $this->assertTrue($first['is_alias']);
+        $this->assertSame('alias:satu.example.org', $first['ssl_slot']);
+        $this->assertSame('active', $first['ssl_status']);
+        $this->assertSame('Sertifikat satu aktif', $first['ssl_message']);
+        $this->assertSame('2027-01-01T00:00:00+00:00', $first['ssl_expires_at']);
+        $this->assertNull($first['ssl_error']);
+
+        $second = $rows[2];
+        $this->assertTrue($second['is_alias']);
+        $this->assertSame('alias:dua.example.org', $second['ssl_slot']);
+        $this->assertSame('failed', $second['ssl_status'], 'status alias dibaca dari entrinya');
+        $this->assertSame('DNS belum siap', $second['ssl_error']);
+
+        $subdomain = $rows[3];
+        $this->assertSame('redirect', $subdomain['role']);
+        $this->assertSame('ssl', $subdomain['ssl_slot']);
+        $this->assertFalse($subdomain['is_alias']);
+    }
+
+    /**
+     * Alias boleh ada tanpa domain utama: alias dilayani (`serve`) dan
+     * subdomain tetap `serve` seperti perilaku lama — subdomain tidak pernah
+     * menjadi redirect bila domain utama tidak ada.
+     */
+    public function testAliasesWithoutPrimaryDomainComeBeforeTheServedSubdomain(): void
+    {
+        $app = [
+            'id' => 'app_alias_only',
+            'name' => 'alias-only',
+            'containers' => [['host_port' => 30004, 'internal_port' => 80]],
+            'custom_domains' => [[
+                'domain' => 'multi.example.org',
+                'ssl_status' => 'pending',
+                'ssl_stage' => 'issue',
+            ]],
+        ];
+
+        $rows = SslDomainRows::appRows([$app]);
+
+        $this->assertCount(2, $rows);
+        $this->assertSame('multi.example.org', $rows[0]['domain']);
+        $this->assertSame('serve', $rows[0]['role']);
+        $this->assertSame('alias:multi.example.org', $rows[0]['ssl_slot']);
+        $this->assertSame('pending', $rows[0]['ssl_status']);
+        $this->assertSame('alias-only.example.org', $rows[1]['domain']);
+        $this->assertSame('serve', $rows[1]['role']);
+        $this->assertSame('ssl', $rows[1]['ssl_slot']);
     }
 
     public function testParkedRowsMapSslFieldsAndDefaultDisabled(): void

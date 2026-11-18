@@ -11,6 +11,7 @@ use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\ServerAddress;
 use app\library\Deploy\ServerResolver;
 use app\library\Deploy\SubdomainManager;
+use app\library\Domain\AppDomains;
 use app\library\Docker\AppPorts;
 use app\library\Nginx\NginxConfigGuard;
 use app\library\Nginx\NginxReloader;
@@ -24,9 +25,9 @@ use support\Request;
 /**
  * Domain, subdomain, dan rute proxy tambahan per app (§7).
  *
- * Route: `POST /apps/{id}/domain/set`, `/domain/remove`, `/subdomain`,
- * `/routes`. Nama kelas sengaja bukan `DomainController` — itu halaman
- * `/domains` global.
+ * Route: `POST /apps/{id}/domain/set`, `/domain/remove`, `/domains`,
+ * `/domains/remove`, `/subdomain`, `/routes`. Nama kelas sengaja bukan
+ * `DomainController` — itu halaman `/domains` global.
  */
 class DomainSettingsController extends AppControllerBase
 {
@@ -102,6 +103,15 @@ class DomainSettingsController extends AppControllerBase
             }
             if ($domain === $subdomain) {
                 throw new RuntimeException('Custom domain tidak boleh sama dengan subdomain bawaan app.');
+            }
+            // Alias app sendiri tidak terlihat oleh `assertDomainUnique()` (app
+            // sendiri sengaja dilewati). Tanpa cek ini domain bisa menjadi
+            // domain utama SEKALIGUS alias: `slotOf()` memetakannya ke
+            // `custom_ssl` dan slot alias tak pernah bisa di-SSL-kan.
+            if (AppDomains::hasAlias($app, $domain)) {
+                throw new RuntimeException(
+                    'Domain ' . $domain . ' sudah terdaftar sebagai domain tambahan app ini — hapus dulu dari daftar domain tambahan bila ingin menjadikannya domain utama.'
+                );
             }
             if ($domain === $oldCustom) {
                 flash_set('info', 'Custom domain sudah di-set ke ' . $domain . '.');
@@ -205,6 +215,147 @@ class DomainSettingsController extends AppControllerBase
         } else {
             flash_set('success', 'Custom domain ' . $customDomain . ' dihapus. Sertifikat SSL-nya di-revoke.');
         }
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Tambah **domain tambahan (alias)** app — `POST /apps/{id}/domains`.
+     *
+     * Alias melayani app **langsung** (tanpa redirect 301): app multi-site
+     * memutuskan sendiri berdasarkan header `Host`. Domain utama
+     * (`custom_domain`) & perilaku redirect subdomain tidak berubah.
+     *
+     * Urutan fail-fast (semua sebelum efek samping): app punya host port
+     * ({@see AppPorts::hasHostPort()}), FQDN/duplikat/batas lewat
+     * {@see AppDomains::assertAliasAddable()}, lalu keunikan lintas app
+     * ({@see self::assertDomainUnique()}, termasuk domain parkir). Entri baru
+     * disimpan dengan status SSL `disabled`, lalu config Nginx ditulis ulang +
+     * di-reload (best-effort). Otorisasi dicek `findApp(..., 'domain')` ⇒ 404.
+     */
+    public function addDomain(Request $request, string $id, ?NginxReloader $localReloader = null, ?AgentClient $agentClient = null)
+    {
+        $store = new AppStore();
+        $app = $this->findApp($id, 'domain');
+        $domain = AppDomains::normalizeDomain((string) $request->post('domain', ''));
+
+        try {
+            // App tanpa port terpublish tidak punya target `proxy_pass` — vhost
+            // domain tambahan tak akan pernah dilayani (sama seperti setDomain).
+            if (!AppPorts::hasHostPort($app)) {
+                throw new RuntimeException('App ini tidak mem-publish port host, jadi tidak ada yang bisa di-proxy ke domain. Tambahkan `ports:` pada compose app (tab Compose) lalu Deploy Ulang.');
+            }
+
+            AppDomains::assertAliasAddable($app, $domain);
+            $this->assertDomainUnique($store, $id, $domain);
+
+            $store->update($id, static function (array &$s) use ($domain): void {
+                $list = is_array($s['custom_domains'] ?? null) ? $s['custom_domains'] : [];
+                $list[] = [
+                    'domain' => $domain,
+                    'ssl_status' => 'disabled',
+                    'ssl_stage' => null,
+                    'ssl_message' => null,
+                    'ssl_error' => null,
+                    'ssl_expires_at' => null,
+                    'created_at' => date('c'),
+                ];
+                $s['custom_domains'] = array_values($list);
+            });
+        } catch (\Throwable $e) {
+            flash_set('error', $this->appErrorText($app, $e));
+
+            return redirect('/apps/' . $id);
+        }
+
+        // Konteks server dipertahankan walau pembacaan ulang gagal (lihat catatan
+        // di `setDomain()` — jangan pernah jatuh ke host lokal).
+        $app = $store->find($id) ?? $app;
+
+        try {
+            $this->applyNginxConfig($app, $agentClient);
+        } catch (\Throwable $e) {
+            flash_set('error', 'Domain tambahan ' . $domain . ' tersimpan, tetapi gagal menulis config Nginx: ' . $this->appErrorText($app, $e) . ' (jalankan Rebuild untuk menerapkan).');
+
+            return redirect('/apps/' . $id);
+        }
+
+        $reloadNote = $this->reloadNginxNote($app, $localReloader, $agentClient);
+        flash_set('success', 'Domain tambahan ' . $domain . ' ditambahkan. App kini melayani domain tersebut langsung (tanpa redirect).'
+            . ($reloadNote !== '' ? ' ' . $reloadNote : '') . ' ' . $this->domainDnsHint($app, $domain));
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Hapus satu **domain tambahan (alias)** — `POST /apps/{id}/domains/remove`.
+     *
+     * Hanya entri `custom_domains[]` yang cocok yang dibuang (domain lain tetap).
+     * Sertifikat SSL domain itu di-revoke best-effort di server pemilik app;
+     * kegagalan revoke hanya memunculkan peringatan `info` — domain tetap
+     * dihapus dan config Nginx ditulis ulang (recovery via Rebuild).
+     */
+    public function removeDomainAlias(Request $request, string $id, ?NginxReloader $localReloader = null, ?AgentClient $agentClient = null)
+    {
+        $store = new AppStore();
+        $app = $this->findApp($id, 'domain');
+        $domain = AppDomains::normalizeDomain((string) $request->post('domain', ''));
+
+        $known = false;
+        foreach (AppDomains::aliases($app) as $alias) {
+            if ((string) ($alias['domain'] ?? '') === $domain) {
+                $known = true;
+                break;
+            }
+        }
+        if (!$known) {
+            flash_set('info', 'Domain tambahan ' . $domain . ' tidak ditemukan pada app ini.');
+
+            return redirect('/apps/' . $id);
+        }
+
+        $warning = '';
+        try {
+            // Pencabutan terjadi di server pemilik app (agent ⇒ op `ssl_revoke`).
+            $this->revokeDomainCert($app, $domain, null, $agentClient);
+        } catch (\Throwable $e) {
+            $warning = 'Peringatan: gagal revoke sertifikat ' . $domain . ' — ' . $this->appErrorText($app, $e) . '.';
+        }
+
+        $store->update($id, static function (array &$s) use ($domain): void {
+            $list = is_array($s['custom_domains'] ?? null) ? $s['custom_domains'] : [];
+            $remaining = [];
+            foreach ($list as $entry) {
+                if (is_array($entry) && AppDomains::normalizeDomain((string) ($entry['domain'] ?? '')) === $domain) {
+                    continue;
+                }
+                $remaining[] = $entry;
+            }
+            $s['custom_domains'] = array_values($remaining);
+        });
+
+        $app = $store->find($id) ?? $app;
+
+        $notes = [];
+        if ($warning !== '') {
+            $notes[] = $warning;
+        }
+
+        try {
+            $this->applyNginxConfig($app, $agentClient);
+            $reloadNote = $this->reloadNginxNote($app, $localReloader, $agentClient);
+            if ($reloadNote !== '') {
+                $notes[] = $reloadNote;
+            }
+        } catch (\Throwable $e) {
+            $notes[] = 'Gagal menulis config Nginx: ' . $this->appErrorText($app, $e);
+        }
+
+        if ($notes !== []) {
+            flash_set('info', 'Domain tambahan ' . $domain . ' dihapus, tetapi: ' . implode(' ', $notes) . ' (jalankan Rebuild untuk menerapkan config).');
+        } else {
+            flash_set('success', 'Domain tambahan ' . $domain . ' dihapus. Sertifikat SSL-nya di-revoke.');
+        }
+
         return redirect('/apps/' . $id);
     }
 
@@ -402,13 +553,17 @@ class DomainSettingsController extends AppControllerBase
 
     /**
      * Pastikan sebuah domain belum dipakai app lain **di server yang sama**
-     * (sebagai subdomain efektif maupun custom domain).
+     * (sebagai subdomain efektif, custom domain utama, maupun domain tambahan).
      *
      * Multi-server F1 (plan §4.2 + §9 keputusan 4): keunikan domain berlaku
      * **per server** — dua server berbeda boleh memakai domain yang sama (FQDN
      * efektifnya memakai domain dasar server masing-masing, dan custom domain
      * selalu diterbitkan di server pemilik app). Scope ditentukan dari app
-     * `$excludeId` lewat {@see AppStore::serverIdOf()} (tanpa query per baris).
+     * `$excludeId` lewat {@see AppStore::serverIdOf()}.
+     *
+     * Pemetaan domain → jenis pemakaian milik {@see AppDomains::ownerOf()} (satu
+     * sumber, supaya bentrok dengan alias app lain juga tertangkap); pesan
+     * subdomain/custom domain dipertahankan apa adanya untuk kompatibilitas UI.
      * Subdomain app itu sendiri sudah dicek pemanggil.
      */
     private function assertDomainUnique(AppStore $store, string $excludeId, string $domain): void
@@ -416,19 +571,18 @@ class DomainSettingsController extends AppControllerBase
         $scope = AppStore::serverIdOf($store->find($excludeId) ?? []);
         $parked = new ParkedDomainStore();
 
-        foreach ($store->all() as $other) {
-            if (($other['id'] ?? '') === $excludeId) {
-                continue;
+        $owner = AppDomains::ownerOf($store->all(), $domain, $excludeId, $scope);
+        if ($owner !== null) {
+            $name = (string) ($owner['app_name'] ?? '?');
+            $kind = (string) ($owner['kind'] ?? '');
+            if ($kind === 'subdomain') {
+                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai subdomain app "' . $name . '".');
             }
-            if (AppStore::serverIdOf($other) !== $scope) {
-                continue; // server lain: domainnya tidak saling berebut
+            if ($kind === 'primary') {
+                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai custom domain app "' . $name . '".');
             }
-            if (app_subdomain_of($other) === $domain) {
-                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai subdomain app "' . ($other['name'] ?? '?') . '".');
-            }
-            if (($other['custom_domain'] ?? '') === $domain) {
-                throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai custom domain app "' . ($other['name'] ?? '?') . '".');
-            }
+
+            throw new RuntimeException('Domain ' . $domain . ' sudah dipakai sebagai domain tambahan app "' . $name . '".');
         }
 
         // Domain parkir adalah entitas global (tidak terikat app/server), jadi

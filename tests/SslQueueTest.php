@@ -114,6 +114,41 @@ class SslQueueTest extends TestCase
         $this->assertSame(2, $this->queue->queueSize());
     }
 
+    /**
+     * Slot domain tambahan (`alias:<domain>`) dipertahankan apa adanya — job
+     * diberi slot & dedupe key alias, sehingga status SSL alias tidak
+     * tercampur dengan slot subdomain.
+     */
+    public function testEnqueueAppKeepsTheAliasSlotForRegisteredAliases(): void
+    {
+        $app = $this->appWithAliases('app_multi', ['multi.example.org']);
+
+        $alias = $this->queue->enqueueApp($app, 'multi.example.org', 'alias:multi.example.org');
+        $this->assertTrue($alias['queued']);
+        $this->assertSame('alias:multi.example.org', $alias['job']['slot']);
+        $this->assertIsArray($this->queue->findActive('app:app_multi:multi.example.org:alias:multi.example.org'));
+
+        // Permintaan kedua untuk domain+slot yang sama = job yang sama.
+        $again = $this->queue->enqueueApp($app, 'Multi.Example.ORG', 'alias:multi.example.org');
+        $this->assertFalse($again['queued']);
+        $this->assertSame($alias['job']['id'], $again['job']['id']);
+        $this->assertSame(1, $this->queue->queueSize());
+    }
+
+    /**
+     * Slot alias yang domainnya **tidak** terdaftar (mis. entri dihapus di antara
+     * permintaan dan enqueue) diperlakukan `ssl` seperti perilaku lama.
+     */
+    public function testEnqueueAppFallsBackToSslForUnknownAliasSlot(): void
+    {
+        $app = $this->appWithAliases('app_multi', ['multi.example.org']);
+
+        $result = $this->queue->enqueueApp($app, 'gone.example.org', 'alias:gone.example.org');
+
+        $this->assertSame('ssl', $result['job']['slot'], 'slot alias tanpa entri = kompatibel ssl');
+        $this->assertIsArray($this->queue->findActive('app:app_multi:gone.example.org:ssl'));
+    }
+
     public function testEnqueueParkedUsesItsOwnDedupeKey(): void
     {
         $result = $this->queue->enqueueParked(['id' => 'pd_aaaaaaaaaaaa', 'domain' => 'p.example.com']);
@@ -353,6 +388,22 @@ class SslQueueTest extends TestCase
     private function app(string $id): array
     {
         return ['id' => $id, 'server_id' => 'local'];
+    }
+
+    /**
+     * App dengan entri domain tambahan (untuk slot `alias:<domain>`).
+     *
+     * @param array<int,string> $aliases
+     * @return array<string,mixed>
+     */
+    private function appWithAliases(string $id, array $aliases): array
+    {
+        $entries = [];
+        foreach ($aliases as $domain) {
+            $entries[] = ['domain' => $domain, 'ssl_status' => 'disabled'];
+        }
+
+        return ['id' => $id, 'server_id' => 'local', 'custom_domains' => $entries];
     }
 
     private function db(): SqliteDatabase

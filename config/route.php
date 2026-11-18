@@ -340,6 +340,11 @@ Route::post('/apps/{id}/delete', [DeploymentController::class, 'delete']);
 Route::post('/apps/{id}/domain/set', [DomainSettingsController::class, 'setDomain']);
 Route::post('/apps/{id}/domain/remove', [DomainSettingsController::class, 'removeDomain']);
 
+// Domain tambahan (alias) per app — melayani app langsung tanpa redirect 301
+// (field apps.json `custom_domains`; ability `domain`, operator+)
+Route::post('/apps/{id}/domains', [DomainSettingsController::class, 'addDomain']);
+Route::post('/apps/{id}/domains/remove', [DomainSettingsController::class, 'removeDomainAlias']);
+
 // Subdomain app (field apps.json `subdomain`; ability `domain`, operator+)
 Route::post('/apps/{id}/subdomain', [DomainSettingsController::class, 'setSubdomain']);
 

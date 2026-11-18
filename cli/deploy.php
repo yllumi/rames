@@ -59,6 +59,7 @@ use app\library\Auth\UserStore;
 use app\library\Billing\BillingGate;
 use app\library\Billing\InsufficientCredits;
 use app\library\Deploy\DeployerFactory;
+use app\library\Domain\AppDomains;
 use app\library\Nginx\NginxReloader;
 use app\library\SSL\SslChallengeVhost;
 use app\library\SSL\SslIssuer;
@@ -361,7 +362,7 @@ if (in_array($mode, ['nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue',
     };
 
     /** Domain target SSL dari payload job (dinormalisasi). */
-    $jobDomain = strtolower(rtrim(trim((string) ($jobPayload['domain'] ?? '')), '.'));
+    $jobDomain = AppDomains::normalizeDomain((string) ($jobPayload['domain'] ?? ''));
 
     /** Slot SSL app untuk domain tersebut; melempar bila domain bukan milik app ini. */
     $sslSlotFor = static function (array $state) use ($jobDomain, $appId): string {
@@ -369,16 +370,12 @@ if (in_array($mode, ['nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue',
             throw new RuntimeException('Operasi SSL tanpa `domain` di payload job — penerbitan dibatalkan.');
         }
 
-        $customDomain = strtolower(trim((string) ($state['custom_domain'] ?? '')));
-        if ($customDomain !== '' && $jobDomain === $customDomain) {
-            return 'custom_ssl';
+        $slot = AppDomains::slotOf($state, $jobDomain);
+        if ($slot === null) {
+            throw new RuntimeException("Domain {$jobDomain} bukan subdomain/custom domain/domain tambahan app {$appId}.");
         }
 
-        if ($jobDomain === strtolower(app_subdomain_of($state))) {
-            return 'ssl';
-        }
-
-        throw new RuntimeException("Domain {$jobDomain} bukan subdomain/custom domain app {$appId}.");
+        return $slot;
     };
 
     try {
@@ -417,23 +414,31 @@ if (in_array($mode, ['nginx_write', 'nginx_remove', 'nginx_reload', 'ssl_issue',
                 (new SslChallengeVhost())->ensure($app, $deployer, $logOp);
                 $issuer->issue($jobDomain);
                 $expires = $issuer->certExpiry($jobDomain);
-                $store->update($appId, function (array &$s) use ($slot, $expires): void {
-                    $s[$slot . '_status'] = 'active';
-                    $s[$slot . '_stage'] = null;
-                    $s[$slot . '_message'] = null;
-                    $s[$slot . '_error'] = null;
-                    $s[$slot . '_expires_at'] = $expires;
-                    $s[$slot === 'custom_ssl' ? 'custom_needs_ssl' : 'needs_ssl'] = false;
+                $store->update($appId, static function (array &$s) use ($slot, $expires): void {
+                    AppDomains::writeStatus($s, $slot, [
+                        'ssl_status' => 'active',
+                        'ssl_stage' => null,
+                        'ssl_message' => null,
+                        'ssl_error' => null,
+                        'ssl_expires_at' => $expires,
+                    ]);
+                    if ($slot === AppDomains::SLOT_PRIMARY) {
+                        $s['custom_needs_ssl'] = false;
+                    } elseif ($slot === AppDomains::SLOT_SUBDOMAIN) {
+                        $s['needs_ssl'] = false;
+                    }
                 });
             } else {
                 $logOp('revoke', "Mencabut sertifikat {$jobDomain} ...");
                 $issuer->revoke($jobDomain);
-                $store->update($appId, function (array &$s) use ($slot): void {
-                    $s[$slot . '_status'] = 'disabled';
-                    $s[$slot . '_stage'] = null;
-                    $s[$slot . '_message'] = null;
-                    $s[$slot . '_error'] = null;
-                    $s[$slot . '_expires_at'] = null;
+                $store->update($appId, static function (array &$s) use ($slot): void {
+                    AppDomains::writeStatus($s, $slot, [
+                        'ssl_status' => 'disabled',
+                        'ssl_stage' => null,
+                        'ssl_message' => null,
+                        'ssl_error' => null,
+                        'ssl_expires_at' => null,
+                    ]);
                 });
             }
 

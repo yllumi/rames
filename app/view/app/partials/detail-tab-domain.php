@@ -271,6 +271,144 @@
   </div>
 </section>
 
+    <section class="card mb-4" id="alias-domains-card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="h6 mb-0">Domain Tambahan</h2>
+        <span class="text-muted small">alias &middot; melayani app langsung</span>
+      </div>
+      <div class="card-body">
+        <?php
+        // Domain tambahan (`apps.json.custom_domains[]`) — alias yang melayani
+        // app **langsung** (tanpa redirect 301), kebalikan dari subdomain yang
+        // dialihkan ke domain utama. Daftar sudah tersanitasi controller
+        // (`AppDomains::aliases()`, kosong bila user tak ber-ability `domain`);
+        // view hanya merender dan mengirim POST ke /apps/{id}/domains(+ /remove)
+        // serta /ssl/{id}/enable (field `domain`). Validasi FQDN tetap di server.
+        $aliasDomains = is_array($customDomains ?? null)
+            ? array_values(array_filter($customDomains, 'is_array'))
+            : [];
+        $aliasMax = class_exists(\app\library\Domain\AppDomains::class)
+            ? \app\library\Domain\AppDomains::MAX_ALIASES
+            : 20;
+        $aliasFormFull = count($aliasDomains) >= $aliasMax;
+        ?>
+        <?php if (!$hasHostPort): ?>
+          <p class="text-muted small mb-0">
+            App ini tidak mem-publish port host, sehingga tidak ada yang bisa di-proxy ke domain — domain tambahan tidak berlaku.
+            Tambahkan <span class="mono">ports:</span> pada compose app (tab Compose) lalu <strong>Deploy Ulang</strong> bila app perlu diakses lewat domain.
+          </p>
+        <?php elseif (!$canDomain): ?>
+          <p class="text-muted small mb-0">tanpa hak</p>
+        <?php else: ?>
+          <div class="table-responsive mb-3">
+            <table class="table align-middle mb-0">
+              <thead>
+                <tr>
+                  <th scope="col">Domain</th>
+                  <th scope="col">Status SSL</th>
+                  <th scope="col" class="text-end">Aksi</th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php if ($aliasDomains === []): ?>
+                  <tr><td colspan="3" class="text-muted small">Belum ada domain tambahan.</td></tr>
+                <?php else: ?>
+                  <?php foreach ($aliasDomains as $alias): ?>
+                    <?php
+                    $aliasDomain = (string) ($alias['domain'] ?? '');
+                    $aliasStatus = strtolower(trim((string) ($alias['ssl_status'] ?? 'disabled')));
+                    if ($aliasStatus === '') {
+                        $aliasStatus = 'disabled';
+                    }
+                    $aliasActive = $aliasStatus === 'active';
+                    $aliasPending = $aliasStatus === 'pending';
+                    $aliasFailed = $aliasStatus === 'failed';
+                    $aliasExpires = trim((string) ($alias['ssl_expires_at'] ?? ''));
+                    $aliasError = trim((string) ($alias['ssl_error'] ?? ''));
+                    $aliasBadge = $aliasActive ? 'running' : ($aliasPending ? 'deploying' : ($aliasFailed ? 'error' : 'stopped'));
+                    ?>
+                    <tr data-alias-domain="<?= e($aliasDomain) ?>">
+                      <td class="mono text-break">
+                        <?php if ($aliasDomain !== ''): ?>
+                          <a href="<?= $aliasActive ? 'https' : 'http' ?>://<?= e($aliasDomain) ?>" target="_blank" rel="noopener"><?= e($aliasDomain) ?></a>
+                        <?php else: ?>
+                          -
+                        <?php endif; ?>
+                      </td>
+                      <td>
+                        <span class="badge badge-<?= e($aliasBadge) ?>"><?= e($aliasStatus) ?></span>
+                        <?php if ($aliasExpires !== ''): ?>
+                          <span class="text-muted small"> &middot; kedaluwarsa <?= e($aliasExpires) ?></span>
+                        <?php endif; ?>
+                        <?php if ($aliasFailed && $aliasError !== ''): ?>
+                          <div class="alert alert-danger py-1 px-2 small mt-2 mb-0"><?= e($aliasError) ?></div>
+                        <?php endif; ?>
+                      </td>
+                      <td>
+                        <div class="d-flex flex-wrap gap-2 align-items-center justify-content-end">
+                          <?php if ($aliasActive): ?>
+                            <span class="text-muted small">SSL aktif</span>
+                          <?php elseif ($aliasPending): ?>
+                            <span class="text-muted small">proses penerbitan SSL ...</span>
+                          <?php elseif ($sslSupported && $canSsl): ?>
+                            <form method="post" action="/ssl/<?= e($app['id']) ?>/enable" class="d-inline">
+                              <?= csrf_field() ?>
+                              <input type="hidden" name="domain" value="<?= e($aliasDomain) ?>">
+                              <button class="btn btn-<?= $aliasFailed ? 'outline-danger' : 'primary' ?> btn-sm">
+                                <?= $aliasFailed ? svg_icon('refresh') . ' Retry SSL' : 'Aktifkan SSL' ?>
+                              </button>
+                            </form>
+                          <?php elseif (!$canSsl): ?>
+                            <span class="text-muted small">tanpa hak SSL</span>
+                          <?php else: ?>
+                            <span class="text-muted small">SSL tidak didukung untuk APP_DOMAIN saat ini</span>
+                          <?php endif; ?>
+                          <form method="post" action="/apps/<?= e($app['id']) ?>/domains/remove" class="d-inline"
+                                onsubmit="return confirm('Hapus domain tambahan <?= e($aliasDomain) ?>? Sertifikat SSL-nya (bila ada) akan di-revoke.');">
+                            <?= csrf_field() ?>
+                            <input type="hidden" name="domain" value="<?= e($aliasDomain) ?>">
+                            <button class="btn btn-outline-danger btn-sm"><?= svg_icon('trash') ?> Hapus</button>
+                          </form>
+                        </div>
+                      </td>
+                    </tr>
+                  <?php endforeach; ?>
+                <?php endif; ?>
+              </tbody>
+            </table>
+          </div>
+          <?php if ($aliasFormFull): ?>
+            <p class="text-muted small mb-0">
+              Batas <strong><?= e((string) $aliasMax) ?></strong> domain tambahan sudah tercapai — hapus salah satu domain di atas untuk menambah yang lain.
+            </p>
+          <?php else: ?>
+            <form method="post" action="/apps/<?= e($app['id']) ?>/domains" class="row g-2 align-items-center">
+              <?= csrf_field() ?>
+              <div class="col-12 col-md-auto flex-grow-1">
+                <label class="visually-hidden" for="alias-domain-input">Domain tambahan (FQDN)</label>
+                <input type="text" class="form-control form-control-sm mono" id="alias-domain-input" name="domain"
+                       placeholder="mis. site2.example.org" required autocomplete="off" spellcheck="false"
+                       style="max-width:420px;">
+              </div>
+              <div class="col-12 col-md-auto">
+                <button class="btn btn-primary btn-sm"><?= svg_icon('plus') ?> Tambah Domain</button>
+              </div>
+            </form>
+          <?php endif; ?>
+          <p class="text-muted small mb-0 mt-2">
+            Maksimal <strong><?= e((string) $aliasMax) ?></strong> domain tambahan per app. Domain tambahan melayani app yang sama
+            <strong>tanpa redirect</strong> (app memutuskan sendiri dari header <span class="mono">Host</span>); subdomain bawaan tetap
+            redirect ke domain utama. Tulis FQDN tanpa <span class="mono">http://</span> dan tanpa path.
+            <?php if ($domainServerAddress !== ''): ?>
+            Arahkan DNS <strong><?= e($domainRecordType) ?></strong> record tiap domain ke <span class="mono"><?= e($domainServerAddress) ?></span> (server: <em><?= e($domainServerLabel) ?></em>) sebelum mengaktifkan SSL — Let's Encrypt memvalidasi domain pada IP itu.
+            <?php else: ?>
+            Arahkan DNS <strong>A/AAAA</strong> record tiap domain ke IP publik server tempat app ini berjalan (server: <em><?= e($domainServerLabel) ?></em>) sebelum mengaktifkan SSL. Periksa alamat server di halaman <a href="/servers">Servers</a> (admin) bila tidak yakin.
+            <?php endif; ?>
+          </p>
+        <?php endif; ?>
+      </div>
+    </section>
+
     <section class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h2 class="h6 mb-0">Rute Proxy Tambahan</h2>

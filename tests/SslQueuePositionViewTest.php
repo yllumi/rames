@@ -18,7 +18,7 @@ use PHPUnit\Framework\TestCase;
  *     `antrean #2 dari 3` (1-based, teks di-`e()`);
  *  2. baris `pending` tanpa kedua field ⇒ tetap `proses ...`;
  *  3. baris `pending` `#1 dari 1` ⇒ `antrean #1 dari 1`;
- *  4. cache-buster naik (`/js/ssl.js?v=5` di `/domains`, `v=4` di `/ssl`);
+ *  4. cache-buster naik (`/js/ssl.js?v=6` di `/domains` dan `/ssl`);
  *  5. `public/js/ssl.js` membaca `ssl_queue_position`/`ssl_queue_size` dan
  *     menulis teks lewat `textContent`; **tanpa `innerHTML`** — ikon dinamis
  *     dibangun sebagai Node SVG (`ramesIconNode('refresh')`) sehingga tidak
@@ -169,7 +169,7 @@ final class SslQueuePositionViewTest extends TestCase
 
         // Polling tetap dimulai otomatis karena ada baris pending.
         self::assertStringContainsString('data-ssl-autostart="1"', $html);
-        self::assertStringContainsString('/js/ssl.js?v=5', $html);
+        self::assertStringContainsString('/js/ssl.js?v=6', $html);
     }
 
     // ------------------------------------------------------------------
@@ -198,7 +198,7 @@ final class SslQueuePositionViewTest extends TestCase
         self::assertStringContainsString('>antrean #1 dari 1</span>', $satu);
 
         self::assertStringContainsString('data-ssl-autostart="1"', $html);
-        self::assertStringContainsString('/js/ssl.js?v=4', $html);
+        self::assertStringContainsString('/js/ssl.js?v=6', $html);
     }
 
     // ------------------------------------------------------------------
@@ -238,11 +238,11 @@ final class SslQueuePositionViewTest extends TestCase
 
         // Cache-buster: satu-satunya mekanisme pembaruan skrip di browser.
         self::assertStringContainsString(
-            '<script src="/js/ssl.js?v=5"></script>',
+            '<script src="/js/ssl.js?v=6"></script>',
             (string) file_get_contents($root . '/app/view/domain/index.php')
         );
         self::assertStringContainsString(
-            '<script src="/js/ssl.js?v=4"></script>',
+            '<script src="/js/ssl.js?v=6"></script>',
             (string) file_get_contents($root . '/app/view/ssl/index.php')
         );
     }

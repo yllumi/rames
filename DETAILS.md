@@ -12,15 +12,15 @@
 
 ## Fitur
 
-- **Autentikasi** — login/logout berbasis session, password bcrypt, multi-user dengan role global (admin/member) + kepemilikan & sharing app per user (viewer/operator/owner; SPECS §7.7). Setiap user dapat **mengubah password sendiri** di halaman **Profil** (`/profile`): wajib memasukkan password saat ini dan password baru minimal 6 karakter. Setiap user juga dapat **mengaktifkan verifikasi dua langkah (2FA TOTP)** dari halaman yang sama — opt-in, memakai aplikasi authenticator, dilengkapi 10 kode pemulihan sekali pakai; jalur darurat host `php webman 2fa:reset <username>` (SPECS §6.4).
+- **Autentikasi** — login/logout berbasis session, password bcrypt, multi-user dengan role global (admin/member) + kepemilikan & sharing app per user (viewer/operator/owner; SPECS §7.7). Setiap user dapat **mengubah password sendiri** di halaman **Profil** (`/profile`): wajib memasukkan password saat ini dan password baru minimal 6 karakter. Bila password (termasuk admin) hilang, jalur darurat host: `php webman passwd:reset <username>` (`docker exec -it rames-webman php webman passwd:reset admin`) — hanya hash password yang diganti (SPECS §6.3). Setiap user juga dapat **mengaktifkan verifikasi dua langkah (2FA TOTP)** dari halaman yang sama — opt-in, memakai aplikasi authenticator, dilengkapi 10 kode pemulihan sekali pakai; jalur darurat host `php webman 2fa:reset <username>` (SPECS §6.4).
 - **Manage Users** — tambah/hapus user, ganti password user lain dari `/users` (password sendiri lewat halaman **Profil**).
 - **App Management** — buat app dari URL repo Git, alokasi host port (dapat dipilih saat konfirmasi create) dengan deteksi konflik & saran otomatis; setelah app jadi, yang dapat diedit dari dashboard adalah **port container** (host port tetap, §5.12b). Daftar `/apps` punya **filter Nama / Domain / Owner** lewat query string (filter **Owner** admin-only); filter digabung AND dengan tab scope (`Semua`/`Milik Saya`/`Dibagikan`) & filter server (SPECS §8e); semua kontrol filter berada dalam **satu toolbar** di bawah tab scope, sedangkan aksi utama **Create App** tetap di header.
 - **Deploy otomatis** — clone repo → parse `docker-compose.yml` → tulis override port → `docker compose up -d --build` → kumpulkan info container → generate config Nginx.
 - **Background worker** — deploy/rebuild berjalan async (proses terpisah) dengan status yang bisa di-*poll* dari UI.
 - **Reverse proxy** — tiap app otomatis mendapat subdomain `{name}.{APP_DOMAIN}`; subdomain bisa **diganti** (label sendiri, terpisah dari nama app) lewat tab **Domain & SSL** (SPECS §7.11).
-- **Custom domain** — app bisa diberi satu custom domain; subdomain bawaan redirect (301) ke custom domain.
+- **Custom domain & domain tambahan** — app bisa diberi **satu domain utama** (subdomain bawaan redirect 301 ke sana) plus **maks 20 domain tambahan/alias** yang melayani app **langsung** (tanpa redirect; app memilih tenant dari header `Host`). SSL terbit **per domain**, bukan SAN.
 - **Domains & SSL** — satu halaman **`/domains`** dengan dua tab: **Semua Domain** (tabel domain app + domain parkir beserta status & aksi SSL) dan **Domain Parkir** (CRUD). Halaman terbuka untuk **semua user login** (baris app disaring kepemilikan; baris parkir + seluruh aksi kelola/SSL parkir **admin-only** ⇒ 404). Domain parkir menyajikan **halaman statis** (mode `html`, berkas `{PARKED_ROOT}/{id}/index.html`) atau **redirect** 301/302 (path & query dipertahankan), dengan `www` sebagai entri terpisah + opsi **tambah www**; SSL Let's Encrypt berlaku untuk domain app **maupun parkir**, hanya server lokal, dan wajib `PARKED_ROOT` absolut yang sama di host agar Nginx host bisa membaca berkasnya (SPECS §8j, ARCHITECTURE §5.38).
-- **SSL otomatis (Let's Encrypt)** — aktifkan SSL **per domain** lewat `/domains` (tab **Semua Domain**): subdomain app, custom domain (bila di-set, app tampil sebagai **dua baris** — custom `serve` + subdomain `redirect` — dengan SSL per slot), dan domain parkir. Certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri; klik **Aktifkan SSL** berjalan **tanpa reload halaman** (baris diperbarui via polling JSON selama `pending`, fallback tanpa JS tetap bekerja). `GET /ssl` dialihkan **302 → `/domains`** (SPECS §8a, ARCHITECTURE §5.36).
+- **SSL otomatis (Let's Encrypt)** — aktifkan SSL **per domain** lewat `/domains` (tab **Semua Domain**): subdomain app, custom domain (bila di-set, app tampil **satu baris per domain** — domain utama `serve`, tiap domain tambahan `serve` berlabel `(domain tambahan)`, subdomain `redirect` — dengan SSL per slot), dan domain parkir. Certbot dijalankan di dashboard, blok `listen 443 ssl` di-render sendiri; klik **Aktifkan SSL** berjalan **tanpa reload halaman** (baris diperbarui via polling JSON selama `pending`, fallback tanpa JS tetap bekerja). `GET /ssl` dialihkan **302 → `/domains`** (SPECS §8a, ARCHITECTURE §5.36).
 - **Reload Nginx dari dashboard** — tombol "Reload Nginx" + auto-reload setelah set custom domain, deploy/rebuild, dan aktivasi SSL (via Docker socket).
 - **Branding (rebranding dashboard)** — halaman **Config** kini bertab (**Update Rames** | **Nginx** | **Template** | **Branding**); admin dapat mengganti **nama brand** (1–32 karakter) dan **logo** dashboard di tab **Branding**, atau menekan **Kembalikan ke default** (nama `Rames` + logo bawaan). Logo: PNG/JPEG/WebP maks **512 KB** (SVG/GIF ditolak); perubahan langsung berlaku di brand sidebar, judul tab browser, dan halaman **login**. Data tersimpan di SQLite (`branding_settings`) + berkas logo di direktori DB (named volume `rames`), sehingga ikut bertahan saat update dashboard (SPECS §7.16).
 - **Container management** — daftar container per app, aksi Rebuild / Stop / Start / Delete.
@@ -173,6 +173,22 @@ docker exec -it rames-webman php webman make:admin
 
 Perintah ini mencetak **username** (default `admin`) dan **password acak**. Simpan keduanya — dipakai untuk login. (Opsional: tentukan sendiri, mis. `sudo ./host/create-admin.sh admin passwordku` atau `docker exec -it rames-webman php webman make:admin admin passwordku`.)
 
+### Lupa password (admin maupun user lain)
+
+Jalankan di host, di container dashboard — **bukan** lewat UI:
+
+```bash
+docker exec -it rames-webman php webman passwd:reset admin
+```
+
+Password baru diminta **dua kali** (input tersembunyi). Untuk otomatisasi/CI (tanpa TTY) password acak di-generate dan dicetak **sekali**; atau berikan password sebagai argumen (terlihat di `ps` selama perintah berjalan):
+
+```bash
+docker exec rames-webman php webman passwd:reset admin 'PasswordBaru123'
+```
+
+Hanya hash password yang diganti — role, kepemilikan app, 2FA, dan API key tetap. Bila 2FA aktif, siapkan authenticator/kode pemulihan saat login (atau `php webman 2fa:reset <username>`). Sesi login lama tidak diputus otomatis.
+
 ### Langkah 4 — Buka dashboard & login
 
 - Buka `http://localhost:{APP_PORT}` (contoh: `http://localhost:8000`).
@@ -190,7 +206,8 @@ Buka `http://{app}.{APP_DOMAIN}` di browser. Pastikan DNS subdomain mengarah ke 
 ### Langkah 6 — (Opsional) Custom domain & SSL
 
 1. Buka halaman detail app → kartu **Custom Domain** → isi domain (mis. `app.example.org`) → **Set**. Kartu lalu menyebut target DNS: arahkan **record A/AAAA** domain ke **alamat publik server tempat app berjalan** — untuk app di server agent, **bukan** IP server dashboard (kalau salah, Let's Encrypt HTTP-01 akan `404`). Alamat dibaca dari registry server (**tanpa resolusi DNS**, tanpa tebakan); bila tak bisa dipastikan, UI menampilkan arahan generik `A/AAAA` + tautan **Servers** (`/servers`, admin), dan alert disembunyikan bila SSL sudah aktif.
-2. Buka halaman **Domains** (`/domains`, tab **Semua Domain**). Bila custom domain di-set, app tampil sebagai **dua baris** (custom domain + subdomain redirect) — masing-masing bisa di-SSL-kan sendiri. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi). Klik ini berjalan **tanpa reload halaman** — baris tabel diperbarui di tempat dan status `pending` di-*poll* via JSON hingga selesai; tombol tetap berupa `<form>` biasa sehingga **fallback tanpa JS** tetap bekerja. Domain parkir (admin) juga bisa di-SSL-kan dari tabel yang sama. Untuk app yang berjalan di **server agent**, penerbitan dijalankan **di server itu** dan `ADMIN_EMAIL` diambil dari `secrets/agent.env` server itu — bukan `.env` dashboard ([detail](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
+2. Buka halaman **Domains** (`/domains`, tab **Semua Domain**). Bila custom domain di-set, app tampil sebagai **beberapa baris** (domain utama + satu baris per domain tambahan + subdomain redirect) — masing-masing bisa di-SSL-kan sendiri. Klik **Aktifkan SSL** untuk menerbitkan sertifikat Let's Encrypt (prasyarat: DNS domain mengarah ke server ini, port 80 publik terbuka, `ADMIN_EMAIL` terisi). Klik ini berjalan **tanpa reload halaman** — baris tabel diperbarui di tempat dan status `pending` di-*poll* via JSON hingga selesai; tombol tetap berupa `<form>` biasa sehingga **fallback tanpa JS** tetap bekerja. Domain parkir (admin) juga bisa di-SSL-kan dari tabel yang sama. Untuk app yang berjalan di **server agent**, penerbitan dijalankan **di server itu** dan `ADMIN_EMAIL` diambil dari `secrets/agent.env` server itu — bukan `.env` dashboard ([detail](./agent/README.md#prasyarat-ssl-sertifikat-app-di-server-ini)).
+3. **Domain tambahan (alias)** — di kartu **Domain Tambahan** (tab **Domain & SSL**) isi FQDN lalu **Tambah** (maks **20** per app; alias boleh ada tanpa domain utama, dan app melayaninya langsung tanpa redirect). Arahkan **record A/AAAA** domain itu ke alamat publik server **yang sama** (flash menyebut alamatnya), lalu klik **Aktifkan SSL** pada baris alias di kartu itu atau di `/domains` — sertifikat diterbitkan **per domain**, bukan SAN. Menghapus alias me-revoke sertifikatnya (best-effort) lalu menulis ulang config Nginx + reload.
 
 ### Reload Nginx host (dari dashboard)
 
@@ -518,6 +535,7 @@ token admin global — dokumentasi `/api-docs` wajib login.
 ```
 app/
 ├── command/MakeAdmin.php        # php webman make:admin (provisioning user awal)
+├── command/ResetPassword.php    # php webman passwd:reset <username> (jalur darurat password)
 ├── controller/                  # AuthController, CreditController, PaymentController, FileController, SslController,
 │                                #   NginxController, BrandingController, UserController, ServerController (registry server),
 │                                #   ErrorController (Error Log), AgentController + AgentJobController + AgentLogController

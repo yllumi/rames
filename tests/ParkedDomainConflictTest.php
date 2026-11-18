@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Tests;
 
 use app\library\Deploy\SubdomainManager;
+use app\library\Domain\ParkedDomainValidator;
 use app\library\Storage\AppStore;
 use app\library\Storage\ParkedDomainStore;
 use PHPUnit\Framework\TestCase;
@@ -92,6 +93,38 @@ class ParkedDomainConflictTest extends TestCase
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessageMatches('/alpha\.example\.com sudah dipakai app/');
         $this->manager($this->parked)->assertAvailable('alpha', 'beta');
+    }
+
+    /**
+     * Arah **parkir → alias app**: domain yang sudah menjadi domain tambahan
+     * app tidak boleh diparkir (dua `server_name` identik di Nginx).
+     */
+    public function testParkedEntryCannotTakeAnAppAliasDomain(): void
+    {
+        $this->apps->create([
+            'name' => 'multi',
+            'custom_domains' => [['domain' => 'multi.example.org', 'ssl_status' => 'disabled']],
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/sudah dipakai sebagai domain tambahan app "multi"/');
+
+        ParkedDomainValidator::assertDomainAvailable('MULTI.example.org.', $this->apps, $this->parked);
+    }
+
+    /**
+     * Arah **alias app → parkir**: calon domain tambahan yang sudah diparkir
+     * ditolak oleh jalur validasi controller (lihat juga
+     * `DomainSettingsAliasTest`); di sini dikunci pemeriksaan store-nya.
+     */
+    public function testParkedDomainBlocksTheSameDomainAsAlias(): void
+    {
+        $this->parked->create(['domain' => 'parkir.example.org', 'mode' => 'html']);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/sudah terparkir/');
+
+        ParkedDomainValidator::assertDomainAvailable('parkir.example.org', $this->apps, $this->parked);
     }
 
     public function testChangeReturnsErrorWhenTargetFqdnIsParked(): void

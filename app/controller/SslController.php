@@ -7,6 +7,7 @@ use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\ServerResolver;
+use app\library\Domain\AppDomains;
 use app\library\Docker\AppPorts;
 use app\library\SSL\SslDomainRows;
 use app\library\SSL\SslErrorSummary;
@@ -257,13 +258,17 @@ class SslController
         }
 
         $subdomain = app_subdomain_of($app);
-        $customDomain = (string) ($app['custom_domain'] ?? '');
-        $domain = strtolower(trim((string) $request->post('domain', '')));
+        $customDomain = AppDomains::normalizeDomain((string) ($app['custom_domain'] ?? ''));
+        $domain = AppDomains::normalizeDomain((string) $request->post('domain', ''));
 
         if ($domain === '') {
-            $domain = $customDomain !== '' ? $customDomain : $subdomain;
+            $domain = $customDomain !== '' ? $customDomain : AppDomains::normalizeDomain($subdomain);
         }
-        if ($domain !== $subdomain && $domain !== $customDomain) {
+
+        // Domain milik app: subdomain, domain utama, atau domain tambahan —
+        // pemetaannya satu pintu di `AppDomains` (`null` ⇒ bukan milik app).
+        $slot = AppDomains::slotOf($app, $domain);
+        if ($slot === null) {
             return $this->rejected("Domain {$domain} bukan milik app ini.", domain: $domain);
         }
 
@@ -271,20 +276,27 @@ class SslController
             return $this->rejected("Domain {$domain} bukan domain publik — SSL otomatis tidak didukung (mis. TLD .local).", domain: $domain);
         }
 
-        $slot = ($domain === $customDomain && $customDomain !== '') ? 'custom_ssl' : 'ssl';
-        $status = (string) ($app[$slot . '_status'] ?? 'disabled');
+        $status = (string) (AppDomains::status($app, $slot)['ssl_status'] ?? 'disabled');
         if (in_array($status, ['active', 'pending'], true)) {
             // Status slot yang sudah jalan bukan error — di jalur halaman ini
             // flash `info` (perilaku lama), bukan `error`.
             return $this->rejected("SSL untuk {$domain} sudah {$status}.", 'already', $domain, 'info');
         }
 
-        $store->update($id, function (array &$s) use ($slot): void {
-            $s[$slot . '_status'] = 'pending';
-            $s[$slot . '_stage'] = 'queued';
-            $s[$slot . '_message'] = 'Menunggu antrean SSL ...';
-            $s[$slot . '_error'] = null;
-            $s[$slot === 'custom_ssl' ? 'custom_needs_ssl' : 'needs_ssl'] = true;
+        $store->update($id, static function (array &$s) use ($slot): void {
+            AppDomains::writeStatus($s, $slot, [
+                'ssl_status' => 'pending',
+                'ssl_stage' => 'queued',
+                'ssl_message' => 'Menunggu antrean SSL ...',
+                'ssl_error' => null,
+            ]);
+            // Flag lama hanya untuk slot lama — alias menyimpan statusnya di
+            // entri `custom_domains[]` (tidak ada flag `needs_ssl`).
+            if ($slot === AppDomains::SLOT_PRIMARY) {
+                $s['custom_needs_ssl'] = true;
+            } elseif ($slot === AppDomains::SLOT_SUBDOMAIN) {
+                $s['needs_ssl'] = true;
+            }
         });
 
         try {
@@ -337,11 +349,13 @@ class SslController
     private function markFailed(AppStore $store, string $id, string $slot, string $message): void
     {
         try {
-            $store->update($id, function (array &$s) use ($slot, $message): void {
-                $s[$slot . '_status'] = 'failed';
-                $s[$slot . '_stage'] = null;
-                $s[$slot . '_message'] = null;
-                $s[$slot . '_error'] = $message;
+            $store->update($id, static function (array &$s) use ($slot, $message): void {
+                AppDomains::writeStatus($s, $slot, [
+                    'ssl_status' => 'failed',
+                    'ssl_stage' => null,
+                    'ssl_message' => null,
+                    'ssl_error' => $message,
+                ]);
             });
         } catch (\Throwable) {
             // Status `pending` tanpa job bukan kegagalan yang bisa diperbaiki di

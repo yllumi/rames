@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\SSL;
 
+use app\library\Domain\AppDomains;
 use app\library\Storage\AppStore;
 use app\library\Storage\ParkedDomainStore;
 use app\library\Support\ProcessRunner;
@@ -95,10 +96,7 @@ final class SslQueueWorker
     private function runApp(array $job, string $jobId, string $domain): string
     {
         $appId = (string) ($job['app_id'] ?? '');
-        $slot = (string) ($job['slot'] ?? 'ssl');
-        if ($slot !== 'custom_ssl') {
-            $slot = 'ssl';
-        }
+        $slot = self::appSlot($job);
 
         try {
             $app = $this->findApp($appId);
@@ -225,8 +223,7 @@ final class SslQueueWorker
     private function syncTarget(array $job, array $fields): void
     {
         if ((string) ($job['target_type'] ?? '') === 'app') {
-            $slot = (string) ($job['slot'] ?? 'ssl');
-            $this->writeAppSlot((string) ($job['app_id'] ?? ''), $slot !== 'custom_ssl' ? 'ssl' : $slot, $fields);
+            $this->writeAppSlot((string) ($job['app_id'] ?? ''), self::appSlot($job), $fields);
 
             return;
         }
@@ -242,7 +239,27 @@ final class SslQueueWorker
     }
 
     /**
-     * Tulis field slot SSL app (`{slot}_status`, `{slot}_stage`, …).
+     * Slot app dari job: `custom_ssl` atau `alias:<domain>` dipertahankan,
+     * selain itu `ssl` (perilaku lama untuk slot tak dikenal).
+     *
+     * @param array<string,mixed> $job
+     */
+    private static function appSlot(array $job): string
+    {
+        $slot = (string) ($job['slot'] ?? 'ssl');
+        if ($slot === 'custom_ssl' || AppDomains::isAliasSlot($slot)) {
+            return $slot;
+        }
+
+        return 'ssl';
+    }
+
+    /**
+     * Tulis field status SSL ke slot app yang tepat.
+     *
+     * Pemetaan slot → field milik {@see AppDomains::writeStatus()} (slot alias
+     * menulis ke entri `custom_domains[]`; slot alias yang entrinya sudah
+     * dihapus diabaikan tanpa melempar).
      *
      * Best-effort: kegagalan menulis status target tidak boleh menggagalkan
      * pencatatan job (sumber kebenaran antrean).
@@ -256,9 +273,7 @@ final class SslQueueWorker
         }
         try {
             (new AppStore())->update($appId, static function (array &$row) use ($slot, $fields): void {
-                foreach ($fields as $name => $value) {
-                    $row[$slot . '_' . $name] = $value;
-                }
+                AppDomains::writeStatus($row, $slot, $fields);
             });
         } catch (Throwable) {
             // abaikan: status target adalah pelengkap tampilan

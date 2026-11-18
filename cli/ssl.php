@@ -10,19 +10,20 @@ declare(strict_types=1);
  * Dipanggil detached oleh SslController (proc_open) supaya request HTTP tidak
  * terblokir oleh proses certbot yang bisa lama. Pipeline:
  *   - muat app dari apps.json; tentukan domain target & slot SSL:
- *       domain == app.custom_domain -> slot `custom_ssl` (SSL custom domain)
- *       domain == subdomain          -> slot `ssl` (SSL subdomain bawaan)
- *       tanpa argumen                -> custom domain bila ada, selain itu subdomain
+ *       domain == app.custom_domain          -> slot `custom_ssl` (domain utama)
+ *       domain == subdomain efektif          -> slot `ssl` (subdomain bawaan)
+ *       domain == salah satu `custom_domains`-> slot `alias:<domain>`
+ *       tanpa argumen                        -> custom domain bila ada, selain itu subdomain
  *   - validasi domain publik
  *   - jalankan certbot certonly (http webroot / dns-cloudflare) **di server
  *     pemilik app** (multi-server F2): app lokal ⇒ certbot di host ini; app
  *     server `kind=agent` ⇒ job `ssl_issue` di server itu (certbot +
  *     /etc/letsencrypt server itu, Nginx server itu di-reload di sana) lalu
  *     state SSL-nya ditarik kembali ke control plane
- *   - sukses: update {slot}_status=active + {slot}_expires_at, tulis ulang config
- *     Nginx (dashboard tetap satu-satunya penulis .conf — di server tempat app
- *     berjalan)
- *   - gagal: {slot}_status=failed + pesan error; HTTP tetap jalan, tombol Retry tampil
+ *   - sukses: status slot `active` + expires_at (lewat `AppDomains::writeStatus()`),
+ *     tulis ulang config Nginx (dashboard tetap satu-satunya penulis .conf —
+ *     di server tempat app berjalan)
+ *   - gagal: status slot `failed` + pesan error; HTTP tetap jalan, tombol Retry tampil
  * Log per-app: runtime/logs/ssl/{appId}.log
  *
  * Kredensial DNS (Cloudflare) tidak pernah dikirim lewat HTTP/payload job: agent
@@ -33,6 +34,7 @@ declare(strict_types=1);
 use app\library\Deploy\AgentDeployer;
 use app\library\Deploy\DeployerFactory;
 use app\library\Deploy\ServerResolver;
+use app\library\Domain\AppDomains;
 use app\library\Nginx\NginxReloader;
 use app\library\SSL\SslChallengeVhost;
 use app\library\SSL\SslIssuer;
@@ -59,25 +61,23 @@ if ($app === null) {
     exit(1);
 }
 
-// Tentukan domain target & slot SSL (subdomain -> `ssl`, custom domain -> `custom_ssl`)
-$subdomain = app_subdomain_of($app);
-$customDomain = (string) ($app['custom_domain'] ?? '');
+// Tentukan domain target & slot SSL (subdomain -> `ssl`, domain utama ->
+// `custom_ssl`, domain tambahan -> `alias:<domain>`). Satu sumber pemetaan:
+// `AppDomains::slotOf()`.
+$domainArg = AppDomains::normalizeDomain($domainArg);
+$customDomain = AppDomains::normalizeDomain((string) ($app['custom_domain'] ?? ''));
 
 if ($domainArg !== '') {
-    if ($domainArg === $customDomain) {
-        $slot = 'custom_ssl';
-        $domain = $customDomain;
-    } elseif ($domainArg === $subdomain) {
-        $slot = 'ssl';
-        $domain = $subdomain;
-    } else {
-        fwrite(STDERR, "Domain {$domainArg} bukan subdomain/custom domain app {$appId}.\n");
+    $slot = AppDomains::slotOf($app, $domainArg);
+    if ($slot === null) {
+        fwrite(STDERR, "Domain {$domainArg} bukan subdomain/custom domain/domain tambahan app {$appId}.\n");
         exit(1);
     }
+    $domain = AppDomains::domainOfSlot($app, $slot) ?? $domainArg;
 } else {
     // tanpa argumen: prioritaskan custom domain bila ada, selain itu subdomain
-    $slot = $customDomain !== '' ? 'custom_ssl' : 'ssl';
-    $domain = $customDomain !== '' ? $customDomain : $subdomain;
+    $slot = $customDomain !== '' ? AppDomains::SLOT_PRIMARY : AppDomains::SLOT_SUBDOMAIN;
+    $domain = $customDomain !== '' ? $customDomain : app_subdomain_of($app);
 }
 
 $logDir = runtime_path('logs/ssl');
@@ -101,11 +101,13 @@ $isLocalServer = ServerResolver::isLocal($server);
 /** @var callable(string,string):void */
 $logger = function (string $stage, string $message) use ($store, $appId, $logFile, $slot): void {
     @file_put_contents($logFile, '[' . date('c') . "] [{$stage}] {$message}" . PHP_EOL, FILE_APPEND);
-    $store->update($appId, function (array &$s) use ($stage, $message, $slot): void {
-        $s[$slot . '_status'] = 'pending';
-        $s[$slot . '_stage'] = $stage;
-        $s[$slot . '_message'] = $message;
-        $s[$slot . '_error'] = null;
+    $store->update($appId, static function (array &$s) use ($stage, $message, $slot): void {
+        AppDomains::writeStatus($s, $slot, [
+            'ssl_status' => 'pending',
+            'ssl_stage' => $stage,
+            'ssl_message' => $message,
+            'ssl_error' => null,
+        ]);
     });
 };
 
@@ -137,19 +139,27 @@ try {
         $expires = null;
         try {
             $state = $deployer->appState($app);
-            $pulled = $state[$slot . '_expires_at'] ?? null;
+            // Status alias hidup di entri `custom_domains[]` — baca lewat
+            // pemetaan slot yang sama dengan penulisnya.
+            $pulled = AppDomains::status($state, $slot)['ssl_expires_at'] ?? null;
             $expires = is_string($pulled) && $pulled !== '' ? $pulled : null;
         } catch (\Throwable $e) {
             @file_put_contents($logFile, '[' . date('c') . "] [ssl] State SSL dari agent tidak bisa ditarik: " . $e->getMessage() . "\n", FILE_APPEND);
         }
 
-        $store->update($appId, function (array &$s) use ($expires, $slot): void {
-            $s[$slot . '_status'] = 'active';
-            $s[$slot . '_stage'] = null;
-            $s[$slot . '_message'] = null;
-            $s[$slot . '_error'] = null;
-            $s[$slot . '_expires_at'] = $expires;
-            $s[$slot === 'custom_ssl' ? 'custom_needs_ssl' : 'needs_ssl'] = false;
+        $store->update($appId, static function (array &$s) use ($expires, $slot): void {
+            AppDomains::writeStatus($s, $slot, [
+                'ssl_status' => 'active',
+                'ssl_stage' => null,
+                'ssl_message' => null,
+                'ssl_error' => null,
+                'ssl_expires_at' => $expires,
+            ]);
+            if ($slot === AppDomains::SLOT_PRIMARY) {
+                $s['custom_needs_ssl'] = false;
+            } elseif ($slot === AppDomains::SLOT_SUBDOMAIN) {
+                $s['needs_ssl'] = false;
+            }
         });
 
         @file_put_contents($logFile, '[' . date('c') . "] done\n", FILE_APPEND);
@@ -167,13 +177,19 @@ try {
     (new SslIssuer())->issue($domain);
 
     $expires = (new SslIssuer())->certExpiry($domain);
-    $store->update($appId, function (array &$s) use ($expires, $slot): void {
-        $s[$slot . '_status'] = 'active';
-        $s[$slot . '_stage'] = null;
-        $s[$slot . '_message'] = null;
-        $s[$slot . '_error'] = null;
-        $s[$slot . '_expires_at'] = $expires;
-        $s[$slot === 'custom_ssl' ? 'custom_needs_ssl' : 'needs_ssl'] = false;
+    $store->update($appId, static function (array &$s) use ($expires, $slot): void {
+        AppDomains::writeStatus($s, $slot, [
+            'ssl_status' => 'active',
+            'ssl_stage' => null,
+            'ssl_message' => null,
+            'ssl_error' => null,
+            'ssl_expires_at' => $expires,
+        ]);
+        if ($slot === AppDomains::SLOT_PRIMARY) {
+            $s['custom_needs_ssl'] = false;
+        } elseif ($slot === AppDomains::SLOT_SUBDOMAIN) {
+            $s['needs_ssl'] = false;
+        }
     });
 
     // Tulis ulang config Nginx + reload nginx host (best-effort). Catatan: JANGAN
@@ -197,11 +213,13 @@ try {
     $msg = $e->getMessage();
     @file_put_contents($logFile, '[' . date('c') . "] ERROR: {$msg}\n", FILE_APPEND);
     try {
-        $store->update($appId, function (array &$s) use ($msg, $slot): void {
-            $s[$slot . '_status'] = 'failed';
-            $s[$slot . '_stage'] = null;
-            $s[$slot . '_message'] = null;
-            $s[$slot . '_error'] = $msg;
+        $store->update($appId, static function (array &$s) use ($msg, $slot): void {
+            AppDomains::writeStatus($s, $slot, [
+                'ssl_status' => 'failed',
+                'ssl_stage' => null,
+                'ssl_message' => null,
+                'ssl_error' => $msg,
+            ]);
         });
     } catch (\Throwable $ignored) {
         // abaikan jika store juga bermasalah

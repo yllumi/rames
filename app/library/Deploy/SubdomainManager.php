@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\Deploy;
 
+use app\library\Domain\AppDomains;
 use app\library\Docker\AppPorts;
 use app\library\Nginx\NginxConfigGuard;
 use app\library\Storage\AppStore;
@@ -95,17 +96,26 @@ final class SubdomainManager
         $effective = self::fqdn($label === '' ? $name : $label, $scope, $this->resolver);
 
         foreach ($this->store->all() as $other) {
-            if ((string) ($other['id'] ?? '') === $excludeId) {
-                continue;
-            }
-            if ($scope !== null && AppStore::serverIdOf($other) !== $scope) {
+            $otherId = (string) ($other['id'] ?? '');
+            $isSelf = $otherId === $excludeId;
+            if (!$isSelf && $scope !== null && AppStore::serverIdOf($other) !== $scope) {
                 continue; // server lain: FQDN-nya di domain lain, tidak bentrok
             }
-            if (app_subdomain_of($other, $this->resolver) === $effective) {
-                throw new RuntimeException('Subdomain ' . $effective . ' sudah dipakai app "' . (string) ($other['name'] ?? '?') . '".');
+            if (!$isSelf) {
+                if (app_subdomain_of($other, $this->resolver) === $effective) {
+                    throw new RuntimeException('Subdomain ' . $effective . ' sudah dipakai app "' . (string) ($other['name'] ?? '?') . '".');
+                }
+                if ((string) ($other['custom_domain'] ?? '') === $effective) {
+                    throw new RuntimeException('Subdomain ' . $effective . ' bentrok dengan custom domain app "' . (string) ($other['name'] ?? '?') . '".');
+                }
             }
-            if ((string) ($other['custom_domain'] ?? '') === $effective) {
-                throw new RuntimeException('Subdomain ' . $effective . ' bentrok dengan custom domain app "' . (string) ($other['name'] ?? '?') . '".');
+            // Domain tambahan (alias) melayani app langsung; `server_name`-nya
+            // tidak boleh dobel dengan subdomain baru — termasuk alias app itu
+            // sendiri (app tidak boleh punya dua slot untuk domain yang sama).
+            foreach (AppDomains::aliases($other) as $alias) {
+                if ((string) ($alias['domain'] ?? '') === $effective) {
+                    throw new RuntimeException('Subdomain ' . $effective . ' bentrok dengan domain tambahan app "' . (string) ($other['name'] ?? '?') . '".');
+                }
             }
         }
 

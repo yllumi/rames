@@ -248,6 +248,40 @@ class SubdomainTest extends TestCase
         $this->assertSame('alpha.example.com', $manager->assertAvailable('alpha', 'alpha', $app['id']));
     }
 
+    /**
+     * Domain tambahan app lain juga memakai FQDN di Nginx → calon subdomain
+     * tidak boleh bentrok dengannya.
+     */
+    public function testAssertAvailableRejectsConflictWithOtherAppAlias(): void
+    {
+        $this->seed([
+            'name' => 'alpha',
+            'custom_domains' => [['domain' => 'blog.example.com']],
+        ]);
+        $manager = new SubdomainManager($this->store());
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/bentrok dengan domain tambahan app "alpha"/');
+        $manager->assertAvailable('blog', 'beta');
+    }
+
+    /**
+     * Alias app itu sendiri juga dihitung: satu app tidak boleh punya dua slot
+     * (`ssl` & `alias:…`) untuk domain yang sama.
+     */
+    public function testAssertAvailableRejectsConflictWithOwnAlias(): void
+    {
+        $app = $this->seed([
+            'name' => 'alpha',
+            'custom_domains' => [['domain' => 'blog.example.com']],
+        ]);
+        $manager = new SubdomainManager($this->store());
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/bentrok dengan domain tambahan app "alpha"/');
+        $manager->assertAvailable('blog', 'alpha', $app['id']);
+    }
+
     // ==================================================================
     // Render config Nginx (server_name efektif)
     // ==================================================================

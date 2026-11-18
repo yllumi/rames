@@ -249,8 +249,13 @@ $breadcrumbs = [
                 if (!isset($roleLabels[$__role])) {
                     $__role = $__defaultRole;
                 }
-                $__key = $__kind . ':' . $__id . ':' . $__role;
+                // Kunci baris polling **unik per domain**: alias melayani app
+                // langsung sehingga berbagi `role='serve'` dengan domain utama —
+                // tanpa `domain` di kunci, dua baris app yang sama saling menimpa
+                // (lihat `public/js/ssl.js`).
+                $__key = $__kind . ':' . $__id . ':' . $__role . ':' . $__domain;
                 $__source = $__text($__row['source'] ?? '');
+                $__isAlias = !empty($__row['is_alias']);
                 $__isCustom = !empty($__row['is_custom']);
                 $__st = strtolower(trim($__text($__row['ssl_status'] ?? 'disabled')));
                 if ($__st === '') {
@@ -294,7 +299,7 @@ $breadcrumbs = [
                   data-ssl-can="<?= $__canSsl ? '1' : '0' ?>">
                 <td>
                   <span class="mono text-break"><?= e($__domain !== '' ? $__domain : '-') ?></span>
-                  <?php if ($__isCustom): ?><span class="text-muted small">(custom)</span><?php endif; ?>
+                  <?php if ($__isAlias): ?><span class="text-muted small">(domain tambahan)</span><?php elseif ($__isCustom): ?><span class="text-muted small">(custom)</span><?php endif; ?>
                 </td>
                 <td class="small">
                   <?php if ($__kind === 'app' && $__appId !== ''): ?>
@@ -369,7 +374,7 @@ $breadcrumbs = [
         </div>
       </div>
     </div>
-    <script src="/js/ssl.js?v=5"></script>
+    <script src="/js/ssl.js?v=6"></script>
   <?php endif; ?>
 </section>
 <?php else: ?>

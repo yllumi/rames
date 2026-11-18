@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\SSL;
 
+use app\library\Domain\AppDomains;
 use app\library\Docker\AppPorts;
 
 /**
@@ -22,7 +23,8 @@ use app\library\Docker\AppPorts;
  *  - `id`       — id app (untuk app; id domain parkir pada baris parkir);
  *  - `role`     — `serve` (melayani app) | `redirect` (subdomain dialihkan ke
  *                 custom domain) | `parkir`;
- *  - `ssl_slot` — awalan field status di `apps.json` (`ssl` | `custom_ssl`);
+ *  - `ssl_slot` — slot status SSL (`ssl` | `custom_ssl` | `alias:<domain>`);
+ *  - `is_alias` — `true` untuk baris domain tambahan (`custom_domains[]`);
  *  - `ssl_queue_position` / `ssl_queue_size` — posisi antrean aktivasi SSL
  *    (hanya terisi saat baris `pending`; lihat {@see SslQueue::decorate()}).
  *    Dekorasi dilakukan **di sini saja** supaya `/domains` & `/ssl` menerima
@@ -34,8 +36,12 @@ use app\library\Docker\AppPorts;
  *    (subdomain/custom domain-nya tidak pernah menerima request);
  *  - tanpa `custom_domain` ⇒ satu baris subdomain, peran `serve`, slot `ssl`;
  *  - dengan `custom_domain` ⇒ baris **custom domain** (peran `serve`, slot
- *    `custom_ssl`) **lalu** baris subdomain (peran `redirect`, slot `ssl`) —
- *    urutan ini dikunci (custom domain selalu di atas) supaya tampilan stabil.
+ *    `custom_ssl`) **lalu** alias (peran `serve`, slot `alias:<domain>`),
+ *    **lalu** baris subdomain (peran `redirect`, slot `ssl`) — urutan ini
+ *    dikunci (custom domain selalu di atas, subdomain selalu terakhir) supaya
+ *    tampilan stabil;
+ *  - tanpa custom domain tetapi punya alias ⇒ alias dulu (`serve`), subdomain
+ *    setelahnya (tetap `serve`, perilaku lama subdomain dipertahankan).
  */
 final class SslDomainRows
 {
@@ -64,13 +70,25 @@ final class SslDomainRows
             $appName = (string) ($app['name'] ?? '');
             $subdomain = app_subdomain_of($app);
             $customDomain = trim((string) ($app['custom_domain'] ?? ''));
+            // Domain tambahan (alias) melayani app langsung — tidak pernah
+            // diarahkan ke domain utama. Slot & statusnya milik `AppDomains`.
+            $aliases = AppDomains::aliases($app);
 
             if ($customDomain !== '') {
                 // Custom domain melayani app; subdomain hanya redirect ke sana.
                 $rows[] = self::appRow($app, $appId, $appName, $customDomain, true, 'serve', 'custom_ssl');
+                foreach ($aliases as $alias) {
+                    $domain = (string) $alias['domain'];
+                    $rows[] = self::appRow($app, $appId, $appName, $domain, true, 'serve', AppDomains::ALIAS_SLOT_PREFIX . $domain, true);
+                }
                 $rows[] = self::appRow($app, $appId, $appName, $subdomain, false, 'redirect', 'ssl');
 
                 continue;
+            }
+
+            foreach ($aliases as $alias) {
+                $domain = (string) $alias['domain'];
+                $rows[] = self::appRow($app, $appId, $appName, $domain, true, 'serve', AppDomains::ALIAS_SLOT_PREFIX . $domain, true);
             }
 
             $rows[] = self::appRow($app, $appId, $appName, $subdomain, false, 'serve', 'ssl');
@@ -122,6 +140,11 @@ final class SslDomainRows
     /**
      * Satu baris app untuk slot SSL tertentu.
      *
+     * Status SELALU diambil dari {@see AppDomains::status()} (satu sumber
+     * pemetaan slot → field) — jangan membaca `$app[$slot.'_status']` sendiri:
+     * slot alias (`alias:<domain>`) menyimpan statusnya di entri
+     * `custom_domains[]`, bukan di field datar.
+     *
      * @param array<string,mixed> $app
      * @return array<string,mixed>
      */
@@ -133,7 +156,10 @@ final class SslDomainRows
         bool $isCustom,
         string $role,
         string $slot,
+        bool $isAlias = false,
     ): array {
+        $status = AppDomains::status($app, $slot);
+
         return [
             'kind' => 'app',
             'id' => $appId,
@@ -146,10 +172,11 @@ final class SslDomainRows
             'is_custom' => $isCustom,
             'role' => $role,
             'ssl_slot' => $slot,
-            'ssl_status' => (string) ($app[$slot . '_status'] ?? 'disabled'),
-            'ssl_message' => $app[$slot . '_message'] ?? null,
-            'ssl_expires_at' => $app[$slot . '_expires_at'] ?? null,
-            'ssl_error' => $app[$slot . '_error'] ?? null,
+            'is_alias' => $isAlias,
+            'ssl_status' => (string) ($status['ssl_status'] ?? 'disabled'),
+            'ssl_message' => $status['ssl_message'] ?? null,
+            'ssl_expires_at' => $status['ssl_expires_at'] ?? null,
+            'ssl_error' => $status['ssl_error'] ?? null,
         ];
     }
 }

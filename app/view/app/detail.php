@@ -4,7 +4,7 @@
 //  01. detail-setup.php           derivasi variabel: $pageTitle/$status/$isBusy/$role/$abilities/canX, $isCompose, custom domain+SSL, rute proxy, overlay container live, $appPorts, $hasHostPort, $logContainer, $breadcrumbs
 //  02. detail-tabs-nav.php        bar tab navigasi section app (<ul id="appTabs">)
 //  03. detail-tab-info.php        Tab Info: dl app-info + kartu SSH Deploy Key
-//  04. detail-tab-domain.php      Tab Domain & SSL: custom domain + SSL + Rute Proxy Tambahan
+//  04. detail-tab-domain.php      Tab Domain & SSL: subdomain + custom domain + SSL + domain tambahan (alias) + Rute Proxy Tambahan
 //  05. detail-tab-env.php         Tab Environment: tabel env + <script> tambah baris & reveal nilai
 //  06. detail-tab-limits.php      Tab Sumber Daya: batas CPU/memori per service (konteks $resourceLimits)
 //  07. detail-tab-network.php     Tab Network: external network lintas-app

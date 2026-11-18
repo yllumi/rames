@@ -15,6 +15,7 @@ use app\library\Deploy\PortOverrides;
 use app\library\Deploy\ResourceLimits;
 use app\library\Deploy\ServerResolver;
 use app\library\Db\DbContainerDetector;
+use app\library\Domain\AppDomains;
 use app\library\Docker\DockerClient;
 use app\library\Git\SshKeyManager;
 use app\library\Storage\AppStore;
@@ -198,8 +199,14 @@ class InfoController extends AppArtifactControllerBase
         // konteks view).
         $serverAddress = app_can('domain', $app) ? $this->serverAddressForApp($app, $resolver) : '';
 
+        // Domain tambahan (alias) — hanya untuk pengguna ber-ability `domain`
+        // (tab Domain), memakai entri tersanitasi `AppDomains::aliases()`.
+        // Domain utama tetap `$app['custom_domain']` (view lama tidak berubah).
+        $customDomains = app_can('domain', $app) ? AppDomains::aliases($app) : [];
+
         return $this->renderView('app/detail', [
             'app' => $viewApp,
+            'customDomains' => $customDomains,
             'serverName' => $serverName,
             'serverAddress' => $serverAddress,
             'live' => $live,

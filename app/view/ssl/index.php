@@ -90,7 +90,7 @@ foreach ($rows as $row) {
         <tr data-ssl-row data-app-id="<?= e($appId) ?>" data-domain="<?= e($r['domain']) ?>" data-ssl-status="<?= e($st) ?>" data-ssl-can="<?= $canSsl ? '1' : '0' ?>">
           <td>
             <span class="mono"><?= e($r['domain']) ?></span>
-            <?php if (!empty($r['is_custom'])): ?><span class="text-muted small">(custom)</span><?php endif; ?>
+            <?php if (!empty($r['is_alias'])): ?><span class="text-muted small">(domain tambahan)</span><?php elseif (!empty($r['is_custom'])): ?><span class="text-muted small">(custom)</span><?php endif; ?>
           </td>
           <td>
             <a href="/apps/<?= e($r['app']['id']) ?>"><?= e($r['app']['name']) ?></a>
@@ -130,5 +130,5 @@ foreach ($rows as $row) {
 </div>
 
 <?php /* Status baris disegarkan lewat polling JSON `/api/ssl/status` (public/js/ssl.js). */ ?>
-<script src="/js/ssl.js?v=4"></script>
+<script src="/js/ssl.js?v=6"></script>
 <?php include app_path() . '/view/partials/footer.php'; ?>

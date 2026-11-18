@@ -12,7 +12,7 @@
 
 - **Multi-user & sharing** — role global admin/member, kepemilikan app, dan sharing per app (viewer/operator/owner).
 - **Create & deploy app** — dari URL repo Git, compose paste/upload, atau template; build & `docker compose up` berjalan async.
-- **Domain & SSL** — subdomain otomatis, custom domain, SSL Let's Encrypt per domain, serta domain parking.
+- **Domain & SSL** — subdomain otomatis, satu custom domain utama + hingga 20 domain tambahan (alias) per app, SSL Let's Encrypt per domain, serta domain parking.
 - **Operasional container** — rebuild/stop/start/delete, log, terminal, file manager, dan batas CPU/RAM per service.
 - **Database & backup** — Adminer tanpa port publik; backup volume harian ke S3 via restic (dump logis untuk database).
 - **Monitoring** — resource container dan total VM, sadar-server, plus metrik per-app (CPU/memori 5 menit + storage) di tab Info detail app.

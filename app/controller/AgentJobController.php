@@ -165,6 +165,7 @@ class AgentJobController
         'server_id',
         'subdomain',
         'custom_domain',
+        'custom_domains',
         'source',
         'repo_url',
         'branch',

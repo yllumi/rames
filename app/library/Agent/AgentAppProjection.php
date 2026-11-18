@@ -18,13 +18,15 @@ use InvalidArgumentException;
  *
  *  - **metadata** ({@see self::METADATA}) → control plane menang: ditimpa dari
  *    payload setiap kali job datang (`owner_id`, `members`, `name`, `subdomain`,
- *    `custom_domain`, `repo_url`, `branch`, `env`, `compose_files`, `limits`,
- *    `nginx_routes`, `container_prefix`, `primary_service`, `primary_port`,
- *    `external_networks`, `template`, `auth_method`, `ssh_key`, `source`);
- *    `custom_domain` ada di sini — **bukan** di {@see self::EXECUTION} — karena
- *    ia metadata control plane (dipakai agent untuk merender blok vhost &
- *    redirect subdomain, misi F2). Satu daftar field saja: jangan menyalin
- *    field metadata secara manual di controller (`AgentJobController`).
+ *    `custom_domain`, `custom_domains`, `repo_url`, `branch`, `env`,
+ *    `compose_files`, `limits`, `nginx_routes`, `container_prefix`,
+ *    `primary_service`, `primary_port`, `external_networks`, `template`,
+ *    `auth_method`, `ssh_key`, `source`);
+ *    `custom_domain`/`custom_domains` ada di sini — **bukan** di
+ *    {@see self::EXECUTION} — karena keduanya metadata control plane (dipakai
+ *    agent untuk merender blok vhost: domain utama, alias, & redirect
+ *    subdomain, misi F2). Satu daftar field saja: jangan menyalin field
+ *    metadata secara manual di controller (`AgentJobController`).
  *  - **state eksekusi** ({@see self::EXECUTION}) → agent menang: `status`,
  *    `stage`, `message`, `error`, `containers`, `deploy_history`, `ssl_status`
  *    **tidak pernah** ditimpa bila app sudah ada, karena hanya agent yang bisa
@@ -77,6 +79,7 @@ final class AgentAppProjection
         'external_networks',
         'subdomain',
         'custom_domain',
+        'custom_domains',
         'nginx_routes',
         'owner_id',
         'members',

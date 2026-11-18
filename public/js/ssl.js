@@ -47,9 +47,11 @@
  *    tidak ada permintaan latar belakang.
  *  - Peta status → kelas badge dibaca dari `data-ssl-badge-map` pada `<table>`
  *    (satu sumber dengan view, tidak diduplikasi di JS).
- *  - Baris dipetakan lewat `data-domain-key` (`kind:id:role`) bila ada — dua
- *    baris app yang sama (custom `serve` + subdomain `redirect`) dipetakan
- *    terpisah; fallback `data-app-id` ↔ `app_id` tetap ada untuk `/ssl` lama.
+ *  - Baris dipetakan lewat `data-domain-key` (`kind:id:role:domain`) bila ada —
+ *    dua baris app yang sama (custom `serve` + subdomain `redirect`) dipetakan
+ *    terpisah, dan alias yang berbagi `role='serve'` dengan domain utama tetap
+ *    unik karena `domain` ikut di kunci (baris tanpa kunci memakai fallback
+ *    `data-app-id` ↔ `app_id`, perilaku lama `/ssl`).
  *    State form/catatan mengikuti `can_ssl` (payload) + `ssl_supported` (tabel),
  *    dengan urutan cabang yang sama seperti render awal view: catatan `pending`/
  *    `active` menang atas form/penanda; galat hanya tampil bila `can_ssl` **dan**
@@ -409,12 +411,30 @@
   }
 
   /**
+   * Kunci pemetaan baris ↔ payload. **Wajib** sama dengan `data-domain-key`
+   * yang dirender view (`/domains`: `kind:id:role:domain`). `domain` ikut di
+   * kunci karena domain tambahan (alias) berbagi `role='serve'` dengan domain
+   * utama — tanpa `domain`, baris kedua saling menimpa status.
+   * `''` bila payload tidak lengkap (baris tak bisa dipetakan lewat kunci).
+   */
+  function rowKey(item) {
+    var id = typeof item.id === 'string' ? item.id : '';
+    var kind = typeof item.kind === 'string' && item.kind !== '' ? item.kind : 'app';
+    var role = typeof item.role === 'string' ? item.role : '';
+    var domain = typeof item.domain === 'string' ? item.domain : '';
+    if (id === '' || role === '') return '';
+
+    return kind + ':' + id + ':' + role + ':' + domain;
+  }
+
+  /**
    * Terapkan seluruh baris dari endpoint status (baris tak dikenal dilewati).
    *
    * Pemetaan baris:
-   *  - baris ber-`data-domain-key` (`kind:id:role`, halaman `/domains`) dicocokkan
-   *    dengan `kind`/`id`/`role` payload → dua baris app yang sama (custom domain
-   *    `serve` + subdomain `redirect`) dipetakan terpisah;
+   *  - baris ber-`data-domain-key` (`kind:id:role:domain`, halaman `/domains`)
+   *    dicocokkan dengan `kind`/`id`/`role` + `domain` payload → dua baris app
+   *    yang sama (custom domain `serve` + subdomain `redirect`, atau domain
+   *    utama + domain tambahan yang sama-sama `serve`) dipetakan terpisah;
    *  - baris tanpa kunci (halaman lama `/ssl`) tetap memakai `data-app-id` ↔
    *    `app_id` (perilaku lama dipertahankan).
    *
@@ -433,10 +453,8 @@
     payload.rows.forEach(function (item) {
       if (!item || typeof item !== 'object') return;
 
-      var id = typeof item.id === 'string' ? item.id : '';
-      var kind = typeof item.kind === 'string' && item.kind !== '' ? item.kind : 'app';
-      var role = typeof item.role === 'string' ? item.role : '';
-      if (id !== '' && role !== '') byKey[kind + ':' + id + ':' + role] = item;
+      var key = rowKey(item);
+      if (key !== '') byKey[key] = item;
 
       // Fallback halaman lama: hanya `app_id` (tipe string) yang dipakai.
       if (typeof item.app_id === 'string' && item.app_id !== '') byId[item.app_id] = item;
@@ -448,9 +466,16 @@
       if (!data) return;
 
       // Domain efektif bisa berubah (custom domain di-set/dihapus) — simpan
-      // untuk POST berikutnya; teks tabel tidak diubah dari sini.
+      // untuk POST berikutnya; teks tabel tidak diubah dari sini. Kunci
+      // `data-domain-key` ikut diperbarui (domain bagian dari kunci) supaya
+      // putaran polling berikutnya tetap menemukan baris ini.
       if (typeof data.domain === 'string' && data.domain !== '') {
+        var previous = row.getAttribute('data-domain') || '';
         row.setAttribute('data-domain', data.domain);
+        if (key !== '' && previous !== data.domain) {
+          var nextKey = rowKey(data);
+          if (nextKey !== '') row.setAttribute('data-domain-key', nextKey);
+        }
       }
 
       var status = typeof data.status === 'string'

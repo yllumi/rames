@@ -20,7 +20,7 @@ Dokumen dipecah per bagian di folder [`ARCHITECTURE/`](./ARCHITECTURE/): setiap 
 | 4.7 | Skrip host & bootstrap | [`04-07-skrip-host-bootstrap.md`](./ARCHITECTURE/04-07-skrip-host-bootstrap.md) |
 | 5.1–5.4 | Siklus hidup app: create (git/compose/template), impor project compose eksternal, rebuild, stop/start, delete | [`05-01-siklus-hidup-app.md`](./ARCHITECTURE/05-01-siklus-hidup-app.md) |
 | 5.5–5.5b | Autentikasi, profil (ubah password self-service), dan verifikasi dua langkah / 2FA TOTP | [`05-02-autentikasi-profil.md`](./ARCHITECTURE/05-02-autentikasi-profil.md) |
-| 5.6–5.6b | Custom domain, SSL per domain, rute proxy, subdomain | [`05-03-domain-ssl-subdomain.md`](./ARCHITECTURE/05-03-domain-ssl-subdomain.md) |
+| 5.6–5.6b | Custom domain (utama + domain tambahan/alias), SSL per domain/slot, rute proxy, subdomain | [`05-03-domain-ssl-subdomain.md`](./ARCHITECTURE/05-03-domain-ssl-subdomain.md) |
 | 5.7–5.10 | Rollback, network, terminal, kepemilikan & sharing | [`05-04-rollback-network-terminal-sharing.md`](./ARCHITECTURE/05-04-rollback-network-terminal-sharing.md) |
 | 5.11–5.12b | Log container/deploy, batalkan build, nama container, batas resource, port container | [`05-05-log-deploy-container-limits.md`](./ARCHITECTURE/05-05-log-deploy-container-limits.md) |
 | 5.13–5.15 | Monitoring (host & per-app), self-update dashboard, backup volume | [`05-06-monitoring-update-backup.md`](./ARCHITECTURE/05-06-monitoring-update-backup.md) |

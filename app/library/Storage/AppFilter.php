@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace app\library\Storage;
 
+use app\library\Domain\AppDomains;
+
 /**
  * Filter daftar app berbasis **query string** (docs/SPECS.md §8e / §7.7): `name`,
  * `domain`, `owner`.
@@ -16,7 +18,9 @@ namespace app\library\Storage;
  *  - `name`   — substring **case-insensitive** pada `$app['name']`;
  *  - `domain` — substring case-insensitive pada domain **efektif**
  *               ({@see app_subdomain_of()} — satu sumber resolusi subdomain,
- *               jangan menebak dari `name`) **atau** `$app['custom_domain']`;
+ *               jangan menebak dari `name`) **atau** `$app['custom_domain']`
+ *               **atau** salah satu domain tambahan (`custom_domains[]`, lihat
+ *               {@see AppDomains::aliases()});
  *  - `owner`  — **cocok persis** dengan `(string) ($app['owner_id'] ?? '')`;
  *  - string kosong / key tidak ada ⇒ filter itu tidak aktif; semua filter
  *    digabung **AND**.
@@ -125,8 +129,8 @@ final class AppFilter
     // ==================================================================
 
     /**
-     * Domain efektif app cocok dengan jarum (sudah lowercase/trim) — atau
-     * `custom_domain`-nya cocok.
+     * Domain efektif app cocok dengan jarum (sudah lowercase/trim) —
+     * `custom_domain` atau salah satu domain tambahan (alias) juga dihitung.
      *
      * @param array<string,mixed> $app
      */
@@ -137,8 +141,17 @@ final class AppFilter
         }
 
         $custom = self::lower(self::text($app['custom_domain'] ?? ''));
+        if ($custom !== '' && str_contains($custom, $needle)) {
+            return true;
+        }
 
-        return $custom !== '' && str_contains($custom, $needle);
+        foreach (AppDomains::aliases($app) as $alias) {
+            if (str_contains(self::lower((string) ($alias['domain'] ?? '')), $needle)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** Nilai filter menjadi string; non-skalar/absen ⇒ string kosong. */

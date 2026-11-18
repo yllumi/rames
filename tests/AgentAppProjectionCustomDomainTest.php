@@ -122,4 +122,68 @@ class AgentAppProjectionCustomDomainTest extends TestCase
         $this->assertStringNotContainsString('$customDomain', $body, 'salinan manual custom_domain harus hilang');
         $this->assertStringContainsString('projection()->upsert(', $body);
     }
+
+    /**
+     * Domain tambahan (alias) juga metadata control plane: agent merender
+     * vhost-nya sendiri dari library yang sama (`AppDomains`).
+     */
+    public function testCustomDomainsIsProjectedMetadataNotExecutionState(): void
+    {
+        $this->assertContains('custom_domains', AgentAppProjection::METADATA);
+        $this->assertNotContains('custom_domains', AgentAppProjection::EXECUTION);
+        $this->assertSame(
+            [],
+            array_intersect(AgentAppProjection::METADATA, AgentAppProjection::EXECUTION),
+            'metadata dan state eksekusi wajib disjoint'
+        );
+    }
+
+    public function testUpsertProjectsCustomDomainsFromPayload(): void
+    {
+        $entries = [
+            ['domain' => 'multi.example.org', 'ssl_status' => 'disabled'],
+            ['domain' => 'multi2.example.org', 'ssl_status' => 'active'],
+        ];
+
+        $this->projection->upsert([
+            'id' => self::APP_ID,
+            'name' => 'demo',
+            'custom_domains' => $entries,
+        ]);
+
+        $stored = (new AppStore($this->projection->path()))->find(self::APP_ID);
+        $this->assertSame($entries, $stored['custom_domains']);
+    }
+
+    public function testUpsertRefreshesCustomDomainsForExistingApp(): void
+    {
+        $this->projection->upsert([
+            'id' => self::APP_ID,
+            'name' => 'demo',
+            'custom_domains' => [['domain' => 'satu.example.org']],
+        ]);
+
+        $this->projection->upsert([
+            'id' => self::APP_ID,
+            'name' => 'demo',
+            'custom_domains' => [['domain' => 'dua.example.org']],
+        ]);
+
+        $stored = (new AppStore($this->projection->path()))->find(self::APP_ID);
+        $this->assertSame([['domain' => 'dua.example.org']], $stored['custom_domains']);
+
+        // Payload parsial (tanpa field) tidak mengosongkan nilai lama.
+        $this->projection->upsert(['id' => self::APP_ID, 'name' => 'demo']);
+        $stored = (new AppStore($this->projection->path()))->find(self::APP_ID);
+        $this->assertSame([['domain' => 'dua.example.org']], $stored['custom_domains']);
+    }
+
+    /**
+     * `GET /apps/{id}` agent ikut mengekspos `custom_domains` (status alias
+     * hidup di entri itu) — tanpa rahasia apa pun.
+     */
+    public function testAgentAppFieldsIncludeCustomDomains(): void
+    {
+        $this->assertContains('custom_domains', AgentJobController::APP_FIELDS);
+    }
 }

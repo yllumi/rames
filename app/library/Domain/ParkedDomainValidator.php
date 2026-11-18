@@ -247,7 +247,9 @@ final class ParkedDomainValidator
      * Sumber bentrok yang diperiksa:
      *  1. FQDN efektif app (`app_subdomain_of()` — satu-satunya jalur resolusi);
      *  2. `custom_domain` app;
-     *  3. domain entri parkir lain (kecuali `$excludeId`, untuk edit entri sendiri).
+     *  3. seluruh domain tambahan app (`custom_domains[]` — alias melayani app
+     *     langsung sehingga FQDN-nya tidak boleh diparkir);
+     *  4. domain entri parkir lain (kecuali `$excludeId`, untuk edit entri sendiri).
      *
      * @param string $excludeId id entri parkir yang sedang diedit (dilewati)
      *
@@ -265,6 +267,11 @@ final class ParkedDomainValidator
             $appId = (string) ($app['id'] ?? '');
             $appName = (string) ($app['name'] ?? ($appId !== '' ? $appId : '?'));
 
+            // Satu sumber himpunan domain app (subdomain + utama + alias).
+            if (!in_array($domain, AppDomains::allDomains($app), true)) {
+                continue;
+            }
+
             $effective = self::normalizeDomain(app_subdomain_of($app));
             if ($effective !== '' && $effective === $domain) {
                 throw new RuntimeException(
@@ -279,6 +286,17 @@ final class ParkedDomainValidator
                     'Domain "' . $domain . '" sudah dipakai sebagai custom domain app "' . $appName
                     . '" (id ' . $appId . '). Lepas custom domain itu atau pilih domain lain.'
                 );
+            }
+
+            // Domain tambahan/alias melayani app langsung (tanpa redirect) —
+            // FQDN-nya tidak boleh diparkir, sama seperti subdomain/domain utama.
+            foreach (AppDomains::aliases($app) as $alias) {
+                if ((string) ($alias['domain'] ?? '') === $domain) {
+                    throw new RuntimeException(
+                        'Domain "' . $domain . '" sudah dipakai sebagai domain tambahan app "' . $appName
+                        . '" (id ' . $appId . '). Hapus domain tambahan itu atau pilih domain lain.'
+                    );
+                }
             }
         }
 

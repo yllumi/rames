@@ -32,6 +32,13 @@
 
 **Pengujian**: `tests/UserStorePasswordTest.php` (9 tes), `tests/ProfileControllerTest.php` (termasuk ubah password), `tests/ProfilePasswordRouteGuardTest.php`, `tests/AgentModeTest.php`.
 
+**Jalur darurat password (host, bukan HTTP).** Bila user (termasuk admin) lupa password dan tidak ada admin lain yang bisa menggantinya dari `/users`, operator host menjalankan `php webman passwd:reset <username> [password]` di container dashboard (`app/command/ResetPassword`). Perilaku:
+- password baru dari argumen, atau diminta **dua kali** dengan input tersembunyi bila interaktif, atau di-generate acak & dicetak sekali pada mode non-interaktif;
+- hanya `password_hash` yang diganti (`UserStore::changePassword()`); role, kepemilikan app, 2FA, dan API key tidak disentuh; sesi login lama tidak diputus;
+- password < 6 karakter, username tak dikenal, atau store kosong ⇒ gagal (exit code non-nol) tanpa mutasi; store kosong menyarankan `make:admin`.
+
+**WAJIB**: command ini **bukan** route HTTP/aksi UI — jangan menambah endpoint atau tombol di `/users`. Seam `users()` ada khusus agar `tests/ResetPasswordCommandTest.php` memakai SQLite temp, bukan data runtime. Password yang diberikan sebagai argumen terlihat di daftar proses (`ps`) selama perintah berjalan.
+
 ## 5.5b Login Dua Langkah & 2FA Self-Service (TOTP)
 
 > Terkait: SPECS §6.4. Route (`config/route.php`): `GET|POST /login/2fa` (**publik**), `POST /profile/2fa/setup`, `/profile/2fa/enable`, `/profile/2fa/disable`, `/profile/2fa/recovery` (login + CSRF). Kelas: `TwoFactorService`, `Totp`, `QrSvg`, `UserStore` (§4.3).

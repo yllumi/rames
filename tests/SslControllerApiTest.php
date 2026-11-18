@@ -224,6 +224,86 @@ class SslControllerApiTest extends TestCase
         $this->assertArrayNotHasKey('ssl_status', $saved, 'slot subdomain tidak boleh ikut tersentuh');
     }
 
+    /**
+     * Domain tambahan (alias) memakai slot `alias:<domain>`: status ditulis ke
+     * entri `custom_domains[]`, dedupe key memakai slot alias, dan flag lama
+     * (`needs_ssl`/`custom_needs_ssl`) **tidak** ditulis untuk alias.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testApiEnableUsesTheAliasSlotForAnAdditionalDomain(): void
+    {
+        $this->installStubs(self::OWNER);
+        $app = $this->app('api-alias', [
+            'owner_id' => self::OWNER['id'],
+            'custom_domains' => [[
+                'domain' => 'multi.example.org',
+                'ssl_status' => 'disabled',
+                'created_at' => '2026-11-18T22:00:00+07:00',
+            ]],
+        ]);
+
+        $response = $this->controller(true)->apiEnable($this->enableRequest($app['id'], 'multi.example.org'), $app['id']);
+
+        $this->assertSame(0, $this->envelope($response)['code']);
+        $body = $this->envelope($response);
+        $this->assertSame('multi.example.org', $body['domain']);
+        $this->assertSame('SSL untuk multi.example.org masuk antrean (posisi 1 dari 1).', $body['message']);
+
+        $job = $this->queue()->findActive('app:' . $app['id'] . ':multi.example.org:alias:multi.example.org');
+        $this->assertIsArray($job, 'slot alias punya dedupe key sendiri');
+        $this->assertSame('alias:multi.example.org', $job['slot']);
+
+        $saved = (new AppStore())->find($app['id']);
+        $this->assertSame('pending', $saved['custom_domains'][0]['ssl_status']);
+        $this->assertSame('queued', $saved['custom_domains'][0]['ssl_stage']);
+        $this->assertSame('2026-11-18T22:00:00+07:00', $saved['custom_domains'][0]['created_at']);
+        $this->assertArrayNotHasKey('ssl_status', $saved, 'slot subdomain tidak tersentuh');
+        $this->assertArrayNotHasKey('needs_ssl', $saved, 'alias tidak menulis flag lama');
+        $this->assertArrayNotHasKey('custom_needs_ssl', $saved, 'alias tidak menulis flag lama');
+
+        // Alias pending ditolak seperti slot lain (tanpa job baru).
+        $second = $this->envelope($this->controller(true)->apiEnable($this->enableRequest($app['id'], 'multi.example.org'), $app['id']));
+        $this->assertSame(1, $second['code']);
+        $this->assertSame('SSL untuk multi.example.org sudah pending.', $second['error']);
+        $this->assertSame(1, $this->queue()->queueSize());
+    }
+
+    /**
+     * Baris alias juga ikut di `apiStatus` (bentuk baris milik
+     * `SslDomainRows`): `is_custom` + `is_alias` + `ssl_slot` alias.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testApiStatusIncludesAliasRowsAsServedDomains(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = $this->app('api-alias-status', [
+            'owner_id' => self::OWNER['id'],
+            'custom_domains' => [[
+                'domain' => 'multi.example.org',
+                'ssl_status' => 'active',
+                'ssl_expires_at' => '2027-03-01T00:00:00+00:00',
+            ]],
+        ]);
+
+        $body = $this->envelope($this->controller(true)->apiStatus($this->statusRequest()));
+
+        $alias = null;
+        foreach ($body['rows'] as $row) {
+            if (($row['domain'] ?? '') === 'multi.example.org') {
+                $alias = $row;
+            }
+        }
+
+        $this->assertIsArray($alias, 'baris alias harus muncul di /api/ssl/status');
+        $this->assertSame($app['id'], $alias['app_id']);
+        $this->assertTrue($alias['is_custom']);
+        $this->assertSame('serve', $alias['role']);
+        $this->assertSame('active', $alias['status']);
+        $this->assertSame('2027-03-01T00:00:00+00:00', $alias['expires_at']);
+    }
+
     // ==================================================================
     // (2) apiEnable — penolakan bisnis (code=1, tanpa efek samping)
     // ==================================================================

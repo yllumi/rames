@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\SSL;
 
+use app\library\Domain\AppDomains;
 use app\library\Storage\SqliteDatabase;
 use PDO;
 use Throwable;
@@ -105,7 +106,7 @@ final class SslQueue
     {
         $appId = trim((string) ($app['id'] ?? ''));
         $normalizedDomain = strtolower(trim($domain));
-        $normalizedSlot = $slot === 'custom_ssl' ? 'custom_ssl' : 'ssl';
+        $normalizedSlot = self::normalizeAppSlot($app, $slot);
 
         return $this->persist([
             'dedupe_key' => 'app:' . $appId . ':' . $normalizedDomain . ':' . $normalizedSlot,
@@ -540,8 +541,38 @@ final class SslQueue
         if ($slot === '') {
             $slot = !empty($row['is_custom']) ? 'custom_ssl' : 'ssl';
         }
+        if (AppDomains::isAliasSlot($slot)) {
+            $slot = AppDomains::ALIAS_SLOT_PREFIX
+                . AppDomains::normalizeDomain(substr($slot, strlen(AppDomains::ALIAS_SLOT_PREFIX)));
+        }
 
         return 'app:' . $appId . ':' . $domain . ':' . $slot;
+    }
+
+    /**
+     * Normalisasi slot job app: `ssl` | `custom_ssl` | `alias:<domain>`.
+     *
+     * Slot alias hanya dipertahankan bila domainnya benar-benar terdaftar
+     * sebagai alias app (entri bisa saja sudah dihapus antara permintaan dan
+     * enqueue); selain itu diperlakukan `ssl` seperti perilaku lama agar
+     * pemanggil lama tidak berubah.
+     *
+     * @param array<string,mixed> $app
+     */
+    private static function normalizeAppSlot(array $app, string $slot): string
+    {
+        if ($slot === 'custom_ssl') {
+            return 'custom_ssl';
+        }
+
+        if (AppDomains::isAliasSlot($slot)) {
+            $domain = AppDomains::domainOfSlot($app, $slot);
+            if ($domain !== null) {
+                return AppDomains::ALIAS_SLOT_PREFIX . $domain;
+            }
+        }
+
+        return 'ssl';
     }
 
     /**
