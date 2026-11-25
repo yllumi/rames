@@ -64,6 +64,7 @@ Default instalasi di `/opt/rames-agent`; agent **menolak** menimpa direktori das
 ## Dokumentasi Lain
 
 - Konfigurasi `.env`, backup, keamanan, alur create app, dan struktur direktori: [`DETAILS.md`](./DETAILS.md)
+- **API eksternal (integrasi AI/CI/CD): [`docs/API.md`](./docs/API.md)** — autentikasi API key, endpoint status/build app, custom domain & domain tambahan, aktivasi SSL, tabel error, resep alur kerja
 - Spesifikasi kebutuhan: [`SPECS.md`](./docs/SPECS.md)
 - Arsitektur dan keputusan desain: [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
 - Panduan server agent: [`agent/README.md`](./agent/README.md)

@@ -36,6 +36,8 @@ Dokumen dipecah per bagian di folder [`ARCHITECTURE/`](./ARCHITECTURE/): setiap 
 | GOTCHA-1 | Jebakan multi-server (F0–F4) | [`09-gotcha-multiserver.md`](./ARCHITECTURE/09-gotcha-multiserver.md) |
 | GOTCHA-2 | Jebakan tema tampilan (mode gelap) | [`10-gotcha-tema.md`](./ARCHITECTURE/10-gotcha-tema.md) |
 
+> Panduan implementasi API eksternal (untuk aplikasi lain / agen AI): [`API.md`](./API.md). Isinya turunan dari `OpenApiSpec::build()` — setiap endpoint baru wajib muncul di keduanya.
+
 ## Cara Menjaga Dokumen
 
 - Perubahan perilaku wajib memperbarui file bagian yang tepat (bukan hanya index ini).

@@ -235,6 +235,25 @@ class OpenApiSpecTest extends TestCase
     }
 
     /**
+     * Panduan implementasi `docs/API.md` harus menyebut **setiap** path di
+     * dokumen OpenAPI — jangan sampai panduan tertinggal saat endpoint baru
+     * ditambahkan (dokumen itu konsumen utama integrasi AI/CI/CD).
+     */
+    public function testApiGuideListsEveryDocumentedPath(): void
+    {
+        $guide = (string) file_get_contents(dirname(__DIR__) . '/docs/API.md');
+        $this->assertNotSame('', $guide, 'docs/API.md hilang');
+
+        foreach (array_keys(OpenApiSpec::build()['paths']) as $path) {
+            $this->assertStringContainsString(
+                (string) $path,
+                $guide,
+                'docs/API.md belum memuat path ' . $path
+            );
+        }
+    }
+
+    /**
      * Kumpulkan seluruh nilai `$ref` di dokumen.
      *
      * @param array<mixed> $node
