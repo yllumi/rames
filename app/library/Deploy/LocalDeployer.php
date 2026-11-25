@@ -1111,10 +1111,16 @@ class LocalDeployer implements DeployerInterface
      *     (perilaku default), selain itu redirect 301 ke custom domain utama;
      *  2. **custom domain utama** — melayani app (hanya bila ada);
      *  3. **domain tambahan** (`apps.json.custom_domains[]`) — satu serve block
-     *     per alias, mem-proxy ke host port primary app yang sama (bukan
-     *     redirect), dengan status SSL sendiri: blok `listen 443 ssl` dirender
-     *     hanya bila status slot `alias:<domain>` bernilai `active`, sehingga
-     *     generator memakai path cert `/etc/letsencrypt/live/<alias>/`.
+     *     per alias, mem-proxy ke host port primary app (bukan redirect) atau ke
+     *     host port lain yang dipilih user untuk alias itu
+     *     (`target_host_port`, mis. service kedua app), dengan status SSL
+     *     sendiri: blok `listen 443 ssl` dirender hanya bila status slot
+     *     `alias:<domain>` bernilai `active`, sehingga generator memakai path
+     *     cert `/etc/letsencrypt/live/<alias>/`.
+     *
+     * Pilihan target alias yang sudah tidak dipublikasikan app (port dihapus
+     * setelah alias dibuat) otomatis kembali ke host port primary —
+     * {@see AppDomains::aliasTargetPort()} yang memutuskan, bukan deployer.
      *
      * Keberadaan alias **tidak** mengubah blok subdomain/domain utama (target
      * redirect tetap domain utama). Alias yang kebetulan sama dengan subdomain
@@ -1122,7 +1128,7 @@ class LocalDeployer implements DeployerInterface
      * ganda membuat nginx memakai blok pertama & menulis warning saat reload.
      *
      * @param array<string,mixed> $app
-     * @return array<int,array{server_name:string,ssl?:bool,redirect_to?:string}>
+     * @return array<int,array{server_name:string,ssl?:bool,redirect_to?:string,port?:int}>
      */
     private function domainServerBlocks(array $app): array
     {
@@ -1163,10 +1169,17 @@ class LocalDeployer implements DeployerInterface
             }
             $taken[] = $domain;
 
-            $servers[] = [
+            $block = [
                 'server_name' => $domain,
                 'ssl' => AppDomains::status($app, AppDomains::ALIAS_SLOT_PREFIX . $domain)['ssl_status'] === 'active',
             ];
+            // Target per-domain (host port service lain app yang sama); 0 =
+            // primary, yaitu perilaku default alias.
+            $target = AppDomains::aliasTargetPort($app, $domain);
+            if ($target > 0) {
+                $block['port'] = $target;
+            }
+            $servers[] = $block;
         }
 
         return $servers;

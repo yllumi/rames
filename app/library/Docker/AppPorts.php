@@ -310,6 +310,32 @@ final class AppPorts
     }
 
     /**
+     * Baris port yang memakai `$hostPort` (null bila app tidak mem-publikasikan
+     * host port itu).
+     *
+     * Dipakai fitur "domain tambahan diarahkan ke service tertentu": target
+     * `proxy_pass` Nginx adalah **host port**, jadi keabsahan pilihan user
+     * diperiksa di sini (port app lain / port yang tidak dipublikasikan tidak
+     * boleh masuk config Nginx). Port ≤ 0 tidak pernah cocok.
+     *
+     * @return array{service:string,container:int,host:int}|null
+     */
+    public static function findHostPort(array $app, int $hostPort): ?array
+    {
+        if ($hostPort <= 0) {
+            return null;
+        }
+
+        foreach (self::all($app) as $port) {
+            if ($port['host'] === $hostPort) {
+                return $port;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Cocokkan host port dari field lama (`host_port`/`internal_port`) bila
      * entri `ports[]` tidak memuat host (mis. data hasil versi lama).
      */

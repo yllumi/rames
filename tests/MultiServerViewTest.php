@@ -547,6 +547,51 @@ class MultiServerViewTest extends TestCase
         $this->assertNoSecretLeak($html);
     }
 
+    /**
+     * Tab Domain & SSL: domain tambahan bisa diarahkan ke service/port lain app
+     * yang sama (`target_host_port`). View wajib menawarkan **hanya** host port
+     * yang dipublikasikan app, menandai pilihan tersimpan, dan mengirim POST ke
+     * `/apps/{id}/domains/target`.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAppDetailAliasDomainTargetSelectUsesPublishedPorts(): void
+    {
+        $app = $this->agentApp();
+        $app['containers'] = [
+            [
+                'container_name' => 'toko-web-2',
+                'service_name' => 'web',
+                'status' => 'running',
+                'host_port' => 30000,
+                'internal_port' => 80,
+                'ports' => [['host' => 30000, 'container' => 80]],
+            ],
+            [
+                'container_name' => 'toko-api-1',
+                'service_name' => 'api',
+                'status' => 'running',
+                'host_port' => 30002,
+                'internal_port' => 8000,
+                'ports' => [['host' => 30002, 'container' => 8000]],
+            ],
+        ];
+
+        $html = $this->renderView('app/detail.php', $this->detailVars($app, [
+            'customDomains' => [
+                ['domain' => 'api.example.org', 'target_host_port' => 30002, 'ssl_status' => 'disabled'],
+            ],
+        ]));
+
+        self::assertStringContainsString('name="target_host_port"', $html);
+        self::assertStringContainsString('/domains/target', $html, 'form ubah tujuan per domain');
+        self::assertStringContainsString('api (container 8000) → host 30002', $html, 'label service+port tersedia');
+        self::assertMatchesRegularExpression('/value="30002" selected/', $html, 'pilihan tersimpan ditandai');
+        self::assertStringContainsString('Primary service (host 30000)', $html, 'opsi default = primary service');
+
+        $this->assertNoSecretLeak($html);
+    }
+
     // ------------------------------------------------------------------
     // Helper
     // ------------------------------------------------------------------

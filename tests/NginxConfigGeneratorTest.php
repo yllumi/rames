@@ -466,6 +466,42 @@ NGINX;
         ], [['path' => '/', 'target' => 'http://127.0.0.1:3001']]);
     }
 
+    /**
+     * Domain tambahan bisa diarahkan ke service/port lain app yang sama:
+     * `port` per server block menimpa host port primary, sedangkan block tanpa
+     * `port` tetap memakai port primary.
+     */
+    public function testServeBlockUsesPerServerPortOverride(): void
+    {
+        $config = $this->generator()->render(30000, [
+            ['server_name' => 'utama.example.com'],
+            ['server_name' => 'api.example.org', 'port' => 30002],
+        ]);
+
+        $this->assertSame(1, substr_count($config, 'proxy_pass http://127.0.0.1:30000;'));
+        $this->assertSame(1, substr_count($config, 'proxy_pass http://127.0.0.1:30002;'));
+    }
+
+    public function testPerServerPortOverrideAppliesToHttpsServeBlock(): void
+    {
+        $config = $this->generator()->render(30000, [
+            ['server_name' => 'api.example.org', 'port' => 30002, 'ssl' => true],
+        ]);
+
+        // Blok 443 memakai port per-domain; blok 80 hanya redirect (tanpa proxy).
+        $this->assertSame(1, substr_count($config, 'proxy_pass http://127.0.0.1:30002;'));
+        $this->assertStringNotContainsString('127.0.0.1:30000', $config);
+    }
+
+    public function testPerServerPortIgnoresNonPositiveValue(): void
+    {
+        $config = $this->generator()->render(30000, [
+            ['server_name' => 'app.example.com', 'port' => 0],
+        ]);
+
+        $this->assertStringContainsString('proxy_pass http://127.0.0.1:30000;', $config);
+    }
+
     public function testWriteIsAtomicKeepsExactContentAndLeavesNoTempFile(): void
     {
         $base = sys_get_temp_dir() . '/rames-nginx-write-' . bin2hex(random_bytes(4));

@@ -265,4 +265,21 @@ class AppPortsTest extends TestCase
         $this->assertSame(30001, AppPorts::hostPortFor($app, 9119));
         $this->assertSame(0, AppPorts::hostPortFor($app, 1234));
     }
+
+    /**
+     * `findHostPort()` = dasar validasi & label target domain tambahan
+     * (`target_host_port`): hanya host port milik app yang dianggap sah.
+     */
+    public function testFindHostPortReturnsOwnerRowAndRejectsUnknown(): void
+    {
+        $app = $this->multiPortApp();
+
+        $this->assertSame(
+            ['service' => 'hermes', 'container' => 9119, 'host' => 30001],
+            AppPorts::findHostPort($app, 30001)
+        );
+        $this->assertNull(AppPorts::findHostPort($app, 30999), 'port tak dipublikasikan app');
+        $this->assertNull(AppPorts::findHostPort($app, 0), 'port 0 bukan target sah');
+        $this->assertNull(AppPorts::findHostPort($app, -1), 'port negatif bukan target sah');
+    }
 }

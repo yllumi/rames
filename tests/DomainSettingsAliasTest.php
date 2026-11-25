@@ -438,6 +438,184 @@ class DomainSettingsAliasTest extends TestCase
     }
 
     // ==================================================================
+    // Target proxy domain tambahan (`target_host_port`)
+    // ==================================================================
+
+    /**
+     * Domain tambahan bisa diarahkan ke port/service lain milik app yang sama;
+     * pilihan tersimpan di entri alias & dipakai sebagai `proxy_pass` vhost.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAddDomainStoresTargetHostPortAndRendersVhostTarget(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = $this->multiPortApp('app-alias-target');
+        $reloader = new DomainSettingsAliasReloader();
+
+        (new DomainSettingsController())->addDomain(
+            $this->post('domain=api.example.org&target_host_port=30002'),
+            $app['id'],
+            $reloader
+        );
+
+        $saved = (new AppStore())->find($app['id']);
+        $this->assertSame(30002, $saved['custom_domains'][0]['target_host_port']);
+        $this->assertSame(1, $reloader->calls);
+
+        $config = (string) file_get_contents($this->tmp . '/nginx/conf/' . $app['name'] . '.conf');
+        $this->assertStringContainsString('proxy_pass http://127.0.0.1:30002;', $config);
+
+        $message = (string) ($this->lastFlash('success')['message'] ?? '');
+        $this->assertStringContainsString('port host 30002', $message);
+        $this->assertStringContainsString('service api', $message);
+    }
+
+    /** Tanpa pilihan target: alias memakai primary service (0). */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAddDomainWithoutTargetDefaultsToPrimary(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = $this->multiPortApp('app-alias-primary-target');
+        $reloader = new DomainSettingsAliasReloader();
+
+        (new DomainSettingsController())->addDomain($this->post('domain=web.example.org'), $app['id'], $reloader);
+
+        $saved = (new AppStore())->find($app['id']);
+        $this->assertSame(0, $saved['custom_domains'][0]['target_host_port']);
+
+        $config = (string) file_get_contents($this->tmp . '/nginx/conf/' . $app['name'] . '.conf');
+        $this->assertStringContainsString('proxy_pass http://127.0.0.1:30000;', $config);
+        $this->assertStringNotContainsString('127.0.0.1:30002', $config);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAddDomainRejectsUnpublishedTargetPort(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = $this->multiPortApp('app-alias-target-bad');
+        $reloader = new DomainSettingsAliasReloader();
+
+        (new DomainSettingsController())->addDomain(
+            $this->post('domain=api.example.org&target_host_port=30999'),
+            $app['id'],
+            $reloader
+        );
+
+        $this->assertSame(0, $reloader->calls, 'penolakan tidak menulis/memuat Nginx');
+        $this->assertArrayNotHasKey('custom_domains', (new AppStore())->find($app['id']));
+        $this->assertStringContainsString(
+            'tidak dipublikasikan app ini',
+            (string) ($this->lastFlash('error')['message'] ?? '')
+        );
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testAddDomainRejectsNonNumericTargetPort(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = $this->multiPortApp('app-alias-target-text');
+        $reloader = new DomainSettingsAliasReloader();
+
+        (new DomainSettingsController())->addDomain(
+            $this->post('domain=api.example.org&target_host_port=web'),
+            $app['id'],
+            $reloader
+        );
+
+        $this->assertSame(0, $reloader->calls);
+        $this->assertArrayNotHasKey('custom_domains', (new AppStore())->find($app['id']));
+        $this->assertStringContainsString(
+            'harus berupa angka',
+            (string) ($this->lastFlash('error')['message'] ?? '')
+        );
+    }
+
+    /** Ubah tujuan alias yang sudah ada, lalu kembali ke primary. */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSetDomainTargetUpdatesAliasAndRewritesConfig(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = $this->multiPortApp('app-alias-retarget');
+        (new AppStore())->update($app['id'], static function (array &$s): void {
+            $s['custom_domains'] = [['domain' => 'api.example.org', 'target_host_port' => 0, 'ssl_status' => 'disabled']];
+        });
+        $reloader = new DomainSettingsAliasReloader();
+        $controller = new DomainSettingsController();
+
+        $controller->setDomainTarget($this->post('domain=api.example.org&target_host_port=30002'), $app['id'], $reloader);
+
+        $this->assertSame(30002, (new AppStore())->find($app['id'])['custom_domains'][0]['target_host_port']);
+        $this->assertSame(1, $reloader->calls);
+        $this->assertStringContainsString(
+            'proxy_pass http://127.0.0.1:30002;',
+            (string) file_get_contents($this->tmp . '/nginx/conf/' . $app['name'] . '.conf')
+        );
+
+        $controller->setDomainTarget($this->post('domain=api.example.org'), $app['id'], $reloader);
+
+        $this->assertSame(0, (new AppStore())->find($app['id'])['custom_domains'][0]['target_host_port'], 'field kosong = primary');
+        $this->assertStringContainsString(
+            'primary service',
+            (string) ($this->lastFlash('success')['message'] ?? '')
+        );
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSetDomainTargetRejectsUnknownAlias(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = $this->multiPortApp('app-alias-retarget-unknown');
+        (new AppStore())->update($app['id'], static function (array &$s): void {
+            $s['custom_domains'] = [['domain' => 'satu.example.org', 'target_host_port' => 0, 'ssl_status' => 'disabled']];
+        });
+        $reloader = new DomainSettingsAliasReloader();
+
+        (new DomainSettingsController())->setDomainTarget(
+            $this->post('domain=lain.example.org&target_host_port=30002'),
+            $app['id'],
+            $reloader
+        );
+
+        $this->assertSame(0, $reloader->calls);
+        $this->assertStringContainsString(
+            'tidak ditemukan',
+            (string) ($this->lastFlash('error')['message'] ?? '')
+        );
+        $this->assertSame(0, (new AppStore())->find($app['id'])['custom_domains'][0]['target_host_port']);
+    }
+
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function testSetDomainTargetRejectsUnpublishedPort(): void
+    {
+        $this->installStubs(self::ADMIN);
+        $app = $this->multiPortApp('app-alias-retarget-bad');
+        (new AppStore())->update($app['id'], static function (array &$s): void {
+            $s['custom_domains'] = [['domain' => 'api.example.org', 'target_host_port' => 0, 'ssl_status' => 'disabled']];
+        });
+        $reloader = new DomainSettingsAliasReloader();
+
+        (new DomainSettingsController())->setDomainTarget(
+            $this->post('domain=api.example.org&target_host_port=30999'),
+            $app['id'],
+            $reloader
+        );
+
+        $this->assertSame(0, $reloader->calls);
+        $this->assertStringContainsString(
+            'tidak dipublikasikan app ini',
+            (string) ($this->lastFlash('error')['message'] ?? '')
+        );
+        $this->assertSame(0, (new AppStore())->find($app['id'])['custom_domains'][0]['target_host_port']);
+    }
+
+    // ==================================================================
     // Helper
     // ==================================================================
 
@@ -448,6 +626,36 @@ class DomainSettingsAliasTest extends TestCase
             'name' => $name,
             'status' => 'running',
             'containers' => [['host_port' => 30001, 'internal_port' => 80]],
+        ]);
+    }
+
+    /**
+     * App dua service/port (web host 30000, api host 30002) — syarat menguji
+     * `target_host_port` domain tambahan.
+     *
+     * @return array<string,mixed>
+     */
+    private function multiPortApp(string $name): array
+    {
+        return (new AppStore())->create([
+            'name' => $name,
+            'status' => 'running',
+            'primary_service' => 'web',
+            'primary_port' => 80,
+            'containers' => [
+                [
+                    'service_name' => 'web',
+                    'internal_port' => 80,
+                    'host_port' => 30000,
+                    'ports' => [['host' => 30000, 'container' => 80]],
+                ],
+                [
+                    'service_name' => 'api',
+                    'internal_port' => 8000,
+                    'host_port' => 30002,
+                    'ports' => [['host' => 30002, 'container' => 8000]],
+                ],
+            ],
         ]);
     }
 

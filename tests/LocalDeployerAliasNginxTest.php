@@ -194,6 +194,58 @@ class LocalDeployerAliasNginxTest extends TestCase
     }
 
     /**
+     * App multi-service: web (host 30000) + api (host 30002).
+     *
+     * @param array<int,array<string,mixed>> $aliases
+     * @return array<string,mixed>
+     */
+    private function multiServiceApp(array $aliases): array
+    {
+        return [
+            'name' => 'multi',
+            'primary_service' => 'web',
+            'primary_port' => 80,
+            'custom_domains' => $aliases,
+            'containers' => [
+                ['service_name' => 'web', 'container_name' => 'multi-web', 'ports' => [['host' => 30000, 'container' => 80]]],
+                ['service_name' => 'api', 'container_name' => 'multi-api', 'ports' => [['host' => 30002, 'container' => 8000]]],
+            ],
+        ];
+    }
+
+    /**
+     * (e) Tiap domain tambahan bisa diarahkan ke host port lain milik app yang
+     * sama (`target_host_port`); alias tanpa target tetap ke port primary.
+     */
+    public function testAliasTargetPortPerDomain(): void
+    {
+        $app = $this->multiServiceApp([
+            ['domain' => 'api.example.org', 'target_host_port' => 30002, 'ssl_status' => 'disabled'],
+            ['domain' => 'web.example.org', 'ssl_status' => 'disabled'],
+        ]);
+        $config = $this->renderer()->renderNginxConfig($app);
+
+        // Subdomain (serve, tanpa domain utama) + alias tanpa target ⇒ primary.
+        $this->assertSame(2, substr_count($config, 'proxy_pass http://127.0.0.1:30000;'));
+        $this->assertSame(1, substr_count($config, 'proxy_pass http://127.0.0.1:30002;'));
+    }
+
+    /**
+     * (f) Target yang sudah tidak dipublikasikan app (port dihapus setelah
+     * alias dibuat) jatuh kembali ke port primary — bukan vhost mati.
+     */
+    public function testAliasTargetPortYangTidakLagiDipublikasikanJatuhKePrimary(): void
+    {
+        $app = $this->multiServiceApp([
+            ['domain' => 'api.example.org', 'target_host_port' => 39999, 'ssl_status' => 'disabled'],
+        ]);
+        $config = $this->renderer()->renderNginxConfig($app);
+
+        $this->assertStringNotContainsString('127.0.0.1:39999', $config);
+        $this->assertSame(2, substr_count($config, 'proxy_pass http://127.0.0.1:30000;'));
+    }
+
+    /**
      * (d) App tanpa host port: tidak ada vhost (config lama dibuang), dan
      * alias tidak mengubah keputusan itu.
      */

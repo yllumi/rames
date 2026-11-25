@@ -291,6 +291,34 @@
             ? \app\library\Domain\AppDomains::MAX_ALIASES
             : 20;
         $aliasFormFull = count($aliasDomains) >= $aliasMax;
+
+        // Pilihan tujuan proxy domain tambahan (`target_host_port` = host port
+        // app, target `proxy_pass` Nginx). Kosong = primary service. Hanya host
+        // port yang benar-benar dipublikasikan app yang ditawarkan — server
+        // tetap menolak port lain; `$appPorts`/`$portContext` dihitung
+        // detail-setup.php.
+        $aliasTargetOptions = [];
+        foreach ((array) ($appPorts ?? []) as $aliasPortEntry) {
+            if (!is_array($aliasPortEntry)) {
+                continue;
+            }
+            $aliasPortHost = (int) ($aliasPortEntry['host'] ?? 0);
+            if ($aliasPortHost <= 0 || isset($aliasTargetOptions[$aliasPortHost])) {
+                continue;
+            }
+            $aliasPortService = trim((string) ($aliasPortEntry['service'] ?? ''));
+            $aliasPortContainer = (int) ($aliasPortEntry['container'] ?? 0);
+            $aliasTargetOptions[$aliasPortHost] = ($aliasPortService !== '' ? $aliasPortService : 'container')
+                . ($aliasPortContainer > 0 ? ' (container ' . $aliasPortContainer . ')' : '')
+                . ' → host ' . $aliasPortHost;
+        }
+        $aliasPrimaryHostPort = 0;
+        try {
+            $aliasPrimaryHostPort = \app\library\Docker\AppPorts::primaryHostPort(is_array($portContext ?? null) ? $portContext : []);
+        } catch (\Throwable) {
+            $aliasPrimaryHostPort = 0;
+        }
+        $aliasPrimaryLabel = 'Primary service' . ($aliasPrimaryHostPort > 0 ? ' (host ' . $aliasPrimaryHostPort . ')' : '');
         ?>
         <?php if (!$hasHostPort): ?>
           <p class="text-muted small mb-0">
@@ -305,15 +333,16 @@
               <thead>
                 <tr>
                   <th scope="col">Domain</th>
+                  <th scope="col">Tujuan proxy</th>
                   <th scope="col">Status SSL</th>
                   <th scope="col" class="text-end">Aksi</th>
                 </tr>
               </thead>
               <tbody>
                 <?php if ($aliasDomains === []): ?>
-                  <tr><td colspan="3" class="text-muted small">Belum ada domain tambahan.</td></tr>
+                  <tr><td colspan="4" class="text-muted small">Belum ada domain tambahan.</td></tr>
                 <?php else: ?>
-                  <?php foreach ($aliasDomains as $alias): ?>
+                  <?php foreach ($aliasDomains as $aliasIndex => $alias): ?>
                     <?php
                     $aliasDomain = (string) ($alias['domain'] ?? '');
                     $aliasStatus = strtolower(trim((string) ($alias['ssl_status'] ?? 'disabled')));
@@ -326,6 +355,8 @@
                     $aliasExpires = trim((string) ($alias['ssl_expires_at'] ?? ''));
                     $aliasError = trim((string) ($alias['ssl_error'] ?? ''));
                     $aliasBadge = $aliasActive ? 'running' : ($aliasPending ? 'deploying' : ($aliasFailed ? 'error' : 'stopped'));
+                    $aliasTargetPort = (int) ($alias['target_host_port'] ?? 0);
+                    $aliasTargetKnown = $aliasTargetPort > 0 && isset($aliasTargetOptions[$aliasTargetPort]);
                     ?>
                     <tr data-alias-domain="<?= e($aliasDomain) ?>">
                       <td class="mono text-break">
@@ -334,6 +365,26 @@
                         <?php else: ?>
                           -
                         <?php endif; ?>
+                      </td>
+                      <td>
+                        <?php if ($aliasTargetPort > 0 && !$aliasTargetKnown): ?>
+                          <div class="text-warning small mb-1">
+                            host <?= e((string) $aliasTargetPort) ?> tidak lagi dipublikasikan app — sementara diarahkan ke <?= e($aliasPrimaryLabel) ?>.
+                          </div>
+                        <?php endif; ?>
+                        <form method="post" action="/apps/<?= e($app['id']) ?>/domains/target" class="d-flex flex-wrap gap-1 align-items-center">
+                          <?= csrf_field() ?>
+                          <input type="hidden" name="domain" value="<?= e($aliasDomain) ?>">
+                          <label class="visually-hidden" for="alias-target-<?= e((string) $aliasIndex) ?>">Tujuan proxy <?= e($aliasDomain) ?></label>
+                          <select class="form-select form-select-sm mono" id="alias-target-<?= e((string) $aliasIndex) ?>"
+                                  name="target_host_port" style="max-width:240px;">
+                            <option value=""<?= $aliasTargetPort === 0 ? ' selected' : '' ?>><?= e($aliasPrimaryLabel) ?></option>
+                            <?php foreach ($aliasTargetOptions as $aliasOptionPort => $aliasOptionLabel): ?>
+                              <option value="<?= e((string) $aliasOptionPort) ?>"<?= $aliasTargetPort === $aliasOptionPort ? ' selected' : '' ?>><?= e($aliasOptionLabel) ?></option>
+                            <?php endforeach; ?>
+                          </select>
+                          <button class="btn btn-outline-secondary btn-sm">Simpan</button>
+                        </form>
                       </td>
                       <td>
                         <span class="badge badge-<?= e($aliasBadge) ?>"><?= e($aliasStatus) ?></span>
@@ -391,6 +442,16 @@
                        style="max-width:420px;">
               </div>
               <div class="col-12 col-md-auto">
+                <label class="visually-hidden" for="alias-target-input">Tujuan proxy domain tambahan</label>
+                <select class="form-select form-select-sm mono" id="alias-target-input" name="target_host_port"
+                        style="max-width:240px;" title="Service/port tujuan proxy domain ini; kosongkan untuk primary service app.">
+                  <option value=""><?= e($aliasPrimaryLabel) ?></option>
+                  <?php foreach ($aliasTargetOptions as $aliasOptionPort => $aliasOptionLabel): ?>
+                    <option value="<?= e((string) $aliasOptionPort) ?>"><?= e($aliasOptionLabel) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+              <div class="col-12 col-md-auto">
                 <button class="btn btn-primary btn-sm"><?= svg_icon('plus') ?> Tambah Domain</button>
               </div>
             </form>
@@ -399,6 +460,9 @@
             Maksimal <strong><?= e((string) $aliasMax) ?></strong> domain tambahan per app. Domain tambahan melayani app yang sama
             <strong>tanpa redirect</strong> (app memutuskan sendiri dari header <span class="mono">Host</span>); subdomain bawaan tetap
             redirect ke domain utama. Tulis FQDN tanpa <span class="mono">http://</span> dan tanpa path.
+            Tiap domain bisa diarahkan ke <strong>service/port lain milik app ini</strong> (mis. web + API terpisah);
+            kosongkan pilihan tujuan untuk memakai <span class="mono">primary</span> service app. Pilihan hanya memuat port yang
+            dipublikasikan app (<span class="mono">ports:</span> compose); ubah port di tab Container bila belum ada.
             <?php if ($domainServerAddress !== ''): ?>
             Arahkan DNS <strong><?= e($domainRecordType) ?></strong> record tiap domain ke <span class="mono"><?= e($domainServerAddress) ?></span> (server: <em><?= e($domainServerLabel) ?></em>) sebelum mengaktifkan SSL — Let's Encrypt memvalidasi domain pada IP itu.
             <?php else: ?>

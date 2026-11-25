@@ -154,11 +154,15 @@ class AgentModeTest extends TestCase
      * +2 (domain tambahan per app): `POST /apps/{id}/domains` &
      * `POST /apps/{id}/domains/remove` — dashboard-only (agent hanya menerima
      * metadata `custom_domains` lewat proyeksi app).
+     *
+     * +1 (tujuan proxy domain tambahan): `POST /apps/{id}/domains/target` —
+     * dashboard-only; agent hanya menerima `custom_domains` (beserta
+     * `target_host_port`) lewat proyeksi app dan merender vhost sendiri.
      */
-    private const DASHBOARD_ROUTE_DEFINITIONS = 169;
+    private const DASHBOARD_ROUTE_DEFINITIONS = 170;
 
-    /** Definisi di atas menghasilkan 175 pasangan method+path (1 route `any` = 7). */
-    private const DASHBOARD_ROUTE_PAIRS = 175;
+    /** Definisi di atas menghasilkan 176 pasangan method+path (1 route `any` = 7). */
+    private const DASHBOARD_ROUTE_PAIRS = 176;
 
     /** Route dashboard yang wajib ADA di mode dashboard & TIDAK ADA di mode agent. */
     private const DASHBOARD_SAMPLES = [

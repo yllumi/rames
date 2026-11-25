@@ -344,6 +344,8 @@ Route::post('/apps/{id}/domain/remove', [DomainSettingsController::class, 'remov
 // (field apps.json `custom_domains`; ability `domain`, operator+)
 Route::post('/apps/{id}/domains', [DomainSettingsController::class, 'addDomain']);
 Route::post('/apps/{id}/domains/remove', [DomainSettingsController::class, 'removeDomainAlias']);
+// Tujuan proxy satu domain tambahan (field `target_host_port`; kosong = primary)
+Route::post('/apps/{id}/domains/target', [DomainSettingsController::class, 'setDomainTarget']);
 
 // Subdomain app (field apps.json `subdomain`; ability `domain`, operator+)
 Route::post('/apps/{id}/subdomain', [DomainSettingsController::class, 'setSubdomain']);

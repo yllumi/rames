@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace app\library\Domain;
 
+use app\library\Docker\AppPorts;
 use app\library\SSL\SslIssuer;
 use app\library\Storage\AppStore;
 use RuntimeException;
@@ -14,9 +15,19 @@ use RuntimeException;
  * Desain data (aditif — dokumen lama aman):
  *  - `custom_domain` (string) tetap domain utama, perilakunya tidak berubah
  *    (subdomain dialihkan 301 ke sana);
- *  - `custom_domains` = daftar entri `{domain, ssl_status, ssl_stage,
- *    ssl_message, ssl_error, ssl_expires_at, created_at}`. Setiap alias
- *    **melayani app langsung** (tanpa redirect) dan punya status SSL sendiri;
+ *  - `custom_domains` = daftar entri `{domain, target_host_port, ssl_status,
+ *    ssl_stage, ssl_message, ssl_error, ssl_expires_at, created_at}`. Setiap
+ *    alias **melayani app langsung** (tanpa redirect) dan punya status SSL
+ *    sendiri;
+ *  - `target_host_port` = **host port** app (port yang dipublikasikan ke host,
+ *    target `proxy_pass` Nginx) untuk alias itu; `0`/tidak ada = port primary
+ *    app (perilaku lama). Host port dipakai — bukan port container — karena
+ *    host port adalah identitas stabil sebuah mapping (`PortOverrides`: host
+ *    port tetap, port container yang boleh diedit). Pilihan user divalidasi
+ *    terhadap port yang benar-benar dipublikasikan app
+ *    ({@see self::assertAliasTargetPort()}), dan saat render pilihan yang sudah
+ *    tidak dipublikasikan jatuh kembali ke primary
+ *    ({@see self::aliasTargetPort()});
  *  - alias boleh ada tanpa domain utama; batasnya {@see self::MAX_ALIASES}.
  *
  * Slot SSL: `ssl` (subdomain), `custom_ssl` (domain utama), dan
@@ -109,6 +120,12 @@ final class AppDomains
             }
             $seen[$domain] = true;
             $entry['domain'] = $domain;
+            // Target proxy alias (host port). Non-skalar/hilang ⇒ 0 = primary.
+            $target = $entry['target_host_port'] ?? 0;
+            $target = is_int($target) || (is_string($target) && ctype_digit(trim($target)))
+                ? (int) $target
+                : 0;
+            $entry['target_host_port'] = $target > 0 && $target <= 65535 ? $target : 0;
             // Field status bisa rusak (data sunting manual): jangan biarkan
             // non-skalar lolos ke cast `(string)` di view/libs (warning
             // "Array to string conversion"). Nilai tak sah ⇒ null/`disabled`.
@@ -383,6 +400,101 @@ final class AppDomains
         if (count(self::aliases($app)) >= self::MAX_ALIASES) {
             throw new RuntimeException('Maksimal ' . self::MAX_ALIASES . ' domain tambahan per app.');
         }
+    }
+
+    /**
+     * Parse input form target domain tambahan → **host port** (0 = primary).
+     *
+     * Field kosong berarti "ikut primary service" (perilaku lama). Nilai lain
+     * wajib bilangan bulat port TCP (1–65535); teks bebas ditolak lebih dulu
+     * agar tidak pernah masuk config Nginx / data app.
+     *
+     * @throws RuntimeException input bukan angka atau di luar rentang port
+     */
+    public static function parseAliasTargetPort(string $raw): int
+    {
+        $text = trim($raw);
+        if ($text === '') {
+            return 0;
+        }
+        if (!ctype_digit($text)) {
+            throw new RuntimeException('Port tujuan harus berupa angka (port host app), atau kosongkan untuk memakai primary service.');
+        }
+        $port = (int) $text;
+        if ($port < 1 || $port > 65535) {
+            throw new RuntimeException('Port tujuan harus di antara 1 dan 65535.');
+        }
+
+        return $port;
+    }
+
+    /**
+     * Pastikan `$hostPort` benar-benar port yang dipublikasikan app ini.
+     *
+     * Alias hanya bisa di-proxy ke `127.0.0.1:{host_port}` di server tempat app
+     * berjalan; port milik app lain atau port yang tidak dipublikasikan akan
+     * menghasilkan vhost mati (502). `0` selalu boleh (= primary).
+     *
+     * @param array<string,mixed> $app
+     * @throws RuntimeException port tidak dipublikasikan app
+     */
+    public static function assertAliasTargetPort(array $app, int $hostPort): void
+    {
+        if ($hostPort === 0) {
+            return;
+        }
+
+        if (AppPorts::findHostPort($app, $hostPort) === null) {
+            $ports = self::publishedHostPortText($app);
+            throw new RuntimeException(
+                'Port ' . $hostPort . ' tidak dipublikasikan app ini.'
+                . ($ports !== '' ? ' Port yang tersedia: ' . $ports . '.' : '')
+                . ' Kosongkan pilihan tujuan untuk memakai primary service.'
+            );
+        }
+    }
+
+    /**
+     * Host port tujuan satu alias (`0` = primary service).
+     *
+     * Dipakai jalur render vhost: pilihan yang sudah tidak dipublikasikan app
+     * (port dihapus/diubah setelah alias dibuat) **jatuh kembali ke primary**
+     * alih-alih menghasilkan `proxy_pass` ke port mati.
+     *
+     * @param array<string,mixed> $app
+     */
+    public static function aliasTargetPort(array $app, string $domain): int
+    {
+        $domain = self::normalizeDomain($domain);
+        if ($domain === '') {
+            return 0;
+        }
+
+        foreach (self::aliases($app) as $alias) {
+            if ((string) ($alias['domain'] ?? '') !== $domain) {
+                continue;
+            }
+            $port = (int) ($alias['target_host_port'] ?? 0);
+
+            return $port > 0 && AppPorts::findHostPort($app, $port) !== null ? $port : 0;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Daftar host port app (teks, dipisah koma) untuk pesan galat.
+     */
+    private static function publishedHostPortText(array $app): string
+    {
+        $ports = [];
+        foreach (AppPorts::all($app) as $port) {
+            if ($port['host'] > 0) {
+                $ports[$port['host']] = (string) $port['host'];
+            }
+        }
+
+        return implode(', ', $ports);
     }
 
     // ==================================================================

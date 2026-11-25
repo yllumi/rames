@@ -57,7 +57,10 @@ class NginxConfigGenerator
      * jalan di host); varian `$connection_upgrade` hanya boleh didefinisikan
      * **sekali** di `nginx.conf` host, di luar kendali dashboard.
      *
-     * @param array<int,array{server_name:string,ssl?:bool,redirect_to?:string}> $servers
+     * @param array<int,array{server_name:string,ssl?:bool,redirect_to?:string,port?:int}> $servers
+     *        `port` = host port alternatif untuk serve block domain itu (mis.
+     *        domain tambahan yang diarahkan ke service lain milik app yang
+     *        sama); kosong/≤0 ⇒ memakai `$hostPort` (port primary).
      * @param array<int,array{path:string,target:string}> $routes
      * @return string
      */
@@ -82,6 +85,12 @@ ACME;
             $serverName = (string) ($entry['server_name'] ?? '');
             $redirectTo = ($entry['redirect_to'] ?? null) !== null ? (string) $entry['redirect_to'] : null;
             $ssl = (bool) ($entry['ssl'] ?? false);
+            // Host port tujuan `proxy_pass` milik server block ini: pilihan
+            // per-domain (domain tambahan → service lain app yang sama) atau
+            // port primary app. Redirect block tidak mem-proxy, jadi tidak
+            // terpengaruh.
+            $entryPort = (int) ($entry['port'] ?? 0);
+            $serverPort = $entryPort > 0 ? $entryPort : $hostPort;
 
             // Redirect block (mis. subdomain → custom domain)
             if ($redirectTo !== null && $redirectTo !== '') {
@@ -144,7 +153,7 @@ server {
     {$acme}
 
     location / {
-        proxy_pass http://127.0.0.1:{$hostPort};
+        proxy_pass http://127.0.0.1:{$serverPort};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -190,7 +199,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     location / {
-        proxy_pass http://127.0.0.1:{$hostPort};
+        proxy_pass http://127.0.0.1:{$serverPort};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;

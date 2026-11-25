@@ -227,7 +227,9 @@ class DomainSettingsController extends AppControllerBase
      *
      * Urutan fail-fast (semua sebelum efek samping): app punya host port
      * ({@see AppPorts::hasHostPort()}), FQDN/duplikat/batas lewat
-     * {@see AppDomains::assertAliasAddable()}, lalu keunikan lintas app
+     * {@see AppDomains::assertAliasAddable()}, target proxy opsional
+     * (`target_host_port`; kosong = primary service) lewat
+     * {@see AppDomains::assertAliasTargetPort()}, lalu keunikan lintas app
      * ({@see self::assertDomainUnique()}, termasuk domain parkir). Entri baru
      * disimpan dengan status SSL `disabled`, lalu config Nginx ditulis ulang +
      * di-reload (best-effort). Otorisasi dicek `findApp(..., 'domain')` ⇒ 404.
@@ -237,6 +239,7 @@ class DomainSettingsController extends AppControllerBase
         $store = new AppStore();
         $app = $this->findApp($id, 'domain');
         $domain = AppDomains::normalizeDomain((string) $request->post('domain', ''));
+        $targetPort = 0;
 
         try {
             // App tanpa port terpublish tidak punya target `proxy_pass` — vhost
@@ -246,12 +249,16 @@ class DomainSettingsController extends AppControllerBase
             }
 
             AppDomains::assertAliasAddable($app, $domain);
+            // Host port tujuan proxy domain ini (0 = primary service app).
+            $targetPort = AppDomains::parseAliasTargetPort((string) $request->post('target_host_port', ''));
+            AppDomains::assertAliasTargetPort($app, $targetPort);
             $this->assertDomainUnique($store, $id, $domain);
 
-            $store->update($id, static function (array &$s) use ($domain): void {
+            $store->update($id, static function (array &$s) use ($domain, $targetPort): void {
                 $list = is_array($s['custom_domains'] ?? null) ? $s['custom_domains'] : [];
                 $list[] = [
                     'domain' => $domain,
+                    'target_host_port' => $targetPort,
                     'ssl_status' => 'disabled',
                     'ssl_stage' => null,
                     'ssl_message' => null,
@@ -280,7 +287,7 @@ class DomainSettingsController extends AppControllerBase
         }
 
         $reloadNote = $this->reloadNginxNote($app, $localReloader, $agentClient);
-        flash_set('success', 'Domain tambahan ' . $domain . ' ditambahkan. App kini melayani domain tersebut langsung (tanpa redirect).'
+        flash_set('success', 'Domain tambahan ' . $domain . ' ditambahkan — diarahkan ke ' . $this->aliasTargetNote($app, $targetPort) . '. App kini melayani domain tersebut langsung (tanpa redirect).'
             . ($reloadNote !== '' ? ' ' . $reloadNote : '') . ' ' . $this->domainDnsHint($app, $domain));
 
         return redirect('/apps/' . $id);
@@ -357,6 +364,101 @@ class DomainSettingsController extends AppControllerBase
         }
 
         return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Ubah **tujuan proxy** satu domain tambahan — `POST /apps/{id}/domains/target`.
+     *
+     * Field `domain` = alias yang sudah terdaftar, `target_host_port` = host
+     * port app tujuan (`proxy_pass` Nginx); kosong = kembali ke **primary
+     * service** app. Berguna untuk app multi-service: satu domain ke web utama,
+     * domain lain ke service/port lain milik app yang sama.
+     *
+     * Fail-fast sebelum efek samping: alias wajib terdaftar di app ini
+     * ({@see AppDomains::hasAlias()}) dan port wajib dipublikasikan app
+     * ({@see AppDomains::assertAliasTargetPort()}). Setelah tersimpan config
+     * Nginx ditulis ulang + di-reload (best-effort). Otorisasi lewat
+     * `findApp(..., 'domain')` ⇒ 404.
+     */
+    public function setDomainTarget(Request $request, string $id, ?NginxReloader $localReloader = null, ?AgentClient $agentClient = null)
+    {
+        $store = new AppStore();
+        $app = $this->findApp($id, 'domain');
+        $domain = AppDomains::normalizeDomain((string) $request->post('domain', ''));
+        $targetPort = 0;
+
+        try {
+            if ($domain === '' || !AppDomains::hasAlias($app, $domain)) {
+                throw new RuntimeException('Domain tambahan ' . ($domain !== '' ? $domain : '?') . ' tidak ditemukan pada app ini.');
+            }
+
+            $targetPort = AppDomains::parseAliasTargetPort((string) $request->post('target_host_port', ''));
+            AppDomains::assertAliasTargetPort($app, $targetPort);
+
+            $store->update($id, static function (array &$s) use ($domain, $targetPort): void {
+                $list = is_array($s['custom_domains'] ?? null) ? $s['custom_domains'] : [];
+                foreach ($list as $index => $entry) {
+                    if (!is_array($entry)) {
+                        continue;
+                    }
+                    if (AppDomains::normalizeDomain((string) ($entry['domain'] ?? '')) !== $domain) {
+                        continue;
+                    }
+                    $list[$index]['target_host_port'] = $targetPort;
+                }
+                $s['custom_domains'] = array_values($list);
+            });
+        } catch (\Throwable $e) {
+            flash_set('error', $this->appErrorText($app, $e));
+
+            return redirect('/apps/' . $id);
+        }
+
+        $app = $store->find($id) ?? $app;
+
+        try {
+            $this->applyNginxConfig($app, $agentClient);
+        } catch (\Throwable $e) {
+            flash_set('error', 'Tujuan domain tambahan ' . $domain . ' tersimpan, tetapi gagal menulis config Nginx: ' . $this->appErrorText($app, $e) . ' (jalankan Rebuild untuk menerapkan).');
+
+            return redirect('/apps/' . $id);
+        }
+
+        $reloadNote = $this->reloadNginxNote($app, $localReloader, $agentClient);
+        flash_set('success', 'Tujuan domain tambahan ' . $domain . ' diset ke ' . $this->aliasTargetNote($app, $targetPort) . '.'
+            . ($reloadNote !== '' ? ' ' . $reloadNote : ''));
+
+        return redirect('/apps/' . $id);
+    }
+
+    /**
+     * Ringkasan tujuan proxy alias untuk flash: port host terpilih, atau
+     * primary service app beserta port host-nya (bila bisa dipastikan).
+     *
+     * @param array<string,mixed> $app
+     */
+    private function aliasTargetNote(array $app, int $hostPort): string
+    {
+        if ($hostPort > 0) {
+            $owner = AppPorts::findHostPort($app, $hostPort);
+            $service = trim((string) ($owner['service'] ?? ''));
+            $container = (int) ($owner['container'] ?? 0);
+
+            $detail = '';
+            if ($service !== '') {
+                $detail = ' (service ' . $service . ($container > 0 ? ', container port ' . $container : '') . ')';
+            } elseif ($container > 0) {
+                $detail = ' (container port ' . $container . ')';
+            }
+
+            return 'port host ' . $hostPort . $detail;
+        }
+
+        try {
+            return 'primary service (port host ' . AppPorts::primaryHostPort($app) . ')';
+        } catch (\Throwable) {
+            return 'primary service';
+        }
     }
 
     /**
