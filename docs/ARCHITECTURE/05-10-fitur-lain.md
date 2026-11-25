@@ -325,7 +325,7 @@ sequenceDiagram
 
 ## 5.45 API Eksternal (API key per user) & Dokumentasi OpenAPI
 
-API mesin untuk otomatisasi (CI/CD) tanpa sesi browser. Cakupan fase awal: **build ulang app berdasarkan nama (slug)** + pembacaan status untuk polling, plus halaman dokumentasi OpenAPI.
+API mesin untuk otomatisasi (CI/CD) tanpa sesi browser. Cakupan: **build ulang app berdasarkan nama (slug)** + pembacaan status untuk polling, **domain app** (custom domain utama, domain tambahan/alias, status SSL), plus halaman dokumentasi OpenAPI.
 
 **Permukaan route** (`config/route.php`, hanya mode `dashboard`):
 
@@ -333,6 +333,13 @@ API mesin untuk otomatisasi (CI/CD) tanpa sesi browser. Cakupan fase awal: **bui
 |---|---|---|---|
 | `POST` | `/api/v1/apps/{slug}/build` | `api\AppApiController::build()` | API key per user |
 | `GET` | `/api/v1/apps/{slug}` | `api\AppApiController::show()` | API key per user |
+| `GET` | `/api/v1/apps/{slug}/domains` | `api\AppApiController::domains()` | API key per user |
+| `PUT` | `/api/v1/apps/{slug}/domain` | `api\AppApiController::setPrimaryDomain()` | API key per user |
+| `DELETE` | `/api/v1/apps/{slug}/domain` | `api\AppApiController::removePrimaryDomain()` | API key per user |
+| `POST` | `/api/v1/apps/{slug}/domains` | `api\AppApiController::addDomainAlias()` | API key per user |
+| `PATCH` | `/api/v1/apps/{slug}/domains/{domain}` | `api\AppApiController::updateDomainAlias()` | API key per user |
+| `DELETE` | `/api/v1/apps/{slug}/domains/{domain}` | `api\AppApiController::removeDomainAlias()` | API key per user |
+| `POST` | `/api/v1/apps/{slug}/domains/{domain}/ssl` | `api\AppApiController::enableDomainSsl()` | API key per user |
 | `GET` | `/api-docs` | `api\ApiDocsController::page()` | sesi login (halaman) |
 | `GET` | `/api-docs/openapi.json` | `api\ApiDocsController::spec()` | sesi login (JSON) |
 | `POST` | `/profile/api-key` | `ProfileController::generateApiKey()` | sesi + CSRF |
@@ -353,6 +360,16 @@ API mesin untuk otomatisasi (CI/CD) tanpa sesi browser. Cakupan fase awal: **bui
 3. `AppAccess::can('deploy', $app, $actor)` — kemampuan sama dengan tombol Rebuild; gagal ⇒ **404** (bukan 403, supaya keberadaan app lain tidak bocor).
 4. `AppBuildService::rebuild($app, $guard, $actorId)` — **satu pipeline** dengan `DeploymentController::rebuild()`: app impor ditolak; status `deploying` ⇒ **409** `app_busy`; artefak lokal (server-aware) diperiksa; `$guard` (gerbang kredit via `billingAssertCanStart()`) dijalankan **sebelum** efek samping — kredit kurang ⇒ **402** `insufficient_credits`; status → `deploying/queued`; worker detached di-spawn (`DeploySpawner` → `DeployWorkerLauncher`, PID dicatat untuk `DeployCanceller`).
 5. Respons **202** `{code:0,data:{slug,id,status,stage,message,poll_url}}`. Ini **bukan** tanda build selesai — klien mem-poll `GET /api/v1/apps/{slug}` sampai `status` bukan `deploying`.
+
+**Alur domain (`/api/v1/apps/{slug}/domain[s]`).** Endpoint ini memakai **`AppDomainService`** — satu sumber dengan `DomainSettingsController`, jadi validasi/efek samping tidak pernah berbeda antara UI dan API:
+
+1. `authorize()` (sama dengan build): API key → `ApiAppLocator` (404/409) → `AppAccess::can('view'|'domain', ...)` ⇒ 404 seragam. `GET` cukup ability `view`; semua mutasi `domain` (operator+).
+2. Body JSON (`application/json`) atau form; field `domain` (wajib) & `target_host_port` (opsional, `0`/kosong = primary service). Body JSON rusak ⇒ **422 `invalid_json`**, field non-skalar ⇒ **422 `invalid_field`**.
+3. `AppDomainService::setPrimary()/removePrimary()/addAlias()/updateAliasTarget()/removeAlias()` menjalankan urutan yang sama dengan UI: prasyarat host port app → validasi FQDN/duplikat/batas alias/port target → keunikan per server (`AppDomains::ownerOf()` + domain parkir) → update `AppStore` → revoke sertifikat lama (`AppSslRevoker`, server pemilik app) → tulis config Nginx → reload (`AppNginxReloader`).
+4. Validasi gagal ⇒ **422 `validation_failed`** tanpa efek samping; alias tak dikenal (`PATCH`) ⇒ **404 `alias_not_found`** (`AppDomainNotFound`); `DELETE` alias tak dikenal juga **404**.
+5. Kegagalan tulis/reload Nginx atau revoke **tidak** membatalkan data: respons **200** `{changed,applied,reloaded,domain,target_host_port,warnings[],domains{...}}` — `applied=false`/`warnings[]` memberi tahu perlu Rebuild. `domains` = status terkini (bentuk sama dengan `GET`): `{slug,served,subdomain,primary,aliases[]}` dengan `ssl{status,stage,message,expires_at,error_summary}` per slot.
+
+**Aktivasi SSL (`POST /api/v1/apps/{slug}/domains/{domain}/ssl`).** Ability **`ssl`** (operator+); logika satu sumber `SslActivationService` (dipakai UI `/ssl` & `/domains`). Domain wajib milik app (`AppDomains::slotOf()`; selain itu **404 `domain_not_found`**), harus publik, dan app wajib punya host port (server agent wajib punya `APP_DOMAIN`). Status slot ditandai `pending/queued` lalu job masuk **antrean global** `ssl_jobs`. Respons **202** `{slug,domain,slot,status:"pending",queued,queue_position,queue_size,message,poll_url}` — penerbitan + penulisan config Nginx (blok ACME/443) + reload Nginx + certbot dijalankan **worker `cli/ssl.php`** di server pemilik app, bukan di request API. Slot yang sudah `active`/`pending` ⇒ **200** `already:true` tanpa job baru; antrean gagal ⇒ **503 `ssl_queue_failed`** (slot ditandai `failed`). Pantau lewat `GET .../domains`.
 
 **Respons status.** `AppApiPayload::summary()` = allowlist: `slug`, `id`, `server_id`, `status`, `stage`, `message`, `domain`, `created_at`, `updated_at`, `containers[]` (service/name/status/ports `host`→`container`), `last_deploy` (sha/short/action/status/message/created_at). **Tidak pernah** `env`, `ssh_key`, kredensial repo, `worker_pid`, `members`, atau field agent.
 

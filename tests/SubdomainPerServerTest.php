@@ -167,9 +167,10 @@ class SubdomainPerServerTest extends TestCase
     }
 
     /**
-     * Keunikan **custom domain** di `DomainSettingsController::assertDomainUnique()`
-     * di-scope per server (misi `ms-f1-deploy`, plan §4.2): dua server boleh
-     * memakai domain custom yang sama; bentrok hanya di server yang sama.
+     * Keunikan **custom domain** di `AppDomainService::assertDomainUnique()`
+     * (dipakai controller dashboard & API eksternal) di-scope per server
+     * (misi `ms-f1-deploy`, plan §4.2): dua server boleh memakai domain custom
+     * yang sama; bentrok hanya di server yang sama.
      *
      * Method privat diuji langsung (reflection) — jalurnya murni (store + helper
      * FQDN), tanpa HTTP/Docker.
@@ -193,8 +194,8 @@ class SubdomainPerServerTest extends TestCase
             $this->seed(['id' => 'app-a', 'name' => 'alpha', 'server_id' => $satu['id'], 'custom_domain' => 'shared.example.org']);
             $this->seed(['id' => 'app-a2', 'name' => 'alpha2', 'server_id' => $satu['id']]);
 
-            $assert = new \ReflectionMethod(DomainSettingsController::class, 'assertDomainUnique');
-            $controller = new DomainSettingsController();
+            $assert = new \ReflectionMethod(\app\library\Domain\AppDomainService::class, 'assertDomainUnique');
+            $controller = new \app\library\Domain\AppDomainService($this->store());
 
             // Server berbeda: domain custom yang sama BUKAN bentrok.
             $assert->invoke($controller, $this->store(), 'app-a', 'shared.example.org');

@@ -298,6 +298,16 @@ Route::get('/api-docs', [ApiDocsController::class, 'page']);
 Route::get('/api-docs/openapi.json', [ApiDocsController::class, 'spec']);
 Route::get('/api/v1/apps/{slug}', [AppApiController::class, 'show']);
 Route::post('/api/v1/apps/{slug}/build', [AppApiController::class, 'build']);
+// Domain app: status domain yang sudah diset + kelola custom domain utama &
+// domain tambahan/alias. Ability `domain` (operator+) kecuali GET ⇒ `view`.
+Route::get('/api/v1/apps/{slug}/domains', [AppApiController::class, 'domains']);
+Route::put('/api/v1/apps/{slug}/domain', [AppApiController::class, 'setPrimaryDomain']);
+Route::delete('/api/v1/apps/{slug}/domain', [AppApiController::class, 'removePrimaryDomain']);
+Route::post('/api/v1/apps/{slug}/domains', [AppApiController::class, 'addDomainAlias']);
+Route::patch('/api/v1/apps/{slug}/domains/{domain}', [AppApiController::class, 'updateDomainAlias']);
+Route::delete('/api/v1/apps/{slug}/domains/{domain}', [AppApiController::class, 'removeDomainAlias']);
+// Aktivasi SSL satu domain app (antrean global, 202; ability `ssl`)
+Route::post('/api/v1/apps/{slug}/domains/{domain}/ssl', [AppApiController::class, 'enableDomainSsl']);
 
 // Wizard create app
 Route::get('/apps/create', [CreateController::class, 'createForm']);

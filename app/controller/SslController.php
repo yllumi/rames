@@ -5,10 +5,7 @@ namespace app\controller;
 
 use app\library\Auth\AppAccess;
 use app\library\Auth\AppAccessDenied;
-use app\library\Deploy\AgentDeployer;
-use app\library\Deploy\ServerResolver;
-use app\library\Domain\AppDomains;
-use app\library\Docker\AppPorts;
+use app\library\SSL\SslActivationService;
 use app\library\SSL\SslDomainRows;
 use app\library\SSL\SslErrorSummary;
 use app\library\SSL\SslIssuer;
@@ -237,88 +234,22 @@ class SslController
         }
         AppAccess::require('ssl', $app, current_user());
 
-        // Server pemilik app (`server_id` tak dikenal ⇒ melempar; fail-fast).
-        $server = (new ServerResolver())->serverForApp($app);
-
-        // Tanpa port terpublish tidak ada vhost Nginx → tidak ada yang bisa
-        // di-SSL (subdomain app memang tidak dilayani, SPECS §7.2).
-        if (!AppPorts::hasHostPort($app)) {
-            return $this->rejected('App ini tidak mem-publish port host — tidak ada domain yang bisa di-SSL. Tambahkan `ports:` pada compose app (tab Compose) lalu Deploy Ulang.');
-        }
-
-        // Fail-fast SEBELUM efek samping apa pun (status/worker): server agent
-        // tanpa APP_DOMAIN (`domain`) tidak boleh dimintai sertifikat — domain
-        // efektifnya akan diisi domain server lain dan sertifikatnya salah.
-        if (!ServerResolver::isLocal($server)) {
-            try {
-                AgentDeployer::assertDomainBase($server, $app);
-            } catch (\RuntimeException $e) {
-                return $this->rejected($e->getMessage());
-            }
-        }
-
-        $subdomain = app_subdomain_of($app);
-        $customDomain = AppDomains::normalizeDomain((string) ($app['custom_domain'] ?? ''));
-        $domain = AppDomains::normalizeDomain((string) $request->post('domain', ''));
-
-        if ($domain === '') {
-            $domain = $customDomain !== '' ? $customDomain : AppDomains::normalizeDomain($subdomain);
-        }
-
-        // Domain milik app: subdomain, domain utama, atau domain tambahan —
-        // pemetaannya satu pintu di `AppDomains` (`null` ⇒ bukan milik app).
-        $slot = AppDomains::slotOf($app, $domain);
-        if ($slot === null) {
-            return $this->rejected("Domain {$domain} bukan milik app ini.", domain: $domain);
-        }
-
-        if (!SslIssuer::isPublicDomain($domain)) {
-            return $this->rejected("Domain {$domain} bukan domain publik — SSL otomatis tidak didukung (mis. TLD .local).", domain: $domain);
-        }
-
-        $status = (string) (AppDomains::status($app, $slot)['ssl_status'] ?? 'disabled');
-        if (in_array($status, ['active', 'pending'], true)) {
-            // Status slot yang sudah jalan bukan error — di jalur halaman ini
-            // flash `info` (perilaku lama), bukan `error`.
-            return $this->rejected("SSL untuk {$domain} sudah {$status}.", 'already', $domain, 'info');
-        }
-
-        $store->update($id, static function (array &$s) use ($slot): void {
-            AppDomains::writeStatus($s, $slot, [
-                'ssl_status' => 'pending',
-                'ssl_stage' => 'queued',
-                'ssl_message' => 'Menunggu antrean SSL ...',
-                'ssl_error' => null,
-            ]);
-            // Flag lama hanya untuk slot lama — alias menyimpan statusnya di
-            // entri `custom_domains[]` (tidak ada flag `needs_ssl`).
-            if ($slot === AppDomains::SLOT_PRIMARY) {
-                $s['custom_needs_ssl'] = true;
-            } elseif ($slot === AppDomains::SLOT_SUBDOMAIN) {
-                $s['needs_ssl'] = true;
-            }
-        });
-
-        try {
-            // Satu antrean global: certbot memakai lock global + rate limit
-            // Let's Encrypt, jadi penerbitan dijalankan satu per satu.
-            $enqueued = $this->queue()->enqueueApp($app, $domain, $slot, $this->actorId());
-        } catch (\Throwable $e) {
-            $this->markFailed($store, $id, $slot, 'Gagal memasukkan permintaan SSL ke antrean: ' . $e->getMessage());
-
-            return $this->rejected('Gagal memasukkan permintaan SSL ke antrean.', 'failed', $domain);
-        }
-
-        $position = (int) ($enqueued['position'] ?? 0);
-        $size = (int) ($enqueued['size'] ?? 0);
+        // Validasi + efek samping (status slot → antrean global) satu sumber
+        // dengan API eksternal (`SslActivationService`); controller hanya
+        // memetakan hasil ke flash.
+        $result = (new SslActivationService($store, $this->queue()))->request(
+            $app,
+            (string) $request->post('domain', ''),
+            $this->actorId()
+        );
 
         return [
-            'ok' => true,
-            'error' => null,
-            'status' => 'pending',
-            'domain' => $domain,
-            'message' => "SSL untuk {$domain} masuk antrean (posisi {$position} dari {$size}).",
-            'flash' => 'success',
+            'ok' => $result['ok'],
+            'error' => $result['error'],
+            'status' => $result['status'],
+            'domain' => $result['domain'],
+            'message' => $result['message'],
+            'flash' => $result['ok'] ? 'success' : ($result['reason'] === 'already' ? 'info' : 'error'),
         ];
     }
 
@@ -341,42 +272,5 @@ class SslController
         $user = current_user();
 
         return is_array($user) ? (string) ($user['id'] ?? '') : null;
-    }
-
-    /**
-     * Tandai slot `failed` + alasan saat permintaan tidak bisa masuk antrean.
-     */
-    private function markFailed(AppStore $store, string $id, string $slot, string $message): void
-    {
-        try {
-            $store->update($id, static function (array &$s) use ($slot, $message): void {
-                AppDomains::writeStatus($s, $slot, [
-                    'ssl_status' => 'failed',
-                    'ssl_stage' => null,
-                    'ssl_message' => null,
-                    'ssl_error' => $message,
-                ]);
-            });
-        } catch (\Throwable) {
-            // Status `pending` tanpa job bukan kegagalan yang bisa diperbaiki di
-            // sini; pesan penolakan tetap dikembalikan ke user.
-        }
-    }
-
-    /**
-     * Hasil terstruktur penolakan bisnis (tanpa efek samping apa pun).
-     *
-     * @return array{ok:bool,error:?string,status:string,domain:string,message:string,flash:string}
-     */
-    private function rejected(string $message, string $status = 'rejected', string $domain = '', string $flash = 'error'): array
-    {
-        return [
-            'ok' => false,
-            'error' => $message,
-            'status' => $status,
-            'domain' => $domain,
-            'message' => $message,
-            'flash' => $flash,
-        ];
     }
 }

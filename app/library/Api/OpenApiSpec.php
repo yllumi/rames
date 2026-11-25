@@ -19,7 +19,7 @@ namespace app\library\Api;
  */
 final class OpenApiSpec
 {
-    public const VERSION = '1.0.0';
+    public const VERSION = '1.2.0';
 
     /**
      * Tool yang disediakan server MCP (`tools/mcp/rames_mcp.py`) — satu sumber
@@ -93,6 +93,7 @@ final class OpenApiSpec
             ],
             'tags' => [
                 ['name' => 'Apps', 'description' => 'Status & aksi siklus hidup app'],
+                ['name' => 'Domains', 'description' => 'Custom domain, domain tambahan (alias), dan status SSL-nya'],
             ],
             'security' => [
                 ['bearerAuth' => []],
@@ -251,6 +252,254 @@ final class OpenApiSpec
                     ],
                 ],
             ],
+            '/api/v1/apps/{slug}/domains' => [
+                'get' => [
+                    'tags' => ['Domains'],
+                    'operationId' => 'listAppDomains',
+                    'summary' => 'Status domain app yang sudah diset',
+                    'description' => 'Subdomain efektif, custom domain utama, dan domain tambahan '
+                        . '(alias) beserta status SSL per slot. Field `served=false` berarti app tidak '
+                        . 'mem-publish port host sehingga Nginx tidak melayani domain mana pun. '
+                        . 'Tidak memuat secret maupun keluaran certbot mentah (`error_summary` sudah diringkas).',
+                    'parameters' => [self::slugParameter()],
+                    'responses' => [
+                        '200' => [
+                            'description' => 'Status domain app.',
+                            'content' => [
+                                'application/json' => [
+                                    'schema' => ['$ref' => '#/components/schemas/DomainStateEnvelope'],
+                                    'example' => [
+                                        'code' => 0,
+                                        'data' => [
+                                            'slug' => 'contoh-app',
+                                            'served' => true,
+                                            'subdomain' => [
+                                                'domain' => 'contoh-app.example.org',
+                                                'role' => 'redirect',
+                                                'ssl' => [
+                                                    'status' => 'active',
+                                                    'stage' => null,
+                                                    'message' => null,
+                                                    'expires_at' => '2027-02-01T00:00:00+00:00',
+                                                    'error_summary' => '',
+                                                ],
+                                            ],
+                                            'primary' => [
+                                                'domain' => 'contoh.example.com',
+                                                'role' => 'serve',
+                                                'ssl' => [
+                                                    'status' => 'disabled',
+                                                    'stage' => null,
+                                                    'message' => null,
+                                                    'expires_at' => null,
+                                                    'error_summary' => '',
+                                                ],
+                                            ],
+                                            'aliases' => [
+                                                [
+                                                    'domain' => 'alias.example.com',
+                                                    'target_host_port' => 30002,
+                                                    'role' => 'serve',
+                                                    'ssl' => [
+                                                        'status' => 'pending',
+                                                        'stage' => 'queued',
+                                                        'message' => 'Menunggu antrean SSL.',
+                                                        'expires_at' => null,
+                                                        'error_summary' => '',
+                                                    ],
+                                                ],
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                        '401' => self::errorResponse('Token tidak ada / salah, atau user aktor tidak ditemukan.'),
+                        '404' => self::errorResponse('App tidak ada **atau** tidak boleh diakses aktor.'),
+                        '409' => self::errorResponse('Nama app ambigu di beberapa server.'),
+                    ],
+                ],
+                'post' => [
+                    'tags' => ['Domains'],
+                    'operationId' => 'addAppDomainAlias',
+                    'summary' => 'Tambah domain tambahan (alias) app',
+                    'description' => 'Alias melayani app **langsung** (tanpa redirect 301) sehingga app '
+                        . 'multi-site dapat merutekan berdasarkan header `Host`. Butuh ability `domain` '
+                        . '(operator+). Validasi sama dengan dashboard: FQDN publik, bukan subdomain/'
+                        . 'domain utama app, unik per server terhadap app lain & domain parkir, maksimal '
+                        . '20 alias, dan `target_host_port` wajib port yang dipublikasikan app '
+                        . '(`0`/kosong = primary service). Config Nginx ditulis ulang + reload; '
+                        . 'kegagalannya dilaporkan di `warnings` tanpa membatalkan data.',
+                    'parameters' => [self::slugParameter()],
+                    'requestBody' => self::domainAliasBody(),
+                    'responses' => [
+                        '200' => self::domainResultResponse('Alias ditambahkan.'),
+                        '401' => self::errorResponse('Token tidak ada / salah.'),
+                        '404' => self::errorResponse('App tidak ada **atau** tidak boleh diakses aktor.'),
+                        '409' => self::errorResponse('Nama app ambigu di beberapa server.'),
+                        '422' => self::errorResponse('Validasi gagal (FQDN tidak sah, duplikat, batas alias, port tujuan tidak dipublikasikan, app tanpa host port).'),
+                    ],
+                ],
+            ],
+            '/api/v1/apps/{slug}/domain' => [
+                'put' => [
+                    'tags' => ['Domains'],
+                    'operationId' => 'setAppPrimaryDomain',
+                    'summary' => 'Set / ganti custom domain utama app',
+                    'description' => 'Perilaku identik form dashboard: domain disimpan sebagai '
+                        . '`custom_domain`, sertifikat domain lama di-revoke, config Nginx ditulis ulang '
+                        . 'di server pemilik app, dan subdomain bawaan dialihkan (301) ke domain ini. '
+                        . 'Mengirim domain yang sama ⇒ `changed=false` tanpa efek samping. Butuh '
+                        . 'ability `domain` (operator+). DNS A/AAAA record domain tetap tanggung jawab '
+                        . 'user; aktifkan SSL lewat halaman `domains`/detail app.',
+                    'parameters' => [self::slugParameter()],
+                    'requestBody' => [
+                        'required' => true,
+                        'content' => [
+                            'application/json' => [
+                                'schema' => [
+                                    'type' => 'object',
+                                    'required' => ['domain'],
+                                    'properties' => ['domain' => ['type' => 'string', 'example' => 'contoh.example.com']],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'responses' => [
+                        '200' => self::domainResultResponse('Custom domain utama tersimpan.'),
+                        '401' => self::errorResponse('Token tidak ada / salah.'),
+                        '404' => self::errorResponse('App tidak ada **atau** tidak boleh diakses aktor.'),
+                        '409' => self::errorResponse('Nama app ambigu di beberapa server.'),
+                        '422' => self::errorResponse('Validasi gagal (FQDN tidak sah, sama dengan subdomain/alias app, dipakai app lain atau domain parkir, app tanpa host port).'),
+                    ],
+                ],
+                'delete' => [
+                    'tags' => ['Domains'],
+                    'operationId' => 'removeAppPrimaryDomain',
+                    'summary' => 'Hapus custom domain utama app',
+                    'description' => 'Sertifikat SSL domain di-revoke best-effort; subdomain kembali '
+                        . 'melayani app. Idempoten: app tanpa custom domain ⇒ `200` `changed=false`. '
+                        . 'Butuh ability `domain` (operator+).',
+                    'parameters' => [self::slugParameter()],
+                    'responses' => [
+                        '200' => self::domainResultResponse('Custom domain utama dihapus (bila ada).'),
+                        '401' => self::errorResponse('Token tidak ada / salah.'),
+                        '404' => self::errorResponse('App tidak ada **atau** tidak boleh diakses aktor.'),
+                        '409' => self::errorResponse('Nama app ambigu di beberapa server.'),
+                    ],
+                ],
+            ],
+            '/api/v1/apps/{slug}/domains/{domain}' => [
+                'patch' => [
+                    'tags' => ['Domains'],
+                    'operationId' => 'updateAppDomainAlias',
+                    'summary' => 'Ubah tujuan proxy satu domain tambahan',
+                    'description' => 'Field `target_host_port` = host port app tujuan `proxy_pass`; '
+                        . '`0`/kosong = kembali ke primary service. Berguna untuk app multi-service '
+                        . '(satu domain ke web utama, domain lain ke service port lain). Nama domain '
+                        . 'adalah identitas entri dan tidak bisa diubah lewat PATCH. Butuh ability '
+                        . '`domain` (operator+); alias tak dikenal ⇒ 404.',
+                    'parameters' => [self::slugParameter(), self::domainParameter()],
+                    'requestBody' => [
+                        'required' => true,
+                        'content' => [
+                            'application/json' => [
+                                'schema' => [
+                                    'type' => 'object',
+                                    'properties' => ['target_host_port' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 65535, 'example' => 30002]],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'responses' => [
+                        '200' => self::domainResultResponse('Tujuan proxy alias diperbarui.'),
+                        '401' => self::errorResponse('Token tidak ada / salah.'),
+                        '404' => self::errorResponse('App tidak ada / tidak boleh diakses aktor, atau alias tidak terdaftar.'),
+                        '409' => self::errorResponse('Nama app ambigu di beberapa server.'),
+                        '422' => self::errorResponse('Port tujuan tidak sah / tidak dipublikasikan app.'),
+                    ],
+                ],
+                'delete' => [
+                    'tags' => ['Domains'],
+                    'operationId' => 'removeAppDomainAlias',
+                    'summary' => 'Hapus satu domain tambahan (alias)',
+                    'description' => 'Hanya entri alias yang diminta yang dibuang (alias lain tetap). '
+                        . 'Sertifikat SSL alias di-revoke best-effort. Alias tak dikenal ⇒ 404 '
+                        . '`alias_not_found`. Butuh ability `domain` (operator+).',
+                    'parameters' => [self::slugParameter(), self::domainParameter()],
+                    'responses' => [
+                        '200' => self::domainResultResponse('Alias dihapus.'),
+                        '401' => self::errorResponse('Token tidak ada / salah.'),
+                        '404' => self::errorResponse('App tidak ada / tidak boleh diakses aktor, atau alias tidak terdaftar.'),
+                        '409' => self::errorResponse('Nama app ambigu di beberapa server.'),
+                    ],
+                ],
+            ],
+            '/api/v1/apps/{slug}/domains/{domain}/ssl' => [
+                'post' => [
+                    'tags' => ['Domains'],
+                    'operationId' => 'enableAppDomainSsl',
+                    'summary' => 'Ajukan aktivasi SSL satu domain app',
+                    'description' => 'Meminta sertifikat Let\'s Encrypt untuk satu domain milik app '
+                        . '(subdomain efektif, custom domain utama, atau alias). Permintaan **masuk antrean '
+                        . 'global** `ssl_jobs` — respons `202` hanya berarti job sudah diantrekan, bukan '
+                        . 'sertifikat terbit. Worker `cli/ssl.php` menulis ulang config Nginx (blok ACME/443), '
+                        . 'me-reload Nginx di server pemilik app, lalu menjalankan certbot (app di server '
+                        . 'agent ⇒ job `ssl_issue` di sana). Butuh ability `ssl` (operator+). Idempoten: '
+                        . 'slot yang sudah `active`/`pending` ⇒ `200` dengan `already:true` tanpa job baru. '
+                        . 'Pantau hasil lewat `GET /api/v1/apps/{slug}/domains`.',
+                    'parameters' => [self::slugParameter(), self::domainParameter()],
+                    'responses' => [
+                        '202' => [
+                            'description' => 'Job SSL masuk antrean; penerbitan berjalan asinkron.',
+                            'content' => [
+                                'application/json' => [
+                                    'schema' => ['$ref' => '#/components/schemas/SslAccepted'],
+                                    'example' => [
+                                        'code' => 0,
+                                        'data' => [
+                                            'slug' => 'contoh-app',
+                                            'domain' => 'contoh.example.com',
+                                            'slot' => 'custom_ssl',
+                                            'status' => 'pending',
+                                            'message' => 'SSL untuk contoh.example.com masuk antrean (posisi 1 dari 1).',
+                                            'queued' => true,
+                                            'queue_position' => 1,
+                                            'queue_size' => 1,
+                                            'poll_url' => '/api/v1/apps/contoh-app/domains',
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                        '200' => [
+                            'description' => 'Slot sudah `active`/`pending` — tidak ada job baru (idempoten).',
+                            'content' => [
+                                'application/json' => [
+                                    'schema' => ['$ref' => '#/components/schemas/SslAccepted'],
+                                    'example' => [
+                                        'code' => 0,
+                                        'data' => [
+                                            'slug' => 'contoh-app',
+                                            'domain' => 'contoh.example.com',
+                                            'slot' => 'custom_ssl',
+                                            'status' => 'pending',
+                                            'message' => 'SSL untuk contoh.example.com sudah pending.',
+                                            'already' => true,
+                                            'poll_url' => '/api/v1/apps/contoh-app/domains',
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                        '401' => self::errorResponse('Token tidak ada / salah.'),
+                        '404' => self::errorResponse('App tidak ada / tidak boleh diakses aktor, atau domain bukan milik app (`domain_not_found`).'),
+                        '409' => self::errorResponse('Nama app ambigu di beberapa server.'),
+                        '422' => self::errorResponse('Validasi gagal (app tanpa host port, server agent tanpa APP_DOMAIN, domain bukan publik).'),
+                        '503' => self::errorResponse('Antrean SSL tidak dapat ditulis (`ssl_queue_failed`); status slot ditandai `failed`.'),
+                    ],
+                ],
+            ],
             self::DOCS_JSON_PATH => [
                 'get' => [
                     'tags' => ['Apps'],
@@ -291,6 +540,63 @@ final class OpenApiSpec
                 'maxLength' => ApiAppLocator::SLUG_MAX_LENGTH,
                 'pattern' => '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$',
                 'example' => 'contoh-app',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private static function domainParameter(): array
+    {
+        return [
+            'name' => 'domain',
+            'in' => 'path',
+            'required' => true,
+            'description' => 'Domain tambahan (alias) yang sudah terdaftar pada app — lowercase, tanpa titik akhir.',
+            'schema' => ['type' => 'string', 'example' => 'alias.example.com'],
+        ];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private static function domainAliasBody(): array
+    {
+        return [
+            'required' => true,
+            'content' => [
+                'application/json' => [
+                    'schema' => [
+                        'type' => 'object',
+                        'required' => ['domain'],
+                        'properties' => [
+                            'domain' => ['type' => 'string', 'example' => 'alias.example.com'],
+                            'target_host_port' => [
+                                'type' => 'integer',
+                                'minimum' => 0,
+                                'maximum' => 65535,
+                                'description' => 'Host port tujuan `proxy_pass`; `0`/kosong = primary service app.',
+                                'example' => 30002,
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private static function domainResultResponse(string $description): array
+    {
+        return [
+            'description' => $description,
+            'content' => [
+                'application/json' => [
+                    'schema' => ['$ref' => '#/components/schemas/DomainResultEnvelope'],
+                ],
             ],
         ];
     }
@@ -404,6 +710,135 @@ final class OpenApiSpec
                     'created_at' => ['type' => 'string'],
                 ],
             ],
+            'DomainStateEnvelope' => [
+                'type' => 'object',
+                'required' => ['code', 'data'],
+                'properties' => [
+                    'code' => ['type' => 'integer', 'const' => 0],
+                    'data' => ['$ref' => '#/components/schemas/DomainState'],
+                ],
+            ],
+            'DomainResultEnvelope' => [
+                'type' => 'object',
+                'required' => ['code', 'data'],
+                'properties' => [
+                    'code' => ['type' => 'integer', 'const' => 0],
+                    'data' => ['$ref' => '#/components/schemas/DomainResult'],
+                ],
+            ],
+            'DomainResult' => [
+                'type' => 'object',
+                'required' => ['changed', 'applied', 'reloaded', 'domain', 'warnings', 'domains'],
+                'properties' => [
+                    'changed' => ['type' => 'boolean', 'description' => '`false` = permintaan idempoten tanpa perubahan.'],
+                    'applied' => [
+                        'type' => 'boolean',
+                        'description' => '`true` = config Nginx berhasil ditulis (belum tentu reload sukses).',
+                    ],
+                    'reloaded' => [
+                        'type' => 'boolean',
+                        'description' => '`true` = reload Nginx di server pemilik app berhasil (bagian dari proses API; berlaku untuk app lokal maupun server agent).',
+                    ],
+                    'domain' => ['type' => 'string', 'description' => 'Domain yang disentuh operasi ini.'],
+                    'target_host_port' => [
+                        'type' => 'integer',
+                        'description' => 'Host port tujuan alias (`0` = primary service); operasi domain utama = 0.',
+                    ],
+                    'warnings' => [
+                        'type' => 'array',
+                        'items' => ['type' => 'string'],
+                        'description' => 'Kegagalan tulis/reload Nginx atau revoke sertifikat yang tidak membatalkan data.',
+                    ],
+                    'domains' => ['$ref' => '#/components/schemas/DomainState'],
+                ],
+            ],
+            'DomainState' => [
+                'type' => 'object',
+                'required' => ['slug', 'served', 'primary', 'aliases'],
+                'properties' => [
+                    'slug' => ['type' => 'string'],
+                    'served' => [
+                        'type' => 'boolean',
+                        'description' => '`false` = app tanpa host port terpublish; Nginx tidak melayani domain mana pun.',
+                    ],
+                    'subdomain' => [
+                        'oneOf' => [
+                            ['$ref' => '#/components/schemas/DomainEntry'],
+                            ['type' => 'null'],
+                        ],
+                    ],
+                    'primary' => [
+                        'oneOf' => [
+                            ['$ref' => '#/components/schemas/DomainEntry'],
+                            ['type' => 'null'],
+                        ],
+                    ],
+                    'aliases' => [
+                        'type' => 'array',
+                        'items' => ['$ref' => '#/components/schemas/DomainEntry'],
+                    ],
+                ],
+            ],
+            'DomainEntry' => [
+                'type' => 'object',
+                'required' => ['domain', 'role', 'ssl'],
+                'properties' => [
+                    'domain' => ['type' => 'string'],
+                    'role' => [
+                        'type' => 'string',
+                        'enum' => ['serve', 'redirect'],
+                        'description' => '`serve` = melayani app; `redirect` = subdomain dialihkan 301 ke custom domain utama.',
+                    ],
+                    'target_host_port' => [
+                        'type' => 'integer',
+                        'description' => 'Hanya alias: host port tujuan `proxy_pass` (`0` = primary service).',
+                    ],
+                    'ssl' => ['$ref' => '#/components/schemas/DomainSsl'],
+                ],
+            ],
+            'DomainSsl' => [
+                'type' => 'object',
+                'required' => ['status', 'stage', 'message', 'expires_at', 'error_summary'],
+                'properties' => [
+                    'status' => [
+                        'type' => 'string',
+                        'description' => 'Status SSL slot: `disabled`, `pending`, `active`, `error`.',
+                    ],
+                    'stage' => ['type' => ['string', 'null'], 'description' => 'Tahap job SSL saat `pending`.'],
+                    'message' => ['type' => ['string', 'null']],
+                    'expires_at' => ['type' => ['string', 'null'], 'description' => 'Masa berlaku sertifikat (ISO 8601).'],
+                    'error_summary' => [
+                        'type' => 'string',
+                        'description' => 'Ringkasan satu baris galat SSL (bukan keluaran certbot mentah); kosong = tidak ada galat.',
+                    ],
+                ],
+            ],
+            'SslAccepted' => [
+                'type' => 'object',
+                'required' => ['code', 'data'],
+                'properties' => [
+                    'code' => ['type' => 'integer', 'const' => 0],
+                    'data' => [
+                        'type' => 'object',
+                        'required' => ['domain', 'status', 'message', 'poll_url'],
+                        'properties' => [
+                            'slug' => ['type' => 'string'],
+                            'domain' => ['type' => 'string'],
+                            'slot' => [
+                                'type' => ['string', 'null'],
+                                'description' => 'Slot SSL: `ssl` (subdomain), `custom_ssl` (domain utama), `alias:<domain>`.',
+                            ],
+                            'status' => ['type' => 'string', 'description' => '`pending` saat diantrekan; status slot saat `already`.'],
+                            'message' => ['type' => 'string'],
+                            'queued' => ['type' => 'boolean', 'description' => '`true` = job baru dibuat (202).'],
+                            'queue_position' => ['type' => 'integer', 'description' => 'Posisi antrean (1 = berikutnya).'],
+                            'queue_size' => ['type' => 'integer'],
+                            'already' => ['type' => 'boolean', 'description' => '`true` = slot sudah active/pending (200, tanpa job baru).'],
+                            'poll_url' => ['type' => 'string', 'description' => 'URL status domain untuk polling.'],
+                        ],
+                    ],
+                ],
+            ],
             'Error' => [
                 'type' => 'object',
                 'required' => ['code', 'error'],
@@ -413,7 +848,9 @@ final class OpenApiSpec
                     'reason' => [
                         'type' => 'string',
                         'description' => 'Alasan mesin: `unauthorized`, `not_found`, `app_busy`, '
-                            . '`ambiguous_app`, `build_rejected`, `insufficient_credits`.',
+                            . '`ambiguous_app`, `build_rejected`, `insufficient_credits`, '
+                            . '`validation_failed`, `invalid_json`, `invalid_field`, `alias_not_found`, '
+                            . '`domain_not_found`, `ssl_queue_failed`.',
                     ],
                 ],
             ],
